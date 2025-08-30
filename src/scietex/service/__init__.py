@@ -2,7 +2,5 @@
 
 __version__ = "0.0.2"
 
-from enum import Enum
-
-from .basic_sync_worker import BasicSyncWorker
-from .redis_sync_worker import RedisSyncWorker
+from .basic_async_worker import BasicAsyncWorker
+from .redis_async_worker import RedisConfig, RedisWorker

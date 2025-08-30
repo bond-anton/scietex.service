@@ -19,7 +19,7 @@ classifiers = [
 requires-python = ">=3.9"
 dependencies = [
     "sdnotify",
-    "redis",
+    "scietex.logging>=0.0.3",
 ]
 
 [project.urls]
@@ -27,7 +27,9 @@ dependencies = [
 "Bug Tracker" = "https://github.com/bond-anton/scietex.service/issues"
 
 [project.optional-dependencies]
-dev = ["redis"]
+redis = ["scietex.logging[redis]>=0.03", "redis>=4.2.0"]
+valkey = ["scietex.logging[valkey]>=0.03", "valkey-glide~=2.0.0"]
+dev = ["redis>=4.2.0", "valkey-glide~=2.0.0"]
 test = ["flake8", "pytest", "pytest-asyncio"]
 lint = ["pylint"]
 
