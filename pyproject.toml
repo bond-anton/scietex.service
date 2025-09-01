@@ -19,7 +19,7 @@ classifiers = [
 requires-python = ">=3.9"
 dependencies = [
     "sdnotify",
-    "scietex.logging>=0.0.3",
+    "scietex.logging>=0.1.0",
 ]
 
 [project.urls]
@@ -27,14 +27,14 @@ dependencies = [
 "Bug Tracker" = "https://github.com/bond-anton/scietex.service/issues"
 
 [project.optional-dependencies]
-redis = ["scietex.logging[redis]>=0.03", "redis>=4.2.0"]
-valkey = ["scietex.logging[valkey]>=0.03", "valkey-glide~=2.0.0"]
+redis = ["scietex.logging[redis]>=0.1.0", "redis>=4.2.0"]
+valkey = ["scietex.logging[valkey]>=0.1.0", "valkey-glide~=2.0.0"]
 dev = ["redis>=4.2.0", "valkey-glide~=2.0.0"]
 test = ["flake8", "pytest", "pytest-asyncio"]
 lint = ["pylint"]
 
 [tool.setuptools.dynamic]
-version = {attr = "scietex.service.__version__"}
+version = {attr = "scietex.service.version.__version__"}
 
 [tool.setuptools.package-data]
 "scietex.service" = ["py.typed"]

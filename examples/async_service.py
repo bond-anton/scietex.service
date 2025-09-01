@@ -1,3 +1,4 @@
+from typing import Union, Mapping, Any
 import asyncio
 import logging
 import random
@@ -13,45 +14,49 @@ TASKS = [
     (5, {"data": "Task data 5", "timeout": 0.0}),
 ]
 
+
 class MyAsyncWorker(BasicAsyncWorker):
 
     tasks = asyncio.Queue()
 
-    async def initialize(self):
+    async def initialize(self) -> bool:
+        if not await super().initialize():
+            return False
         for task in TASKS:
             await self.tasks.put(task)
+        return True
 
-    async def fetch_tasks(self):
+    async def fetch_tasks(self) -> None:
         try:
             task_id, task_data = await asyncio.wait_for(self.tasks.get(), timeout=1)
-            print("GOT TASK {}".format(task_id))
             await self.task_queue.put((task_id, task_data))
-            print("--", self.tasks)
         except TimeoutError:
             pass
 
-    async def process_task(self, task_id, task_data):
+    async def process_task(
+        self, task_id: Union[int, str], task_data: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
         task_time = random.randint(5, 20)
-        print(f"PROCESSING TASK {task_id} TIME={task_time}s")
         await asyncio.sleep(task_time)
+        return {"data": task_time}
 
-    async def return_task_to_queue(self, task_id, task_data):
+    async def return_task_to_queue(
+        self, task_id: Union[int, str], task_data: Mapping[str, Any]
+    ) -> None:
         await self.tasks.put((task_id, task_data))
-        print("++", self.tasks)
 
-    async def process_result(self, task_id, result):
-        print("Processed task {} result".format(task_id))
+    async def process_result(
+        self, task_id: Union[int, str], result: Mapping[str, Any]
+    ) -> None:
+        await asyncio.sleep(1)
 
 
-async def main():
+async def main() -> None:
     worker = MyAsyncWorker(
-        service_name="MyAsyncWorker",
-        version="0.0.1",
-        delay=1,
-        log_level=logging.DEBUG
+        service_name="MyAsyncWorker", version="0.0.1", delay=1, log_level=logging.DEBUG
     )
     await worker.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())

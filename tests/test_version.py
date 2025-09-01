@@ -3,9 +3,9 @@
 import unittest
 
 try:
-    from src.nts.service import __version__ as version
+    from src.scietex.service import __version__ as version
 except ModuleNotFoundError:
-    from nts.service import __version__ as version
+    from scietex.service import __version__ as version
 
 
 class TestVersion(unittest.TestCase):

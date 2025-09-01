@@ -3,7 +3,8 @@ import asyncio
 import logging
 import random
 
-from src.scietex.service import RedisWorker
+from glide import GlideClientConfiguration, NodeAddress
+from src.scietex.service import ValkeyWorker
 
 
 TASKS = [
@@ -15,7 +16,7 @@ TASKS = [
 ]
 
 
-class MyAsyncWorker(RedisWorker):
+class MyAsyncWorker(ValkeyWorker):
 
     tasks = asyncio.Queue()
 
@@ -29,7 +30,9 @@ class MyAsyncWorker(RedisWorker):
     async def fetch_tasks(self) -> None:
         try:
             task_id, task_data = await asyncio.wait_for(self.tasks.get(), timeout=1)
+            # print("GOT TASK {}".format(task_id))
             await self.task_queue.put((task_id, task_data))
+            # print("--", self.tasks)
         except TimeoutError:
             pass
 
@@ -52,17 +55,15 @@ class MyAsyncWorker(RedisWorker):
 
 
 async def main() -> None:
-    redis_config = {
-        "host": "localhost",
-        "port": 6379,
-        "db": 0,
-    }
+    valkey_config = GlideClientConfiguration(
+        [NodeAddress(host="localhost", port=6379)], database_id=0
+    )
     worker = MyAsyncWorker(
-        redis_config=redis_config,
-        service_name="MyRedisService",
+        service_name="MyValkeyService",
         version="0.0.1",
         worker_id=1,
         delay=1,
+        valkey_config=valkey_config,
         log_level=logging.DEBUG,
     )
     await worker.run()
