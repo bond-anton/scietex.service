@@ -1,10 +1,15 @@
+"""
+Example of custom service based on RedisWorker.
+"""
+
 from typing import Union, Mapping, Any
 import asyncio
 import logging
 import random
 
-from src.scietex.service import RedisWorker
+from scietex.service import RedisWorker
 
+# pylint: disable=duplicate-code
 
 TASKS = [
     (1, {"data": "Task data 1", "timeout": 6.0}),
@@ -16,6 +21,7 @@ TASKS = [
 
 
 class MyAsyncWorker(RedisWorker):
+    """Custom async worker implementation."""
 
     tasks = asyncio.Queue()
 
@@ -52,6 +58,7 @@ class MyAsyncWorker(RedisWorker):
 
 
 async def main() -> None:
+    """Main function."""
     redis_config = {
         "host": "localhost",
         "port": 6379,

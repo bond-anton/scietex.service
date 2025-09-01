@@ -1,10 +1,13 @@
+"""Example of BasycAsyncWorker based service."""
+
 from typing import Union, Mapping, Any
 import asyncio
 import logging
 import random
 
-from src.scietex.service import BasicAsyncWorker
+from scietex.service import BasicAsyncWorker
 
+# pylint: disable=duplicate-code
 
 TASKS = [
     (1, {"data": "Task data 1", "timeout": 6.0}),
@@ -16,6 +19,9 @@ TASKS = [
 
 
 class MyAsyncWorker(BasicAsyncWorker):
+    """
+    Custom Worker based on BasicAsyncWorker.
+    """
 
     tasks = asyncio.Queue()
 
@@ -52,6 +58,7 @@ class MyAsyncWorker(BasicAsyncWorker):
 
 
 async def main() -> None:
+    """Main function."""
     worker = MyAsyncWorker(
         service_name="MyAsyncWorker", version="0.0.1", delay=1, log_level=logging.DEBUG
     )

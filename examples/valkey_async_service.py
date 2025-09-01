@@ -1,10 +1,16 @@
+"""
+Example of ValkeyWorker based service
+"""
+
+# pylint: disable=duplicate-code
+
 from typing import Union, Mapping, Any
 import asyncio
 import logging
 import random
 
 from glide import GlideClientConfiguration, NodeAddress
-from src.scietex.service import ValkeyWorker
+from scietex.service import ValkeyWorker
 
 
 TASKS = [
@@ -17,6 +23,7 @@ TASKS = [
 
 
 class MyAsyncWorker(ValkeyWorker):
+    """Custom worker implementation."""
 
     tasks = asyncio.Queue()
 
@@ -55,6 +62,7 @@ class MyAsyncWorker(ValkeyWorker):
 
 
 async def main() -> None:
+    """Main function."""
     valkey_config = GlideClientConfiguration(
         [NodeAddress(host="localhost", port=6379)], database_id=0
     )
