@@ -64,6 +64,9 @@ async def main() -> None:
         "port": 6379,
         "db": 0,
     }
+    use_config_file = True
+    if use_config_file:
+        redis_config = None
     worker = MyAsyncWorker(
         redis_config=redis_config,
         service_name="MyRedisService",

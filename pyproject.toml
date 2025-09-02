@@ -18,7 +18,7 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "sdnotify",
+    "pyyaml",
     "scietex.logging>=0.1.0",
 ]
 

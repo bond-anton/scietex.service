@@ -7,11 +7,14 @@ import asyncio
 from typing import Optional, Union, Any, Mapping
 import logging
 import json
+from pathlib import Path
+import yaml
 
 try:
     from glide import (
         GlideClient,
         GlideClientConfiguration,
+        ServerCredentials,
         NodeAddress,
         CoreCommands,
         ConnectionError as GlideConnectionError,
@@ -59,7 +62,7 @@ class ValkeyWorker(BasicAsyncWorker):
         """
         super().__init__(service_name=service_name, version=version, **kwargs)
         self._client_config: GlideClientConfiguration = (
-            valkey_config or GlideClientConfiguration([NodeAddress()])
+            valkey_config or self.read_valkey_config()
         )
         self._listening_client_config: GlideClientConfiguration = (
             GlideClientConfiguration(
@@ -93,6 +96,38 @@ class ValkeyWorker(BasicAsyncWorker):
         self.control_msg_queue: asyncio.Queue[Mapping[str, Union[str, dict]]] = (
             asyncio.Queue()
         )
+
+    def read_valkey_config(self) -> GlideClientConfiguration:
+        """Read valkey config from YML file"""
+        if isinstance(self.conf_dir, Path):
+            valkey_yml = self.conf_dir.joinpath("valkey.yml")
+        else:
+            raise RuntimeError("Configuration dir was not set!")
+        try:
+            valkey_config = yaml.safe_load(valkey_yml.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, FileNotFoundError):
+            valkey_config = {
+                "nodes": [{"host": "localhost", "port": 6379}],
+                "database_id": 0,
+                "use_tls": False,
+            }
+            with open(valkey_yml, "w", encoding="utf-8") as f:
+                yaml.dump(valkey_config, f, default_flow_style=False, sort_keys=False)
+        addresses = [NodeAddress(**node) for node in valkey_config["nodes"]]
+        credentials = None
+        if "credentials" in valkey_config:
+            try:
+                credentials = ServerCredentials(**valkey_config["credentials"])
+            except TypeError:
+                pass
+        valkey_safe_conf = {
+            k: v for k, v in valkey_config.items() if k not in ("nodes", "credentials")
+        }
+        client_config = GlideClientConfiguration(
+            addresses=addresses, credentials=credentials, **valkey_safe_conf
+        )
+
+        return client_config
 
     def parse_message(self, message: CoreCommands.PubSubMsg, context: Any) -> None:
         """Parse message from the Valkey client and put it to processing queue."""

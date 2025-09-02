@@ -66,6 +66,9 @@ async def main() -> None:
     valkey_config = GlideClientConfiguration(
         [NodeAddress(host="localhost", port=6379)], database_id=0
     )
+    use_config_file = True
+    if use_config_file:
+        valkey_config = None
     worker = MyAsyncWorker(
         service_name="MyValkeyService",
         version="0.0.1",

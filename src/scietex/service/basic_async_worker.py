@@ -3,11 +3,12 @@ Module providing basic asynchronous worker, which can be used to construct more 
 Worker provides task queue management, watchdog, and console logging.
 """
 
-from typing import Union, Tuple, Mapping, Any
+from typing import Union, Optional, Tuple, Mapping, Any
 import asyncio
 import signal
 import time
 import logging
+from pathlib import Path
 
 from scietex.logging import AsyncBaseHandler
 
@@ -24,6 +25,13 @@ DEFAULT_MAX_CONCURRENT_TASKS = 2
 
 TASK_TIMEOUT = 3  # Timeout in seconds for task completion
 """Timeout in seconds for task completion before cancellation."""
+
+CONF_PATHS = [
+    Path.home() / ".config" / "scietex",
+    Path("/etc") / "scietex",
+    Path("/usr/local/etc") / "scietex",
+    Path().cwd() / "config",
+]
 
 
 # pylint: disable=too-many-instance-attributes, too-many-public-methods
@@ -58,9 +66,10 @@ class BasicAsyncWorker:
         Args:
             service_name: Name of the service, used for logging and identification
             version: Version string of the service
+            logging_level: Logging level as string or integer
             **kwargs: Additional keyword arguments including:
+                conf_dir: Directory to use for configuration files
                 worker_id: Unique identifier for this worker instance
-                logging_level: Logging level as string or integer
                 queue_size: Queue size as integer
                 max_concurrent_tasks: Maximum number of concurrent tasks
 
@@ -81,6 +90,22 @@ class BasicAsyncWorker:
                     self.__logging_level = logging.getLevelName(kwargs["logging_level"])
             except (TypeError, ValueError):
                 pass
+
+        # Config dir setup
+        self.conf_dir: Optional[Path] = None
+
+        if "conf_dir" in kwargs and isinstance(kwargs["conf_dir"], (str, Path)):
+            conf_dir_path = Path(kwargs["conf_dir"])
+            if conf_dir_path.is_dir():
+                self.conf_dir = conf_dir_path
+        if self.conf_dir is None:
+            for conf_dir_path in CONF_PATHS:
+                if conf_dir_path.is_dir():
+                    self.conf_dir = conf_dir_path
+                    break
+        if self.conf_dir is None:
+            self.conf_dir = CONF_PATHS[0]
+            self.conf_dir.mkdir(exist_ok=True)
 
         # Set up logger with async handler
         self._logger: logging.Logger = logging.getLogger(__name__)

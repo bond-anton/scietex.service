@@ -3,10 +3,12 @@ Module providing asynchronous worker, which can communicate with the Redis serve
 Worker provides handling connections, disconnections, initialization, cleanups, and logging.
 """
 
-from typing import Optional, Union, Mapping
+from typing import Optional, Union, Mapping, Any
 import asyncio
 import logging
 import json
+from pathlib import Path
+import yaml
 
 try:
     import redis.asyncio as redis
@@ -52,13 +54,27 @@ class RedisWorker(BasicAsyncWorker):
             kwargs: Additional keyword arguments passed through to parent constructor.
         """
         super().__init__(service_name=service_name, version=version, **kwargs)
-        self._client_config: dict = redis_config or {
-            "host": "localhost",
-            "port": 6379,
-            "db": 0,
-        }
+        self._client_config: dict[str, Any] = redis_config or self.read_redis_config()
         self.client: Optional[redis.Redis] = None
         self.pubsub: Optional[redis.client.PubSub] = None
+
+    def read_redis_config(self) -> dict[str, Any]:
+        """Read redis config from YML file"""
+        if isinstance(self.conf_dir, Path):
+            redis_yml = self.conf_dir.joinpath("redis.yml")
+        else:
+            raise RuntimeError("Coonfig dir path was not set!")
+        try:
+            redis_config = yaml.safe_load(redis_yml.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, FileNotFoundError):
+            redis_config = {
+                "host": "localhost",
+                "port": 6379,
+                "db": 0,
+            }
+            with open(redis_yml, "w", encoding="utf-8") as f:
+                yaml.dump(redis_config, f, default_flow_style=False, sort_keys=False)
+        return redis_config
 
     async def connect(self) -> bool:
         """
