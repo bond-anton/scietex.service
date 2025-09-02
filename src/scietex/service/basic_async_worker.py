@@ -109,6 +109,7 @@ class BasicAsyncWorker:
         )
         self._stop_event: asyncio.Event = asyncio.Event()
         self._completion_event: asyncio.Event = asyncio.Event()
+        self.message_handler_task = None
         self.managers_tasks: list = []
 
     @property
@@ -238,7 +239,9 @@ class BasicAsyncWorker:
             raise RuntimeError("Initialization failed")
 
         # Start control messages listener
-        asyncio.create_task(self.listen_for_control_messages())
+        self.message_handler_task = asyncio.create_task(
+            self.listen_for_control_messages()
+        )
 
         # Main tasks
         self.managers_tasks = [
@@ -299,6 +302,10 @@ class BasicAsyncWorker:
         """
         self.logger.debug("Stopping worker gracefully...")
         self._stop_event.set()
+
+        if self.message_handler_task is not None:
+            self.message_handler_task.cancel()
+            self.message_handler_task = None
 
         # Return tasks in worker queue to external queue
         while not self.task_queue.empty():

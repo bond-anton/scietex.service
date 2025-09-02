@@ -3,8 +3,10 @@ Module providing asynchronous worker, which can communicate with the Redis serve
 Worker provides handling connections, disconnections, initialization, cleanups, and logging.
 """
 
-from typing import Optional
+from typing import Optional, Union, Mapping
+import asyncio
 import logging
+import json
 
 try:
     import redis.asyncio as redis
@@ -56,6 +58,7 @@ class RedisWorker(BasicAsyncWorker):
             "db": 0,
         }
         self.client: Optional[redis.Redis] = None
+        self.pubsub: Optional[redis.client.PubSub] = None
 
     async def connect(self) -> bool:
         """
@@ -72,6 +75,7 @@ class RedisWorker(BasicAsyncWorker):
                 self.client = await redis.Redis(
                     **self._client_config, decode_responses=True
                 )
+                self.pubsub = self.client.pubsub()
                 if await self.client.ping():
                     await self.log("Connected to Redis", logging.INFO)
                     return True
@@ -89,8 +93,61 @@ class RedisWorker(BasicAsyncWorker):
         """
         if self.client is not None:
             await self.client.aclose()
+            await self.pubsub.close()
             self.logger.info("Redis client disconnected")
             self.client = None
+            self.pubsub = None
+
+    async def listen_for_control_messages(self):
+        """
+        Listen for messages from the Redis client.
+        """
+        await self.pubsub.subscribe(self.service_name)
+        await self.pubsub.subscribe("broadcast")
+
+        try:
+            async for message in self.pubsub.listen():
+                if message["type"] == "message":
+                    try:
+                        data = json.loads(message["data"])
+                        if message["channel"] == self.service_name:
+                            await self.process_control_message(
+                                {"channel": message["channel"], "data": data}
+                            )
+                        else:
+                            await self.process_broadcast_message(
+                                {"channel": message["channel"], "data": data}
+                            )
+                    except json.JSONDecodeError as ex:
+                        self.logger.error("Message decode error: %s", ex)
+        except asyncio.CancelledError:
+            self.logger.debug("Redis message handler stopped.")
+
+    async def process_control_message(
+        self, message: Mapping[str, Union[str, dict]]
+    ) -> None:
+        """
+        Process control messages from the Valkey client.
+        Args:
+            message (Mapping[str, Union[str, dict]]): Message received from the Valkey client.
+
+        This method should be overridden by subclasses to implement
+        the actual message processing logic.
+        """
+        self.logger.debug("Processing control message: %s", message["data"])
+
+    async def process_broadcast_message(
+        self, message: Mapping[str, Union[str, dict]]
+    ) -> None:
+        """
+        Process control messages from the Valkey client.
+        Args:
+            message (Mapping[str, Union[str, dict]]): Message received from the Valkey client.
+
+        This method should be overridden by subclasses to implement
+        the actual message processing logic.
+        """
+        self.logger.debug("Processing broadcast message: %s", message["data"])
 
     async def initialize(self) -> bool:
         """
