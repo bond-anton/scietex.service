@@ -276,7 +276,7 @@ class BasicAsyncWorker:
             asyncio.create_task(self.results_manager()),
             asyncio.create_task(self.watchdog()),
         ]
-        await self.log("LOG Message from start", level=logging.DEBUG)
+        await self.log(f"Worker {self.service_name} started", level=logging.DEBUG)
 
     async def return_task_to_queue(
         self, task_id: Union[int, str], task_data: Mapping[str, Any]
