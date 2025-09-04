@@ -161,8 +161,10 @@ class ValkeyWorker(BasicAsyncWorker):
                 try:
                     message_data = message["data"]
                 except KeyError:
-                    await self.log(f"Message should have data payload, got {message}", logging.ERROR)
-                    pass
+                    await self.log(
+                        f"Message should have data payload, got {message}",
+                        logging.ERROR,
+                    )
                 if message_data is not None:
                     if message["channel"] == self.service_name:
                         await self.process_control_message(message_data)
