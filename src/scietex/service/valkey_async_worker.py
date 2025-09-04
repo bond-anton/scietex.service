@@ -157,10 +157,17 @@ class ValkeyWorker(BasicAsyncWorker):
                 message = await asyncio.wait_for(
                     self.control_msg_queue.get(), timeout=1
                 )
-                if message["channel"] == self.service_name:
-                    await self.process_control_message(message)
-                else:
-                    await self.process_broadcast_message(message)
+                message_data = None
+                try:
+                    message_data = message["data"]
+                except KeyError:
+                    await self.log(f"Message should have data payload, got {message}", logging.ERROR)
+                    pass
+                if message_data is not None:
+                    if message["channel"] == self.service_name:
+                        await self.process_control_message(message_data)
+                    else:
+                        await self.process_broadcast_message(message_data)
                 self.control_msg_queue.task_done()
             except TimeoutError:
                 pass
@@ -171,12 +178,12 @@ class ValkeyWorker(BasicAsyncWorker):
         """
         Process control messages from the Valkey client.
         Args:
-            message (Mapping[str, Union[str, dict]]): Message received from the Valkey client.
+            message (Mapping[str, Union[str, dict]]): Message data received from the Valkey client.
 
         This method should be overridden by subclasses to implement
         the actual message processing logic.
         """
-        self.logger.debug("Processing control message: %s", message["data"])
+        self.logger.debug("Processing control message: %s", message)
 
     async def process_broadcast_message(
         self, message: Mapping[str, Union[str, dict]]
@@ -184,12 +191,12 @@ class ValkeyWorker(BasicAsyncWorker):
         """
         Process control messages from the Valkey client.
         Args:
-            message (Mapping[str, Union[str, dict]]): Message received from the Valkey client.
+            message (Mapping[str, Union[str, dict]]): Message data received from the Valkey client.
 
         This method should be overridden by subclasses to implement
         the actual message processing logic.
         """
-        self.logger.debug("Processing broadcast message: %s", message["data"])
+        self.logger.debug("Processing broadcast message: %s", message)
 
     async def connect(self) -> bool:
         """

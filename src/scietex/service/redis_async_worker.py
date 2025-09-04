@@ -127,13 +127,9 @@ class RedisWorker(BasicAsyncWorker):
                     try:
                         data = json.loads(message["data"])
                         if message["channel"] == self.service_name:
-                            await self.process_control_message(
-                                {"channel": message["channel"], "data": data}
-                            )
+                            await self.process_control_message(data)
                         else:
-                            await self.process_broadcast_message(
-                                {"channel": message["channel"], "data": data}
-                            )
+                            await self.process_broadcast_message(data)
                     except json.JSONDecodeError as ex:
                         self.logger.error("Message decode error: %s", ex)
         except asyncio.CancelledError:
@@ -145,12 +141,12 @@ class RedisWorker(BasicAsyncWorker):
         """
         Process control messages from the Valkey client.
         Args:
-            message (Mapping[str, Union[str, dict]]): Message received from the Valkey client.
+            message (Mapping[str, Union[str, dict]]): Message data received from the Redis client.
 
         This method should be overridden by subclasses to implement
         the actual message processing logic.
         """
-        self.logger.debug("Processing control message: %s", message["data"])
+        self.logger.debug("Processing control message: %s", message)
 
     async def process_broadcast_message(
         self, message: Mapping[str, Union[str, dict]]
@@ -158,12 +154,12 @@ class RedisWorker(BasicAsyncWorker):
         """
         Process control messages from the Valkey client.
         Args:
-            message (Mapping[str, Union[str, dict]]): Message received from the Valkey client.
+            message (Mapping[str, Union[str, dict]]): Message data received from the Redis client.
 
         This method should be overridden by subclasses to implement
         the actual message processing logic.
         """
-        self.logger.debug("Processing broadcast message: %s", message["data"])
+        self.logger.debug("Processing broadcast message: %s", message)
 
     async def initialize(self) -> bool:
         """
