@@ -1,2 +1,3 @@
 # Project exclude paths
 /.tox/
+/src/scietex.service.egg-info/

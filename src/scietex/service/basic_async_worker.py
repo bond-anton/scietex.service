@@ -3,7 +3,7 @@ Module providing basic asynchronous worker, which can be used to construct more 
 Worker provides task queue management, watchdog, and console logging.
 """
 
-from typing import Union, Optional, Tuple, Mapping, Any
+from typing import Any
 import asyncio
 import signal
 import time
@@ -92,7 +92,7 @@ class BasicAsyncWorker:
                 pass
 
         # Config dir setup
-        self.conf_dir: Optional[Path] = None
+        self.conf_dir: Path | None = None
 
         if "conf_dir" in kwargs and isinstance(kwargs["conf_dir"], (str, Path)):
             conf_dir_path = Path(kwargs["conf_dir"])
@@ -117,7 +117,7 @@ class BasicAsyncWorker:
         self._logger.addHandler(stdout_handler)
 
         # Initialize queues and tracking structures
-        self.log_queue: asyncio.Queue[Tuple[int, str]] = asyncio.Queue()
+        self.log_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
         self.running_tasks: dict = {}  # Track running tasks and their start times
         self.running_result_processors: dict = (
             {}
@@ -126,10 +126,10 @@ class BasicAsyncWorker:
         self.max_concurrent_tasks: int = kwargs.get(
             "max_concurrent_tasks", DEFAULT_MAX_CONCURRENT_TASKS
         )
-        self.task_queue: asyncio.Queue[Tuple[Union[int, str], Mapping[str, Any]]] = (
+        self.task_queue: asyncio.Queue[tuple[int | str, dict[str, Any]]] = (
             asyncio.Queue(maxsize=self.queue_size)
         )
-        self.results_queue: asyncio.Queue[Tuple[Union[int, str], Mapping[str, Any]]] = (
+        self.results_queue: asyncio.Queue[tuple[int | str, dict[str, Any]]] = (
             asyncio.Queue()
         )
         self._stop_event: asyncio.Event = asyncio.Event()
@@ -163,7 +163,7 @@ class BasicAsyncWorker:
         return self.__logging_level
 
     @logging_level.setter
-    def logging_level(self, level: Union[int, str]) -> None:
+    def logging_level(self, level: int | str) -> None:
         """
         Set the logging level for the worker.
 
@@ -279,7 +279,7 @@ class BasicAsyncWorker:
         await self.log(f"Worker {self.service_name} started", level=logging.DEBUG)
 
     async def return_task_to_queue(
-        self, task_id: Union[int, str], task_data: Mapping[str, Any]
+        self, task_id: int | str, task_data: dict[str, Any]
     ) -> None:
         """
         Return a task to the external queue.
@@ -290,12 +290,10 @@ class BasicAsyncWorker:
 
         Args:
             task_id (Union[int, str]): The task id
-            task_data (Mapping[str, Any]): The task data to return to the external queue
+            task_data (dict[str, Any]): The task data to return to the external queue
         """
 
-    async def process_result(
-        self, task_id: Union[int, str], result: Mapping[str, Any]
-    ) -> None:
+    async def process_result(self, task_id: int | str, result: dict[str, Any]) -> None:
         """
         Process a completed task result.
 
@@ -421,8 +419,8 @@ class BasicAsyncWorker:
         await self.log_queue.put((level, message))
 
     async def process_task(
-        self, task_id: Union[int, str], task_data: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
+        self, task_id: int | str, task_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Process a single task.
 
@@ -442,7 +440,7 @@ class BasicAsyncWorker:
         """
         await self.log(f"Processing task {task_id}: {task_data}", level=logging.DEBUG)
         await asyncio.sleep(1)
-        result: Mapping[str, Any] = {"data": f"Result of {task_id}"}
+        result: dict[str, Any] = {"data": f"Result of {task_id}"}
         await self.log(
             f"Task {task_id} completed with result: {result}", level=logging.DEBUG
         )
@@ -457,7 +455,7 @@ class BasicAsyncWorker:
         and their start times for timeout monitoring.
         """
 
-        async def handle_task(t_id: Union[int, str], t_data: Mapping[str, Any]):
+        async def handle_task(t_id: int | str, t_data: dict[str, Any]):
             try:
                 await self.log(
                     f"Sending to handler. Task {t_id}: {t_data}", level=logging.INFO
@@ -515,7 +513,7 @@ class BasicAsyncWorker:
         them. Runs until the stop event is set.
         """
 
-        async def handle_result(t_id: Union[int, str], r_data: Mapping[str, Any]):
+        async def handle_result(t_id: int | str, r_data: dict[str, Any]):
             try:
                 await self.log(
                     f"Processing results of task {t_id}: {r_data}", level=logging.INFO

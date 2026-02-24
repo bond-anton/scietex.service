@@ -4,14 +4,13 @@ Example of ValkeyWorker based service
 
 # pylint: disable=duplicate-code
 
-from typing import Union, Mapping, Any
+from typing import Any
 import asyncio
 import logging
 import random
 
 from glide import GlideClientConfiguration, NodeAddress
 from scietex.service import ValkeyWorker
-
 
 TASKS = [
     (1, {"data": "Task data 1", "timeout": 6.0}),
@@ -44,20 +43,18 @@ class MyAsyncWorker(ValkeyWorker):
             pass
 
     async def process_task(
-        self, task_id: Union[int, str], task_data: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
+        self, task_id: int | str, task_data: dict[str, Any]
+    ) -> dict[str, Any]:
         task_time = random.randint(5, 20)
         await asyncio.sleep(task_time)
         return {"data": task_time}
 
     async def return_task_to_queue(
-        self, task_id: Union[int, str], task_data: Mapping[str, Any]
+        self, task_id: int | str, task_data: dict[str, Any]
     ) -> None:
         await self.tasks.put((task_id, task_data))
 
-    async def process_result(
-        self, task_id: Union[int, str], result: Mapping[str, Any]
-    ) -> None:
+    async def process_result(self, task_id: int | str, result: dict[str, Any]) -> None:
         await asyncio.sleep(1)
 
 

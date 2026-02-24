@@ -16,10 +16,10 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "pyyaml",
-    "scietex.logging>=0.1.1",
+    "scietex.logging>=0.1.2",
 ]
 
 [project.urls]
@@ -27,9 +27,13 @@ dependencies = [
 "Bug Tracker" = "https://github.com/bond-anton/scietex.service/issues"
 
 [project.optional-dependencies]
-redis = ["scietex.logging[redis]>=0.1.0", "redis>=4.2.0"]
-valkey = ["scietex.logging[valkey]>=0.1.0", "valkey-glide~=2.0.0"]
-dev = ["redis>=4.2.0", "valkey-glide~=2.0.0"]
+redis = ["scietex.logging[redis]>=0.1.2", "redis>=5.0.0"]
+valkey = ["scietex.logging[valkey]>=0.1.2", "valkey-glide>=2.2.0"]
+dev = [
+    "redis>=5.0.0",
+    "tox>=4.45.0",
+    "valkey-glide>=2.2.0",
+]
 test = ["flake8", "pytest", "pytest-asyncio"]
 lint = ["pylint"]
 
@@ -43,7 +47,7 @@ version = {attr = "scietex.service.version.__version__"}
 where = ["src"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 
 [tool.pytest.ini_options]
 pythonpath = [

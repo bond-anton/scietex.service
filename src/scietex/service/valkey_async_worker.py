@@ -4,7 +4,7 @@ Worker provides handling connections, disconnections, initialization, cleanups, 
 """
 
 import asyncio
-from typing import Optional, Union, Any, Mapping
+from typing import Any
 import logging
 import json
 from pathlib import Path
@@ -16,7 +16,7 @@ try:
         GlideClientConfiguration,
         ServerCredentials,
         NodeAddress,
-        CoreCommands,
+        PubSubMsg,
         ConnectionError as GlideConnectionError,
         TimeoutError as GlideTimeoutError,
     )
@@ -47,7 +47,7 @@ class ValkeyWorker(BasicAsyncWorker):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
-        valkey_config: Optional[GlideClientConfiguration] = None,
+        valkey_config: GlideClientConfiguration | None = None,
         **kwargs,
     ):
         """
@@ -56,7 +56,7 @@ class ValkeyWorker(BasicAsyncWorker):
         Args:
             service_name (str): Name of the service (default: "service").
             version (str): Version string associated with the service (default: "0.0.1").
-            valkey_config (Optional[GlideClientConfiguration], optional): Custom configuration for
+            valkey_config (GlideClientConfiguration, optional): Custom configuration for
                 the Valkey client. If omitted, defaults to minimal settings.
             kwargs: Additional keyword arguments passed through to parent constructor.
         """
@@ -82,8 +82,8 @@ class ValkeyWorker(BasicAsyncWorker):
                 pubsub_subscriptions=GlideClientConfiguration.PubSubSubscriptions(
                     channels_and_patterns={
                         GlideClientConfiguration.PubSubChannelModes.Exact: {
-                            self.service_name,
-                            "broadcast",
+                            f"scietex:{self.service_name}:{self.worker_id}",
+                            "scietex:broadcast",
                         },
                     },
                     callback=self.parse_message,
@@ -91,11 +91,9 @@ class ValkeyWorker(BasicAsyncWorker):
                 ),
             )
         )
-        self.client: Optional[GlideClient] = None
-        self.listening_client: Optional[GlideClient] = None
-        self.control_msg_queue: asyncio.Queue[Mapping[str, Union[str, dict]]] = (
-            asyncio.Queue()
-        )
+        self.client: GlideClient | None = None
+        self.listening_client: GlideClient | None = None
+        self.control_msg_queue: asyncio.Queue[dict[str, str | dict]] = asyncio.Queue()
 
     def read_valkey_config(self) -> GlideClientConfiguration:
         """Read valkey config from YML file"""
@@ -129,7 +127,7 @@ class ValkeyWorker(BasicAsyncWorker):
 
         return client_config
 
-    def parse_message(self, message: CoreCommands.PubSubMsg, context: Any) -> None:
+    def parse_message(self, message: PubSubMsg, context: Any) -> None:
         """Parse message from the Valkey client and put it to processing queue."""
         try:
             if isinstance(message.channel, bytes):
@@ -140,7 +138,7 @@ class ValkeyWorker(BasicAsyncWorker):
                 data = json.loads(message.message.decode(encoding="utf-8"))
             else:
                 data = json.loads(str(message.message))
-            if channel == self.service_name:
+            if channel == f"scietex:{self.service_name}:{self.worker_id}":
                 self.logger.debug("Received message: %s, context: %s", data, context)
             else:
                 self.logger.debug(
@@ -166,7 +164,10 @@ class ValkeyWorker(BasicAsyncWorker):
                         logging.ERROR,
                     )
                 if message_data is not None:
-                    if message["channel"] == self.service_name:
+                    if (
+                        message["channel"]
+                        == f"scietex:{self.service_name}:{self.worker_id}"
+                    ):
                         await self.process_control_message(message_data)
                     else:
                         await self.process_broadcast_message(message_data)
@@ -174,26 +175,22 @@ class ValkeyWorker(BasicAsyncWorker):
             except TimeoutError:
                 pass
 
-    async def process_control_message(
-        self, message: Mapping[str, Union[str, dict]]
-    ) -> None:
+    async def process_control_message(self, message: dict[str, str | dict]) -> None:
         """
         Process control messages from the Valkey client.
         Args:
-            message (Mapping[str, Union[str, dict]]): Message data received from the Valkey client.
+            message (dict[str, Union[str, dict]]): Message data received from the Valkey client.
 
         This method should be overridden by subclasses to implement
         the actual message processing logic.
         """
         self.logger.debug("Processing control message: %s", message)
 
-    async def process_broadcast_message(
-        self, message: Mapping[str, Union[str, dict]]
-    ) -> None:
+    async def process_broadcast_message(self, message: dict[str, str | dict]) -> None:
         """
         Process control messages from the Valkey client.
         Args:
-            message (Mapping[str, Union[str, dict]]): Message data received from the Valkey client.
+            message (dict[str, Union[str, dict]]): Message data received from the Valkey client.
 
         This method should be overridden by subclasses to implement
         the actual message processing logic.
@@ -233,7 +230,8 @@ class ValkeyWorker(BasicAsyncWorker):
         """
         if self.client is not None:
             await self.client.close()
-            await self.listening_client.close()
+            if self.listening_client:
+                await self.listening_client.close()
             self.logger.info("Valkey client disconnected")
             self.client = None
             self.listening_client = None
