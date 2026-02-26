@@ -8,12 +8,17 @@ from typing import Any
 import logging
 import json
 from pathlib import Path
-import yaml
+import msgspec
+from msgspec import field
 
 try:
     from glide import (
+        ConfigurationError,
         GlideClient,
         GlideClientConfiguration,
+        BackoffStrategy,
+        ProtocolVersion,
+        ReadFrom,
         ServerCredentials,
         NodeAddress,
         PubSubMsg,
@@ -29,7 +34,84 @@ except ImportError as e:
 from scietex.logging import AsyncValkeyHandler
 from .basic_async_worker import BasicAsyncWorker
 
-# pylint: disable=duplicate-code
+# pylint: disable=duplicate-code, too-few-public-methods
+
+
+class ValkeyNode(msgspec.Struct, frozen=True):
+    """Valkey Node Schema."""
+
+    host: str = "localhost"
+    port: int = 6379
+
+
+class ValkeyUserCredentials(msgspec.Struct, frozen=True):
+    """Valkey Credentials Schema."""
+
+    username: str
+    password: str
+
+
+class ValkeyBackoffStrategy(msgspec.Struct, frozen=True):
+    """Valkey Backoff Strategy Schema."""
+
+    num_of_retries: int
+    factor: int
+    exponent_base: int
+    jitter_percent: int | None = None
+
+    @property
+    def reconnect_strategy(self) -> BackoffStrategy:
+        """BackoffStrategy object generation."""
+        return BackoffStrategy(
+            num_of_retries=self.num_of_retries,
+            factor=self.factor,
+            exponent_base=self.exponent_base,
+            jitter_percent=self.jitter_percent,
+        )
+
+
+class ValkeyBaseConfig(msgspec.Struct, frozen=True):
+    """Valkey Basic Configuration Schema."""
+
+    nodes: list[ValkeyNode] = field(
+        default_factory=lambda: [ValkeyNode(host="localhost", port=6379)]
+    )
+    user_credentials: ValkeyUserCredentials | None = None
+    use_tls: bool = False
+    request_timeout: int | None = None
+    database_id: int | None = None
+    client_name: str | None = None
+    inflight_requests_limit: int | None = None
+    client_az: str | None = None
+    lazy_connect: bool | None = None
+    read_from: ReadFrom = ReadFrom.PRIMARY
+    backoff_strategy: ValkeyBackoffStrategy | None = None
+    protocol: ProtocolVersion = ProtocolVersion.RESP3
+
+    @property
+    def addresses(self) -> list[NodeAddress]:
+        """NodeAddresses objects generation."""
+        return [NodeAddress(node.host, node.port) for node in self.nodes]
+
+    @property
+    def credentials(self) -> ServerCredentials | None:
+        """ServerCredentials object generation."""
+        if self.user_credentials:
+            try:
+                return ServerCredentials(
+                    password=self.user_credentials.password,
+                    username=self.user_credentials.username,
+                )
+            except ConfigurationError:
+                return None
+        return None
+
+    @property
+    def reconnect_strategy(self) -> BackoffStrategy | None:
+        """BackoffStrategy object generation."""
+        if self.backoff_strategy:
+            return self.backoff_strategy.reconnect_strategy
+        return None
 
 
 class ValkeyWorker(BasicAsyncWorker):
@@ -47,7 +129,7 @@ class ValkeyWorker(BasicAsyncWorker):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
-        valkey_config: GlideClientConfiguration | None = None,
+        valkey_config: ValkeyBaseConfig | None = None,
         **kwargs,
     ):
         """
@@ -56,75 +138,73 @@ class ValkeyWorker(BasicAsyncWorker):
         Args:
             service_name (str): Name of the service (default: "service").
             version (str): Version string associated with the service (default: "0.0.1").
-            valkey_config (GlideClientConfiguration, optional): Custom configuration for
-                the Valkey client. If omitted, defaults to minimal settings.
+            valkey_config (ValkeyBaseConfigSchema, optional): Custom configuration for
+                the Valkey client. If omitted, tries to read config from the yaml file,
+                if fail defaults to minimal settings.
             kwargs: Additional keyword arguments passed through to parent constructor.
         """
         super().__init__(service_name=service_name, version=version, **kwargs)
-        self._client_config: GlideClientConfiguration = (
-            valkey_config or self.read_valkey_config()
+        if valkey_config is None:
+            valkey_config = self.read_valkey_config()
+        self._client_config: GlideClientConfiguration = self.generate_glide_config(
+            valkey_config
         )
         self._listening_client_config: GlideClientConfiguration = (
-            GlideClientConfiguration(
-                addresses=self._client_config.addresses,
-                use_tls=self._client_config.use_tls,
-                credentials=self._client_config.credentials,
-                read_from=self._client_config.read_from,
-                request_timeout=self._client_config.request_timeout,
-                reconnect_strategy=self._client_config.reconnect_strategy,
-                database_id=self._client_config.database_id,
-                client_name=self._client_config.client_name,
-                protocol=self._client_config.protocol,
-                inflight_requests_limit=self._client_config.inflight_requests_limit,
-                client_az=self._client_config.client_az,
-                # advanced_config=self._client_config.advanced_config,
-                lazy_connect=self._client_config.lazy_connect,
-                pubsub_subscriptions=GlideClientConfiguration.PubSubSubscriptions(
-                    channels_and_patterns={
-                        GlideClientConfiguration.PubSubChannelModes.Exact: {
-                            f"scietex:{self.service_name}:{self.worker_id}",
-                            "scietex:broadcast",
-                        },
-                    },
-                    callback=self.parse_message,
-                    context=None,
-                ),
-            )
+            self.generate_glide_config(valkey_config, listening=True)
         )
         self.client: GlideClient | None = None
         self.listening_client: GlideClient | None = None
         self.control_msg_queue: asyncio.Queue[dict[str, str | dict]] = asyncio.Queue()
 
-    def read_valkey_config(self) -> GlideClientConfiguration:
+    def read_valkey_config(self) -> ValkeyBaseConfig:
         """Read valkey config from YML file"""
         if isinstance(self.conf_dir, Path):
             valkey_yml = self.conf_dir.joinpath("valkey.yml")
         else:
             raise RuntimeError("Configuration dir was not set!")
         try:
-            valkey_config = yaml.safe_load(valkey_yml.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, FileNotFoundError):
-            valkey_config = {
-                "nodes": [{"host": "localhost", "port": 6379}],
-                "database_id": 0,
-                "use_tls": False,
-            }
-            with open(valkey_yml, "w", encoding="utf-8") as f:
-                yaml.dump(valkey_config, f, default_flow_style=False, sort_keys=False)
-        addresses = [NodeAddress(**node) for node in valkey_config["nodes"]]
-        credentials = None
-        if "credentials" in valkey_config:
-            try:
-                credentials = ServerCredentials(**valkey_config["credentials"])
-            except TypeError:
-                pass
-        valkey_safe_conf = {
-            k: v for k, v in valkey_config.items() if k not in ("nodes", "credentials")
-        }
-        client_config = GlideClientConfiguration(
-            addresses=addresses, credentials=credentials, **valkey_safe_conf
-        )
+            with open(valkey_yml, "rb") as f:
+                valkey_config = msgspec.yaml.decode(
+                    f.read(), type=ValkeyBaseConfig, strict=True
+                )
+        except Exception:  # pylint: disable=broad-exception-caught
+            valkey_config = ValkeyBaseConfig()
+            with open(valkey_yml, "wb") as f:
+                f.write(msgspec.yaml.encode(valkey_config))
+        return valkey_config
 
+    def generate_glide_config(
+        self, valkey_config: ValkeyBaseConfig, listening: bool = False
+    ) -> GlideClientConfiguration:
+        """Generate Glide configuration from the Valkey Config Schema."""
+        pubsub_subscriptions = None
+        if listening:
+            pubsub_subscriptions = GlideClientConfiguration.PubSubSubscriptions(
+                channels_and_patterns={
+                    GlideClientConfiguration.PubSubChannelModes.Exact: {
+                        f"scietex:{self.service_name}:{self.worker_id}",
+                        "scietex:broadcast",
+                    },
+                },
+                callback=self.parse_message,
+                context=None,
+            )
+        client_config = GlideClientConfiguration(
+            addresses=valkey_config.addresses,
+            credentials=valkey_config.credentials,
+            use_tls=valkey_config.use_tls,
+            read_from=valkey_config.read_from,
+            request_timeout=valkey_config.request_timeout,
+            reconnect_strategy=valkey_config.reconnect_strategy,
+            database_id=valkey_config.database_id,
+            client_name=valkey_config.client_name,
+            protocol=valkey_config.protocol,
+            inflight_requests_limit=valkey_config.inflight_requests_limit,
+            client_az=valkey_config.client_az,
+            lazy_connect=valkey_config.lazy_connect,
+            advanced_config=None,
+            pubsub_subscriptions=pubsub_subscriptions,
+        )
         return client_config
 
     def parse_message(self, message: PubSubMsg, context: Any) -> None:
@@ -175,7 +255,9 @@ class ValkeyWorker(BasicAsyncWorker):
             except TimeoutError:
                 pass
 
-    async def process_control_message(self, message: dict[str, str | dict]) -> None:
+    async def process_control_message(
+        self, message: str | dict[str, str | dict]
+    ) -> None:
         """
         Process control messages from the Valkey client.
         Args:
@@ -186,7 +268,9 @@ class ValkeyWorker(BasicAsyncWorker):
         """
         self.logger.debug("Processing control message: %s", message)
 
-    async def process_broadcast_message(self, message: dict[str, str | dict]) -> None:
+    async def process_broadcast_message(
+        self, message: str | dict[str, str | dict]
+    ) -> None:
         """
         Process control messages from the Valkey client.
         Args:

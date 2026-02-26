@@ -3,12 +3,11 @@ Module providing asynchronous worker, which can communicate with the Redis serve
 Worker provides handling connections, disconnections, initialization, cleanups, and logging.
 """
 
-from typing import Any
 import asyncio
 import logging
 import json
 from pathlib import Path
-import yaml
+import msgspec
 
 try:
     import redis.asyncio as redis
@@ -21,6 +20,16 @@ except ImportError as e:
 
 from scietex.logging import AsyncRedisHandler
 from .basic_async_worker import BasicAsyncWorker
+
+
+# pylint: disable=too-few-public-methods
+class RedisConfig(msgspec.Struct, frozen=True):
+    """Redis Configuration Schema."""
+
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+
 
 # pylint: disable=duplicate-code
 
@@ -40,7 +49,7 @@ class RedisWorker(BasicAsyncWorker):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
-        redis_config: dict | None = None,
+        redis_config: RedisConfig | None = None,
         **kwargs,
     ):
         """
@@ -49,31 +58,31 @@ class RedisWorker(BasicAsyncWorker):
         Args:
             service_name (str): Name of the service (default: "service").
             version (str): Version string associated with the service (default: "0.0.1").
-            redis_config (dict, optional): Custom configuration for
-                the Redis client. If omitted, defaults to minimal settings.
+            redis_config (RedisConfigSchema, optional): Custom configuration for
+                the Redis client. If omitted, tries to read from yaml,
+                if failed defaults to minimal settings.
             kwargs: Additional keyword arguments passed through to parent constructor.
         """
         super().__init__(service_name=service_name, version=version, **kwargs)
-        self._client_config: dict[str, Any] = redis_config or self.read_redis_config()
+        self._client_config: RedisConfig = redis_config or self.read_redis_config()
         self.client: redis.Redis | None = None
         self.pubsub: redis.client.PubSub | None = None
 
-    def read_redis_config(self) -> dict[str, Any]:
+    def read_redis_config(self) -> RedisConfig:
         """Read redis config from YML file"""
         if isinstance(self.conf_dir, Path):
             redis_yml = self.conf_dir.joinpath("redis.yml")
         else:
-            raise RuntimeError("Coonfig dir path was not set!")
+            raise RuntimeError("Config dir path was not set!")
         try:
-            redis_config = yaml.safe_load(redis_yml.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, FileNotFoundError):
-            redis_config = {
-                "host": "localhost",
-                "port": 6379,
-                "db": 0,
-            }
-            with open(redis_yml, "w", encoding="utf-8") as f:
-                yaml.dump(redis_config, f, default_flow_style=False, sort_keys=False)
+            with open(redis_yml, "rb") as f:
+                redis_config = msgspec.yaml.decode(
+                    f.read(), type=RedisConfig, strict=True
+                )
+        except Exception:  # pylint: disable=broad-exception-caught
+            redis_config = RedisConfig()
+            with open(redis_yml, "wb") as f:
+                f.write(msgspec.yaml.encode(redis_config))
         return redis_config
 
     async def connect(self) -> bool:
@@ -89,10 +98,13 @@ class RedisWorker(BasicAsyncWorker):
         if self.client is None:
             try:
                 self.client = await redis.Redis(
-                    **self._client_config, decode_responses=True
+                    host=self._client_config.host,
+                    port=self._client_config.port,
+                    db=self._client_config.db,
+                    decode_responses=True,
                 )
                 self.pubsub = self.client.pubsub()
-                if await self.client.ping():  # type: ignore[misc]
+                if await self.client.ping():  # type: ignore
                     await self.log("Connected to Redis", logging.INFO)
                     return True
                 print("Error pinging Redis")
@@ -189,7 +201,11 @@ class RedisWorker(BasicAsyncWorker):
             stream_name="log",
             service_name=self.service_name,
             worker_id=self.worker_id,
-            redis_config=self._client_config,
+            redis_config={
+                "host": self._client_config.host,
+                "port": self._client_config.port,
+                "db": self._client_config.db,
+            },
             stdout_enable=False,
         )
         redis_handler.setLevel(self.logging_level)

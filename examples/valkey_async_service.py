@@ -9,8 +9,7 @@ import asyncio
 import logging
 import random
 
-from glide import GlideClientConfiguration, NodeAddress
-from scietex.service import ValkeyWorker
+from scietex.service import ValkeyWorker, ValkeyBaseConfig, ValkeyNode
 
 TASKS = [
     (1, {"data": "Task data 1", "timeout": 6.0}),
@@ -60,8 +59,8 @@ class MyAsyncWorker(ValkeyWorker):
 
 async def main() -> None:
     """Main function."""
-    valkey_config = GlideClientConfiguration(
-        [NodeAddress(host="localhost", port=6379)], database_id=0
+    valkey_config = ValkeyBaseConfig(
+        nodes=[ValkeyNode(host="localhost", port=6379)], database_id=0
     )
     use_config_file = True
     if use_config_file:

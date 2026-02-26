@@ -1,3 +1,7 @@
 # Project exclude paths
-/.tox/
+/.venv
+/.tox
+/.mypy_cache
 /src/scietex.service.egg-info/
+uv.lock
+__pycache__

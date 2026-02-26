@@ -7,7 +7,7 @@ import asyncio
 import logging
 import random
 
-from scietex.service import RedisWorker
+from scietex.service import RedisWorker, RedisConfig
 
 # pylint: disable=duplicate-code
 
@@ -57,11 +57,11 @@ class MyAsyncWorker(RedisWorker):
 
 async def main() -> None:
     """Main function."""
-    redis_config: dict[str, str | int] | None = {
-        "host": "localhost",
-        "port": 6379,
-        "db": 0,
-    }
+    redis_config: RedisConfig | None = RedisConfig(
+        host="localhost",
+        port=6379,
+        db=0,
+    )
     use_config_file = True
     if use_config_file:
         redis_config = None
