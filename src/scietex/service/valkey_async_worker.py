@@ -84,9 +84,9 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
     inflight_requests_limit: int | None = None
     client_az: str | None = None
     lazy_connect: bool | None = None
-    read_from: ReadFrom = ReadFrom.PRIMARY
+    read_from: str = "PRIMARY"
     backoff_strategy: ValkeyBackoffStrategy | None = None
-    protocol: ProtocolVersion = ProtocolVersion.RESP3
+    protocol: str = "RESP3"
 
     @property
     def addresses(self) -> list[NodeAddress]:
@@ -189,16 +189,31 @@ class ValkeyWorker(BasicAsyncWorker):
                 callback=self.parse_message,
                 context=None,
             )
+        try:
+            read_from = ReadFrom[valkey_config.read_from]
+        except KeyError as exc:
+            raise ValueError(f"""
+                Invalid read_from value in Valkey Config: {valkey_config.read_from}.
+                Supported values are: {[e.name for e in ReadFrom]}.
+
+                """) from exc
+        try:
+            protocol = ProtocolVersion[valkey_config.protocol]
+        except KeyError as exc:
+            raise ValueError(f"""
+                Invalid protocol value in Valkey Config: {valkey_config.protocol}.
+                Supported values are: {[e.name for e in ProtocolVersion]}.
+                """) from exc
         client_config = GlideClientConfiguration(
             addresses=valkey_config.addresses,
             credentials=valkey_config.credentials,
             use_tls=valkey_config.use_tls,
-            read_from=valkey_config.read_from,
+            read_from=read_from,
             request_timeout=valkey_config.request_timeout,
             reconnect_strategy=valkey_config.reconnect_strategy,
             database_id=valkey_config.database_id,
             client_name=valkey_config.client_name,
-            protocol=valkey_config.protocol,
+            protocol=protocol,
             inflight_requests_limit=valkey_config.inflight_requests_limit,
             client_az=valkey_config.client_az,
             lazy_connect=valkey_config.lazy_connect,
