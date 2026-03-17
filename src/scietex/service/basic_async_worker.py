@@ -3,7 +3,7 @@ Module providing basic asynchronous worker, which can be used to construct more 
 Worker provides task queue management, watchdog, and console logging.
 """
 
-from typing import Any
+from typing import Any, Generic
 import asyncio
 import signal
 import time
@@ -14,6 +14,9 @@ from scietex.logging import AsyncBaseHandler
 
 from .version import __version__
 from .logo import LOGO
+
+from .task_handlers import TaskType, TaskHandler
+
 
 DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
 """Default logging level for the worker if no valid level is provided."""
@@ -35,7 +38,7 @@ CONF_PATHS = [
 
 
 # pylint: disable=too-many-instance-attributes, too-many-public-methods
-class BasicAsyncWorker:
+class BasicAsyncWorker(Generic[TaskType]):
     """
     A basic asynchronous worker framework for processing tasks concurrently.
 
@@ -81,6 +84,8 @@ class BasicAsyncWorker:
         self.__version: str = version
         self.__logging_level: int = DEFAULT_LOGGING_LEVEL
 
+        self._task_handlers_map: dict[TaskType, TaskHandler] = {}
+
         # Configure logging level from kwargs if provided
         if "logging_level" in kwargs:
             try:
@@ -119,9 +124,7 @@ class BasicAsyncWorker:
         # Initialize queues and tracking structures
         self.log_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
         self.running_tasks: dict = {}  # Track running tasks and their start times
-        self.running_result_processors: dict = (
-            {}
-        )  # Track running result processors and their start times
+        self.running_result_processors: dict = {}  # Track running result processors and their start times
         self.queue_size: int = kwargs.get("queue_size", DEFAULT_MAX_TASKS_QUEUE_SIZE)
         self.max_concurrent_tasks: int = kwargs.get(
             "max_concurrent_tasks", DEFAULT_MAX_CONCURRENT_TASKS
@@ -227,6 +230,40 @@ class BasicAsyncWorker:
                     print("Failed to shut down logging handler", handler)
                     print(e)
 
+    def register_task_handler(
+        self, task_type: TaskType, handler_class: type[TaskHandler]
+    ) -> None:
+        """Register a task handler for a specific task type."""
+        handler_instance = handler_class(self)
+        self._task_handlers_map[task_type] = handler_instance
+
+    def unregister_task_handler(self, task_type: TaskType) -> None:
+        """
+        Unregister a task handler for a specific task type.
+
+        Args:
+            task_type: The type of task for which to unregister the handler
+        """
+        if task_type in self._task_handlers_map:
+            # Perform cleanup before removal
+            asyncio.create_task(self._task_handlers_map[task_type].cleanup())
+            del self._task_handlers_map[task_type]
+
+    def _find_task_handler(self, task_type: str) -> TaskHandler | None:
+        """
+        Finds a handler for the specified task type.
+
+        Args:
+            task_type: The type of task
+
+        Returns:
+            An instance of the handler or None if not found
+        """
+        for supported_type, handler in self._task_handlers_map.items():
+            if handler.supports(task_type):
+                return handler
+        return None
+
     async def initialize(self) -> bool:
         """
         Perform any initialization before starting the main loop.
@@ -260,6 +297,12 @@ class BasicAsyncWorker:
             )
         )
         self.setup_signal_handlers()
+
+        # Initialize all registered task handlers
+        for task_handler in self._task_handlers_map.values():
+            await task_handler.initialize()
+
+        # Perform any custom initialization and check if successful
         if not await self.initialize():
             raise RuntimeError("Initialization failed")
 
@@ -350,6 +393,15 @@ class BasicAsyncWorker:
                     pass
         self.logger.debug("All tasks cancelled")
 
+        # Cleanup task handlers
+        task_handlers_cleanup_tasks = [
+            handler.cleanup() for handler in self._task_handlers_map.values()
+        ]
+        if task_handlers_cleanup_tasks:
+            await asyncio.gather(*task_handlers_cleanup_tasks, return_exceptions=True)
+        self._task_handlers_map.clear()
+        self.logger.debug("All task handlers cleaned up")
+
         # Process remaining results
         while not self.results_queue.empty():
             task_id, result = await self.results_queue.get()
@@ -426,9 +478,6 @@ class BasicAsyncWorker:
         """
         Process a single task.
 
-        This method should be overridden by subclasses to implement
-        the actual task processing logic.
-
         Args:
             task_id: Identifier of the task to process
             task_data: The data associated with the task
@@ -441,6 +490,33 @@ class BasicAsyncWorker:
             and returns a mock result. Subclasses should override this.
         """
         await self.log(f"Processing task {task_id}: {task_data}", level=logging.DEBUG)
+
+        task_type = task_data.get("task")
+        if not task_type:
+            await self.log(
+                f"Wrong task format for {task_id}: {task_data}", level=logging.ERROR
+            )
+            raise ValueError("Task data must contain 'task' field")
+
+        result: dict[str, Any] = {
+            "task_id": task_id,
+            "task": task_type,
+            "data": None,
+            "status": "pending",
+        }
+
+        handler = self._find_task_handler(task_type)
+        if handler and handler.is_ready:
+            try:
+                result["data"] = await handler.handle(task_data)
+                result["status"] = "success"
+            except Exception as e:
+                result["status"] = "error"
+                result["error"] = str(e)
+        else:
+            result["status"] = "error"
+            result["error"] = f"No handler found for task type '{task_type}'"
+
         await asyncio.sleep(1)
         result: dict[str, Any] = {"data": f"Result of {task_id}"}
         await self.log(
