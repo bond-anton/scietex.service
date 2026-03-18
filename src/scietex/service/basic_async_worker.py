@@ -279,11 +279,9 @@ class BasicAsyncWorker:
             # Start main managers
             self.managers_tasks = [
                 asyncio.create_task(self.logging_manager()),
-                asyncio.create_task(self.messages_manager()),
             ]
 
             await self.log("Log manager started", level=logging.DEBUG)
-            await self.log("Control messages manager started", level=logging.DEBUG)
 
             self.setup_signal_handlers()
             await self.log("Signal handlers are all setup", level=logging.DEBUG)
@@ -403,24 +401,6 @@ class BasicAsyncWorker:
             level: The logging level (default: INFO)
         """
         await self.log_queue.put((level, message))
-
-    async def messages_manager(self):
-        """
-        Control messages manager.
-        """
-        while not self._stop_event.is_set():
-            await self.messages_handler()
-            await asyncio.sleep(0.01)
-
-    async def messages_handler(self):
-        """
-        Listen for control messages to manage worker behavior.
-
-        This method should be overridden by subclasses to implement
-        control message handling for dynamic configuration changes,
-        priority adjustments, or other runtime controls.
-        """
-        await asyncio.sleep(5)
 
     async def run(self):
         """

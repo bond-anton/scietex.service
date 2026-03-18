@@ -6,12 +6,16 @@ Worker provides handling connections, disconnections, initialization, cleanups, 
 from typing import Any
 import logging
 import json
+from uuid import UUID
+import msgspec
 
 try:
     from glide import (
         GlideClient,
         GlideClientConfiguration,
         PubSubMsg,
+        StreamGroupOptions,
+        StreamReadGroupOptions,
         ConnectionError as GlideConnectionError,
         TimeoutError as GlideTimeoutError,
     )
@@ -23,6 +27,7 @@ except ImportError as e:
 
 from scietex.logging import AsyncValkeyHandler
 from ..async_tasks_processor import AsyncTaskProcessor
+from ..task_handlers import TaskData
 
 from .valkey_config import (
     ValkeyBaseConfig,
@@ -79,6 +84,9 @@ class ValkeyWorker(AsyncTaskProcessor):
             listening=False,
         )
         self._client: GlideClient | None = None
+        self._task_stream_name = f"scietex:{self.service_name}:tasks"
+        self._task_group_name = f"scietex:{self.service_name}:task_group"
+        self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
 
     @property
     def valkey_config(self) -> ValkeyBaseConfig:
@@ -158,6 +166,12 @@ class ValkeyWorker(AsyncTaskProcessor):
             return False
         if not self.initialized:
             return await self.connect()
+            await self.client.xgroup_create(
+                self._task_stream_name,
+                self._task_group_name,
+                "0-0",  # Use "$" to start from new messages, "0-0" to process existing ones
+                StreamGroupOptions(make_stream=True),
+            )
         else:
             await self.log("Already initialized", level=logging.DEBUG)
             return True
@@ -185,3 +199,71 @@ class ValkeyWorker(AsyncTaskProcessor):
         )
         valkey_handler.setLevel(self.logging_level)
         self.logger.addHandler(valkey_handler)
+
+    async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
+        """
+        Return a task to the external queue.
+
+        This method should be overridden by subclasses to implement
+        the specific logic for returning tasks to their source queue
+        when they cannot be processed or need to be retried.
+
+        Args:
+            task_id (UUID): The task id
+            task_data (dict[str, Any]): The task data to return to the external queue
+        """
+        if self.client:
+            t_id: bytes = str(task_id).encode("utf-8")
+            packed = msgspec.msgpack.encode(task_data)  # bytes
+            await self.client.xadd("mystream", [(t_id, packed)])
+
+    async def fetch_tasks(self):
+        """
+        Fetch tasks from external sources and add them to the task queue.
+
+        This method should be overridden by subclasses to implement
+        the specific logic for retrieving tasks from external sources
+        such as message queues, databases, or APIs.
+        """
+
+        if self.client is None:
+            return
+        try:
+            # Attempt to call the method in a forgiving way.
+            res = await self.client.xreadgroup(
+                {self._task_stream_name: ">"},
+                self._task_group_name,
+                self._consumer_name,
+                StreamReadGroupOptions(count=1, block_ms=1000),
+            )
+
+            if res:
+                for stream, entries in res.items():
+                    for entry_id, pairs in entries.items():
+                        if pairs is None:
+                            continue
+                        for field, payload_bytes in pairs:
+                            task_id = (
+                                field.decode("utf-8")
+                                if isinstance(field, bytes)
+                                else field
+                            )
+                            if payload_bytes is None:
+                                continue
+                            try:
+                                task_data = msgspec.msgpack.decode(
+                                    payload_bytes, type=TaskData
+                                )
+                                await self.task_queue.put((UUID(task_id), task_data))
+                            except Exception as exc:
+                                self.logger.error("Failed to decode task data: %s", exc)
+                                continue
+                        await self.client.xack(
+                            self._task_stream_name,
+                            self._task_group_name,
+                            [entry_id],
+                        )
+                        await self.client.xdel(self._task_stream_name, [entry_id])
+
+        except Exception as exc:
+            self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
