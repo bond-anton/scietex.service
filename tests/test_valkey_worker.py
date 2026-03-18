@@ -12,6 +12,21 @@ class DummyClient:
         self._ping_ok = ping_ok
         self.closed = False
 
+    async def xgroup_create(self, *args, **kwargs):
+        pass
+
+    async def xadd(self, *args, **kwargs):
+        pass
+
+    async def xack(self, *args, **kwargs):
+        pass
+
+    async def xdel(self, *args, **kwargs):
+        pass
+
+    async def xreadgroup(self, *args, **kwargs):
+        return None
+
     async def ping(self):
         return self._ping_ok
 

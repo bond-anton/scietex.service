@@ -288,8 +288,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[TaskType]):
         while not self._stop_event.is_set():
             if not self.task_queue.full():
                 await self.fetch_tasks()
-            else:
-                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05)
 
     async def watchdog(self):
         """
