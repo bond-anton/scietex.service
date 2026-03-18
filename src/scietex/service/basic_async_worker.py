@@ -13,7 +13,6 @@ from scietex.logging import AsyncBaseHandler
 from .version import __version__
 from .logo import LOGO
 
-
 DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
 """Default logging level for the worker if no valid level is provided."""
 

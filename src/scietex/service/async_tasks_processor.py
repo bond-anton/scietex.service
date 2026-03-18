@@ -13,7 +13,6 @@ from uuid import UUID
 from .task_handlers import TaskType, TaskHandler, TaskData, TaskResult
 from .basic_async_worker import BasicAsyncWorker
 
-
 DEFAULT_MAX_TASKS_QUEUE_SIZE = 2
 """Default maximum number of tasks queue size."""
 DEFAULT_MAX_CONCURRENT_TASKS = 2
@@ -113,7 +112,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[TaskType]):
         Returns:
             An instance of the handler or None if not found
         """
-        for supported_type, handler in self._task_handlers_map.items():
+        for _, handler in self._task_handlers_map.items():
             if handler.supports(task_type):
                 return handler
         return None

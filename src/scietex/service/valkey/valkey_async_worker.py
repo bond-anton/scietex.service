@@ -7,7 +7,6 @@ from typing import Any
 import logging
 import json
 
-
 try:
     from glide import (
         GlideClient,
