@@ -15,20 +15,15 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 requires-python = ">=3.10"
-dependencies = [
-    "msgspec>=0.20.0",
-    "pyaml>=26.2.1",
-    "scietex.logging>=0.1.2",
-]
+dependencies = ["msgspec>=0.20.0", "pyaml>=26.2.1", "scietex.logging>=0.1.2"]
 
 [project.urls]
 "Homepage" = "https://github.com/bond-anton/scietex.service"
 "Bug Tracker" = "https://github.com/bond-anton/scietex.service/issues"
 
 [project.optional-dependencies]
-redis = ["scietex.logging[redis]>=0.1.2", "redis>=5.0.0"]
 valkey = ["scietex.logging[valkey]>=0.1.2", "valkey-glide>=2.2.0"]
-dev = ["redis>=5.0.0", "tox>=4.45.0", "valkey-glide>=2.2.0"]
+dev = ["tox>=4.45.0", "valkey-glide>=2.2.0"]
 test = ["flake8", "pytest", "pytest-asyncio"]
 lint = ["pylint"]
 
