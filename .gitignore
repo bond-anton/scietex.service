@@ -5,3 +5,7 @@
 /src/scietex.service.egg-info/
 uv.lock
 __pycache__
+/build
+.pytest_cache
+.coverage
+htmlcov
