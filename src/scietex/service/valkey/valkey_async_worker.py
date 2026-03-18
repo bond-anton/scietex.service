@@ -3,7 +3,7 @@ Module providing asynchronous worker, which communicates with the Valkey server 
 Worker provides handling connections, disconnections, initialization, cleanups, and logging.
 """
 
-from typing import Any
+from typing import Any, Generic
 import logging
 import json
 from uuid import UUID
@@ -27,7 +27,7 @@ except ImportError as e:
 
 from scietex.logging import AsyncValkeyHandler
 from ..async_tasks_processor import AsyncTaskProcessor
-from ..task_handlers import TaskData
+from ..task_handlers import TaskType, TaskData
 
 from .valkey_config import (
     ValkeyBaseConfig,
@@ -36,7 +36,7 @@ from .valkey_config import (
 )
 
 
-class ValkeyWorker(AsyncTaskProcessor):
+class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
     """
     An asynchronous worker class designed to interact with Valkey services via its glide client.
 
@@ -162,19 +162,24 @@ class ValkeyWorker(AsyncTaskProcessor):
         Returns:
             bool: True if both initialization steps succeed, otherwise False.
         """
-        if not await super().initialize():
-            return False
-        if not self.initialized:
-            return await self.connect()
-            await self.client.xgroup_create(
-                self._task_stream_name,
-                self._task_group_name,
-                "0-0",  # Use "$" to start from new messages, "0-0" to process existing ones
-                StreamGroupOptions(make_stream=True),
-            )
-        else:
+        if self.initialized:
             await self.log("Already initialized", level=logging.DEBUG)
             return True
+
+        if not await super().initialize():
+            return False
+
+        await self.connect()
+        if not self.client:
+            return False
+
+        await self.client.xgroup_create(
+            self._task_stream_name,
+            self._task_group_name,
+            "0-0",  # Use "$" to start from new messages, "0-0" to process existing ones
+            StreamGroupOptions(make_stream=True),
+        )
+        return True
 
     async def cleanup(self):
         """

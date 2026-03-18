@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from scietex.service.valkey.valkey_async_worker import ValkeyWorker
+from scietex.service import ValkeyWorker
 from scietex.service.valkey.valkey_config import ValkeyBaseConfig
 
 

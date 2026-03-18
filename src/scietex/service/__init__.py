@@ -22,5 +22,11 @@ try:
         "ValkeyBackoffStrategy",
         "ValkeyBaseConfig",
     ]
-except ImportError:
+except Exception:
+    # If importing Valkey support fails for any reason (missing glide,
+    # runtime errors during module import, etc.), swallow the exception so
+    # the package remains importable without Valkey installed.
+    # We intentionally catch broad Exception because import-time errors
+    # inside `scietex.service.valkey` (not only ImportError) should not
+    # prevent the rest of the package from loading.
     pass
