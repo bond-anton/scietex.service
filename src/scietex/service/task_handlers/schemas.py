@@ -16,16 +16,19 @@ TaskType = TypeVar("TaskType", bound=Enum)
 
 
 class TaskTimeout(msgspec.Struct, frozen=True):
+    """Schema for task timeout configuration."""
+
     timeout: float | None = None
-    timeout_action: Literal["requeue", "drop", "discard"] = "requeue"
+    timeout_action: Literal["requeue", "discard"] = "requeue"
 
 
 class TaskData(msgspec.Struct, frozen=True):
-    """Minimal required fields for task data."""
+    """Schema for task data."""
 
     # The task identifier/type string used to select a handler.
     task: str
     timeout: TaskTimeout = TaskTimeout(timeout=None, timeout_action="requeue")
+    canceled_action: Literal["requeue", "discard"] = "requeue"
     payload: bytes = b""
 
 

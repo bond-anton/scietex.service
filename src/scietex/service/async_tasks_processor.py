@@ -175,7 +175,12 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[TaskType]):
         for task_id, (task, task_data, _) in list(self.running_tasks.items()):
             if not task.done():
                 task.cancel()
-                await self.return_task_to_queue(task_id, task_data)
+                if task_data.canceled_action == "requeue":
+                    await self.log(
+                        f"Task {task_id} will be returned to queue.",
+                        logging.WARNING,
+                    )
+                    await self.return_task_to_queue(task_id, task_data)
                 try:
                     await asyncio.wait_for(
                         task, timeout=5
