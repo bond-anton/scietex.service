@@ -7,7 +7,7 @@ from .async_tasks_processor import AsyncTaskProcessor
 __all__ = ["__version__", "BasicAsyncWorker", "AsyncTaskProcessor"]
 
 try:
-    from .valkey_async_worker import (
+    from .valkey import (
         ValkeyWorker,
         ValkeyNode,
         ValkeyUserCredentials,

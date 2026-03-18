@@ -7,20 +7,11 @@ import asyncio
 from typing import Any
 import logging
 import json
-from pathlib import Path
-import msgspec
-from msgspec import field
 
 try:
     from glide import (
-        ConfigurationError,
         GlideClient,
         GlideClientConfiguration,
-        BackoffStrategy,
-        ProtocolVersion,
-        ReadFrom,
-        ServerCredentials,
-        NodeAddress,
         PubSubMsg,
         ConnectionError as GlideConnectionError,
         TimeoutError as GlideTimeoutError,
@@ -31,90 +22,12 @@ except ImportError as e:
         "Please install it by running:\n\n    pip install scietex.service[valkey]\n"
     ) from e
 
-from scietex.logging import AsyncValkeyHandler
-from .async_tasks_processor import AsyncTaskProcessor
 
-# pylint: disable=duplicate-code, too-few-public-methods
-
-
-class ValkeyNode(msgspec.Struct, frozen=True):
-    """Valkey Node Schema."""
-
-    host: str = "localhost"
-    port: int = 6379
+from .valkey_config import ValkeyBaseConfig, generate_glide_config
+from .valkey_async_worker import ValkeyWorker
 
 
-class ValkeyUserCredentials(msgspec.Struct, frozen=True):
-    """Valkey Credentials Schema."""
-
-    username: str
-    password: str
-
-
-class ValkeyBackoffStrategy(msgspec.Struct, frozen=True):
-    """Valkey Backoff Strategy Schema."""
-
-    num_of_retries: int
-    factor: int
-    exponent_base: int
-    jitter_percent: int | None = None
-
-    @property
-    def reconnect_strategy(self) -> BackoffStrategy:
-        """BackoffStrategy object generation."""
-        return BackoffStrategy(
-            num_of_retries=self.num_of_retries,
-            factor=self.factor,
-            exponent_base=self.exponent_base,
-            jitter_percent=self.jitter_percent,
-        )
-
-
-class ValkeyBaseConfig(msgspec.Struct, frozen=True):
-    """Valkey Basic Configuration Schema."""
-
-    nodes: list[ValkeyNode] = field(
-        default_factory=lambda: [ValkeyNode(host="localhost", port=6379)]
-    )
-    user_credentials: ValkeyUserCredentials | None = None
-    use_tls: bool = False
-    request_timeout: int | None = None
-    database_id: int | None = None
-    client_name: str | None = None
-    inflight_requests_limit: int | None = None
-    client_az: str | None = None
-    lazy_connect: bool | None = None
-    read_from: str = "PRIMARY"
-    backoff_strategy: ValkeyBackoffStrategy | None = None
-    protocol: str = "RESP3"
-
-    @property
-    def addresses(self) -> list[NodeAddress]:
-        """NodeAddresses objects generation."""
-        return [NodeAddress(node.host, node.port) for node in self.nodes]
-
-    @property
-    def credentials(self) -> ServerCredentials | None:
-        """ServerCredentials object generation."""
-        if self.user_credentials:
-            try:
-                return ServerCredentials(
-                    password=self.user_credentials.password,
-                    username=self.user_credentials.username,
-                )
-            except ConfigurationError:
-                return None
-        return None
-
-    @property
-    def reconnect_strategy(self) -> BackoffStrategy | None:
-        """BackoffStrategy object generation."""
-        if self.backoff_strategy:
-            return self.backoff_strategy.reconnect_strategy
-        return None
-
-
-class ValkeyWorker(AsyncTaskProcessor):
+class ValkeyMessagingWorker(ValkeyWorker):
     """
     An asynchronous worker class designed to interact with Valkey services via its glide client.
 
@@ -150,85 +63,24 @@ class ValkeyWorker(AsyncTaskProcessor):
             version=version,
             queue_size=queue_size,
             max_concurrent_tasks=max_concurrent_tasks,
+            valkey_config=valkey_config,
             **kwargs,
         )
-        if valkey_config is None:
-            valkey_config = self.read_valkey_config()
-        self._client_config: GlideClientConfiguration = self.generate_glide_config(
-            valkey_config, listening=False
+
+        self._listening_client_config: GlideClientConfiguration = generate_glide_config(
+            self.valkey_config,
+            service_name=self.service_name,
+            worker_id=self.worker_id,
+            listening=True,
+            parse_control_message=self._parse_control_message,
         )
-        self._listening_client_config: GlideClientConfiguration = (
-            self.generate_glide_config(valkey_config, listening=True)
-        )
-        self.client: GlideClient | None = None
-        self.listening_client: GlideClient | None = None
+        self._listening_client: GlideClient | None = None
         self.control_msg_queue: asyncio.Queue[dict[str, str | dict]] = asyncio.Queue()
 
-    def read_valkey_config(self) -> ValkeyBaseConfig:
-        """Read valkey config from YML file"""
-        if isinstance(self.conf_dir, Path):
-            valkey_yml = self.conf_dir.joinpath("valkey.yml")
-        else:
-            raise RuntimeError("Configuration dir was not set!")
-        try:
-            with open(valkey_yml, "rb") as f:
-                valkey_config = msgspec.yaml.decode(
-                    f.read(), type=ValkeyBaseConfig, strict=True
-                )
-        except Exception:  # pylint: disable=broad-exception-caught
-            valkey_config = ValkeyBaseConfig()
-            with open(valkey_yml, "wb") as f:
-                f.write(msgspec.yaml.encode(valkey_config))
-        return valkey_config
-
-    def generate_glide_config(
-        self, valkey_config: ValkeyBaseConfig, listening: bool = False
-    ) -> GlideClientConfiguration:
-        """Generate Glide configuration from the Valkey Config Schema."""
-        pubsub_subscriptions = None
-        if listening:
-            pubsub_subscriptions = GlideClientConfiguration.PubSubSubscriptions(
-                channels_and_patterns={
-                    GlideClientConfiguration.PubSubChannelModes.Exact: {
-                        f"scietex:{self.service_name}:{self.worker_id}",
-                        "scietex:broadcast",
-                    },
-                },
-                callback=self._parse_control_message,
-                context=None,
-            )
-        try:
-            read_from = ReadFrom[valkey_config.read_from]
-        except KeyError as exc:
-            raise ValueError(f"""
-                Invalid read_from value in Valkey Config: {valkey_config.read_from}.
-                Supported values are: {[e.name for e in ReadFrom]}.
-
-                """) from exc
-        try:
-            protocol = ProtocolVersion[valkey_config.protocol]
-        except KeyError as exc:
-            raise ValueError(f"""
-                Invalid protocol value in Valkey Config: {valkey_config.protocol}.
-                Supported values are: {[e.name for e in ProtocolVersion]}.
-                """) from exc
-        client_config = GlideClientConfiguration(
-            addresses=valkey_config.addresses,
-            credentials=valkey_config.credentials,
-            use_tls=valkey_config.use_tls,
-            read_from=read_from,
-            request_timeout=valkey_config.request_timeout,
-            reconnect_strategy=valkey_config.reconnect_strategy,
-            database_id=valkey_config.database_id,
-            client_name=valkey_config.client_name,
-            protocol=protocol,
-            inflight_requests_limit=valkey_config.inflight_requests_limit,
-            client_az=valkey_config.client_az,
-            lazy_connect=valkey_config.lazy_connect,
-            advanced_config=None,
-            pubsub_subscriptions=pubsub_subscriptions,
-        )
-        return client_config
+    @property
+    def listening_client(self) -> GlideClient | None:
+        """Client used for listening to pub/sub messages."""
+        return self._listening_client
 
     def _parse_control_message(self, message: PubSubMsg, context: Any) -> None:
         """Parse control message from the Valkey client and put it to messages processing queue."""
@@ -314,14 +166,15 @@ class ValkeyWorker(AsyncTaskProcessor):
         Returns:
             bool: True if successfully connected, otherwise False.
         """
-        if self.client is None:
+        if not await super().connect():
+            return False
+        if self._listening_client is None:
             try:
-                self.client = await GlideClient.create(self._client_config)
-                self.listening_client = await GlideClient.create(
+                self._listening_client = await GlideClient.create(
                     self._listening_client_config
                 )
-                if await self.client.ping():
-                    await self.log("Connected to Valkey", logging.INFO)
+                if await self._listening_client.ping():
+                    await self.log("Connected Listening client to Valkey", logging.INFO)
                     return True
                 print("Error pinging Valkey")
                 return False
@@ -335,13 +188,11 @@ class ValkeyWorker(AsyncTaskProcessor):
         Gracefully closes the connection to Valkey.
         Closes the current Valkey client session and removes references to it.
         """
-        if self.client is not None:
-            await self.client.close()
-            if self.listening_client:
-                await self.listening_client.close()
-            self.logger.info("Valkey client disconnected")
-            self.client = None
-            self.listening_client = None
+        await super().disconnect()
+        if self._listening_client is not None:
+            await self._listening_client.close()
+            self.logger.info("Valkey Listening client disconnected")
+            self._listening_client = None
 
     async def initialize(self) -> bool:
         """
@@ -371,20 +222,3 @@ class ValkeyWorker(AsyncTaskProcessor):
         """
         await super().cleanup()
         await self.disconnect()
-
-    async def logger_add_custom_handlers(self) -> None:
-        """
-        Adds a custom logging handler specific to Valkey.
-
-        Configures an AsyncValkeyHandler that forwards log messages to Valkey.
-        Disables standard output logging (stdout_enable=False).
-        """
-        valkey_handler = AsyncValkeyHandler(
-            stream_name="log",
-            service_name=self.service_name,
-            worker_id=self.worker_id,
-            valkey_config=self._client_config,
-            stdout_enable=False,
-        )
-        valkey_handler.setLevel(self.logging_level)
-        self.logger.addHandler(valkey_handler)
