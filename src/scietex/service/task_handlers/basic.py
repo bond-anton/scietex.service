@@ -1,7 +1,9 @@
 """Module: scietex.service.task_handlers.basic"""
 
 from abc import ABC, abstractmethod
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
+
+from .schemas import TaskData, TaskResult
 
 if TYPE_CHECKING:
     from ..basic_async_worker import BasicAsyncWorker
@@ -33,7 +35,7 @@ class TaskHandler(ABC):
         self._is_initialized = True
 
     @abstractmethod
-    async def handle(self, task_data: dict[str, Any]) -> dict[str, Any]:
+    async def handle(self, task_data: TaskData) -> TaskResult:
         """
         Process the given task data and return the results.
 

@@ -1,6 +1,6 @@
 """Module for task handlers."""
 
 from .basic import TaskHandler
-from .types import TaskType
+from .schemas import TaskType, TaskTimeout, TaskData, TaskResult
 
-__all__ = ["TaskHandler", "TaskType"]
+__all__ = ["TaskHandler", "TaskType", "TaskTimeout", "TaskData", "TaskResult"]

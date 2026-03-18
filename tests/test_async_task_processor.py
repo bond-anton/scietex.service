@@ -1,74 +1,101 @@
-"""Test Basic AsyncWorker"""
-
 import asyncio
-import os
-import signal
 
 import pytest
 
-try:
-    from src.scietex.service.basic_async_worker import BasicAsyncWorker
-except ModuleNotFoundError:
-    from scietex.service.basic_async_worker import BasicAsyncWorker
+from uuid import uuid4
+from scietex.service.async_tasks_processor import AsyncTaskProcessor
+from scietex.service.task_handlers.basic import TaskHandler
+from scietex.service.task_handlers.schemas import TaskData, TaskResult, TaskTimeout
 
 
-@pytest.fixture(scope="module")
-def test_event_loop():
-    """
-    Fixture to create asyncio event loop for testing.
-    """
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+class DummyHandler(TaskHandler):
+    def __init__(self, worker):
+        super().__init__(worker)
+        self._is_initialized = True
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        result = task_data.payload.decode("utf-8")
+        return TaskResult(
+            status="success", error="No error", payload=result.encode("utf-8")
+        )
+
+    def supports(self, task_type: str) -> bool:
+        return task_type == "dummy"
 
 
-# pylint: disable=redefined-outer-name, protected-access
+class SlowHandler(TaskHandler):
+    def __init__(self, worker):
+        super().__init__(worker)
+        self._is_initialized = True
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        # simulate long running task
+        await asyncio.sleep(2)
+        return TaskResult(payload=task_data.payload, status="success", error="No error")
+
+    def supports(self, task_type: str) -> bool:
+        return task_type == "slow"
+
+
+class DemoProcessor(AsyncTaskProcessor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.requeued: list = []
+
+    async def fetch_tasks(self) -> None:  # pragma: no cover - stub
+        return None
+
+    async def return_task_to_queue(self, task_id, task_data):
+        # record requeued tasks for assertions
+        self.requeued.append((task_id, task_data))
+
+    async def _logger_init_handlers(self) -> None:  # disable real logging start
+        return None
+
+    async def _logger_shut_down_handlers(self) -> None:  # disable real logging stop
+        return None
+
+
 @pytest.mark.asyncio
-async def test_graceful_shutdown(test_event_loop):
-    """
-    Test that the worker shuts down gracefully after receiving a SIGINT/SIGTERM signal.
-    """
-    worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
-    test_event_loop.create_task(worker.run())
-    await asyncio.sleep(1)
+async def test_process_task_with_dummy_handler():
+    proc = DemoProcessor()
+    proc.register_task_handler("dummy", DummyHandler)
 
-    assert not worker._stop_event.is_set()
+    result: TaskResult = await proc.process_task(
+        uuid4(), TaskData(task="dummy", payload=b'{"value": 5}')
+    )
 
-    # Simulate a SIGINT signal
-    worker.setup_signal_handlers()
-    os.kill(os.getpid(), signal.SIGINT)
-    await asyncio.sleep(0.1)  # Allow some time for the signal handler to react
-
-    # Verify that the stop event was triggered
-    assert worker._stop_event.is_set()
-
-    # Await stop procedure
-    await worker.stop()
-
-    # Assert that cleanup has been performed
-    assert worker.task_queue.empty()
-    assert worker.results_queue.empty()
-    assert worker.log_queue.empty()
+    assert result.status == "success"
+    assert result.payload.decode("utf-8") == '{"value": 5}'
 
 
-# pylint: disable=redefined-outer-name
 @pytest.mark.asyncio
-async def test_task_processing(test_event_loop):
-    """
-    Test that tasks are correctly added to the task queue and processed.
-    """
-    worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
-    await worker.initialize()
+async def test_watchdog_requeues_timed_out_task():
+    proc = DemoProcessor()
+    proc.register_task_handler("slow", SlowHandler)
 
-    # Add a task to the queue
-    task_id = 1
-    task_data = {"task_type": "example"}
-    await worker.task_queue.put((task_id, task_data))
-    test_event_loop.create_task(worker.run())
-    await asyncio.sleep(1)
-    await worker.stop()
-    print("Task gathered")
-    assert worker.log_queue.empty()
-    # Check that the task was removed from the queue
-    assert worker.task_queue.empty()
-    assert worker.results_queue.empty()
+    # start managers (task_manager, task_queue_manager, watchdog)
+    await proc.start()
+
+    # push a task that will timeout quickly
+    t_id = uuid4()
+    await proc.task_queue.put(
+        (
+            t_id,
+            TaskData(
+                task="slow",
+                payload=b'{"value": 5}',
+                timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
+            ),
+        )
+    )
+
+    # allow some time for task_manager to pick up and watchdog to act
+    # Need to wait longer than watchdog sleep interval to ensure it runs at least once
+    await asyncio.sleep(1.5)
+
+    # task should have been requeued by watchdog
+    assert any(tid == t_id for tid, _ in proc.requeued)
+
+    # stop processor to cleanup background tasks
+    await proc.stop()

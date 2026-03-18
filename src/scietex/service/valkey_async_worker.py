@@ -32,7 +32,7 @@ except ImportError as e:
     ) from e
 
 from scietex.logging import AsyncValkeyHandler
-from .basic_async_worker import BasicAsyncWorker
+from .async_tasks_processor import AsyncTaskProcessor
 
 # pylint: disable=duplicate-code, too-few-public-methods
 
@@ -114,11 +114,11 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
         return None
 
 
-class ValkeyWorker(BasicAsyncWorker):
+class ValkeyWorker(AsyncTaskProcessor):
     """
     An asynchronous worker class designed to interact with Valkey services via its glide client.
 
-    Inherits from BasicAsyncWorker and extends its capabilities by adding support for
+    Inherits from AsyncTaskProcessor and extends its capabilities by adding support for
     Valkey-specific operations like connection management and logging.
 
     Attributes:
@@ -129,6 +129,8 @@ class ValkeyWorker(BasicAsyncWorker):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
+        queue_size: int | None = None,
+        max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyBaseConfig | None = None,
         **kwargs,
     ):
@@ -143,11 +145,17 @@ class ValkeyWorker(BasicAsyncWorker):
                 if fail defaults to minimal settings.
             kwargs: Additional keyword arguments passed through to parent constructor.
         """
-        super().__init__(service_name=service_name, version=version, **kwargs)
+        super().__init__(
+            service_name=service_name,
+            version=version,
+            queue_size=queue_size,
+            max_concurrent_tasks=max_concurrent_tasks,
+            **kwargs,
+        )
         if valkey_config is None:
             valkey_config = self.read_valkey_config()
         self._client_config: GlideClientConfiguration = self.generate_glide_config(
-            valkey_config
+            valkey_config, listening=False
         )
         self._listening_client_config: GlideClientConfiguration = (
             self.generate_glide_config(valkey_config, listening=True)
@@ -186,7 +194,7 @@ class ValkeyWorker(BasicAsyncWorker):
                         "scietex:broadcast",
                     },
                 },
-                callback=self.parse_message,
+                callback=self._parse_control_message,
                 context=None,
             )
         try:
@@ -222,8 +230,8 @@ class ValkeyWorker(BasicAsyncWorker):
         )
         return client_config
 
-    def parse_message(self, message: PubSubMsg, context: Any) -> None:
-        """Parse message from the Valkey client and put it to processing queue."""
+    def _parse_control_message(self, message: PubSubMsg, context: Any) -> None:
+        """Parse control message from the Valkey client and put it to messages processing queue."""
         try:
             if isinstance(message.channel, bytes):
                 channel = message.channel.decode(encoding="utf-8")
@@ -243,7 +251,7 @@ class ValkeyWorker(BasicAsyncWorker):
         except (AttributeError, json.decoder.JSONDecodeError) as ex:
             self.logger.error("Message decode error: %s", ex)
 
-    async def listen_for_control_messages(self):
+    async def control_messages_manager(self):
         """Process control messages from the Valkey client."""
         while not self._stop_event.is_set():
             try:
@@ -267,7 +275,7 @@ class ValkeyWorker(BasicAsyncWorker):
                     else:
                         await self.process_broadcast_message(message_data)
                 self.control_msg_queue.task_done()
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 pass
 
     async def process_control_message(
@@ -346,12 +354,22 @@ class ValkeyWorker(BasicAsyncWorker):
         """
         if not await super().initialize():
             return False
-        return await self.connect()
+        if not self.initialized:
+            # Start managers
+            self.managers_tasks += [
+                asyncio.create_task(self.control_messages_manager()),
+            ]
+            await self.log("Control messages manager started", level=logging.DEBUG)
+            return await self.connect()
+        else:
+            await self.log("Already initialized", level=logging.DEBUG)
+            return True
 
     async def cleanup(self):
         """
         Handles cleanup tasks upon termination, including closing any open connections.
         """
+        await super().cleanup()
         await self.disconnect()
 
     async def logger_add_custom_handlers(self) -> None:

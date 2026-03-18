@@ -66,6 +66,7 @@ class BasicAsyncWorker:
         self.__worker_id: int = kwargs.get("worker_id", 1)
         self.__version: str = version
         self.__logging_level: int = DEFAULT_LOGGING_LEVEL
+        self.__initialized: bool = False
 
         # Configure logging level from kwargs if provided
         if "logging_level" in kwargs:
@@ -123,6 +124,11 @@ class BasicAsyncWorker:
     def version(self) -> str:
         """Service version string (read-only)."""
         return self.__version
+
+    @property
+    def initialized(self) -> bool:
+        """Indicates whether the worker has completed initialization."""
+        return self.__initialized
 
     @property
     def logger(self) -> logging.Logger:
@@ -190,14 +196,53 @@ class BasicAsyncWorker:
                 await handler.start_logging()
 
     async def _logger_shut_down_handlers(self) -> None:
-        """Cleanly shut down all async logging handlers."""
+        """Cleanly shut down all async logging handlers.
+
+        This will attempt to stop each `AsyncBaseHandler` with a per-handler
+        timeout to avoid hanging shutdowns if a handler blocks.
+        """
+        per_handler_timeout: float = 2.0
         for handler in self.logger.handlers:
             if isinstance(handler, AsyncBaseHandler):
                 try:
-                    await handler.stop_logging()
+                    await asyncio.wait_for(
+                        handler.stop_logging(), timeout=per_handler_timeout
+                    )
+                except asyncio.TimeoutError:
+                    try:
+                        self.logger.warning(
+                            "Timeout stopping logging handler %s", handler
+                        )
+                    except Exception:
+                        # logger itself may be in a bad state; fallback to print
+                        print("Timeout stopping logging handler", handler)
                 except Exception as e:  # pylint: disable=broad-exception-caught
-                    print("Failed to shut down logging handler", handler)
-                    print(e)
+                    try:
+                        self.logger.exception(
+                            "Failed to shut down logging handler %s: %s", handler, e
+                        )
+                    except Exception:
+                        print("Failed to shut down logging handler", handler)
+                        print(e)
+
+    async def _drain_log_queue(self) -> None:
+        """Drain `log_queue` and deliver remaining messages to the logger.
+
+        Implemented as a separate coroutine so it can be awaited with a timeout
+        from `stop()` to avoid hanging forever.
+        """
+        while not self.log_queue.empty():
+            level, message = await self.log_queue.get()
+            try:
+                self.logger.log(level, message)
+            except Exception:
+                # Best-effort: don't fail draining because of logging errors
+                print("Failed to emit log message:", level, message)
+            finally:
+                try:
+                    self.log_queue.task_done()
+                except Exception:
+                    pass
 
     async def initialize(self) -> bool:
         """
@@ -207,7 +252,8 @@ class BasicAsyncWorker:
         service-specific initialization such as database connections,
         API client setup, or other preparatory work.
         """
-        await self._logger_init_handlers()
+        if not self.initialized:
+            await self._logger_init_handlers()
         return True
 
     async def start(self):
@@ -222,33 +268,41 @@ class BasicAsyncWorker:
         Raises:
             RuntimeError: If the worker fails to start properly
         """
-        print(
-            LOGO.format(
-                service_name=self.service_name,
-                version=self.version,
-                scietex_version=__version__,
+        if not self.managers_tasks:
+            print(
+                LOGO.format(
+                    service_name=self.service_name,
+                    version=self.version,
+                    scietex_version=__version__,
+                )
             )
-        )
 
-        # Start main managers
-        self.managers_tasks = [
-            asyncio.create_task(self.logging_manager()),
-            asyncio.create_task(self.messages_manager()),
-        ]
+            # Start main managers
+            self.managers_tasks = [
+                asyncio.create_task(self.logging_manager()),
+                asyncio.create_task(self.messages_manager()),
+            ]
 
-        await self.log("Log manager started", level=logging.DEBUG)
-        await self.log("Control messages manager started", level=logging.DEBUG)
+            await self.log("Log manager started", level=logging.DEBUG)
+            await self.log("Control messages manager started", level=logging.DEBUG)
 
-        self.setup_signal_handlers()
-        await self.log("Signal handlers are all setup", level=logging.DEBUG)
+            self.setup_signal_handlers()
+            await self.log("Signal handlers are all setup", level=logging.DEBUG)
 
-        # Perform any custom initialization and check if successful
-        if not await self.initialize():
-            raise RuntimeError("Initialization failed")
+            # Perform any custom initialization and check if successful
+            if not await self.initialize():
+                raise RuntimeError("Initialization failed")
 
-        await self.log(
-            f"Worker {self.service_name}:{self.worker_id} started", level=logging.DEBUG
-        )
+            self.__initialized = True
+            await self.log(
+                f"Worker {self.service_name}:{self.worker_id} started",
+                level=logging.DEBUG,
+            )
+        else:
+            await self.log(
+                f"Worker {self.service_name}:{self.worker_id} is already running",
+                level=logging.WARNING,
+            )
 
     async def stop(self):
         """
@@ -262,23 +316,46 @@ class BasicAsyncWorker:
         Note:
             This method is automatically called on SIGINT or SIGTERM
         """
-        self.logger.debug("Stopping worker gracefully...")
-        self._stop_event.set()
+        if self.managers_tasks:
+            self.logger.debug("Stopping worker gracefully...")
+            self._stop_event.set()
 
-        await asyncio.gather(*self.managers_tasks, return_exceptions=True)
-        self.logger.debug("Managers tasks finished")
+            await asyncio.gather(*self.managers_tasks, return_exceptions=True)
+            self.logger.debug("Managers tasks finished")
 
-        # Process remaining logs
-        while not self.log_queue.empty():
-            level, message = await self.log_queue.get()
-            self.logger.log(level, message)
-            self.log_queue.task_done()
-        self.logger.debug("Log queue is empty")
+            # Process remaining logs with a timeout to avoid hanging forever
+            try:
+                await asyncio.wait_for(self._drain_log_queue(), timeout=2)
+            except asyncio.TimeoutError:
+                self.logger.warning("Timeout while draining log_queue")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                try:
+                    self.logger.exception("Error while draining log_queue: %s", e)
+                except Exception:
+                    print("Error while draining log_queue:", e)
 
-        # await self.log("Worker stopped.", logging.DEBUG)
-        await self.cleanup()
-        await self._logger_shut_down_handlers()
-        self._completion_event.set()
+            self.logger.debug("Log queue is empty")
+
+            # await self.log("Worker stopped.", logging.DEBUG)
+            await self.cleanup()
+
+            # Shut down logging handlers with an overall timeout
+            try:
+                await asyncio.wait_for(self._logger_shut_down_handlers(), timeout=5)
+            except asyncio.TimeoutError:
+                self.logger.warning("Timeout while shutting down logging handlers")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                try:
+                    self.logger.exception("Error shutting down logging handlers: %s", e)
+                except Exception:
+                    print("Error shutting down logging handlers:", e)
+            self.__initialized = False
+            self._completion_event.set()
+        else:
+            await self.log(
+                f"Worker {self.service_name}:{self.worker_id} is not running",
+                level=logging.WARNING,
+            )
 
     async def cleanup(self):
         """
@@ -315,7 +392,7 @@ class BasicAsyncWorker:
                 level, message = await asyncio.wait_for(self.log_queue.get(), timeout=1)
                 self.logger.log(level, message)
                 self.log_queue.task_done()
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 pass
 
     async def log(self, message: str, level: int = logging.INFO):

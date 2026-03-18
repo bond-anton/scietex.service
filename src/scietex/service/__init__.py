@@ -7,12 +7,6 @@ from .async_tasks_processor import AsyncTaskProcessor
 __all__ = ["__version__", "BasicAsyncWorker", "AsyncTaskProcessor"]
 
 try:
-    from .redis_async_worker import RedisWorker, RedisConfig
-
-    __all__ += ["RedisWorker", "RedisConfig"]
-except ImportError:
-    pass
-try:
     from .valkey_async_worker import (
         ValkeyWorker,
         ValkeyNode,
