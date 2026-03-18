@@ -173,12 +173,16 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
         if not self.client:
             return False
 
-        await self.client.xgroup_create(
-            self._task_stream_name,
-            self._task_group_name,
-            "0-0",  # Use "$" to start from new messages, "0-0" to process existing ones
-            StreamGroupOptions(make_stream=True),
-        )
+        try:
+            await self.client.xgroup_create(
+                self._task_stream_name,
+                self._task_group_name,
+                "0-0",  # Use "$" to start from new messages, "0-0" to process existing ones
+                StreamGroupOptions(make_stream=True),
+            )
+        except Exception as exc:
+            await self.log(f"Valkey: {exc}", logging.DEBUG)
+            pass
         return True
 
     async def cleanup(self):
