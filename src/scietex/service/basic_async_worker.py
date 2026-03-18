@@ -1,12 +1,10 @@
 """
 Module providing basic asynchronous worker, which can be used to construct more advanced services.
-Worker provides task queue management, watchdog, and console logging.
+Worker provides console logging, signal handlers, etc.
 """
 
-from typing import Any, Generic
 import asyncio
 import signal
-import time
 import logging
 from pathlib import Path
 
@@ -15,19 +13,9 @@ from scietex.logging import AsyncBaseHandler
 from .version import __version__
 from .logo import LOGO
 
-from .task_handlers import TaskType, TaskHandler
-
 
 DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
 """Default logging level for the worker if no valid level is provided."""
-
-DEFAULT_MAX_TASKS_QUEUE_SIZE = 2
-"""Default maximum number of tasks queue size."""
-DEFAULT_MAX_CONCURRENT_TASKS = 2
-"""Default maximum number of concurrent tasks that can be processed."""
-
-TASK_TIMEOUT = 3  # Timeout in seconds for task completion
-"""Timeout in seconds for task completion before cancellation."""
 
 CONF_PATHS = [
     Path.home() / ".config" / "scietex",
@@ -38,16 +26,13 @@ CONF_PATHS = [
 
 
 # pylint: disable=too-many-instance-attributes, too-many-public-methods
-class BasicAsyncWorker(Generic[TaskType]):
+class BasicAsyncWorker:
     """
-    A basic asynchronous worker framework for processing tasks concurrently.
+    A basic asynchronous worker framework.
 
     This class provides a foundation for building async workers that can:
-    - Process tasks from a queue with configurable concurrency
     - Handle graceful shutdown on signals
     - Manage logging with custom handlers
-    - Monitor task timeouts and handle failures
-    - Process results asynchronously
 
     Properties:
         service_name (str): Name of the service (read-only)
@@ -73,8 +58,6 @@ class BasicAsyncWorker(Generic[TaskType]):
             **kwargs: Additional keyword arguments including:
                 conf_dir: Directory to use for configuration files
                 worker_id: Unique identifier for this worker instance
-                queue_size: Queue size as integer
-                max_concurrent_tasks: Maximum number of concurrent tasks
 
         Note:
             If logging_level is invalid, defaults to DEFAULT_LOGGING_LEVEL
@@ -83,8 +66,6 @@ class BasicAsyncWorker(Generic[TaskType]):
         self.__worker_id: int = kwargs.get("worker_id", 1)
         self.__version: str = version
         self.__logging_level: int = DEFAULT_LOGGING_LEVEL
-
-        self._task_handlers_map: dict[TaskType, TaskHandler] = {}
 
         # Configure logging level from kwargs if provided
         if "logging_level" in kwargs:
@@ -123,21 +104,9 @@ class BasicAsyncWorker(Generic[TaskType]):
 
         # Initialize queues and tracking structures
         self.log_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
-        self.running_tasks: dict = {}  # Track running tasks and their start times
-        self.running_result_processors: dict = {}  # Track running result processors and their start times
-        self.queue_size: int = kwargs.get("queue_size", DEFAULT_MAX_TASKS_QUEUE_SIZE)
-        self.max_concurrent_tasks: int = kwargs.get(
-            "max_concurrent_tasks", DEFAULT_MAX_CONCURRENT_TASKS
-        )
-        self.task_queue: asyncio.Queue[tuple[int | str, dict[str, Any]]] = (
-            asyncio.Queue(maxsize=self.queue_size)
-        )
-        self.results_queue: asyncio.Queue[tuple[int | str, dict[str, Any]]] = (
-            asyncio.Queue()
-        )
+
         self._stop_event: asyncio.Event = asyncio.Event()
         self._completion_event: asyncio.Event = asyncio.Event()
-        self.message_handler_task = None
         self.managers_tasks: list = []
 
     @property
@@ -230,40 +199,6 @@ class BasicAsyncWorker(Generic[TaskType]):
                     print("Failed to shut down logging handler", handler)
                     print(e)
 
-    def register_task_handler(
-        self, task_type: TaskType, handler_class: type[TaskHandler]
-    ) -> None:
-        """Register a task handler for a specific task type."""
-        handler_instance = handler_class(self)
-        self._task_handlers_map[task_type] = handler_instance
-
-    def unregister_task_handler(self, task_type: TaskType) -> None:
-        """
-        Unregister a task handler for a specific task type.
-
-        Args:
-            task_type: The type of task for which to unregister the handler
-        """
-        if task_type in self._task_handlers_map:
-            # Perform cleanup before removal
-            asyncio.create_task(self._task_handlers_map[task_type].cleanup())
-            del self._task_handlers_map[task_type]
-
-    def _find_task_handler(self, task_type: str) -> TaskHandler | None:
-        """
-        Finds a handler for the specified task type.
-
-        Args:
-            task_type: The type of task
-
-        Returns:
-            An instance of the handler or None if not found
-        """
-        for supported_type, handler in self._task_handlers_map.items():
-            if handler.supports(task_type):
-                return handler
-        return None
-
     async def initialize(self) -> bool:
         """
         Perform any initialization before starting the main loop.
@@ -280,11 +215,9 @@ class BasicAsyncWorker(Generic[TaskType]):
         Start the worker and all its components.
 
         This method:
-        1. Sets up signal handlers for graceful shutdown
-        2. Initializes logging handlers
+        1. Starts all manager tasks
+        2. Sets up signal handlers for graceful shutdown
         3. Performs custom initialization
-        4. Starts all manager tasks
-        5. Begins listening for control messages
 
         Raises:
             RuntimeError: If the worker fails to start properly
@@ -296,118 +229,41 @@ class BasicAsyncWorker(Generic[TaskType]):
                 scietex_version=__version__,
             )
         )
-        self.setup_signal_handlers()
 
-        # Initialize all registered task handlers
-        for task_handler in self._task_handlers_map.values():
-            await task_handler.initialize()
+        # Start main managers
+        self.managers_tasks = [
+            asyncio.create_task(self.logging_manager()),
+            asyncio.create_task(self.messages_manager()),
+        ]
+
+        await self.log("Log manager started", level=logging.DEBUG)
+        await self.log("Control messages manager started", level=logging.DEBUG)
+
+        self.setup_signal_handlers()
+        await self.log("Signal handlers are all setup", level=logging.DEBUG)
 
         # Perform any custom initialization and check if successful
         if not await self.initialize():
             raise RuntimeError("Initialization failed")
 
-        # Start control messages listener
-        self.message_handler_task = asyncio.create_task(
-            self.listen_for_control_messages()
-        )
-
-        # Main tasks
-        self.managers_tasks = [
-            asyncio.create_task(self.logging_manager()),
-            asyncio.create_task(self.task_manager()),
-            asyncio.create_task(self.task_fetcher()),
-            asyncio.create_task(self.results_manager()),
-            asyncio.create_task(self.watchdog()),
-        ]
         await self.log(
             f"Worker {self.service_name}:{self.worker_id} started", level=logging.DEBUG
         )
-
-    async def return_task_to_queue(
-        self, task_id: int | str, task_data: dict[str, Any]
-    ) -> None:
-        """
-        Return a task to the external queue.
-
-        This method should be overridden by subclasses to implement
-        the specific logic for returning tasks to their source queue
-        when they cannot be processed or need to be retried.
-
-        Args:
-            task_id (Union[int, str]): The task id
-            task_data (dict[str, Any]): The task data to return to the external queue
-        """
-
-    async def process_result(self, task_id: int | str, result: dict[str, Any]) -> None:
-        """
-        Process a completed task result.
-
-        This method should be overridden by subclasses to implement
-        result processing logic such as storing results, sending
-        notifications, or updating status.
-
-        Args:
-            task_id: Identifier of the completed task
-            result: The result data from the completed task
-        """
 
     async def stop(self):
         """
         Stop the worker gracefully.
 
         This method:
-        1. Sets the stop event to signal all tasks to stop
-        2. Returns all queued tasks to the external queue
-        3. Cancels and returns to queue running tasks
-        4. Processes remaining results
-        5. Waits for all tasks to complete
-        6. Processes remaining log messages
-        7. Shuts down logging handlers
-        8. Performs cleanup
+        1. Shuts down managers tasks
+        2. Processes remaining log messages
+        3. Performs cleanup
 
         Note:
             This method is automatically called on SIGINT or SIGTERM
         """
         self.logger.debug("Stopping worker gracefully...")
         self._stop_event.set()
-
-        if self.message_handler_task is not None:
-            self.message_handler_task.cancel()
-            self.message_handler_task = None
-
-        # Return tasks in worker queue to external queue
-        while not self.task_queue.empty():
-            task_id, task_data = await self.task_queue.get()
-            await self.return_task_to_queue(task_id, task_data)
-            self.task_queue.task_done()
-        self.logger.debug("Task queue is empty")
-
-        # Cancel and requeue running tasks
-        for task_id, (task, task_data, _) in list(self.running_tasks.items()):
-            if not task.done():
-                task.cancel()
-                await self.return_task_to_queue(task_id, task_data)
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self.logger.debug("All tasks cancelled")
-
-        # Cleanup task handlers
-        task_handlers_cleanup_tasks = [
-            handler.cleanup() for handler in self._task_handlers_map.values()
-        ]
-        if task_handlers_cleanup_tasks:
-            await asyncio.gather(*task_handlers_cleanup_tasks, return_exceptions=True)
-        self._task_handlers_map.clear()
-        self.logger.debug("All task handlers cleaned up")
-
-        # Process remaining results
-        while not self.results_queue.empty():
-            task_id, result = await self.results_queue.get()
-            await self.process_result(task_id, result)
-            self.results_queue.task_done()
-        self.logger.debug("Results queue is empty")
 
         await asyncio.gather(*self.managers_tasks, return_exceptions=True)
         self.logger.debug("Managers tasks finished")
@@ -472,152 +328,15 @@ class BasicAsyncWorker(Generic[TaskType]):
         """
         await self.log_queue.put((level, message))
 
-    async def process_task(
-        self, task_id: int | str, task_data: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def messages_manager(self):
         """
-        Process a single task.
-
-        Args:
-            task_id: Identifier of the task to process
-            task_data: The data associated with the task
-
-        Returns:
-            The result of processing the task
-
-        Note:
-            This is a placeholder implementation that sleeps for 1 second
-            and returns a mock result. Subclasses should override this.
-        """
-        await self.log(f"Processing task {task_id}: {task_data}", level=logging.DEBUG)
-
-        task_type = task_data.get("task")
-        if not task_type:
-            await self.log(
-                f"Wrong task format for {task_id}: {task_data}", level=logging.ERROR
-            )
-            raise ValueError("Task data must contain 'task' field")
-
-        result: dict[str, Any] = {
-            "task_id": task_id,
-            "task": task_type,
-            "data": None,
-            "status": "pending",
-        }
-
-        handler = self._find_task_handler(task_type)
-        if handler and handler.is_ready:
-            try:
-                result["data"] = await handler.handle(task_data)
-                result["status"] = "success"
-            except Exception as e:
-                result["status"] = "error"
-                result["error"] = str(e)
-        else:
-            result["status"] = "error"
-            result["error"] = f"No handler found for task type '{task_type}'"
-
-        await asyncio.sleep(1)
-        result: dict[str, Any] = {"data": f"Result of {task_id}"}
-        await self.log(
-            f"Task {task_id} completed with result: {result}", level=logging.DEBUG
-        )
-        return result
-
-    async def task_manager(self):
-        """
-        Manage task processing from the task queue.
-
-        Continuously takes tasks from the task queue, processes them,
-        and puts results in the results queue. Tracks running tasks
-        and their start times for timeout monitoring.
-        """
-
-        async def handle_task(t_id: int | str, t_data: dict[str, Any]):
-            try:
-                await self.log(
-                    f"Sending to handler. Task {t_id}: {t_data}", level=logging.INFO
-                )
-                result = await self.process_task(t_id, t_data)
-                await self.results_queue.put((t_id, result))
-            finally:
-                self.task_queue.task_done()
-
-        while not self._stop_event.is_set():
-            if len(self.running_tasks) < self.max_concurrent_tasks:
-                try:
-                    task_id, task_data = await asyncio.wait_for(
-                        self.task_queue.get(), timeout=1
-                    )
-                    task = asyncio.create_task(handle_task(task_id, task_data))
-                    self.running_tasks[task_id] = (
-                        task,
-                        task_data,
-                        time.time(),
-                    )  # Track start time
-                    task.add_done_callback(
-                        lambda t: self.running_tasks.pop(task_id, None)
-                    )
-                except TimeoutError:
-                    pass
-            else:
-                await asyncio.sleep(1)
-
-    async def fetch_tasks(self):
-        """
-        Fetch tasks from external sources and add them to the task queue.
-
-        This method should be overridden by subclasses to implement
-        the specific logic for retrieving tasks from external sources
-        such as message queues, databases, or APIs.
-        """
-
-    async def task_fetcher(self):
-        """
-        Main loop that fetches tasks periodically.
-
-        Continuously calls fetch_tasks() with a small delay between
-        calls to prevent busy waiting. Runs until the stop event is set.
+        Control messages manager.
         """
         while not self._stop_event.is_set():
-            await self.fetch_tasks()
-            await asyncio.sleep(0.1)
+            await self.messages_handler()
+            await asyncio.sleep(0.01)
 
-    async def results_manager(self):
-        """
-        Manage result processing from the results queue.
-
-        Continuously takes results from the results queue and processes
-        them. Runs until the stop event is set.
-        """
-
-        async def handle_result(t_id: int | str, r_data: dict[str, Any]):
-            try:
-                await self.log(
-                    f"Processing results of task {t_id}: {r_data}", level=logging.INFO
-                )
-                await self.process_result(t_id, r_data)
-            finally:
-                self.results_queue.task_done()
-
-        while not self._stop_event.is_set():
-            try:
-                task_id, result = await asyncio.wait_for(
-                    self.results_queue.get(), timeout=1
-                )
-                r_task = asyncio.create_task(handle_result(task_id, result))
-                self.running_result_processors[task_id] = (
-                    r_task,
-                    result,
-                    time.time(),
-                )  # Track start time
-                r_task.add_done_callback(
-                    lambda t: self.running_result_processors.pop(task_id, None)
-                )
-            except TimeoutError:
-                pass
-
-    async def listen_for_control_messages(self):
+    async def messages_handler(self):
         """
         Listen for control messages to manage worker behavior.
 
@@ -625,39 +344,7 @@ class BasicAsyncWorker(Generic[TaskType]):
         control message handling for dynamic configuration changes,
         priority adjustments, or other runtime controls.
         """
-        while not self._stop_event.is_set():
-            await asyncio.sleep(5)
-
-    async def watchdog(self):
-        """
-        Monitor running tasks for timeouts and handle stalled tasks.
-
-        Periodically checks all running tasks and cancels any that have
-        exceeded the TASK_TIMEOUT. Returns cancelled tasks to the external
-        queue for potential retry.
-        """
-        while not self._stop_event.is_set():
-            now = time.time()
-            for task_id, (task, task_data, start_time) in list(
-                self.running_tasks.items()
-            ):
-                timeout = TASK_TIMEOUT
-                if "timeout" in task_data:
-                    timeout = task_data["timeout"]
-                if 0 < timeout < (now - start_time) and not task.done():
-                    await self.log(
-                        f"Task {task_id} exceeded timeout. Cancelling and returning to queue.",
-                        logging.WARNING,
-                    )
-                    task.cancel()
-                    await self.return_task_to_queue(task_id, task_data)
-                    self.running_tasks.pop(task_id, None)
-                    try:
-                        await task  # Wait for cancellation to complete
-                    except asyncio.CancelledError:
-                        pass
-                    # self.task_queue.task_done()
-            await asyncio.sleep(5)  # Check for timeouts every 5 seconds
+        await asyncio.sleep(5)
 
     async def run(self):
         """

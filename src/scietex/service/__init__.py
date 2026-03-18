@@ -2,8 +2,9 @@
 
 from .version import __version__
 from .basic_async_worker import BasicAsyncWorker
+from .async_tasks_processor import AsyncTaskProcessor
 
-__all__ = ["__version__", "BasicAsyncWorker"]
+__all__ = ["__version__", "BasicAsyncWorker", "AsyncTaskProcessor"]
 
 try:
     from .redis_async_worker import RedisWorker, RedisConfig
