@@ -3,9 +3,9 @@ Module providing asynchronous worker, which communicates with the Valkey server 
 Worker provides handling connections, disconnections, initialization, cleanups, and logging.
 """
 
-from typing import Any, Generic
+from typing import Generic
+import asyncio
 import logging
-import json
 from uuid import UUID
 import msgspec
 
@@ -13,9 +13,10 @@ try:
     from glide import (
         GlideClient,
         GlideClientConfiguration,
-        PubSubMsg,
         StreamGroupOptions,
         StreamReadGroupOptions,
+        ExpirySet,
+        ExpiryType,
         ConnectionError as GlideConnectionError,
         TimeoutError as GlideTimeoutError,
     )
@@ -34,6 +35,11 @@ from .valkey_config import (
     read_valkey_config,
     generate_glide_config,
 )
+from .schemas import Heartbeat
+
+
+DEFAULT_HEARTBEAT_INTERVAL: int = 10
+MAX_HEARTBEAT_INTERVAL: int = 600
 
 
 class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
@@ -54,6 +60,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
         queue_size: int | None = None,
         max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyBaseConfig | None = None,
+        heartbeat_interval: int | None = None,
         **kwargs,
     ):
         """
@@ -84,6 +91,13 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
             listening=False,
         )
         self._client: GlideClient | None = None
+        if heartbeat_interval is None or not isinstance(heartbeat_interval, int):
+            self._heartbeat_interval = DEFAULT_HEARTBEAT_INTERVAL
+        else:
+            self._heartbeat_interval = max(
+                0, min(heartbeat_interval, MAX_HEARTBEAT_INTERVAL)
+            )
+        self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
         self._task_stream_name = f"scietex:{self.service_name}:tasks"
         self._task_group_name = f"scietex:{self.service_name}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
@@ -97,27 +111,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
     def client(self) -> GlideClient | None:
         """Valkey client property."""
         return self._client
-
-    def _parse_control_message(self, message: PubSubMsg, context: Any) -> None:
-        """Parse control message from the Valkey client."""
-        try:
-            if isinstance(message.channel, bytes):
-                channel = message.channel.decode(encoding="utf-8")
-            else:
-                channel = message.channel
-            if isinstance(message.message, bytes):
-                data = json.loads(message.message.decode(encoding="utf-8"))
-            else:
-                data = json.loads(str(message.message))
-            if channel == f"scietex:{self.service_name}:{self.worker_id}":
-                self.logger.debug("Received message: %s, context: %s", data, context)
-            else:
-                self.logger.debug(
-                    "Received broadcast message: %s, context: %s", data, context
-                )
-            # self.control_msg_queue.put_nowait({"channel": channel, "data": data})
-        except (AttributeError, json.decoder.JSONDecodeError) as ex:
-            self.logger.error("Message decode error: %s", ex)
 
     async def connect(self) -> bool:
         """
@@ -152,6 +145,24 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
             await self._client.close()
             self.logger.info("Valkey client disconnected")
             self._client = None
+
+    async def heartbeat(self):
+        """Continuously put Heartbeat data in Valkey."""
+        encoder = msgspec.msgpack.Encoder()
+        while not self._stop_event.is_set():
+            heartbeat_data = Heartbeat(
+                service=self.service_name,
+                worker_id=self.worker_id,
+                status="active",
+                heartbeat_interval=self._heartbeat_interval,
+            )
+            if self.client:
+                await self.client.set(
+                    self._heartbeat_key,
+                    encoder.encode(heartbeat_data),
+                    expiry=ExpirySet(ExpiryType.KEEP_TTL, self._heartbeat_interval * 2),
+                )
+            await asyncio.sleep(self._heartbeat_interval)
 
     async def initialize(self) -> bool:
         """
