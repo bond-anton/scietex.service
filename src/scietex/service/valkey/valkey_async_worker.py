@@ -242,7 +242,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
         if self.client:
             t_id: bytes = str(task_id).encode("utf-8")
             packed = msgspec.msgpack.encode(task_data)  # bytes
-            await self.client.xadd("mystream", [(t_id, packed)])
+            await self.client.xadd(self._task_stream_name, [(t_id, packed)])
 
     async def fetch_tasks(self):
         """
