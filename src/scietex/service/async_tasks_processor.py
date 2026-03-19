@@ -125,21 +125,24 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[TaskType]):
         service-specific initialization such as database connections,
         API client setup, or other preparatory work.
         """
+        if self.initialized:
+            await self.log("Already initialized", level=logging.DEBUG)
+            return True
+
         if not await super().initialize():
             return False
-        if not self.initialized:
-            # Start managers
-            self.managers_tasks += [
-                asyncio.create_task(self.task_manager()),
-                asyncio.create_task(self.task_queue_manager()),
-                asyncio.create_task(self.watchdog()),
-            ]
 
-            await self.log("Task manager started", level=logging.DEBUG)
-            await self.log("Task queue manager started", level=logging.DEBUG)
-            await self.log("Watchdog started", level=logging.DEBUG)
-        else:
-            await self.log("Already initialized", level=logging.DEBUG)
+        # Start managers
+        self.managers_tasks += [
+            asyncio.create_task(self.task_manager()),
+            asyncio.create_task(self.task_queue_manager()),
+            asyncio.create_task(self.watchdog()),
+        ]
+
+        await self.log("Task manager started", level=logging.DEBUG)
+        await self.log("Task queue manager started", level=logging.DEBUG)
+        await self.log("Watchdog started", level=logging.DEBUG)
+
         return True
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:

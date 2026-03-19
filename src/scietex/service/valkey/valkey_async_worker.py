@@ -184,6 +184,13 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
         if not self.client:
             return False
 
+        # Start managers
+        self.managers_tasks += [
+            asyncio.create_task(self.heartbeat()),
+        ]
+
+        await self.log("Heartbeat started", level=logging.DEBUG)
+
         try:
             await self.client.xgroup_create(
                 self._task_stream_name,
