@@ -101,6 +101,17 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
 def read_valkey_config(conf_dir: Path | None) -> ValkeyBaseConfig:
     """Read valkey config from YML file"""
     if isinstance(conf_dir, Path):
+        if not conf_dir.exists():
+            try:
+                conf_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to create configuration directory {conf_dir}!"
+                ) from exc
+        elif not conf_dir.is_dir():
+            raise RuntimeError(
+                f"Provided configuration directory path {conf_dir} is not a directory!"
+            )
         valkey_yml = conf_dir.joinpath("valkey.yml")
     else:
         raise RuntimeError("Configuration dir was not set!")
