@@ -13,6 +13,8 @@
     "getpid",
     "posargs",
     "setuptools",
+    "pypi",
+    "pypa",
     "pytest",
     "asyncio",
     "xgroup",
