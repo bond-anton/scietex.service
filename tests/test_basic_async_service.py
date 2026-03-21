@@ -5,7 +5,6 @@ import logging
 
 import pytest
 
-
 from scietex.service.basic_async_worker import BasicAsyncWorker
 
 

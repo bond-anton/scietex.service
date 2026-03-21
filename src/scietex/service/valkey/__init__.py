@@ -1,11 +1,12 @@
+"""Sync Task Processor wit Valkey backend."""
+
+from .valkey_async_worker import ValkeyWorker
 from .valkey_config import (
-    ValkeyNode,
-    ValkeyUserCredentials,
     ValkeyBackoffStrategy,
     ValkeyBaseConfig,
+    ValkeyNode,
+    ValkeyUserCredentials,
 )
-from .valkey_async_worker import ValkeyWorker
-from .valkey_async_worker_messaging import ValkeyMessagingWorker
 
 __all__ = [
     "ValkeyNode",
@@ -13,5 +14,4 @@ __all__ = [
     "ValkeyBackoffStrategy",
     "ValkeyBaseConfig",
     "ValkeyWorker",
-    "ValkeyMessagingWorker",
 ]

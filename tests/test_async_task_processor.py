@@ -1,8 +1,8 @@
 import asyncio
+from uuid import uuid4
 
 import pytest
 
-from uuid import uuid4
 from scietex.service.async_tasks_processor import AsyncTaskProcessor
 from scietex.service.task_handlers.basic import TaskHandler
 from scietex.service.task_handlers.schemas import TaskData, TaskResult, TaskTimeout
@@ -15,9 +15,7 @@ class DummyHandler(TaskHandler):
 
     async def handle(self, task_data: TaskData) -> TaskResult:
         result = task_data.payload.decode("utf-8")
-        return TaskResult(
-            status="success", error="No error", payload=result.encode("utf-8")
-        )
+        return TaskResult(status="success", error="No error", payload=result.encode("utf-8"))
 
     def supports(self, task_type: str) -> bool:
         return task_type == "dummy"

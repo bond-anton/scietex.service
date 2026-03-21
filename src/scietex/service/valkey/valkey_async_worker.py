@@ -3,21 +3,26 @@ Module providing asynchronous worker, which communicates with the Valkey server 
 Worker provides handling connections, disconnections, initialization, cleanups, and logging.
 """
 
-from typing import Generic
 import asyncio
 import logging
+from typing import Generic
 from uuid import UUID
+
 import msgspec
 
 try:
     from glide import (
+        ConnectionError as GlideConnectionError,
+    )
+    from glide import (
+        ExpirySet,
+        ExpiryType,
         GlideClient,
         GlideClientConfiguration,
         StreamGroupOptions,
         StreamReadGroupOptions,
-        ExpirySet,
-        ExpiryType,
-        ConnectionError as GlideConnectionError,
+    )
+    from glide import (
         TimeoutError as GlideTimeoutError,
     )
 except ImportError as e:
@@ -27,22 +32,21 @@ except ImportError as e:
     ) from e
 
 from scietex.logging import AsyncValkeyHandler
-from ..async_tasks_processor import AsyncTaskProcessor
-from ..task_handlers import TaskType, TaskData
 
+from ..async_tasks_processor import AsyncTaskProcessor
+from ..task_handlers import TaskData, task_type
+from .schemas import Heartbeat
 from .valkey_config import (
     ValkeyBaseConfig,
-    read_valkey_config,
     generate_glide_config,
+    read_valkey_config,
 )
-from .schemas import Heartbeat
-
 
 DEFAULT_HEARTBEAT_INTERVAL: int = 10
 MAX_HEARTBEAT_INTERVAL: int = 600
 
 
-class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
+class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
     """
     An asynchronous worker class designed to interact with Valkey services via its glide client.
 
@@ -94,9 +98,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
         if heartbeat_interval is None or not isinstance(heartbeat_interval, int):
             self._heartbeat_interval = DEFAULT_HEARTBEAT_INTERVAL
         else:
-            self._heartbeat_interval = max(
-                0, min(heartbeat_interval, MAX_HEARTBEAT_INTERVAL)
-            )
+            self._heartbeat_interval = max(0, min(heartbeat_interval, MAX_HEARTBEAT_INTERVAL))
         self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
         self._task_stream_name = f"scietex:{self.service_name}:tasks"
         self._task_group_name = f"scietex:{self.service_name}:task_group"
@@ -200,7 +202,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
             )
         except Exception as exc:
             await self.log(f"Valkey: {exc}", logging.DEBUG)
-            pass
         return True
 
     async def cleanup(self):
@@ -270,17 +271,11 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[TaskType]):
                         if pairs is None:
                             continue
                         for field, payload_bytes in pairs:
-                            task_id = (
-                                field.decode("utf-8")
-                                if isinstance(field, bytes)
-                                else field
-                            )
+                            task_id = field.decode("utf-8") if isinstance(field, bytes) else field
                             if payload_bytes is None:
                                 continue
                             try:
-                                task_data = msgspec.msgpack.decode(
-                                    payload_bytes, type=TaskData
-                                )
+                                task_data = msgspec.msgpack.decode(payload_bytes, type=TaskData)
                                 await self.task_queue.put((UUID(task_id), task_data))
                             except Exception as exc:
                                 self.logger.error("Failed to decode task data: %s", exc)

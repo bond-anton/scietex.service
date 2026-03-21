@@ -1,5 +1,4 @@
-import asyncio
-import json
+"""Valkey async task processor testing."""
 
 import pytest
 
@@ -8,6 +7,8 @@ from scietex.service.valkey.valkey_config import ValkeyBaseConfig
 
 
 class DummyClient:
+    """Mocking Valkey client."""
+
     def __init__(self, ping_ok=True):
         self._ping_ok = ping_ok
         self.closed = False
@@ -42,9 +43,7 @@ async def test_connect_success(monkeypatch):
 
     import scietex.service.valkey.valkey_async_worker as mod
 
-    monkeypatch.setattr(
-        mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)})
-    )
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
@@ -73,16 +72,3 @@ def _make_msg(channel: bytes | str, message: bytes | str):
             self.message = message
 
     return Msg(channel, message)
-
-
-def test_parse_control_message_bytes(monkeypatch):
-    worker = ValkeyWorker(valkey_config=ValkeyBaseConfig())
-
-    # valid json bytes channel
-    msg = _make_msg(b"scietex:service:1", b'{"a": 1}')
-    # should not raise
-    worker._parse_control_message(msg, context={"k": "v"})
-
-    # invalid json should be caught and not raise
-    bad = _make_msg(b"other", b"not-json")
-    worker._parse_control_message(bad, context=None)

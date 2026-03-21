@@ -6,13 +6,13 @@ processors can use consistent typing for `task_data` and returned
 results.
 """
 
-from typing import TypeVar, Literal
-from enum import Enum
 from datetime import datetime, timezone
+from enum import Enum
+from typing import Literal, TypeVar
 
 import msgspec
 
-TaskType = TypeVar("TaskType", bound=Enum)
+task_type = TypeVar("task_type", bound=Enum)
 
 
 class TaskTimeout(msgspec.Struct, frozen=True):

@@ -1,18 +1,20 @@
-from typing import Callable, Any
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+
 import msgspec
 from msgspec import field
 
 try:
     from glide import (
+        BackoffStrategy,
         ConfigurationError,
         GlideClientConfiguration,
-        BackoffStrategy,
+        NodeAddress,
         ProtocolVersion,
+        PubSubMsg,
         ReadFrom,
         ServerCredentials,
-        NodeAddress,
-        PubSubMsg,
     )
 except ImportError as e:
     raise ImportError(
@@ -105,9 +107,7 @@ def read_valkey_config(conf_dir: Path | None) -> ValkeyBaseConfig:
             try:
                 conf_dir.mkdir(parents=True, exist_ok=True)
             except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to create configuration directory {conf_dir}!"
-                ) from exc
+                raise RuntimeError(f"Failed to create configuration directory {conf_dir}!") from exc
         elif not conf_dir.is_dir():
             raise RuntimeError(
                 f"Provided configuration directory path {conf_dir} is not a directory!"
@@ -117,9 +117,7 @@ def read_valkey_config(conf_dir: Path | None) -> ValkeyBaseConfig:
         raise RuntimeError("Configuration dir was not set!")
     try:
         with open(valkey_yml, "rb") as f:
-            valkey_config = msgspec.yaml.decode(
-                f.read(), type=ValkeyBaseConfig, strict=True
-            )
+            valkey_config = msgspec.yaml.decode(f.read(), type=ValkeyBaseConfig, strict=True)
     except Exception:  # pylint: disable=broad-exception-caught
         valkey_config = ValkeyBaseConfig()
         with open(valkey_yml, "wb") as f:

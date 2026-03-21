@@ -1,13 +1,13 @@
-import pytest
-
 from pathlib import Path
+
+import pytest
 
 from scietex.service.valkey.valkey_config import (
     ValkeyBaseConfig,
     ValkeyNode,
     ValkeyUserCredentials,
-    read_valkey_config,
     generate_glide_config,
+    read_valkey_config,
 )
 
 

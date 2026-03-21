@@ -1,8 +1,8 @@
 """Tests for TaskHandler base class and a simple concrete implementation."""
 
 import types
-import pytest
 
+import pytest
 
 from scietex.service.task_handlers.basic import TaskHandler
 from scietex.service.task_handlers.schemas import TaskData, TaskResult
@@ -22,7 +22,7 @@ class DummyHandler(TaskHandler):
         return TaskResult(
             status="success",
             error="",
-            payload=f"{task_data.payload.decode('utf-8')}".encode("utf-8"),
+            payload=f"{task_data.payload.decode('utf-8')}".encode(),
         )
 
     def supports(self, task_type: str) -> bool:

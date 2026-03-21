@@ -3,7 +3,24 @@
   "ignorePaths": [],
   "dictionaryDefinitions": [],
   "dictionaries": [],
-  "words": ["scietex", "valkey", "getpid"],
+  "words": [
+    "scietex",
+    "Bondarenko",
+    "valkey",
+    "msgspec",
+    "pyaml",
+    "pythonpath",
+    "getpid",
+    "posargs",
+    "setuptools",
+    "pytest",
+    "asyncio",
+    "xgroup",
+    "xreadgroup",
+    "xadd",
+    "xack",
+    "xdel"
+  ],
   "ignoreWords": [],
   "import": []
 }

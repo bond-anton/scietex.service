@@ -4,14 +4,15 @@ Worker provides console logging, signal handlers, etc.
 """
 
 import asyncio
-import signal
 import logging
+import signal
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scietex.logging import AsyncBaseHandler
 
-from .version import __version__
 from .logo import LOGO
+from .version import __version__
 
 DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
 """Default logging level for the worker if no valid level is provided."""
@@ -65,7 +66,7 @@ class BasicAsyncWorker:
         self.__worker_id: int = kwargs.get("worker_id", 1)
         self.__version: str = version
         self.__logging_level: int = DEFAULT_LOGGING_LEVEL
-        self.__initialized: bool = False
+        self.__start_time: datetime | None = None
 
         # Configure logging level from kwargs if provided
         if "logging_level" in kwargs:
@@ -125,9 +126,14 @@ class BasicAsyncWorker:
         return self.__version
 
     @property
+    def start_time(self) -> datetime | None:
+        """Service start time."""
+        return self.__start_time
+
+    @property
     def initialized(self) -> bool:
         """Indicates whether the worker has completed initialization."""
-        return self.__initialized
+        return self.__start_time is not None
 
     @property
     def logger(self) -> logging.Logger:
@@ -175,9 +181,7 @@ class BasicAsyncWorker:
         self.logger.setLevel(self.__logging_level)
         for handler in self.logger.handlers:
             handler.setLevel(self.__logging_level)
-        self.logger.debug(
-            "Logging level set to %s", logging.getLevelName(self.logging_level)
-        )
+        self.logger.debug("Logging level set to %s", logging.getLevelName(self.logging_level))
 
     async def logger_add_custom_handlers(self) -> None:
         """
@@ -204,14 +208,10 @@ class BasicAsyncWorker:
         for handler in self.logger.handlers:
             if isinstance(handler, AsyncBaseHandler):
                 try:
-                    await asyncio.wait_for(
-                        handler.stop_logging(), timeout=per_handler_timeout
-                    )
+                    await asyncio.wait_for(handler.stop_logging(), timeout=per_handler_timeout)
                 except asyncio.TimeoutError:
                     try:
-                        self.logger.warning(
-                            "Timeout stopping logging handler %s", handler
-                        )
+                        self.logger.warning("Timeout stopping logging handler %s", handler)
                     except Exception:
                         # logger itself may be in a bad state; fallback to print
                         print("Timeout stopping logging handler", handler)
@@ -290,7 +290,7 @@ class BasicAsyncWorker:
             if not await self.initialize():
                 raise RuntimeError("Initialization failed")
 
-            self.__initialized = True
+            self.__start_time = datetime.now(timezone.utc)
             await self.log(
                 f"Worker {self.service_name}:{self.worker_id} started",
                 level=logging.DEBUG,
@@ -346,7 +346,7 @@ class BasicAsyncWorker:
                     self.logger.exception("Error shutting down logging handlers: %s", e)
                 except Exception:
                     print("Error shutting down logging handlers:", e)
-            self.__initialized = False
+            self.__start_time = None
             self._completion_event.set()
         else:
             await self.log(
@@ -372,9 +372,7 @@ class BasicAsyncWorker:
         """
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(
-                sig, lambda _: asyncio.create_task(self.stop()), (sig,)
-            )
+            loop.add_signal_handler(sig, lambda _: asyncio.create_task(self.stop()), (sig,))
 
     async def logging_manager(self):
         """
