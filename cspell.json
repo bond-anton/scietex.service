@@ -21,7 +21,8 @@
     "xreadgroup",
     "xadd",
     "xack",
-    "xdel"
+    "xdel",
+    "keepalive"
   ],
   "ignoreWords": [],
   "import": []
