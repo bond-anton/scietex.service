@@ -7,6 +7,7 @@ from msgspec import field
 
 try:
     from glide import (
+        AdvancedGlideClientConfiguration,
         BackoffStrategy,
         ConfigurationError,
         GlideClientConfiguration,
@@ -15,6 +16,7 @@ try:
         PubSubMsg,
         ReadFrom,
         ServerCredentials,
+        TlsAdvancedConfiguration,
     )
 except ImportError as e:
     raise ImportError(
@@ -53,6 +55,36 @@ class ValkeyBackoffStrategy(msgspec.Struct, frozen=True):
             factor=self.factor,
             exponent_base=self.exponent_base,
             jitter_percent=self.jitter_percent,
+        )
+
+
+class ValkeyTlsAdvancedConfiguration(msgspec.Struct, frozen=True):
+    """Valkey TLS Advanced Configuration Schema."""
+
+    use_insecure_tls: bool = False
+    root_pem_cacerts: str | None = None
+
+    def to_tls_advanced_config(self) -> TlsAdvancedConfiguration:
+        """TlsAdvancedConfiguration object generation."""
+        return TlsAdvancedConfiguration(
+            use_insecure_tls=self.use_insecure_tls,
+            root_pem_cacerts=self.root_pem_cacerts.encode() if self.root_pem_cacerts else None,
+        )
+
+
+class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
+    """Valkey Advanced Configuration Schema."""
+
+    connection_timeout: int | None = None
+    tcp_nodelay: bool | None = None
+    tls_config: ValkeyTlsAdvancedConfiguration | None = None
+
+    def to_advanced_config(self) -> AdvancedGlideClientConfiguration:
+        """AdvancedGlideClientConfiguration object generation."""
+        return AdvancedGlideClientConfiguration(
+            connection_timeout=self.connection_timeout,
+            tcp_nodelay=self.tcp_nodelay,
+            tls_config=self.tls_config.to_tls_advanced_config() if self.tls_config else None,
         )
 
 
@@ -100,7 +132,14 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
         return None
 
 
-def read_valkey_config(conf_dir: Path | None) -> ValkeyBaseConfig:
+class ValkeyConfig(msgspec.Struct, frozen=True):
+    """Valkey Configuration Schema."""
+
+    base_config: ValkeyBaseConfig = ValkeyBaseConfig()
+    advanced_config: ValkeyAdvancedConfig | None = None
+
+
+def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
     """Read valkey config from YML file"""
     if isinstance(conf_dir, Path):
         if not conf_dir.exists():
@@ -117,16 +156,16 @@ def read_valkey_config(conf_dir: Path | None) -> ValkeyBaseConfig:
         raise RuntimeError("Configuration dir was not set!")
     try:
         with open(valkey_yml, "rb") as f:
-            valkey_config = msgspec.yaml.decode(f.read(), type=ValkeyBaseConfig, strict=True)
-    except Exception:  # pylint: disable=broad-exception-caught
-        valkey_config = ValkeyBaseConfig()
+            valkey_config = msgspec.yaml.decode(f.read(), type=ValkeyConfig, strict=True)
+    except Exception:
+        valkey_config = ValkeyConfig()
         with open(valkey_yml, "wb") as f:
             f.write(msgspec.yaml.encode(valkey_config))
     return valkey_config
 
 
 def generate_glide_config(
-    valkey_config: ValkeyBaseConfig,
+    valkey_config: ValkeyConfig,
     service_name: str,
     worker_id: str | int,
     listening: bool = False,
@@ -146,34 +185,36 @@ def generate_glide_config(
             context=None,
         )
     try:
-        read_from = ReadFrom[valkey_config.read_from]
+        read_from = ReadFrom[valkey_config.base_config.read_from]
     except KeyError as exc:
         raise ValueError(f"""
-            Invalid read_from value in Valkey Config: {valkey_config.read_from}.
+            Invalid read_from value in Valkey Config: {valkey_config.base_config.read_from}.
             Supported values are: {[e.name for e in ReadFrom]}.
 
             """) from exc
     try:
-        protocol = ProtocolVersion[valkey_config.protocol]
+        protocol = ProtocolVersion[valkey_config.base_config.protocol]
     except KeyError as exc:
         raise ValueError(f"""
-            Invalid protocol value in Valkey Config: {valkey_config.protocol}.
+            Invalid protocol value in Valkey Config: {valkey_config.base_config.protocol}.
             Supported values are: {[e.name for e in ProtocolVersion]}.
             """) from exc
     client_config = GlideClientConfiguration(
-        addresses=valkey_config.addresses,
-        credentials=valkey_config.credentials,
-        use_tls=valkey_config.use_tls,
+        addresses=valkey_config.base_config.addresses,
+        credentials=valkey_config.base_config.credentials,
+        use_tls=valkey_config.base_config.use_tls,
         read_from=read_from,
-        request_timeout=valkey_config.request_timeout,
-        reconnect_strategy=valkey_config.reconnect_strategy,
-        database_id=valkey_config.database_id,
-        client_name=valkey_config.client_name,
+        request_timeout=valkey_config.base_config.request_timeout,
+        reconnect_strategy=valkey_config.base_config.reconnect_strategy,
+        database_id=valkey_config.base_config.database_id,
+        client_name=valkey_config.base_config.client_name,
         protocol=protocol,
-        inflight_requests_limit=valkey_config.inflight_requests_limit,
-        client_az=valkey_config.client_az,
-        lazy_connect=valkey_config.lazy_connect,
-        advanced_config=None,
+        inflight_requests_limit=valkey_config.base_config.inflight_requests_limit,
+        client_az=valkey_config.base_config.client_az,
+        lazy_connect=valkey_config.base_config.lazy_connect,
+        advanced_config=valkey_config.advanced_config.to_advanced_config()
+        if valkey_config.advanced_config
+        else None,
         pubsub_subscriptions=pubsub_subscriptions,
     )
     return client_config

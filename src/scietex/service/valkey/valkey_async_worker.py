@@ -38,7 +38,7 @@ from ..async_tasks_processor import AsyncTaskProcessor
 from ..task_handlers import TaskData, task_type
 from .schemas import Heartbeat
 from .valkey_config import (
-    ValkeyBaseConfig,
+    ValkeyConfig,
     generate_glide_config,
     read_valkey_config,
 )
@@ -65,7 +65,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         version: str = "0.0.1",
         queue_size: int | None = None,
         max_concurrent_tasks: int | None = None,
-        valkey_config: ValkeyBaseConfig | None = None,
+        valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
         heartbeat_interval: int | None = None,
         **kwargs,
     ):
@@ -96,13 +96,15 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         if valkey_config is None:
             valkey_config = read_valkey_config(self.conf_dir)
         self._valkey_config = valkey_config
-
-        self._client_config: GlideClientConfiguration = generate_glide_config(
-            valkey_config,
-            service_name=self.service_name,
-            worker_id=self.worker_id,
-            listening=False,
-        )
+        if isinstance(valkey_config, GlideClientConfiguration):
+            self._client_config = valkey_config
+        else:
+            self._client_config: GlideClientConfiguration = generate_glide_config(
+                valkey_config,
+                service_name=self.service_name,
+                worker_id=self.worker_id,
+                listening=False,
+            )
 
         self._client: GlideClient | None = None
         if heartbeat_interval is None or not isinstance(heartbeat_interval, int):
@@ -118,7 +120,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
 
     @property
-    def valkey_config(self) -> ValkeyBaseConfig | GlideClientConfiguration:
+    def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
         """Valkey configuration property."""
         return self._valkey_config
 
@@ -174,6 +176,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                     heartbeat_interval=self._heartbeat_interval,
                     start_time=self.start_time,
                 )
+                print("\n\n")
                 await self.log(f"Sending heartbeat to Valkey: {heartbeat_data}", logging.DEBUG)
                 start_time = time.monotonic()
                 try:

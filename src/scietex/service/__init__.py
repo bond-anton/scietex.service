@@ -8,9 +8,12 @@ __all__ = ["__version__", "BasicAsyncWorker", "AsyncTaskProcessor"]
 
 try:
     from .valkey import (
+        ValkeyAdvancedConfig,
         ValkeyBackoffStrategy,
         ValkeyBaseConfig,
+        ValkeyConfig,
         ValkeyNode,
+        ValkeyTlsAdvancedConfiguration,
         ValkeyUserCredentials,
         ValkeyWorker,
     )
@@ -21,6 +24,9 @@ try:
         "ValkeyUserCredentials",
         "ValkeyBackoffStrategy",
         "ValkeyBaseConfig",
+        "ValkeyConfig",
+        "ValkeyAdvancedConfig",
+        "ValkeyTlsAdvancedConfiguration",
     ]
 except Exception:
     # If importing Valkey support fails for any reason (missing glide,

@@ -22,7 +22,9 @@
     "xadd",
     "xack",
     "xdel",
-    "keepalive"
+    "keepalive",
+    "cacerts",
+    "nodelay"
   ],
   "ignoreWords": [],
   "import": []

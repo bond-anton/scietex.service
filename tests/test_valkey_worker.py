@@ -3,7 +3,7 @@
 import pytest
 
 from scietex.service import ValkeyWorker
-from scietex.service.valkey.valkey_config import ValkeyBaseConfig
+from scietex.service.valkey.valkey_config import ValkeyConfig
 
 
 class DummyClient:
@@ -47,7 +47,7 @@ async def test_connect_success(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyBaseConfig())
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
     ok = await worker.connect()
     assert ok is True
     assert worker.client is not None
@@ -56,7 +56,7 @@ async def test_connect_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_disconnect_closes_client(monkeypatch):
     # Create a worker and attach a dummy client
-    worker = ValkeyWorker(valkey_config=ValkeyBaseConfig())
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
     client = DummyClient()
     worker._client = client
 

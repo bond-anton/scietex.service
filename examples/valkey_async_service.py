@@ -2,33 +2,42 @@
 Example of ValkeyWorker based service
 """
 
-# pylint: disable=duplicate-code
-from tox.config.loader.api import V
-
 import asyncio
 import logging
 
-from glide import GlideClientConfiguration, AdvancedGlideClientConfiguration, NodeAddress
+from scietex.service import (
+    ValkeyAdvancedConfig,
+    ValkeyBaseConfig,
+    ValkeyConfig,
+    ValkeyNode,
+    ValkeyWorker,
+)
 
-from scietex.service import ValkeyWorker, ValkeyBaseConfig
 
-
-class MyAsyncWorker(ValkeyWorker):
-    """Custom worker implementation."""
-
-
-async def main() -> None:
+async def main(config: ValkeyConfig | None) -> None:
     """Main function."""
 
-    worker = MyAsyncWorker(
+    worker = ValkeyWorker(
         service_name="MyValkeyService",
         version="0.0.1",
         worker_id=1,
         log_level=logging.DEBUG,
-        heartbeat_interval=3,
+        heartbeat_interval=4,
+        valkey_config=config,
     )
     await worker.run()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    valkey_config = ValkeyConfig(
+        base_config=ValkeyBaseConfig(
+            nodes=[ValkeyNode(host="localhost", port=6379)],
+            request_timeout=10_000,
+        ),
+        advanced_config=ValkeyAdvancedConfig(
+            connection_timeout=10000,
+            tcp_nodelay=True,
+        ),
+    )
+
+    asyncio.run(main(None))
