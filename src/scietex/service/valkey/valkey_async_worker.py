@@ -5,6 +5,7 @@ Worker provides handling connections, disconnections, initialization, cleanups, 
 
 import asyncio
 import logging
+import time
 from typing import Generic
 from uuid import UUID
 
@@ -42,10 +43,6 @@ from .valkey_config import (
     read_valkey_config,
 )
 
-DEFAULT_KEEPALIVE_INTERVAL: int = 2
-MIN_KEEPALIVE_INTERVAL: int = 1
-MAX_KEEPALIVE_INTERVAL: int = 30
-
 DEFAULT_HEARTBEAT_INTERVAL: int = 10
 MIN_HEARTBEAT_INTERVAL: int = 1
 MAX_HEARTBEAT_INTERVAL: int = 600
@@ -70,7 +67,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyBaseConfig | None = None,
         heartbeat_interval: int | None = None,
-        keepalive_interval: int | None = None,
         **kwargs,
     ):
         """
@@ -88,8 +84,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 if fail defaults to minimal settings.
             heartbeat_interval (Optional[int]): Interval for sending heartbeats
                 (default: None, meaning default).
-            keepalive_interval (Optional[int]): Interval for sending keepalive messages
-                (default: None, meaning default).
             kwargs: Additional keyword arguments passed through to parent constructor.
         """
         super().__init__(
@@ -102,12 +96,14 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         if valkey_config is None:
             valkey_config = read_valkey_config(self.conf_dir)
         self._valkey_config = valkey_config
+
         self._client_config: GlideClientConfiguration = generate_glide_config(
             valkey_config,
             service_name=self.service_name,
             worker_id=self.worker_id,
             listening=False,
         )
+
         self._client: GlideClient | None = None
         if heartbeat_interval is None or not isinstance(heartbeat_interval, int):
             self._heartbeat_interval = DEFAULT_HEARTBEAT_INTERVAL
@@ -115,19 +111,14 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             self._heartbeat_interval = max(
                 MIN_HEARTBEAT_INTERVAL, min(heartbeat_interval, MAX_HEARTBEAT_INTERVAL)
             )
-        if keepalive_interval is None or not isinstance(keepalive_interval, int):
-            self._keepalive_interval = DEFAULT_KEEPALIVE_INTERVAL
-        else:
-            self._keepalive_interval = max(
-                MIN_KEEPALIVE_INTERVAL, min(keepalive_interval, MAX_KEEPALIVE_INTERVAL)
-            )
+
         self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
         self._task_stream_name = f"scietex:{self.service_name}:tasks"
         self._task_group_name = f"scietex:{self.service_name}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
 
     @property
-    def valkey_config(self) -> ValkeyBaseConfig:
+    def valkey_config(self) -> ValkeyBaseConfig | GlideClientConfiguration:
         """Valkey configuration property."""
         return self._valkey_config
 
@@ -171,23 +162,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             self.logger.info("Valkey client disconnected")
             self._client = None
 
-    async def ping(self) -> None:
-        """Pings the Valkey client to verify connectivity."""
-        while not self._stop_event.is_set():
-            if self.client is not None:
-                try:
-                    pong = await self.client.ping()
-                    if pong:
-                        await self.log(
-                            f"PONG {pong.decode() if isinstance(pong, bytes) else pong}",
-                            logging.DEBUG,
-                        )
-                    else:
-                        await self.log("No PONG response received from Valkey", logging.WARNING)
-                except Exception as exc:
-                    self.logger.debug("Error during Valkey keepalive: %s", exc)
-            await asyncio.sleep(self._keepalive_interval)
-
     async def heartbeat(self) -> None:
         """Continuously put Heartbeat data in Valkey."""
         encoder = msgspec.msgpack.Encoder()
@@ -200,15 +174,24 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                     heartbeat_interval=self._heartbeat_interval,
                     start_time=self.start_time,
                 )
-                self.logger.debug("Sending heartbeat to Valkey: %s", heartbeat_data)
+                await self.log(f"Sending heartbeat to Valkey: {heartbeat_data}", logging.DEBUG)
+                start_time = time.monotonic()
                 try:
                     await self.client.set(
                         self._heartbeat_key,
                         encoder.encode(heartbeat_data),
                         expiry=ExpirySet(ExpiryType.SEC, self._heartbeat_interval * 2),
                     )
+                    duration = (time.monotonic() - start_time) * 1000
+                    await self.log(
+                        f"Heartbeat set in Valkey, duration: {duration:.2f} ms", logging.DEBUG
+                    )
                 except Exception as exc:
-                    self.logger.debug("Failed to set heartbeat in Valkey: %s", exc)
+                    duration = (time.monotonic() - start_time) * 1000
+                    await self.log(
+                        f"Failed to set heartbeat in Valkey: {exc}. Duration: {duration:.2f} ms",
+                        logging.DEBUG,
+                    )
             await asyncio.sleep(self._heartbeat_interval)
 
     async def initialize(self) -> bool:
@@ -233,11 +216,9 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
 
         # Start managers
         self.managers_tasks += [
-            asyncio.create_task(self.ping()),
             asyncio.create_task(self.heartbeat()),
         ]
 
-        await self.log("Ping started", level=logging.DEBUG)
         await self.log("Heartbeat started", level=logging.DEBUG)
 
         try:
