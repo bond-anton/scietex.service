@@ -13,5 +13,5 @@ class Heartbeat(msgspec.Struct, frozen=True):
     worker_id: int
     status: Literal["active", "inactive"]
     heartbeat_interval: int
-    start_time: datetime | None = None
+    start_time: datetime
     timestamp: datetime = datetime.now(timezone.utc)

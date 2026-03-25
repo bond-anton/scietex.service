@@ -6,6 +6,7 @@ Worker provides handling connections, disconnections, initialization, cleanups, 
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Generic
 from uuid import UUID
 
@@ -168,15 +169,15 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         """Continuously put Heartbeat data in Valkey."""
         encoder = msgspec.msgpack.Encoder()
         while not self._stop_event.is_set():
-            if self.client:
+            if self.client and self.start_time:
                 heartbeat_data = Heartbeat(
                     service=self.service_name,
                     worker_id=self.worker_id,
                     status="active",
                     heartbeat_interval=self._heartbeat_interval,
                     start_time=self.start_time,
+                    timestamp=datetime.now(timezone.utc),
                 )
-                print("\n\n")
                 await self.log(f"Sending heartbeat to Valkey: {heartbeat_data}", logging.DEBUG)
                 start_time = time.monotonic()
                 try:
