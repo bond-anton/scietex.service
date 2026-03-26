@@ -67,6 +67,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         queue_size: int | None = None,
         max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
+        log_stream_name: str = "log",
         heartbeat_interval: int | None = None,
         **kwargs,
     ):
@@ -94,6 +95,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             max_concurrent_tasks=max_concurrent_tasks,
             **kwargs,
         )
+        self._log_stream_name = log_stream_name
         if valkey_config is None:
             valkey_config = read_valkey_config(self.conf_dir)
         self._valkey_config = valkey_config
@@ -251,7 +253,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         Disables standard output logging (stdout_enable=False).
         """
         valkey_handler = AsyncValkeyHandler(
-            stream_name="log",
+            stream_name=self._log_stream_name,
             service_name=self.service_name,
             worker_id=self.worker_id,
             valkey_config=self._client_config,
