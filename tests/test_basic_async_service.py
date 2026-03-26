@@ -16,7 +16,6 @@ def test_event_loop():
     loop.close()
 
 
-# pylint: disable=redefined-outer-name, protected-access
 @pytest.mark.asyncio
 async def test_graceful_shutdown_and_log_drain(test_event_loop):
     """Start the worker, enqueue some logs, then stop and ensure drain."""

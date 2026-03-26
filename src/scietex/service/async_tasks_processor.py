@@ -21,7 +21,6 @@ DEFAULT_TASK_TIMEOUT = 3  # Timeout in seconds for task completion
 """Timeout in seconds for task completion before cancellation."""
 
 
-# pylint: disable=too-many-instance-attributes, too-many-public-methods
 class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
     """
     A basic asynchronous worker framework for processing tasks concurrently.

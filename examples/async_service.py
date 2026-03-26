@@ -5,8 +5,6 @@ import logging
 
 from scietex.service import BasicAsyncWorker
 
-# pylint: disable=duplicate-code
-
 
 async def main() -> None:
     """Main function."""

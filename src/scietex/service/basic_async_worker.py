@@ -25,7 +25,6 @@ CONF_PATHS = [
 ]
 
 
-# pylint: disable=too-many-instance-attributes, too-many-public-methods
 class BasicAsyncWorker:
     """
     A basic asynchronous worker framework.
@@ -215,7 +214,7 @@ class BasicAsyncWorker:
                     except Exception:
                         # logger itself may be in a bad state; fallback to print
                         print("Timeout stopping logging handler", handler)
-                except Exception as e:  # pylint: disable=broad-exception-caught
+                except Exception as e:
                     try:
                         self.logger.exception(
                             "Failed to shut down logging handler %s: %s", handler, e
@@ -325,7 +324,7 @@ class BasicAsyncWorker:
                 await asyncio.wait_for(self._drain_log_queue(), timeout=2)
             except asyncio.TimeoutError:
                 self.logger.warning("Timeout while draining log_queue")
-            except Exception as e:  # pylint: disable=broad-exception-caught
+            except Exception as e:
                 try:
                     self.logger.exception("Error while draining log_queue: %s", e)
                 except Exception:
@@ -341,7 +340,7 @@ class BasicAsyncWorker:
                 await asyncio.wait_for(self._logger_shut_down_handlers(), timeout=5)
             except asyncio.TimeoutError:
                 self.logger.warning("Timeout while shutting down logging handlers")
-            except Exception as e:  # pylint: disable=broad-exception-caught
+            except Exception as e:
                 try:
                     self.logger.exception("Error shutting down logging handlers: %s", e)
                 except Exception:
