@@ -116,8 +116,8 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             )
 
         self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
-        self._task_stream_name = f"scietex:{self.service_name}:tasks"
-        self._task_group_name = f"scietex:{self.service_name}:task_group"
+        self._task_stream_name = f"scietex:{self.service_name}:{self.worker_id}:tasks"
+        self._task_group_name = f"scietex:{self.service_name}:{self.worker_id}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
 
     @property
