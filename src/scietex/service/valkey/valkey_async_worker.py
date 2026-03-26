@@ -67,7 +67,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         queue_size: int | None = None,
         max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
-        log_stream_name: str = "log",
+        log_stream_name: str = "scietex:log",
         heartbeat_interval: int | None = None,
         **kwargs,
     ):
