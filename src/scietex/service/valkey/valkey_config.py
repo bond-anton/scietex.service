@@ -75,7 +75,7 @@ class ValkeyTlsAdvancedConfiguration(msgspec.Struct, frozen=True):
 class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
     """Valkey Advanced Configuration Schema."""
 
-    connection_timeout: int | None = None
+    connection_timeout: int | None = 10_000
     tcp_nodelay: bool | None = None
     tls_config: ValkeyTlsAdvancedConfiguration | None = None
 
@@ -96,7 +96,7 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
     )
     user_credentials: ValkeyUserCredentials | None = None
     use_tls: bool = False
-    request_timeout: int | None = None
+    request_timeout: int | None = 10_000
     database_id: int | None = None
     client_name: str | None = None
     inflight_requests_limit: int | None = None
