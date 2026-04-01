@@ -77,7 +77,7 @@ class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
 
     connection_timeout: int | None = 10_000
     tcp_nodelay: bool | None = None
-    tls_config: ValkeyTlsAdvancedConfiguration | None = None
+    tls_config: ValkeyTlsAdvancedConfiguration = ValkeyTlsAdvancedConfiguration()
 
     def to_advanced_config(self) -> AdvancedGlideClientConfiguration:
         """AdvancedGlideClientConfiguration object generation."""
@@ -96,7 +96,7 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
     )
     user_credentials: ValkeyUserCredentials | None = None
     use_tls: bool = False
-    request_timeout: int | None = 10_000
+    request_timeout: int | None = 5_000
     database_id: int | None = None
     client_name: str | None = None
     inflight_requests_limit: int | None = None
@@ -136,7 +136,7 @@ class ValkeyConfig(msgspec.Struct, frozen=True):
     """Valkey Configuration Schema."""
 
     base_config: ValkeyBaseConfig = ValkeyBaseConfig()
-    advanced_config: ValkeyAdvancedConfig | None = None
+    advanced_config: ValkeyAdvancedConfig = ValkeyAdvancedConfig()
 
 
 def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
