@@ -277,7 +277,7 @@ class BasicAsyncWorker:
 
             # Start main managers
             self.managers_tasks = [
-                asyncio.create_task(self.logging_manager()),
+                asyncio.create_task(self.logging_manager(), name="LoggingManager"),
             ]
 
             await self.log("Log manager started", level=logging.DEBUG)
@@ -371,7 +371,9 @@ class BasicAsyncWorker:
         """
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda _: asyncio.create_task(self.stop()), (sig,))
+            loop.add_signal_handler(
+                sig, lambda _: asyncio.create_task(self.stop(), name="StopTask"), (sig,)
+            )
 
     async def logging_manager(self):
         """
@@ -383,7 +385,7 @@ class BasicAsyncWorker:
         while not self._stop_event.is_set():
             # Wait for a message to arrive in the queue
             try:
-                level, message = await asyncio.wait_for(self.log_queue.get(), timeout=1)
+                level, message = await asyncio.wait_for(self.log_queue.get(), timeout=0.1)
                 self.logger.log(level, message)
                 self.log_queue.task_done()
             except asyncio.TimeoutError:

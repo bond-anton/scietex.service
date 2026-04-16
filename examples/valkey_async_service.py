@@ -24,6 +24,8 @@ async def main(config: ValkeyConfig | None) -> None:
         log_level=logging.DEBUG,
         heartbeat_interval=4,
         valkey_config=config,
+        queue_size=100,
+        max_concurrent_tasks=100,
     )
     await worker.run()
 

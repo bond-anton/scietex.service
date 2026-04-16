@@ -130,9 +130,9 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
         # Start managers
         self.managers_tasks += [
-            asyncio.create_task(self.task_manager()),
-            asyncio.create_task(self.task_queue_manager()),
-            asyncio.create_task(self.watchdog()),
+            asyncio.create_task(self.task_manager(), name="TaskManager"),
+            asyncio.create_task(self.task_queue_manager(), name="TaskQueueManager"),
+            asyncio.create_task(self.watchdog(), name="Watchdog"),
         ]
 
         await self.log("Task manager started", level=logging.DEBUG)
@@ -235,7 +235,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
         async def handle_task(t_id: UUID, t_data: TaskData):
             try:
-                await self.log(f"Sending to handler. Task {t_id}: {t_data}", level=logging.INFO)
+                await self.log(f"Sending to handler. Task {t_id}: {t_data}", level=logging.DEBUG)
                 await self.process_task(t_id, t_data)
             finally:
                 self.task_queue.task_done()
@@ -254,7 +254,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                 except asyncio.TimeoutError:
                     pass
             else:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
 
     async def fetch_tasks(self):
         """
@@ -275,7 +275,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         while not self._stop_event.is_set():
             if not self.task_queue.full():
                 await self.fetch_tasks()
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
     async def watchdog(self):
         """
@@ -308,4 +308,4 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                         await task  # Wait for cancellation to complete
                     except asyncio.CancelledError:
                         pass
-            await asyncio.sleep(1)  # Check for timeouts every 1 second
+            await asyncio.sleep(0.1)  # Check for timeouts every 0.1 second
