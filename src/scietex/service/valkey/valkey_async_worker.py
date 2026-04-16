@@ -262,6 +262,44 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         valkey_handler.setLevel(self.logging_level)
         self.logger.addHandler(valkey_handler)
 
+    async def purge_tasks(self):
+        """
+        Purges all pending tasks from the Valkey task stream.
+
+        This method is useful for clearing out any unprocessed tasks, especially during
+        shutdown or when resetting the worker's state. It deletes all entries from the
+        task stream and acknowledges them to ensure they are not reprocessed.
+        """
+        if self.client is None:
+            print("No Valkey client available to purge tasks")
+            return
+        try:
+            while True:
+                print("IN THE LOOP")
+                res = await self.client.xreadgroup(
+                    {self._task_stream_name: "0-0"},
+                    self._task_group_name,
+                    self._consumer_name,
+                    StreamReadGroupOptions(count=100, block_ms=1000),
+                )
+                if not res:
+                    break  # No results for stream_name, exit the loop
+                print("  GOT RES", res)
+                entries = res[self._task_stream_name.encode("utf-8")]
+                if not entries:
+                    break  # No entries, exit the loop
+                # entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(
+                entries_ids: list[str | bytes] = list(entries.keys())
+                await self.client.xack(
+                    self._task_stream_name,
+                    self._task_group_name,
+                    entries_ids,
+                )
+                await self.client.xdel(self._task_stream_name, entries_ids)
+            await self.log("All pending tasks purged from Valkey", logging.INFO)
+        except Exception as exc:
+            await self.log(f"Failed to purge tasks from Valkey: {exc}", logging.DEBUG)
+
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """
         Return a task to the external queue.

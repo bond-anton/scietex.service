@@ -22,8 +22,8 @@ dependencies = ["msgspec>=0.20.0", "pyaml>=26.2.1", "scietex.logging>=0.1.3"]
 "Bug Tracker" = "https://github.com/bond-anton/scietex.service/issues"
 
 [project.optional-dependencies]
-valkey = ["scietex.logging[valkey]>=0.1.2", "valkey-glide>=2.2.0"]
-dev = ["tox>=4.45.0", "valkey-glide>=2.2.0"]
+valkey = ["scietex.logging[valkey]>=0.1.2", "valkey-glide~=2.2.0"]
+dev = ["tox>=4.45.0", "valkey-glide~=2.2.0"]
 test = ["pytest", "pytest-asyncio"]
 lint = ["ruff"]
 
