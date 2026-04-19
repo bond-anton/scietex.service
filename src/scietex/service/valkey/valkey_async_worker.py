@@ -275,16 +275,16 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             return
         try:
             while True:
-                print("IN THE LOOP")
+                # print("PURGING OLD TASKS")
                 res = await self.client.xreadgroup(
                     {self._task_stream_name: "0-0"},
                     self._task_group_name,
                     self._consumer_name,
-                    StreamReadGroupOptions(count=100, block_ms=1000),
+                    # StreamReadGroupOptions(count=100, block_ms=1000),
                 )
                 if not res:
                     break  # No results for stream_name, exit the loop
-                print("  GOT RES", res)
+                # print("  OLD TASKS", res)
                 entries = res[self._task_stream_name.encode("utf-8")]
                 if not entries:
                     break  # No entries, exit the loop
@@ -295,6 +295,43 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                     self._task_group_name,
                     entries_ids,
                 )
+                await self.client.xdel(self._task_stream_name, entries_ids)
+            while True:
+                # print("PURGING PENDING TASKS")
+                res = await self.client.xreadgroup(
+                    {self._task_stream_name: ">"},
+                    self._task_group_name,
+                    self._consumer_name,
+                    # StreamReadGroupOptions(count=100, block_ms=1000),
+                )
+                if not res:
+                    break  # No results for stream_name, exit the loop
+                # print("  PENDING TASKS", res)
+                entries = res[self._task_stream_name.encode("utf-8")]
+                if not entries:
+                    break  # No entries, exit the loop
+                # entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(
+                entries_ids: list[str | bytes] = list(entries.keys())
+                await self.client.xack(
+                    self._task_stream_name,
+                    self._task_group_name,
+                    entries_ids,
+                )
+                await self.client.xdel(self._task_stream_name, entries_ids)
+            while True:
+                # print("PURGING STREAM")
+                res = await self.client.xread(
+                    {self._task_stream_name: "0-0"},
+                    # StreamReadOptions(count=100, block_ms=1000),
+                )
+                if not res:
+                    break  # No results for stream_name, exit the loop
+                # print("  STREAM DATA", res)
+                entries = res[self._task_stream_name.encode("utf-8")]
+                if not entries:
+                    break  # No entries, exit the loop
+                # entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(
+                entries_ids: list[str | bytes] = list(entries.keys())
                 await self.client.xdel(self._task_stream_name, entries_ids)
             await self.log("All pending tasks purged from Valkey", logging.INFO)
         except Exception as exc:
@@ -361,3 +398,5 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
 
         except Exception as exc:
             self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
+            await self.disconnect()
+            await self.connect()

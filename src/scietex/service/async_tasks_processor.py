@@ -203,11 +203,16 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             task_id: Identifier of the task to process
             task_data: The data associated with the task
         """
-        await self.log(f"Processing task {task_id}: {task_data}", level=logging.DEBUG)
+        await self.log(
+            f"Processing task {task_data.task} ({task_id}): {task_data}", level=logging.DEBUG
+        )
 
         task_type = task_data.task
         if not task_type:
-            await self.log(f"Wrong task format for {task_id}: {task_data}", level=logging.ERROR)
+            await self.log(
+                f"Wrong task format for {task_data.task} ({task_id}): {task_data}",
+                level=logging.ERROR,
+            )
             raise ValueError("Task data must contain 'task' field")
 
         handler = self._find_task_handler(task_type)
@@ -221,7 +226,10 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                 status="error", error=f"No handler found for task type '{task_type}'"
             )
 
-        await self.log(f"Task {task_id} completed with result: {result}", level=logging.DEBUG)
+        await self.log(
+            f"Task {task_data.task} ({task_id}) completed with result: {result}",
+            level=logging.DEBUG,
+        )
         return result
 
     async def task_manager(self):
@@ -235,7 +243,10 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
         async def handle_task(t_id: UUID, t_data: TaskData):
             try:
-                await self.log(f"Sending to handler. Task {t_id}: {t_data}", level=logging.DEBUG)
+                # await self.log(
+                #     f"Sending to handler. Task {t_data.task} ({t_id}): {t_data}",
+                #     level=logging.DEBUG,
+                # )
                 await self.process_task(t_id, t_data)
             finally:
                 self.task_queue.task_done()
@@ -254,7 +265,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                 except asyncio.TimeoutError:
                     pass
             else:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.01)
 
     async def fetch_tasks(self):
         """
@@ -293,13 +304,13 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                     timeout = DEFAULT_TASK_TIMEOUT
                 if 0 < timeout < (now - start_time) and not task.done():
                     await self.log(
-                        f"Task {task_id} exceeded timeout and will be canceled.",
+                        f"Task {task_data.task} ({task_id}) exceeded timeout and will be canceled.",
                         logging.WARNING,
                     )
                     task.cancel()
                     if task_data.timeout.timeout_action == "requeue":
                         await self.log(
-                            f"Task {task_id} will be returned to queue.",
+                            f"Task {task_data.task} ({task_id}) will be returned to queue.",
                             logging.WARNING,
                         )
                         await self.return_task_to_queue(task_id, task_data)
