@@ -63,6 +63,10 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         """
         super().__init__(service_name, version, **kwargs)
 
+        self.register_manager("TaskManager", self.task_manager)
+        self.register_manager("TaskQueueManager", self.task_queue_manager)
+        self.register_manager("Watchdog", self.watchdog)
+
         self._task_handlers_map: dict[task_type, TaskHandler] = {}
 
         # Initialize queues and tracking structures
@@ -127,17 +131,6 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
         if not await super().initialize():
             return False
-
-        # Start managers
-        self.managers_tasks += [
-            asyncio.create_task(self.task_manager(), name="TaskManager"),
-            asyncio.create_task(self.task_queue_manager(), name="TaskQueueManager"),
-            asyncio.create_task(self.watchdog(), name="Watchdog"),
-        ]
-
-        self.logger.log(logging.DEBUG, "Task manager started")
-        self.logger.log(logging.DEBUG, "Task queue manager started")
-        self.logger.log(logging.DEBUG, "Watchdog started")
 
         return True
 
