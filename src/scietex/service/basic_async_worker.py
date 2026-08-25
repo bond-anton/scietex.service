@@ -6,23 +6,17 @@ Worker provides console logging, signal handlers, etc.
 import asyncio
 import logging
 import signal
+from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from pathlib import Path
 
 from scietex.logging import AsyncBaseHandler
 
-from .logo import LOGO
-from .version import __version__
+from .utils import parse_logging_level, prepare_conf_dir, print_scietex_logo
 
-DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
-"""Default logging level for the worker if no valid level is provided."""
-
-CONF_PATHS = [
-    Path.home() / ".config" / "scietex",
-    Path("/etc") / "scietex",
-    Path("/usr/local/etc") / "scietex",
-    Path().cwd() / "config",
-]
+DEFAULT_HEARTBEAT_INTERVAL: int = 10
+MIN_HEARTBEAT_INTERVAL: int = 1
+MAX_HEARTBEAT_INTERVAL: int = 600
 
 
 class BasicAsyncWorker:
@@ -45,7 +39,10 @@ class BasicAsyncWorker:
         self,
         service_name: str = "service",
         version: str = "0.0.1",
-        **kwargs,
+        worker_id: int = 1,
+        conf_dir: str | Path | None = None,
+        logging_level: int | str = logging.DEBUG,
+        heartbeat_interval: int = DEFAULT_HEARTBEAT_INTERVAL,
     ):
         """
         Initialize the BasicAsyncWorker.
@@ -53,48 +50,35 @@ class BasicAsyncWorker:
         Args:
             service_name: Name of the service, used for logging and identification
             version: Version string of the service
-            logging_level: Logging level as string or integer
-            **kwargs: Additional keyword arguments including:
-                conf_dir: Directory to use for configuration files
-                worker_id: Unique identifier for this worker instance
+            worker_id: Unique identifier for this worker instance
+            conf_dir: Directory to use for configuration files
+            logging_level: Logging level as string or integer.
+                If logging_level is invalid, defaults to DEFAULT_LOGGING_LEVEL
+            heartbeat_interval: Heartbeat interval in seconds as integer
 
         Note:
-            If logging_level is invalid, defaults to DEFAULT_LOGGING_LEVEL
+            In a single process service_name, worker_id combination should be unique.
+            This ensures separate logger names for different workers.
         """
         self.__service_name: str = service_name
-        self.__worker_id: int = kwargs.get("worker_id", 1)
+        self.__worker_id: int = worker_id
         self.__version: str = version
-        self.__logging_level: int = DEFAULT_LOGGING_LEVEL
+        self.__logging_level: int = parse_logging_level(logging_level)
+        self.__initialized: bool = False
         self.__start_time: datetime | None = None
 
-        # Configure logging level from kwargs if provided
-        if "logging_level" in kwargs:
-            try:
-                if not isinstance(logging.getLevelName(kwargs["logging_level"]), int):
-                    self.__logging_level = DEFAULT_LOGGING_LEVEL
-                else:
-                    self.__logging_level = logging.getLevelName(kwargs["logging_level"])
-            except (TypeError, ValueError):
-                pass
+        self.__heartbeat_interval: int = max(
+            MIN_HEARTBEAT_INTERVAL,
+            min(MAX_HEARTBEAT_INTERVAL, heartbeat_interval),
+        )
 
         # Config dir setup
-        self.conf_dir: Path | None = None
-
-        if "conf_dir" in kwargs and isinstance(kwargs["conf_dir"], (str, Path)):
-            conf_dir_path = Path(kwargs["conf_dir"])
-            if conf_dir_path.is_dir():
-                self.conf_dir = conf_dir_path
-        if self.conf_dir is None:
-            for conf_dir_path in CONF_PATHS:
-                if conf_dir_path.is_dir():
-                    self.conf_dir = conf_dir_path
-                    break
-        if self.conf_dir is None:
-            self.conf_dir = CONF_PATHS[0]
-            self.conf_dir.mkdir(exist_ok=True)
+        self.__conf_dir: Path = prepare_conf_dir(conf_dir)
 
         # Set up logger with async handler
-        self._logger: logging.Logger = logging.getLogger(__name__)
+        self._logger: logging.Logger = logging.getLogger(
+            f"{self.__service_name}.{self.__worker_id}"
+        )
         self._logger.setLevel(self.logging_level)
         stdout_handler = AsyncBaseHandler(
             service_name=self.__service_name, worker_id=self.__worker_id
@@ -102,12 +86,13 @@ class BasicAsyncWorker:
         stdout_handler.setLevel(self.logging_level)
         self._logger.addHandler(stdout_handler)
 
-        # Initialize queues and tracking structures
-        self.log_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
-
+        self._start_event: asyncio.Event = asyncio.Event()
         self._stop_event: asyncio.Event = asyncio.Event()
         self._completion_event: asyncio.Event = asyncio.Event()
-        self.managers_tasks: list = []
+
+        self.__managers: dict[str, Callable[[], Coroutine[None, None, None]]] = {}
+        self.__managers_tasks: dict[str, asyncio.Task[None]] = {}
+        self.register_manager("Heartbeat", self.heartbeat)
 
     @property
     def service_name(self) -> str:
@@ -125,6 +110,21 @@ class BasicAsyncWorker:
         return self.__version
 
     @property
+    def conf_dir(self) -> Path:
+        return self.__conf_dir
+
+    @property
+    def heartbeat_interval(self) -> int:
+        return self.__heartbeat_interval
+
+    @heartbeat_interval.setter
+    def heartbeat_interval(self, interval: int) -> None:
+        self.__heartbeat_interval = max(
+            MIN_HEARTBEAT_INTERVAL,
+            min(MAX_HEARTBEAT_INTERVAL, interval),
+        )
+
+    @property
     def start_time(self) -> datetime | None:
         """Service start time."""
         return self.__start_time
@@ -132,7 +132,11 @@ class BasicAsyncWorker:
     @property
     def initialized(self) -> bool:
         """Indicates whether the worker has completed initialization."""
-        return self.__start_time is not None
+        return self.__initialized
+
+    @property
+    def managers_tasks(self) -> list[asyncio.Task[None]]:
+        return [self.__managers_tasks[name] for name in self.__managers_tasks]
 
     @property
     def logger(self) -> logging.Logger:
@@ -145,7 +149,7 @@ class BasicAsyncWorker:
         return self.__logging_level
 
     @logging_level.setter
-    def logging_level(self, level: int | str) -> None:
+    def logging_level(self, level: int | str | None) -> None:
         """
         Set the logging level for the worker.
 
@@ -159,22 +163,10 @@ class BasicAsyncWorker:
                 - FATAL: 'F', 'FTL', 'FAT', 'FATAL', logging.FATAL
 
         Note:
-            If level is not recognized, defaults to DEFAULT_LOGGING_LEVEL
+            If level is None or not recognized, defaults to DEFAULT_LOGGING_LEVEL
         """
-        if level in ("D", "DBG", "DEBUG", logging.DEBUG):
-            self.__logging_level = logging.DEBUG
-        elif level in ("I", "INF", "INFO", "INFORMATION", logging.INFO):
-            self.__logging_level = logging.INFO
-        elif level in ("W", "WRN", "WARN", "WARNING", logging.WARNING):
-            self.__logging_level = logging.WARNING
-        elif level in ("E", "ERR", "ERROR", logging.ERROR):
-            self.__logging_level = logging.ERROR
-        elif level in ("C", "CRT", "CRIT", "CRITICAL", logging.CRITICAL):
-            self.__logging_level = logging.CRITICAL
-        elif level in ("F", "FTL", "FAT", "FATAL", logging.FATAL):
-            self.__logging_level = logging.FATAL
-        else:
-            self.__logging_level = DEFAULT_LOGGING_LEVEL
+
+        self.__logging_level = parse_logging_level(level)
 
         # Update logger and all handlers
         self.logger.setLevel(self.__logging_level)
@@ -223,24 +215,9 @@ class BasicAsyncWorker:
                         print("Failed to shut down logging handler", handler)
                         print(e)
 
-    async def _drain_log_queue(self) -> None:
-        """Drain `log_queue` and deliver remaining messages to the logger.
-
-        Implemented as a separate coroutine so it can be awaited with a timeout
-        from `stop()` to avoid hanging forever.
-        """
-        while not self.log_queue.empty():
-            level, message = await self.log_queue.get()
-            try:
-                self.logger.log(level, message)
-            except Exception:
-                # Best-effort: don't fail draining because of logging errors
-                print("Failed to emit log message:", level, message)
-            finally:
-                try:
-                    self.log_queue.task_done()
-                except Exception:
-                    pass
+    def register_manager(self, name: str, manager: Callable[[], Coroutine[None, None, None]]):
+        """This method allows to add custom managers to the service."""
+        self.__managers[name] = manager
 
     async def initialize(self) -> bool:
         """
@@ -250,9 +227,31 @@ class BasicAsyncWorker:
         service-specific initialization such as database connections,
         API client setup, or other preparatory work.
         """
-        if not self.initialized:
-            await self._logger_init_handlers()
         return True
+
+    async def heartbeat_manager(self) -> None:
+        """Continuously repeat Heartbeat procedure."""
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self.heartbeat_interval,
+                )
+            except asyncio.TimeoutError:
+                await self.heartbeat()
+
+    async def heartbeat(self) -> None:
+        """Heartbeat function to be overwritten."""
+        self.logger.debug("💓 Heartbeat")
+
+    async def _start_managers(self) -> None:
+        """Start managers tasks."""
+        for name in self.__managers:
+            if name in self.__managers_tasks:
+                self.logger.log(logging.DEBUG, "%s is already running", name)
+                continue
+            self.__managers_tasks[name] = asyncio.create_task(self.__managers[name](), name=name)
+            self.logger.log(logging.DEBUG, "%s has started")
 
     async def start(self):
         """
@@ -266,41 +265,54 @@ class BasicAsyncWorker:
         Raises:
             RuntimeError: If the worker fails to start properly
         """
-        if not self.managers_tasks:
-            print(
-                LOGO.format(
-                    service_name=self.service_name,
-                    version=self.version,
-                    scietex_version=__version__,
-                )
+        if self._stop_event.is_set():
+            self.logger.log(
+                logging.INFO,
+                "Worker %s:{%d} is stopping, please wait.",
+                self.service_name,
+                self.worker_id,
             )
+            return
+        if not self.managers_tasks:
+            if self._start_event.is_set():
+                # start has already been called wait for completion.
+                return
+
+            self._start_event.set()
+
+            self._stop_event.clear()
+            self._completion_event.clear()
+
+            print_scietex_logo(service_name=self.service_name, version=self.version)
+
+            # Init Logging Handlers
+            if not self.initialized:
+                await self._logger_init_handlers()
 
             # Start main managers
-            self.managers_tasks = [
-                asyncio.create_task(self.logging_manager(), name="LoggingManager"),
-            ]
-
-            await self.log("Log manager started", level=logging.DEBUG)
+            await self._start_managers()
 
             self.setup_signal_handlers()
-            await self.log("Signal handlers are all setup", level=logging.DEBUG)
 
             # Perform any custom initialization and check if successful
-            if not await self.initialize():
+            self.__initialized = await self.initialize()
+            if not self.initialized:
                 raise RuntimeError("Initialization failed")
 
             self.__start_time = datetime.now(timezone.utc)
-            await self.log(
-                f"Worker {self.service_name}:{self.worker_id} started",
-                level=logging.DEBUG,
+            self.logger.log(
+                logging.DEBUG, "Worker %s:%d started", self.service_name, self.worker_id
             )
+            self._start_event.clear()
         else:
-            await self.log(
-                f"Worker {self.service_name}:{self.worker_id} is already running",
-                level=logging.WARNING,
+            self.logger.log(
+                logging.WARNING,
+                "Worker %s:%d is already running",
+                self.service_name,
+                self.worker_id,
             )
 
-    async def stop(self):
+    async def stop(self) -> None:
         """
         Stop the worker gracefully.
 
@@ -312,27 +324,28 @@ class BasicAsyncWorker:
         Note:
             This method is automatically called on SIGINT or SIGTERM
         """
+        if self._start_event.is_set():
+            self.logger.log(
+                logging.INFO,
+                "Worker %s:{%d} is starting, please wait.",
+                self.service_name,
+                self.worker_id,
+            )
+            return
         if self.managers_tasks:
+            if self._stop_event.is_set():
+                # stop has already been called
+                return
+
             self.logger.debug("Stopping worker gracefully...")
+
             self._stop_event.set()
 
             await asyncio.gather(*self.managers_tasks, return_exceptions=True)
             self.logger.debug("Managers tasks finished")
 
-            # Process remaining logs with a timeout to avoid hanging forever
-            try:
-                await asyncio.wait_for(self._drain_log_queue(), timeout=2)
-            except asyncio.TimeoutError:
-                self.logger.warning("Timeout while draining log_queue")
-            except Exception as e:
-                try:
-                    self.logger.exception("Error while draining log_queue: %s", e)
-                except Exception:
-                    print("Error while draining log_queue:", e)
+            self.logger.log(logging.DEBUG, "Worker stopped.")
 
-            self.logger.debug("Log queue is empty")
-
-            # await self.log("Worker stopped.", logging.DEBUG)
             await self.cleanup()
 
             # Shut down logging handlers with an overall timeout
@@ -345,12 +358,13 @@ class BasicAsyncWorker:
                     self.logger.exception("Error shutting down logging handlers: %s", e)
                 except Exception:
                     print("Error shutting down logging handlers:", e)
+            self.__managers_tasks = {}
             self.__start_time = None
+            self.__initialized = False
             self._completion_event.set()
         else:
-            await self.log(
-                f"Worker {self.service_name}:{self.worker_id} is not running",
-                level=logging.WARNING,
+            self.logger.log(
+                logging.WARNING, "Worker %s:{%d} is not running", self.service_name, self.worker_id
             )
 
     async def cleanup(self):
@@ -371,35 +385,8 @@ class BasicAsyncWorker:
         """
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(
-                sig, lambda _: asyncio.create_task(self.stop(), name="StopTask"), (sig,)
-            )
-
-    async def logging_manager(self):
-        """
-        Manage log message processing from the log queue.
-
-        Continuously processes log messages from the log queue and
-        passes them to the logger. Runs until the stop event is set.
-        """
-        while not self._stop_event.is_set():
-            # Wait for a message to arrive in the queue
-            try:
-                level, message = await asyncio.wait_for(self.log_queue.get(), timeout=0.1)
-                self.logger.log(level, message)
-                self.log_queue.task_done()
-            except asyncio.TimeoutError:
-                pass
-
-    async def log(self, message: str, level: int = logging.INFO):
-        """
-        Add a log message to the log queue for processing.
-
-        Args:
-            message: The log message text
-            level: The logging level (default: INFO)
-        """
-        await self.log_queue.put((level, message))
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop(), name="StopTask"))
+        self.logger.log(logging.DEBUG, "Signal handlers are all setup")
 
     async def run(self):
         """

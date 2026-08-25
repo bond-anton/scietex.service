@@ -122,7 +122,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         API client setup, or other preparatory work.
         """
         if self.initialized:
-            await self.log("Already initialized", level=logging.DEBUG)
+            self.logger.log(logging.DEBUG, "Already initialized")
             return True
 
         if not await super().initialize():
@@ -135,9 +135,9 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             asyncio.create_task(self.watchdog(), name="Watchdog"),
         ]
 
-        await self.log("Task manager started", level=logging.DEBUG)
-        await self.log("Task queue manager started", level=logging.DEBUG)
-        await self.log("Watchdog started", level=logging.DEBUG)
+        self.logger.log(logging.DEBUG, "Task manager started")
+        self.logger.log(logging.DEBUG, "Task queue manager started")
+        self.logger.log(logging.DEBUG, "Watchdog started")
 
         return True
 
@@ -175,10 +175,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             if not task.done():
                 task.cancel()
                 if task_data.canceled_action == "requeue":
-                    await self.log(
-                        f"Task {task_id} will be returned to queue.",
-                        logging.WARNING,
-                    )
+                    self.logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
                     await self.return_task_to_queue(task_id, task_data)
                 try:
                     await asyncio.wait_for(task, timeout=5)  # Wait for cancellation to complete
@@ -203,15 +200,18 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             task_id: Identifier of the task to process
             task_data: The data associated with the task
         """
-        await self.log(
-            f"Processing task {task_data.task} ({task_id}): {task_data}", level=logging.DEBUG
+        self.logger.log(
+            logging.DEBUG, "Processing task %s (%s): %s", task_data.task, task_id, task_data
         )
 
         task_type = task_data.task
         if not task_type:
-            await self.log(
-                f"Wrong task format for {task_data.task} ({task_id}): {task_data}",
-                level=logging.ERROR,
+            self.logger.log(
+                logging.ERROR,
+                "Wrong task format for %s (%s): %s",
+                task_data.task,
+                task_id,
+                task_data,
             )
             raise ValueError("Task data must contain 'task' field")
 
@@ -226,9 +226,8 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                 status="error", error=f"No handler found for task type '{task_type}'"
             )
 
-        await self.log(
-            f"Task {task_data.task} ({task_id}) completed with result: {result}",
-            level=logging.DEBUG,
+        self.logger.log(
+            logging.DEBUG, "Task %s (%s) completed with result: {result}", task_data, task_id
         )
         return result
 
@@ -303,15 +302,19 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                 if timeout is None:
                     timeout = DEFAULT_TASK_TIMEOUT
                 if 0 < timeout < (now - start_time) and not task.done():
-                    await self.log(
-                        f"Task {task_data.task} ({task_id}) exceeded timeout and will be canceled.",
+                    self.logger.log(
                         logging.WARNING,
+                        "Task %s (%s) exceeded timeout and will be canceled.",
+                        task_data.task,
+                        task_id,
                     )
                     task.cancel()
                     if task_data.timeout.timeout_action == "requeue":
-                        await self.log(
-                            f"Task {task_data.task} ({task_id}) will be returned to queue.",
+                        self.logger.log(
                             logging.WARNING,
+                            "Task %s (%s) will be returned to queue.",
+                            task_data.task,
+                            task_id,
                         )
                         await self.return_task_to_queue(task_id, task_data)
                         self.running_tasks.pop(task_id, None)

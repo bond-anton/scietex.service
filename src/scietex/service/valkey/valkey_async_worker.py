@@ -3,7 +3,6 @@ Module providing asynchronous worker, which communicates with the Valkey server 
 Worker provides handling connections, disconnections, initialization, cleanups, and logging.
 """
 
-import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -44,10 +43,6 @@ from .valkey_config import (
     read_valkey_config,
 )
 
-DEFAULT_HEARTBEAT_INTERVAL: int = 10
-MIN_HEARTBEAT_INTERVAL: int = 1
-MAX_HEARTBEAT_INTERVAL: int = 600
-
 
 class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
     """
@@ -68,7 +63,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
         log_stream_name: str = "scietex:log",
-        heartbeat_interval: int | None = None,
         **kwargs,
     ):
         """
@@ -84,8 +78,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             valkey_config (ValkeyBaseConfigSchema, optional): Custom configuration for
                 the Valkey client. If omitted, tries to read config from the yaml file,
                 if fail defaults to minimal settings.
-            heartbeat_interval (Optional[int]): Interval for sending heartbeats
-                (default: None, meaning default).
             kwargs: Additional keyword arguments passed through to parent constructor.
         """
         super().__init__(
@@ -110,17 +102,11 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             )
 
         self._client: GlideClient | None = None
-        if heartbeat_interval is None or not isinstance(heartbeat_interval, int):
-            self._heartbeat_interval = DEFAULT_HEARTBEAT_INTERVAL
-        else:
-            self._heartbeat_interval = max(
-                MIN_HEARTBEAT_INTERVAL, min(heartbeat_interval, MAX_HEARTBEAT_INTERVAL)
-            )
-
         self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
         self._task_stream_name = f"scietex:{self.service_name}:{self.worker_id}:tasks"
         self._task_group_name = f"scietex:{self.service_name}:{self.worker_id}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
+        self.__encoder = msgspec.msgpack.Encoder()
 
     @property
     def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
@@ -147,7 +133,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 self._client = await GlideClient.create(self._client_config)
 
                 if await self._client.ping():
-                    await self.log("Connected to Valkey", logging.INFO)
+                    self.logger.log(logging.INFO, "Connected to Valkey")
                     return True
                 print("Error pinging Valkey")
                 return False
@@ -169,36 +155,36 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
 
     async def heartbeat(self) -> None:
         """Continuously put Heartbeat data in Valkey."""
-        encoder = msgspec.msgpack.Encoder()
-        while not self._stop_event.is_set():
-            if self.client and self.start_time:
-                heartbeat_data = Heartbeat(
-                    service=self.service_name,
-                    worker_id=self.worker_id,
-                    status="active",
-                    heartbeat_interval=self._heartbeat_interval,
-                    start_time=self.start_time,
-                    timestamp=datetime.now(timezone.utc),
+
+        if self.client and self.start_time:
+            heartbeat_data = Heartbeat(
+                service=self.service_name,
+                worker_id=self.worker_id,
+                status="active",
+                heartbeat_interval=self.heartbeat_interval,
+                start_time=self.start_time,
+                timestamp=datetime.now(timezone.utc),
+            )
+            self.logger.log(logging.DEBUG, "Sending heartbeat to Valkey: %s", heartbeat_data)
+            start_time = time.monotonic()
+            try:
+                await self.client.set(
+                    self._heartbeat_key,
+                    value=self.__encoder.encode(heartbeat_data),
+                    expiry=ExpirySet(ExpiryType.SEC, self.heartbeat_interval * 2),
                 )
-                await self.log(f"Sending heartbeat to Valkey: {heartbeat_data}", logging.DEBUG)
-                start_time = time.monotonic()
-                try:
-                    await self.client.set(
-                        self._heartbeat_key,
-                        encoder.encode(heartbeat_data),
-                        expiry=ExpirySet(ExpiryType.SEC, self._heartbeat_interval * 2),
-                    )
-                    duration = (time.monotonic() - start_time) * 1000
-                    await self.log(
-                        f"Heartbeat set in Valkey, duration: {duration:.2f} ms", logging.DEBUG
-                    )
-                except Exception as exc:
-                    duration = (time.monotonic() - start_time) * 1000
-                    await self.log(
-                        f"Failed to set heartbeat in Valkey: {exc}. Duration: {duration:.2f} ms",
-                        logging.DEBUG,
-                    )
-            await asyncio.sleep(self._heartbeat_interval)
+                duration = (time.monotonic() - start_time) * 1000
+                self.logger.log(
+                    logging.DEBUG, "Heartbeat set in Valkey, duration: %.2f ms", duration
+                )
+            except Exception as exc:
+                duration = (time.monotonic() - start_time) * 1000
+                self.logger.log(
+                    logging.DEBUG,
+                    "Failed to set heartbeat in Valkey: %s. Duration: %.2f ms",
+                    exc,
+                    duration,
+                )
 
     async def initialize(self) -> bool:
         """
@@ -210,7 +196,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             bool: True if both initialization steps succeed, otherwise False.
         """
         if self.initialized:
-            await self.log("Already initialized", level=logging.DEBUG)
+            self.logger.log(logging.DEBUG, "Already initialized")
             return True
 
         if not await super().initialize():
@@ -220,13 +206,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         if not self.client:
             return False
 
-        # Start managers
-        self.managers_tasks += [
-            asyncio.create_task(self.heartbeat()),
-        ]
-
-        await self.log("Heartbeat started", level=logging.DEBUG)
-
         try:
             await self.client.xgroup_create(
                 self._task_stream_name,
@@ -235,7 +214,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 StreamGroupOptions(make_stream=True),
             )
         except Exception as exc:
-            await self.log(f"Valkey: {exc}", logging.DEBUG)
+            self.logger.log(logging.DEBUG, "Valkey: %s", exc)
         return True
 
     async def cleanup(self):
@@ -288,8 +267,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 entries = res[self._task_stream_name.encode("utf-8")]
                 if not entries:
                     break  # No entries, exit the loop
-                # entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(
-                entries_ids: list[str | bytes] = list(entries.keys())
+                entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(entries.keys())
                 await self.client.xack(
                     self._task_stream_name,
                     self._task_group_name,
@@ -310,8 +288,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 entries = res[self._task_stream_name.encode("utf-8")]
                 if not entries:
                     break  # No entries, exit the loop
-                # entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(
-                entries_ids: list[str | bytes] = list(entries.keys())
+                entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(entries.keys())
                 await self.client.xack(
                     self._task_stream_name,
                     self._task_group_name,
@@ -330,12 +307,11 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 entries = res[self._task_stream_name.encode("utf-8")]
                 if not entries:
                     break  # No entries, exit the loop
-                # entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(
-                entries_ids: list[str | bytes] = list(entries.keys())
+                entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(entries.keys())
                 await self.client.xdel(self._task_stream_name, entries_ids)
-            await self.log("All pending tasks purged from Valkey", logging.INFO)
+            self.logger.log(logging.INFO, "All pending tasks purged from Valkey")
         except Exception as exc:
-            await self.log(f"Failed to purge tasks from Valkey: {exc}", logging.DEBUG)
+            self.logger.log(logging.DEBUG, "Failed to purge tasks from Valkey: %s", exc)
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """
