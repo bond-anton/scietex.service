@@ -230,7 +230,7 @@ class UnifiedManager:
 
     # ==================== Примеры методов-менеджеров ====================
 
-    @manager(name="worker1", cleanup=lambda self: self._cleanup_worker1())
+    @manager(self, name="worker1", cleanup=lambda self: self._cleanup_worker1())
     async def worker1(self, duration: int = 10):
         """Первый работник - имитация работы с БД"""
         self._logger.info("Worker1: Подключаюсь к БД...")

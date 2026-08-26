@@ -87,6 +87,15 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             max_concurrent_tasks=max_concurrent_tasks,
             **kwargs,
         )
+        valkey_handler = AsyncValkeyHandler(
+            stream_name=self._log_stream_name,
+            service_name=self.service_name,
+            worker_id=self.worker_id,
+            valkey_config=self._client_config,
+            stdout_enable=False,
+        )
+        valkey_handler.setLevel(self.logging_level)
+        self.logger.addHandler(valkey_handler)
         self._log_stream_name = log_stream_name
         if valkey_config is None:
             valkey_config = read_valkey_config(self.conf_dir)
@@ -223,23 +232,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         """
         await super().cleanup()
         await self.disconnect()
-
-    async def logger_add_custom_handlers(self) -> None:
-        """
-        Adds a custom logging handler specific to Valkey.
-
-        Configures an AsyncValkeyHandler that forwards log messages to Valkey.
-        Disables standard output logging (stdout_enable=False).
-        """
-        valkey_handler = AsyncValkeyHandler(
-            stream_name=self._log_stream_name,
-            service_name=self.service_name,
-            worker_id=self.worker_id,
-            valkey_config=self._client_config,
-            stdout_enable=False,
-        )
-        valkey_handler.setLevel(self.logging_level)
-        self.logger.addHandler(valkey_handler)
 
     async def purge_tasks(self):
         """

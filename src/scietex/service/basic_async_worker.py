@@ -9,12 +9,20 @@ import signal
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from scietex.logging import AsyncBaseHandler
 
-from .utils import ServiceState, parse_logging_level, prepare_conf_dir, print_scietex_logo
+from .utils import (
+    ManagerStatus,
+    RegisterManager,
+    ServiceStatus,
+    parse_logging_level,
+    prepare_conf_dir,
+    print_scietex_logo,
+)
 
-DEFAULT_HEARTBEAT_INTERVAL: int = 10
+DEFAULT_HEARTBEAT_INTERVAL: int = 1
 MIN_HEARTBEAT_INTERVAL: int = 1
 MAX_HEARTBEAT_INTERVAL: int = 600
 
@@ -86,7 +94,7 @@ class BasicAsyncWorker:
         stdout_handler.setLevel(self.logging_level)
         self._logger.addHandler(stdout_handler)
 
-        self.__state: ServiceState = ServiceState.STOPPED
+        self.__state: ServiceStatus = ServiceStatus.STOPPED
 
         self.__events: dict[str, asyncio.Event] = {
             "start": asyncio.Event(),
@@ -94,22 +102,19 @@ class BasicAsyncWorker:
             "startup_success": asyncio.Event(),
             "startup_failure": asyncio.Event(),
             "stopping_complete": asyncio.Event(),
+            "complete": asyncio.Event(),
             "exit": asyncio.Event(),
         }
 
-        self.__start_event: asyncio.Event = asyncio.Event()
-        self.__stop_event: asyncio.Event = asyncio.Event()
-        self.__completion_event: asyncio.Event = asyncio.Event()
-        self.__exit_event: asyncio.Event = asyncio.Event()
-
-        self.__managers: dict[str, Callable[[], Coroutine[None, None, None]]] = {}
-        self.__managers_tasks: dict[str, asyncio.Task[None]] = {}
-        self.register_manager("Heartbeat", self.heartbeat_manager)
+        self._managers: dict[str, Callable[[Any], Coroutine[None, None, Any]]] = {}
+        self._managers_statuses: dict[str, ManagerStatus] = {}
+        self._managers_errors: dict[str, Exception | None] = {}
+        self._managers_results: dict[str, asyncio.Queue[Any]] = {}
+        self._managers_tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
-    def exit_event(self) -> asyncio.Event:
-        """Exit event."""
-        return self.__exit_event
+    def events(self) -> dict[str, asyncio.Event]:
+        return self.__events
 
     @property
     def service_name(self) -> str:
@@ -153,7 +158,7 @@ class BasicAsyncWorker:
 
     @property
     def managers_tasks(self) -> list[asyncio.Task[None]]:
-        return [self.__managers_tasks[name] for name in self.__managers_tasks]
+        return [self._managers_tasks[name] for name in self._managers_tasks]
 
     @property
     def logger(self) -> logging.Logger:
@@ -191,17 +196,27 @@ class BasicAsyncWorker:
             handler.setLevel(self.__logging_level)
         self.logger.debug("Logging level set to %s", logging.getLevelName(self.logging_level))
 
-    async def logger_add_custom_handlers(self) -> None:
-        """
-        Override this method to add custom handlers to logger.
+    def _activate_managers(self) -> None:
+        """Activate registered managers."""
+        managers_count = 0
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if hasattr(attr, "_is_manager"):
+                attr()
+                managers_count += 1
+        self.logger.log(logging.DEBUG, "Activated %d managers", managers_count)
 
-        This method is intended to be overridden by subclasses to add
-        additional logging handlers beyond the default AsyncBaseHandler.
-        """
+    def _deactivate_managers(self) -> None:
+        """Deactivate registered managers."""
+        managers_count = 0
+        while self._managers:
+            manager, _ = self._managers.popitem()
+            self.logger.log(logging.DEBUG, "Manager %s deactivated successfully", manager)
+            managers_count += 1
+        self.logger.log(logging.DEBUG, "Deactivated %d managers", managers_count)
 
-    async def _logger_init_handlers(self) -> None:
+    async def _logger_start_handlers(self) -> None:
         """Initialize all async logging handlers."""
-        await self.logger_add_custom_handlers()
         for handler in self.logger.handlers:
             if isinstance(handler, AsyncBaseHandler):
                 await handler.start_logging()
@@ -232,10 +247,6 @@ class BasicAsyncWorker:
                         print("Failed to shut down logging handler", handler)
                         print(e)
 
-    def register_manager(self, name: str, manager: Callable[[], Coroutine[None, None, None]]):
-        """This method allows to add custom managers to the service."""
-        self.__managers[name] = manager
-
     async def initialize(self) -> bool:
         """
         Perform any initialization before starting the main loop.
@@ -246,30 +257,44 @@ class BasicAsyncWorker:
         """
         return True
 
+    @RegisterManager(
+        max_results_queue_size=3, sliding_queue=True, queue_timeout=1, no_consumer=True
+    )
     async def heartbeat_manager(self) -> None:
         """Continuously repeat Heartbeat procedure."""
-        while not self.__stop_event.is_set():
-            try:
-                await asyncio.wait_for(
-                    self.__stop_event.wait(),
-                    timeout=self.heartbeat_interval,
-                )
-            except asyncio.TimeoutError:
-                await self.heartbeat()
+        try:
+            await asyncio.wait_for(
+                self.events["stop"].wait(),
+                timeout=self.heartbeat_interval,
+            )
+        except asyncio.TimeoutError:
+            await self.heartbeat()
 
     async def heartbeat(self) -> None:
         """Heartbeat function to be overwritten."""
         self.logger.debug("💓 Heartbeat")
 
+    def setup_signal_handlers(self):
+        """
+        Set up signal handlers for graceful shutdown.
+
+        Registers handlers for SIGINT and SIGTERM signals that will
+        trigger a graceful shutdown of the worker.
+        """
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop(), name="StopTask"))
+        self.logger.log(logging.DEBUG, "Signal handlers are all setup")
+
     async def _start_managers(self) -> None:
         """Start managers tasks."""
-        for name in self.__managers:
+        for name in self._managers:
             if self.__events["stop"].is_set():
                 break
-            if name in self.__managers_tasks:
+            if name in self._managers_tasks:
                 self.logger.log(logging.DEBUG, "%s is already running", name)
                 continue
-            self.__managers_tasks[name] = asyncio.create_task(self.__managers[name](), name=name)
+            self._managers_tasks[name] = asyncio.create_task(self._managers[name](self), name=name)
             self.logger.log(logging.DEBUG, "%s has started", name)
 
     async def start(self):
@@ -284,7 +309,7 @@ class BasicAsyncWorker:
         Raises:
             RuntimeError: If the worker fails to start properly
         """
-        if self.__stop_event.is_set():
+        if self.events["stop"].is_set():
             self.logger.log(
                 logging.INFO,
                 "Worker %s:{%d} is stopping, please wait.",
@@ -293,22 +318,24 @@ class BasicAsyncWorker:
             )
             return
         if not self.managers_tasks:
-            if self.__start_event.is_set():
+            if self.events["start"].is_set():
                 # start has already been called wait for completion.
                 return
 
-            self.__start_event.set()
+            self.events["start"].set()
 
-            self.__stop_event.clear()
-            self.__completion_event.clear()
+            self.events["stop"].clear()
+            self.events["complete"].clear()
 
             print_scietex_logo(service_name=self.service_name, version=self.version)
 
-            # Init Logging Handlers
             if not self.initialized:
-                await self._logger_init_handlers()
+                # Init Logging Handlers
+                await self._logger_start_handlers()
+                # Activate managers
+                self._activate_managers()
 
-            # Start main managers
+            # Start managers
             await self._start_managers()
 
             self.setup_signal_handlers()
@@ -322,7 +349,7 @@ class BasicAsyncWorker:
             self.logger.log(
                 logging.DEBUG, "Worker %s:%d started", self.service_name, self.worker_id
             )
-            self.__start_event.clear()
+            self.events["start"].clear()
         else:
             self.logger.log(
                 logging.WARNING,
@@ -343,7 +370,7 @@ class BasicAsyncWorker:
         Note:
             This method is automatically called on SIGINT or SIGTERM
         """
-        if self.__start_event.is_set():
+        if self.events["start"].is_set():
             self.logger.log(
                 logging.INFO,
                 "Worker %s:{%d} is starting, please wait.",
@@ -352,16 +379,18 @@ class BasicAsyncWorker:
             )
             return
         if self.managers_tasks:
-            if self.__stop_event.is_set():
+            if self.events["stop"].is_set():
                 # stop has already been called
                 return
 
             self.logger.debug("Stopping worker gracefully...")
 
-            self.__stop_event.set()
+            self.events["stop"].set()
 
             await asyncio.gather(*self.managers_tasks, return_exceptions=True)
             self.logger.debug("Managers tasks finished")
+            self.__managers_tasks = {}
+            self._deactivate_managers()
 
             self.logger.log(logging.DEBUG, "Worker stopped.")
 
@@ -377,10 +406,9 @@ class BasicAsyncWorker:
                     self.logger.exception("Error shutting down logging handlers: %s", e)
                 except Exception:
                     print("Error shutting down logging handlers:", e)
-            self.__managers_tasks = {}
             self.__start_time = None
             self.__initialized = False
-            self.__completion_event.set()
+            self.events["complete"].set()
         else:
             self.logger.log(
                 logging.WARNING, "Worker %s:{%d} is not running", self.service_name, self.worker_id
@@ -395,18 +423,6 @@ class BasicAsyncWorker:
         releasing resources, or sending final status updates.
         """
 
-    def setup_signal_handlers(self):
-        """
-        Set up signal handlers for graceful shutdown.
-
-        Registers handlers for SIGINT and SIGTERM signals that will
-        trigger a graceful shutdown of the worker.
-        """
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop(), name="StopTask"))
-        self.logger.log(logging.DEBUG, "Signal handlers are all setup")
-
     async def run(self):
         """
         Run the worker indefinitely.
@@ -416,5 +432,5 @@ class BasicAsyncWorker:
         for running the worker.
         """
         await self.start()
-        await self.__completion_event.wait()
-        self.__exit_event.set()
+        await self.events["complete"].wait()
+        self.events["exit"].set()
