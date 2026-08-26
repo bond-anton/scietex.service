@@ -3,5 +3,6 @@
 from .conf import prepare_conf_dir
 from .logging import parse_logging_level
 from .logo import print_scietex_logo
+from .state import ServiceState
 
-__all__ = ["parse_logging_level", "prepare_conf_dir", "print_scietex_logo"]
+__all__ = ["ServiceState", "parse_logging_level", "prepare_conf_dir", "print_scietex_logo"]

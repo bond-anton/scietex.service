@@ -12,7 +12,7 @@ from pathlib import Path
 
 from scietex.logging import AsyncBaseHandler
 
-from .utils import parse_logging_level, prepare_conf_dir, print_scietex_logo
+from .utils import ServiceState, parse_logging_level, prepare_conf_dir, print_scietex_logo
 
 DEFAULT_HEARTBEAT_INTERVAL: int = 10
 MIN_HEARTBEAT_INTERVAL: int = 1
@@ -86,13 +86,30 @@ class BasicAsyncWorker:
         stdout_handler.setLevel(self.logging_level)
         self._logger.addHandler(stdout_handler)
 
-        self._start_event: asyncio.Event = asyncio.Event()
-        self._stop_event: asyncio.Event = asyncio.Event()
-        self._completion_event: asyncio.Event = asyncio.Event()
+        self.__state: ServiceState = ServiceState.STOPPED
+
+        self.__events: dict[str, asyncio.Event] = {
+            "start": asyncio.Event(),
+            "stop": asyncio.Event(),
+            "startup_success": asyncio.Event(),
+            "startup_failure": asyncio.Event(),
+            "stopping_complete": asyncio.Event(),
+            "exit": asyncio.Event(),
+        }
+
+        self.__start_event: asyncio.Event = asyncio.Event()
+        self.__stop_event: asyncio.Event = asyncio.Event()
+        self.__completion_event: asyncio.Event = asyncio.Event()
+        self.__exit_event: asyncio.Event = asyncio.Event()
 
         self.__managers: dict[str, Callable[[], Coroutine[None, None, None]]] = {}
         self.__managers_tasks: dict[str, asyncio.Task[None]] = {}
-        self.register_manager("Heartbeat", self.heartbeat)
+        self.register_manager("Heartbeat", self.heartbeat_manager)
+
+    @property
+    def exit_event(self) -> asyncio.Event:
+        """Exit event."""
+        return self.__exit_event
 
     @property
     def service_name(self) -> str:
@@ -231,10 +248,10 @@ class BasicAsyncWorker:
 
     async def heartbeat_manager(self) -> None:
         """Continuously repeat Heartbeat procedure."""
-        while not self._stop_event.is_set():
+        while not self.__stop_event.is_set():
             try:
                 await asyncio.wait_for(
-                    self._stop_event.wait(),
+                    self.__stop_event.wait(),
                     timeout=self.heartbeat_interval,
                 )
             except asyncio.TimeoutError:
@@ -247,11 +264,13 @@ class BasicAsyncWorker:
     async def _start_managers(self) -> None:
         """Start managers tasks."""
         for name in self.__managers:
+            if self.__events["stop"].is_set():
+                break
             if name in self.__managers_tasks:
                 self.logger.log(logging.DEBUG, "%s is already running", name)
                 continue
             self.__managers_tasks[name] = asyncio.create_task(self.__managers[name](), name=name)
-            self.logger.log(logging.DEBUG, "%s has started")
+            self.logger.log(logging.DEBUG, "%s has started", name)
 
     async def start(self):
         """
@@ -265,7 +284,7 @@ class BasicAsyncWorker:
         Raises:
             RuntimeError: If the worker fails to start properly
         """
-        if self._stop_event.is_set():
+        if self.__stop_event.is_set():
             self.logger.log(
                 logging.INFO,
                 "Worker %s:{%d} is stopping, please wait.",
@@ -274,14 +293,14 @@ class BasicAsyncWorker:
             )
             return
         if not self.managers_tasks:
-            if self._start_event.is_set():
+            if self.__start_event.is_set():
                 # start has already been called wait for completion.
                 return
 
-            self._start_event.set()
+            self.__start_event.set()
 
-            self._stop_event.clear()
-            self._completion_event.clear()
+            self.__stop_event.clear()
+            self.__completion_event.clear()
 
             print_scietex_logo(service_name=self.service_name, version=self.version)
 
@@ -303,7 +322,7 @@ class BasicAsyncWorker:
             self.logger.log(
                 logging.DEBUG, "Worker %s:%d started", self.service_name, self.worker_id
             )
-            self._start_event.clear()
+            self.__start_event.clear()
         else:
             self.logger.log(
                 logging.WARNING,
@@ -324,7 +343,7 @@ class BasicAsyncWorker:
         Note:
             This method is automatically called on SIGINT or SIGTERM
         """
-        if self._start_event.is_set():
+        if self.__start_event.is_set():
             self.logger.log(
                 logging.INFO,
                 "Worker %s:{%d} is starting, please wait.",
@@ -333,13 +352,13 @@ class BasicAsyncWorker:
             )
             return
         if self.managers_tasks:
-            if self._stop_event.is_set():
+            if self.__stop_event.is_set():
                 # stop has already been called
                 return
 
             self.logger.debug("Stopping worker gracefully...")
 
-            self._stop_event.set()
+            self.__stop_event.set()
 
             await asyncio.gather(*self.managers_tasks, return_exceptions=True)
             self.logger.debug("Managers tasks finished")
@@ -361,7 +380,7 @@ class BasicAsyncWorker:
             self.__managers_tasks = {}
             self.__start_time = None
             self.__initialized = False
-            self._completion_event.set()
+            self.__completion_event.set()
         else:
             self.logger.log(
                 logging.WARNING, "Worker %s:{%d} is not running", self.service_name, self.worker_id
@@ -397,4 +416,5 @@ class BasicAsyncWorker:
         for running the worker.
         """
         await self.start()
-        await self._completion_event.wait()
+        await self.__completion_event.wait()
+        self.__exit_event.set()
