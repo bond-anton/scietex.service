@@ -4,9 +4,10 @@ from .conf import prepare_conf_dir
 from .logging import parse_logging_level
 from .logo import print_scietex_logo
 from .managers import RegisterManager, timeout_action
-from .status import ManagerStatus, ServiceStatus
+from .status import LoggerStatus, ManagerStatus, ServiceStatus
 
 __all__ = [
+    "LoggerStatus",
     "ManagerStatus",
     "RegisterManager",
     "ServiceStatus",

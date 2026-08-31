@@ -39,14 +39,14 @@ class RegisterManager:
 
     def __call__(self, method: Callable[[Any], Coroutine[None, None, Any]]) -> Callable:
         @wraps(method)
-        def wrapper(self_wrp: BasicAsyncWorker, *args, **kwargs) -> Callable:
+        def wrapper(self_wrp: "BasicAsyncWorker", *args, **kwargs) -> Callable:
             manager_name = get_anything_name(method)
             self.name: str = self.name or manager_name
             self_wrp._managers_statuses[self.name] = ManagerStatus.STOPPED
             self_wrp._managers_errors[self.name] = None
             self_wrp._managers_results[self.name] = asyncio.Queue(self.max_results_queue_size)
 
-            async def manager(service: BasicAsyncWorker, *args, **kwargs):
+            async def manager(service: "BasicAsyncWorker", *args, **kwargs):
                 service._managers_statuses[self.name] = ManagerStatus.RUNNING
                 service._managers_errors[self.name] = None
 
@@ -111,7 +111,7 @@ def timeout_action(delay: int = DEFAULT_ACTION_TIMEOUT):
     ) -> Callable[[Any], Coroutine[None, None, Any]]:
 
         @wraps(method)
-        async def wrapper(self: BasicAsyncWorker, *args, **kwargs):
+        async def wrapper(self: "BasicAsyncWorker", *args, **kwargs):
             """Run after delay."""
             try:
                 await asyncio.wait_for(
