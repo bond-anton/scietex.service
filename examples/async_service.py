@@ -11,8 +11,8 @@ async def main() -> None:
     worker = BasicAsyncWorker(
         service_name="MyAsyncWorker", version="0.0.1", logging_level=logging.DEBUG
     )
-    await worker.run()
-    # await worker.exit_event.wait()
+    await worker.start()
+    await worker.events["exit"].wait()
 
 
 if __name__ == "__main__":

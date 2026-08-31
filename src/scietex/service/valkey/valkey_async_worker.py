@@ -6,6 +6,7 @@ Worker provides handling connections, disconnections, initialization, cleanups, 
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Generic
 from uuid import UUID
 
@@ -59,6 +60,11 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
+        worker_id: int = 1,
+        conf_dir: str | Path | None = None,
+        logging_level: int | str = logging.DEBUG,
+        heartbeat_interval: float | None = None,
+        watchdog_interval: float | None = None,
         queue_size: int | None = None,
         max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
@@ -83,19 +89,15 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         super().__init__(
             service_name=service_name,
             version=version,
+            worker_id=worker_id,
+            conf_dir=conf_dir,
+            logging_level=logging_level,
+            heartbeat_interval=heartbeat_interval,
+            watchdog_interval=watchdog_interval,
             queue_size=queue_size,
             max_concurrent_tasks=max_concurrent_tasks,
             **kwargs,
         )
-        valkey_handler = AsyncValkeyHandler(
-            stream_name=self._log_stream_name,
-            service_name=self.service_name,
-            worker_id=self.worker_id,
-            valkey_config=self._client_config,
-            stdout_enable=False,
-        )
-        valkey_handler.setLevel(self.logging_level)
-        self.logger.addHandler(valkey_handler)
         self._log_stream_name = log_stream_name
         if valkey_config is None:
             valkey_config = read_valkey_config(self.conf_dir)
@@ -109,6 +111,15 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 worker_id=self.worker_id,
                 listening=False,
             )
+        valkey_handler = AsyncValkeyHandler(
+            stream_name=self._log_stream_name,
+            service_name=self.service_name,
+            worker_id=self.worker_id,
+            valkey_config=self._client_config,
+            stdout_enable=False,
+        )
+        valkey_handler.setLevel(self.logging_level)
+        self.logger.addHandler(valkey_handler)
 
         self._client: GlideClient | None = None
         self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
@@ -180,7 +191,7 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 await self.client.set(
                     self._heartbeat_key,
                     value=self.__encoder.encode(heartbeat_data),
-                    expiry=ExpirySet(ExpiryType.SEC, self.heartbeat_interval * 2),
+                    expiry=ExpirySet(ExpiryType.SEC, int(self.heartbeat_interval * 2)),
                 )
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(

@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from scietex.service.basic_async_worker import BasicAsyncWorker
+from scietex.service.basic_async_worker import BasicAsyncWorker, ServiceStatus
 
 
 @pytest.fixture(scope="module")
@@ -17,19 +17,25 @@ def test_event_loop():
 
 
 @pytest.mark.asyncio
-async def test_graceful_shutdown_and_log_drain(test_event_loop):
+async def test_graceful_shutdown(test_event_loop):
     """Start the worker, enqueue some logs, then stop and ensure drain."""
     worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
 
     # Start worker (initializes logging handlers and managers)
     await worker.start()
+    await asyncio.sleep(5)
 
     # Put some log messages into the queue
     worker.logger.log(logging.INFO, "first message")
     worker.logger.log(logging.WARNING, "second message")
+    await asyncio.sleep(5)
 
-    # Ensure stop works and drains logs
+    # Ensure stop works
     await worker.stop()
+    await asyncio.sleep(5)
 
-    assert worker._stop_event.is_set()
-    assert worker._completion_event.is_set()
+    assert worker.state == ServiceStatus.STOPPED
+
+    await worker.exit()
+    await asyncio.sleep(5)
+    assert worker.events["exit"].is_set()

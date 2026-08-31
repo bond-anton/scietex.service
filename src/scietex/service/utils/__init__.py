@@ -1,18 +1,11 @@
-"""Utility functions for the scietex.service package."""
+"""Utility functions."""
 
 from .conf import prepare_conf_dir
-from .logging import parse_logging_level
+from .helpers import get_anything_name
 from .logo import print_scietex_logo
-from .managers import RegisterManager, timeout_action
-from .status import LoggerStatus, ManagerStatus, ServiceStatus
 
 __all__ = [
-    "LoggerStatus",
-    "ManagerStatus",
-    "RegisterManager",
-    "ServiceStatus",
-    "parse_logging_level",
+    "get_anything_name",
     "prepare_conf_dir",
     "print_scietex_logo",
-    "timeout_action",
 ]

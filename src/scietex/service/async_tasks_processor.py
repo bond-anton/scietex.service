@@ -6,10 +6,12 @@ more advanced services. Worker provides task queue management, watchdog, and con
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Generic
 from uuid import UUID
 
 from .basic_async_worker import BasicAsyncWorker
+from .manager import Manager
 from .task_handlers import TaskData, TaskHandler, TaskResult, task_type
 
 DEFAULT_MAX_TASKS_QUEUE_SIZE = 2
@@ -44,6 +46,11 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
+        worker_id: int = 1,
+        conf_dir: str | Path | None = None,
+        logging_level: int | str = logging.DEBUG,
+        heartbeat_interval: float | None = None,
+        watchdog_interval: float | None = None,
         queue_size: int | None = None,
         max_concurrent_tasks: int | None = None,
         **kwargs,
@@ -61,11 +68,16 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                 worker_id: Unique identifier for this worker instance
                 logging_level: Logging level as string or integer
         """
-        super().__init__(service_name, version, **kwargs)
-
-        self.register_manager("TaskManager", self.task_manager)
-        self.register_manager("TaskQueueManager", self.task_queue_manager)
-        self.register_manager("Watchdog", self.watchdog)
+        super().__init__(
+            service_name=service_name,
+            version=version,
+            worker_id=worker_id,
+            conf_dir=conf_dir,
+            logging_level=logging_level,
+            heartbeat_interval=heartbeat_interval,
+            watchdog_interval=watchdog_interval,
+            **kwargs,
+        )
 
         self._task_handlers_map: dict[task_type, TaskHandler] = {}
 
@@ -224,6 +236,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         )
         return result
 
+    @Manager("TaskManager")
     async def task_manager(self):
         """
         Manage task processing from the task queue.
@@ -241,23 +254,23 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
                 # )
                 await self.process_task(t_id, t_data)
             finally:
+                self.running_tasks.pop(t_id, None)
                 self.task_queue.task_done()
 
-        while not self._stop_event.is_set():
-            if len(self.running_tasks) < self.max_concurrent_tasks:
-                try:
-                    task_id, task_data = await asyncio.wait_for(self.task_queue.get(), timeout=1)
-                    task = asyncio.create_task(handle_task(task_id, task_data))
-                    self.running_tasks[task_id] = (
-                        task,
-                        task_data,
-                        time.time(),
-                    )  # Track start time
-                    task.add_done_callback(lambda t, _id=task_id: self.running_tasks.pop(_id, None))
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await asyncio.sleep(0.01)
+        if len(self.running_tasks) < self.max_concurrent_tasks:
+            try:
+                task_id, task_data = await asyncio.wait_for(self.task_queue.get(), timeout=1)
+                task = asyncio.create_task(handle_task(task_id, task_data))
+                self.running_tasks[task_id] = (
+                    task,
+                    task_data,
+                    time.time(),
+                )  # Track start time
+                # task.add_done_callback(lambda t, _id=task_id: self.running_tasks.pop(_id, None))
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(0.01)
 
     async def fetch_tasks(self):
         """
@@ -268,17 +281,17 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         such as message queues, databases, or APIs.
         """
 
+    @Manager("TaskQueueManager")
     async def task_queue_manager(self):
         """
-        Main loop that fetches tasks periodically.
+        Task queue manager fetches tasks periodically.
 
         Continuously calls fetch_tasks() with a small delay between
-        calls to prevent busy waiting. Runs until the stop event is set.
+        calls to prevent busy waiting.
         """
-        while not self._stop_event.is_set():
-            if not self.task_queue.full():
-                await self.fetch_tasks()
-            await asyncio.sleep(0.01)
+        if not self.task_queue.full():
+            await self.fetch_tasks()
+        await asyncio.sleep(0.01)
 
     async def watchdog(self):
         """
@@ -288,31 +301,29 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         exceeded the DEFAULT_TASK_TIMEOUT. Returns cancelled tasks to the external
         queue for potential retry.
         """
-        while not self._stop_event.is_set():
-            now = time.time()
-            for task_id, (task, task_data, start_time) in list(self.running_tasks.items()):
-                timeout = task_data.timeout.timeout
-                if timeout is None:
-                    timeout = DEFAULT_TASK_TIMEOUT
-                if 0 < timeout < (now - start_time) and not task.done():
+        now = time.time()
+        for task_id, (task, task_data, start_time) in list(self.running_tasks.items()):
+            timeout = task_data.timeout.timeout
+            if timeout is None:
+                timeout = DEFAULT_TASK_TIMEOUT
+            if 0 < timeout < (now - start_time) and not task.done():
+                self.logger.log(
+                    logging.WARNING,
+                    "Task %s (%s) exceeded timeout and will be canceled.",
+                    task_data.task,
+                    task_id,
+                )
+                task.cancel()
+                if task_data.timeout.timeout_action == "requeue":
                     self.logger.log(
                         logging.WARNING,
-                        "Task %s (%s) exceeded timeout and will be canceled.",
+                        "Task %s (%s) will be returned to queue.",
                         task_data.task,
                         task_id,
                     )
-                    task.cancel()
-                    if task_data.timeout.timeout_action == "requeue":
-                        self.logger.log(
-                            logging.WARNING,
-                            "Task %s (%s) will be returned to queue.",
-                            task_data.task,
-                            task_id,
-                        )
-                        await self.return_task_to_queue(task_id, task_data)
-                        self.running_tasks.pop(task_id, None)
-                    try:
-                        await task  # Wait for cancellation to complete
-                    except asyncio.CancelledError:
-                        pass
-            await asyncio.sleep(0.1)  # Check for timeouts every 0.1 second
+                    await self.return_task_to_queue(task_id, task_data)
+                    self.running_tasks.pop(task_id, None)
+                try:
+                    await task  # Wait for cancellation to complete
+                except asyncio.CancelledError:
+                    pass

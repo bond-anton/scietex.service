@@ -21,13 +21,14 @@ async def main(config: ValkeyConfig | None) -> None:
         service_name="MyValkeyService",
         version="0.0.1",
         worker_id=1,
-        log_level=logging.DEBUG,
+        logging_level=logging.DEBUG,
         heartbeat_interval=4,
         valkey_config=config,
         queue_size=100,
         max_concurrent_tasks=100,
     )
-    await worker.run()
+    await worker.start()
+    await worker.events["exit"].wait()
 
 
 if __name__ == "__main__":

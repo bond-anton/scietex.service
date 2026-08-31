@@ -1,8 +1,16 @@
 """Logging-related functions."""
 
 import logging
+from enum import Enum
 
 DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
+
+
+class LoggerStatus(Enum):
+    """Async Logger Status."""
+
+    STOPPED = "Stopped"
+    RUNNING = "Running"
 
 
 def parse_logging_level(level: int | str | None) -> int:
