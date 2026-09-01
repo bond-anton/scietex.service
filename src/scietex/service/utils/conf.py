@@ -1,4 +1,9 @@
-"""Configuration routines."""
+"""Configuration directory resolution for ``scietex.service``.
+
+Provides ``prepare_conf_dir()`` which searches a predefined list of
+paths (``~/.config/scietex``, ``/etc/scietex``, etc.) and creates the
+first available directory, falling back to ``~/.config/scietex``.
+"""
 
 from pathlib import Path
 

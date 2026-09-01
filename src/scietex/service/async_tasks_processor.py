@@ -1,6 +1,9 @@
 """
-Module providing basic asynchronous task processing worker, which can be used to construct
-more advanced services. Worker provides task queue management, watchdog, and console logging.
+Asynchronous task processing worker for ``scietex.service``.
+
+Provides ``AsyncTaskProcessor``, a concurrent task processing framework
+built on ``BasicAsyncWorker`` with task queue management, timeout
+monitoring (watchdog), handler dispatch, and graceful shutdown support.
 """
 
 import asyncio
@@ -33,21 +36,26 @@ WORKER_TASK_CANCELLATION_TIMEOUT: float = 5
 
 class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
     """
-    A basic asynchronous worker framework for processing tasks concurrently.
+    Concurrent asynchronous task processor built on ``BasicAsyncWorker``.
 
-    This class provides a foundation for building async workers that can:
-    - Process tasks from a queue with configurable concurrency
-    - Handle graceful shutdown on signals
-    - Manage logging with custom handlers
-    - Monitor task timeouts and handle failures
-    - Process results asynchronously
+    Extends the base worker with a task queue, handler dispatch, concurrent
+    task execution, timeout monitoring via watchdog, and cleanup on shutdown.
+
+    Subclasses should override:
+        - ``fetch_tasks()``: Retrieve tasks from an external source.
+        - ``return_task_to_queue()``: Re-queue tasks on cancellation/timeout.
+        - ``cleanup()``: Service-specific cleanup logic.
+        - ``initialize()``: Service-specific initialization logic.
 
     Properties:
-        service_name (str): Name of the service (read-only)
-        worker_id (int): Unique identifier for this worker (read-only)
-        version (str): Version string of the service (read-only)
-        logger (logging.Logger): Logger instance for the worker
-        logging_level (int): Current logging level (configurable)
+        service_name (str): Name of the service (read-only).
+        worker_id (int): Unique identifier for this worker (read-only).
+        version (str): Version string of the service (read-only).
+        logger (logging.Logger): Logger instance for the worker.
+        logging_level (int): Current logging level (configurable).
+        task_handlers_map (dict): Registered task type to handler mappings.
+        queue_size (int): Maximum size of the internal task queue.
+        max_concurrent_tasks (int): Maximum concurrent task count.
     """
 
     def __init__(
@@ -67,14 +75,19 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         Initialize the AsyncTaskProcessor.
 
         Args:
-            service_name: Name of the service, used for logging and identification
-            version: Version string of the service
-            queue_size: Queue size as integer
-            max_concurrent_tasks: Maximum number of concurrent tasks
-            **kwargs: Additional keyword arguments including:
-                conf_dir: Directory to use for configuration files
-                worker_id: Unique identifier for this worker instance
-                logging_level: Logging level as string or integer
+            service_name: Name of the service, used for logging and identification.
+            version: Version string of the service.
+            worker_id: Unique identifier for this worker instance.
+            conf_dir: Directory to use for configuration files.
+            logging_level: Logging level as string or integer.
+            heartbeat_interval: Heartbeat interval in seconds.
+            watchdog_interval: Watchdog check interval in seconds.
+            queue_size: Maximum size of the internal task queue.
+            max_concurrent_tasks: Maximum number of tasks processed concurrently.
+            **kwargs: Additional keyword arguments passed to the parent
+                ``BasicAsyncWorker`` constructor. May include
+                ``task_manager_sleep_time``, ``task_queue_manager_sleep_time``,
+                ``logger_handler_timeout``, and ``manager_shutdown_timeout``.
         """
         super().__init__(
             service_name=service_name,
@@ -120,30 +133,43 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
     @property
     def task_handlers_map(self) -> dict[task_type, TaskHandler]:
+        """Mapping of registered task types to their handler instances."""
         return self.__task_handlers_map
 
     @property
     def running_tasks(self) -> dict[UUID, TaskTracker]:
+        """Dictionary of currently running tasks and their trackers."""
         return self.__running_tasks
 
     @property
     def queue_size(self) -> int:
+        """Maximum size of the internal task queue."""
         return self.__queue_size
 
     @property
     def max_concurrent_tasks(self) -> int:
+        """Maximum number of tasks that can be processed concurrently."""
         return self.__max_concurrent_tasks
 
     @property
     def task_queue(self) -> asyncio.Queue[tuple[UUID, TaskData]]:
+        """The internal async queue holding pending tasks."""
         return self.__task_queue
 
     @property
     def task_manager_sleep_time(self) -> float:
+        """Sleep time in seconds between task manager loop iterations."""
         return self.__task_manager_sleep_time
 
     @task_manager_sleep_time.setter
     def task_manager_sleep_time(self, delay: float | None) -> None:
+        """
+        Set the sleep time for the task manager loop.
+
+        Args:
+            delay: Sleep time in seconds, clamped between MIN_MANAGER_SLEEP_TIME
+                and MAX_MANAGER_SLEEP_TIME, or None to use DEFAULT_MANAGER_SLEEP_TIME
+        """
         self.__task_manager_sleep_time: float = min(
             MAX_MANAGER_SLEEP_TIME,
             max(MIN_MANAGER_SLEEP_TIME, delay or DEFAULT_MANAGER_SLEEP_TIME),
@@ -151,10 +177,18 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
     @property
     def task_queue_manager_sleep_time(self) -> float:
+        """Sleep time in seconds between task queue manager loop iterations."""
         return self.__task_queue_manager_sleep_time
 
     @task_queue_manager_sleep_time.setter
     def task_queue_manager_sleep_time(self, delay: float | None) -> None:
+        """
+        Set the sleep time for the task queue manager loop.
+
+        Args:
+            delay: Sleep time in seconds, clamped between MIN_MANAGER_SLEEP_TIME
+                and MAX_MANAGER_SLEEP_TIME, or None to use DEFAULT_MANAGER_SLEEP_TIME
+        """
         self.__task_queue_manager_sleep_time: float = min(
             MAX_MANAGER_SLEEP_TIME,
             max(MIN_MANAGER_SLEEP_TIME, delay or DEFAULT_MANAGER_SLEEP_TIME),
@@ -178,14 +212,17 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             del self.__task_handlers_map[task]
 
     def _find_task_handler(self, task: str) -> TaskHandler | None:
-        """
-        Finds a handler for the specified task type.
+        """Find a registered handler that supports the given task type.
+
+        Iterates over all registered task handlers and returns the first
+        one whose ``supports(task_type)`` method returns ``True``.
 
         Args:
-            task_type: The type of task
+            task: The task type string to look up.
 
         Returns:
-            An instance of the handler or None if not found
+            The matching ``TaskHandler`` instance, or ``None`` if no
+            handler supports the given task type.
         """
         for _, handler in self.task_handlers_map.items():
             if handler.supports(task):
@@ -193,16 +230,15 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         return None
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
-        """
-        Return a task to the external queue.
+        """Return a task to its external source queue.
 
-        This method should be overridden by subclasses to implement
-        the specific logic for returning tasks to their source queue
-        when they cannot be processed or need to be retried.
+        Subclasses should override this method to implement the specific
+        logic for re-queueing tasks when they cannot be processed or
+        need to be retried (e.g., writing back to a message queue).
 
         Args:
-            task_id (UUID): The task id
-            task_data (dict[str, Any]): The task data to return to the external queue
+            task_id: The unique identifier of the task.
+            task_data: The task data to return to the external queue.
         """
 
     async def cleanup(self):
@@ -318,12 +354,12 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             await asyncio.sleep(self.task_manager_sleep_time)
 
     async def fetch_tasks(self):
-        """
-        Fetch tasks from external sources and add them to the task queue.
+        """Fetch tasks from external sources and enqueue them.
 
-        This method should be overridden by subclasses to implement
-        the specific logic for retrieving tasks from external sources
-        such as message queues, databases, or APIs.
+        Subclasses should override this method to implement the specific
+        logic for retrieving tasks from external sources such as message
+        queues, databases, or APIs, and putting them into
+        ``self.task_queue``.
         """
 
     @Manager("TaskQueueManager")

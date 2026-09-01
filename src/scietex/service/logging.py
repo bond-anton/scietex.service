@@ -1,4 +1,9 @@
-"""Logging-related functions."""
+"""Logging utilities for ``scietex.service``.
+
+Provides ``LoggerStatus`` for tracking async handler states and
+``parse_logging_level()`` for converting string or integer logging
+level specifications to ``logging`` module constants.
+"""
 
 import logging
 from enum import Enum
@@ -7,7 +12,7 @@ DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
 
 
 class LoggerStatus(Enum):
-    """Async Logger Status."""
+    """Lifecycle status of an async logging handler."""
 
     STOPPED = "Stopped"
     RUNNING = "Running"

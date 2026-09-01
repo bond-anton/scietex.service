@@ -1,4 +1,9 @@
-"""This module provides classes for implementation of simple daemons working in a background."""
+"""scietex.service — Async worker framework for building background daemon services.
+
+Provides ``BasicAsyncWorker`` for basic async daemon functionality,
+``AsyncTaskProcessor`` for concurrent task processing, and optionally
+``ValkeyWorker`` for Valkey-backed task queues.
+"""
 
 from .async_tasks_processor import AsyncTaskProcessor
 from .basic_async_worker import BasicAsyncWorker

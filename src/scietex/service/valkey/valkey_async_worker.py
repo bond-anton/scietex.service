@@ -47,13 +47,17 @@ from .valkey_config import (
 
 class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
     """
-    An asynchronous worker class designed to interact with Valkey services via its glide client.
+    Async worker backed by a Valkey (Redis) stream for task distribution.
 
-    Inherits from AsyncTaskProcessor and extends its capabilities by adding support for
-    Valkey-specific operations like connection management and logging.
+    Extends ``AsyncTaskProcessor`` with Valkey-specific operations including
+    connection management, stream-based task fetching, heartbeat publishing,
+    and async logging to a Valkey stream via the ``glide`` client.
+
+    Requires the optional ``valkey-glide`` dependency.
 
     Attributes:
-        client (Optional[GlideClient]): Instance of the Valkey client initialized during runtime.
+        client (GlideClient | None): Valkey client instance, initialized
+            during ``initialize()``.
     """
 
     def __init__(
@@ -72,19 +76,24 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         **kwargs,
     ):
         """
-        Constructor method initializing the ValkeyWorker.
+        Initialize the ValkeyWorker.
 
         Args:
-            service_name (str): Name of the service (default: "service").
-            version (str): Version string associated with the service (default: "0.0.1").
-            queue_size (Optional[int]): Maximum size of the task queue
-                (default: None, meaning default).
-            max_concurrent_tasks (Optional[int]): Maximum number of concurrent tasks
-                (default: None, meaning default).
-            valkey_config (ValkeyBaseConfigSchema, optional): Custom configuration for
-                the Valkey client. If omitted, tries to read config from the yaml file,
-                if fail defaults to minimal settings.
-            kwargs: Additional keyword arguments passed through to parent constructor.
+            service_name: Name of the service, used for logging and identification.
+            version: Version string of the service.
+            worker_id: Unique identifier for this worker instance.
+            conf_dir: Directory to use for configuration files.
+            logging_level: Logging level as string or integer.
+            heartbeat_interval: Heartbeat interval in seconds.
+            watchdog_interval: Watchdog check interval in seconds.
+            queue_size: Maximum size of the internal task queue.
+            max_concurrent_tasks: Maximum number of tasks processed concurrently.
+            valkey_config: Custom Valkey configuration. If ``None``, reads
+                ``valkey.yml`` from the config directory; on failure falls back
+                to minimal defaults.
+            log_stream_name: Name of the Valkey stream used for log entries.
+            **kwargs: Additional keyword arguments passed to the parent
+                ``AsyncTaskProcessor`` constructor.
         """
         super().__init__(
             service_name=service_name,
@@ -163,10 +172,10 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         return True
 
     async def disconnect(self):
-        """
-        Gracefully closes the connection to Valkey.
-        Closes the current Valkey client session and removes references to it.
-            await as
+        """Gracefully close the connection to Valkey.
+
+        Closes the current Valkey client session and clears the internal
+        client reference.
         """
         if self._client is not None:
             await self._client.close()
@@ -174,7 +183,12 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             self._client = None
 
     async def heartbeat(self) -> None:
-        """Continuously put Heartbeat data in Valkey."""
+        """Publish a heartbeat entry to the Valkey status key.
+
+        Encodes a ``Heartbeat`` struct with service metadata and writes it
+        to ``self._heartbeat_key`` with a TTL set to twice the heartbeat
+        interval. Logs duration and any errors at DEBUG level.
+        """
 
         if self.client and self.start_time:
             heartbeat_data = Heartbeat(
@@ -232,8 +246,11 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         return True
 
     async def cleanup(self):
-        """
-        Handles cleanup tasks upon termination, including closing any open connections.
+        """Perform cleanup on shutdown.
+
+        Calls the parent ``AsyncTaskProcessor.cleanup()`` to handle task
+        queue drainage and handler cleanup, then closes the Valkey
+        connection via ``disconnect()``.
         """
         await super().cleanup()
         await self.disconnect()
@@ -311,16 +328,14 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             self.logger.log(logging.DEBUG, "Failed to purge tasks from Valkey: %s", exc)
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
-        """
-        Return a task to the external queue.
+        """Return a task to the Valkey task stream.
 
-        This method should be overridden by subclasses to implement
-        the specific logic for returning tasks to their source queue
-        when they cannot be processed or need to be retried.
+        Encodes the ``TaskData`` using msgpack and appends it to the
+        task stream identified by ``self._task_stream_name``.
 
         Args:
-            task_id (UUID): The task id
-            task_data (dict[str, Any]): The task data to return to the external queue
+            task_id: The unique identifier of the task.
+            task_data: The task data to return to the Valkey stream.
         """
         if self.client:
             t_id: bytes = str(task_id).encode("utf-8")
@@ -328,12 +343,12 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
             await self.client.xadd(self._task_stream_name, [(t_id, packed)])
 
     async def fetch_tasks(self):
-        """
-        Fetch tasks from external sources and add them to the task queue.
+        """Fetch a single task from the Valkey task stream and enqueue it.
 
-        This method should be overridden by subclasses to implement
-        the specific logic for retrieving tasks from external sources
-        such as message queues, databases, or APIs.
+        Reads one entry from the task stream using ``XREADGROUP`` with
+        the configured consumer group, decodes the msgpack payload into
+        a ``TaskData`` struct, and puts it into ``self.task_queue``.
+        On read errors, attempts to reconnect to Valkey.
         """
 
         if self.client is None:

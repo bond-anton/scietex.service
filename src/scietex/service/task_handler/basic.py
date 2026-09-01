@@ -1,4 +1,4 @@
-"""Module: scietex.service.task_handlers.basic"""
+"""Abstract task handler base class for ``scietex.service``."""
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
@@ -16,12 +16,10 @@ class TaskHandler(ABC):
     """
 
     def __init__(self, worker: "BasicAsyncWorker") -> None:
-        """
-        Initialize the handler.
-
+        """Initialize the task handler with a reference to the parent worker.
 
         Args:
-            worker: Link to the main BasicAsyncWorker,
+            worker: Reference to the parent ``BasicAsyncWorker`` instance,
                 allowing handlers to access shared resources and utilities.
         """
         self.worker = worker
@@ -36,30 +34,30 @@ class TaskHandler(ABC):
 
     @abstractmethod
     async def handle(self, task_data: TaskData) -> TaskResult:
-        """
-        Process the given task data and return the results.
+        """Process the given task and return a ``TaskResult``.
 
         Args:
-            task_data: dictionary with task data
+            task_data: Typed task data structure containing the task type,
+                payload, timeout, and cancellation behavior.
 
         Returns:
-            dictionary with processing results
+            A ``TaskResult`` with status, optional error message, and payload.
 
         Raises:
-            Exception: when errors occur while processing the task
+            Exception: Any error that occurs during task processing.
         """
         pass
 
     @abstractmethod
     def supports(self, task_type: str) -> bool:
-        """
-        Checks if the handler supports the specified task type.
+        """Check whether this handler can process the given task type.
 
         Args:
-            task_type: the type of task to check
+            task_type: The task type string to check against.
 
         Returns:
-            True if the handler supports the specified task type. False otherwise.
+            ``True`` if this handler supports the given task type,
+            ``False`` otherwise.
         """
         pass
 

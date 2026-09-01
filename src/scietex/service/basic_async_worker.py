@@ -1,6 +1,9 @@
 """
-Module providing basic asynchronous worker, which can be used to construct more advanced services.
-Worker provides console logging, signal handlers, etc.
+Basic asynchronous worker for ``scietex.service``.
+
+Provides ``BasicAsyncWorker``, a foundation class for building async
+daemon services with signal handling, async logging, heartbeat and
+watchdog managers, and graceful shutdown support.
 """
 
 import asyncio
@@ -47,18 +50,26 @@ class ServiceStatus(Enum):
 
 class BasicAsyncWorker:
     """
-    A basic asynchronous worker framework.
+    Base async worker framework for daemon services.
 
-    This class provides a foundation for building async workers that can:
-    - Handle graceful shutdown on signals
-    - Manage logging with custom handlers
+    Provides signal handling, async logging with custom handlers,
+    heartbeat and watchdog managers (decorated with ``@Manager``),
+    automatic manager restart on error, and graceful shutdown.
+
+    Subclasses should override:
+        - ``initialize()``: Service-specific initialization logic.
+        - ``heartbeat()``: Periodic heartbeat behavior.
+        - ``watchdog()``: Periodic watchdog checks.
+        - ``cleanup()``: Service-specific cleanup on shutdown.
 
     Properties:
-        service_name (str): Name of the service (read-only)
-        worker_id (int): Unique identifier for this worker (read-only)
-        version (str): Version string of the service (read-only)
-        logger (logging.Logger): Logger instance for the worker
-        logging_level (int): Current logging level (configurable)
+        service_name (str): Name of the service (read-only).
+        worker_id (int): Unique identifier for this worker (read-only).
+        version (str): Version string of the service (read-only).
+        logger (logging.Logger): Logger instance for the worker.
+        logging_level (int): Current logging level (configurable).
+        state (ServiceStatus): Current service lifecycle state.
+        start_time (datetime | None): Service start timestamp.
     """
 
     def __init__(
@@ -76,17 +87,21 @@ class BasicAsyncWorker:
         Initialize the BasicAsyncWorker.
 
         Args:
-            service_name: Name of the service, used for logging and identification
-            version: Version string of the service
-            worker_id: Unique identifier for this worker instance
-            conf_dir: Directory to use for configuration files
+            service_name: Name of the service, used for logging and identification.
+            version: Version string of the service.
+            worker_id: Unique identifier for this worker instance.
+            conf_dir: Directory to use for configuration files.
             logging_level: Logging level as string or integer.
-                If logging_level is invalid, defaults to DEFAULT_LOGGING_LEVEL
-            heartbeat_interval: Heartbeat interval in seconds as integer
+                If invalid, defaults to ``DEFAULT_LOGGING_LEVEL`` (DEBUG).
+            heartbeat_interval: Heartbeat interval in seconds.
+            watchdog_interval: Watchdog check interval in seconds.
+            **kwargs: Additional keyword arguments including:
+                ``logger_handler_timeout``: Timeout for logger handler ops.
+                ``manager_shutdown_timeout``: Timeout for manager shutdown.
 
         Note:
-            In a single process service_name, worker_id combination should be unique.
-            This ensures separate logger names for different workers.
+            Within a single process, the ``(service_name, worker_id)``
+            combination should be unique to ensure separate logger names.
         """
         self.__service_name: str = service_name
         self.__worker_id: int = worker_id
@@ -151,10 +166,12 @@ class BasicAsyncWorker:
 
     @property
     def state(self) -> ServiceStatus:
+        """Current service status (read-only)."""
         return self.__state
 
     @property
     def events(self) -> dict[str, asyncio.Event]:
+        """Dictionary of lifecycle events (exit_requested, exit)."""
         return self.__events
 
     @property
@@ -174,14 +191,23 @@ class BasicAsyncWorker:
 
     @property
     def conf_dir(self) -> Path:
+        """Configuration directory path (read-only)."""
         return self.__conf_dir
 
     @property
     def logger_handler_timeout(self) -> float:
+        """Timeout in seconds for logger handler operations."""
         return self.__logger_handler_timeout
 
     @logger_handler_timeout.setter
     def logger_handler_timeout(self, timeout: float | None) -> None:
+        """
+        Set the timeout for logger handler operations.
+
+        Args:
+            timeout: Timeout in seconds, clamped between MIN_LOGGER_HANDLER_TIMEOUT
+                and MAX_LOGGER_HANDLER_TIMEOUT, or None to use DEFAULT_LOGGER_HANDLER_TIMEOUT
+        """
         self.__logger_handler_timeout = max(
             MIN_LOGGER_HANDLER_TIMEOUT,
             min(
@@ -192,10 +218,18 @@ class BasicAsyncWorker:
 
     @property
     def manager_shutdown_timeout(self) -> float:
+        """Timeout in seconds for manager shutdown operations."""
         return self.__manager_shutdown_timeout
 
     @manager_shutdown_timeout.setter
     def manager_shutdown_timeout(self, timeout: float | None) -> None:
+        """
+        Set the timeout for manager shutdown operations.
+
+        Args:
+            timeout: Timeout in seconds, clamped between MIN_MANAGER_SHUTDOWN_TIMEOUT
+                and MAX_MANAGER_SHUTDOWN_TIMEOUT, or None to use DEFAULT_MANAGER_SHUTDOWN_TIMEOUT
+        """
         self.__manager_shutdown_timeout = max(
             MIN_MANAGER_SHUTDOWN_TIMEOUT,
             min(
@@ -206,10 +240,18 @@ class BasicAsyncWorker:
 
     @property
     def heartbeat_interval(self) -> float:
+        """Interval in seconds between heartbeat calls."""
         return self.__heartbeat_interval
 
     @heartbeat_interval.setter
     def heartbeat_interval(self, interval: float) -> None:
+        """
+        Set the heartbeat interval.
+
+        Args:
+            interval: Heartbeat interval in seconds, clamped between
+                MIN_HEARTBEAT_INTERVAL and MAX_HEARTBEAT_INTERVAL
+        """
         self.__heartbeat_interval = max(
             MIN_HEARTBEAT_INTERVAL,
             min(MAX_HEARTBEAT_INTERVAL, interval),
@@ -217,10 +259,18 @@ class BasicAsyncWorker:
 
     @property
     def watchdog_interval(self) -> float:
+        """Interval in seconds between watchdog checks."""
         return self.__watchdog_interval
 
     @watchdog_interval.setter
     def watchdog_interval(self, interval: float) -> None:
+        """
+        Set the watchdog interval.
+
+        Args:
+            interval: Watchdog interval in seconds, clamped between
+                MIN_WATCHDOG_INTERVAL and MAX_WATCHDOG_INTERVAL
+        """
         self.__watchdog_interval = max(
             MIN_WATCHDOG_INTERVAL,
             min(MAX_WATCHDOG_INTERVAL, interval),
@@ -268,7 +318,13 @@ class BasicAsyncWorker:
         self.logger.debug("Logging level set to %s", logging.getLevelName(self.logging_level))
 
     def _iter_manager_definitions(self) -> Generator[tuple[str, Manager]]:
-        """Registered managers iterator."""
+        """
+        Iterate over all registered managers from the class MRO.
+
+        Yields:
+            Tuple of (manager_name, manager) for each Manager decorator found
+            in the class hierarchy, processed from most-derived to base classes.
+        """
         for cls in reversed(type(self).__mro__):
             for attribute_name, attribute in cls.__dict__.items():
                 if not isinstance(attribute, Manager):
@@ -276,7 +332,7 @@ class BasicAsyncWorker:
                 manager_name = attribute.name or attribute_name
                 yield manager_name, attribute
 
-    def _setup_signal_handlers(self):
+    def _setup_signal_handlers(self) -> None:
         """
         Set up signal handlers for graceful shutdown.
 
@@ -289,7 +345,14 @@ class BasicAsyncWorker:
         self.logger.log(logging.DEBUG, "Signal handlers are all setup")
 
     async def _logger_start_handlers(self) -> None:
-        """Initialize all async logging handlers."""
+        """
+        Start all async logging handlers that are not already running.
+
+        Iterates over the logger's handlers and calls start_logging() on each
+        AsyncBaseHandler that is stopped or not yet tracked. Handles timeouts
+        and errors gracefully, falling back to print statements if the logger
+        is in an unrecoverable state.
+        """
         for handler in self.logger.handlers:
             handler_name = handler.name or handler.__class__.__name__
             if (
@@ -369,7 +432,18 @@ class BasicAsyncWorker:
         return True
 
     async def _run_manager(self, name: str, manager: Manager) -> None:
-        """Run manager task."""
+        """
+        Execute a manager's lifecycle loop with automatic restart on error.
+
+        Runs the manager's method in an infinite loop. On cancellation, the
+        manager stops cleanly. On any other exception, the error is recorded
+        and the manager is automatically restarted. The finally block handles
+        cleanup and status updates.
+
+        Args:
+            name: Human-readable name for the manager
+            manager: The Manager instance whose method will be executed
+        """
         self.logger.info("🟢 Manager %s started", name)
 
         try:
@@ -393,7 +467,13 @@ class BasicAsyncWorker:
             self.logger.info("🔴 Manager %s stopped", name)
 
     async def _start_manager(self, name: str, manager: Manager) -> None:
-        """Start manager task."""
+        """
+        Start a named manager as an asyncio task.
+
+        Args:
+            name: Identifier for the manager
+            manager: The Manager instance to execute
+        """
         if name in self.__manager_tasks:
             self.logger.log(logging.DEBUG, "%s is already running", name)
             return
@@ -408,7 +488,15 @@ class BasicAsyncWorker:
         self.__manager_tasks[name] = task
 
     async def _stop_manager(self, name: str) -> None:
-        """Stop manager task."""
+        """
+        Stop a named manager task with a timeout.
+
+        Cancels the task and waits up to `manager_shutdown_timeout` seconds
+        for it to complete. Removes the task from internal tracking.
+
+        Args:
+            name: Identifier of the manager to stop
+        """
         if name not in self.__manager_tasks:
             self.logger.log(logging.DEBUG, "%s is not running", name)
             return
@@ -420,23 +508,37 @@ class BasicAsyncWorker:
         del self.__manager_tasks[name]
 
     async def _restart_manager(self, name: str, manager: Manager) -> None:
-        """Restart manager task."""
+        """
+        Stop and then restart a manager.
+
+        Args:
+            name: Identifier of the manager to restart
+            manager: The Manager instance to run
+        """
         await self._stop_manager(name)
         await self._start_manager(name, manager)
 
     async def _start_managers(self) -> None:
-        """Start managers tasks."""
+        """Start all registered managers as asyncio tasks."""
         for name, manager in self._iter_manager_definitions():
             await self._start_manager(name, manager)
 
     async def _stop_managers(self) -> None:
-        """Stop managers tasks."""
+        """Stop all registered managers in order."""
         for name, _ in self._iter_manager_definitions():
             await self._stop_manager(name)
 
     async def _startup(self):
         """
-        Startup task.
+        Execute the full startup sequence for the worker.
+
+        Waits for any previous shutdown to complete, prints the service logo,
+        starts logging handlers, starts all managers, runs custom initialization
+        via initialize(), sets the start time, and transitions to RUNNING state.
+
+        Raises:
+            asyncio.CancelledError: If the startup process is cancelled
+            RuntimeError: If initialization fails
         """
         try:
             if self.__state != ServiceStatus.STOPPED:
@@ -471,7 +573,11 @@ class BasicAsyncWorker:
 
     async def start(self) -> None:
         """
-        Start the worker and all its components.
+        Transition the worker to RUNNING state by spawning the startup task.
+
+        If the worker is already running or starting, logs a warning and returns.
+        If the worker is stopping or stopped, creates a task to execute the
+        full startup sequence.
         """
         if self.__state == ServiceStatus.RUNNING:
             self.logger.log(
@@ -537,10 +643,14 @@ class BasicAsyncWorker:
 
     async def stop(self) -> None:
         """
-        Stop the worker gracefully.
+        Request a graceful shutdown of the worker.
+
+        If the worker is stopped or already stopping, clears the exit events
+        and returns. Otherwise, creates a task to execute the full shutdown
+        sequence (stop managers, cleanup, shut down loggers).
 
         Note:
-            This method is automatically called on SIGINT or SIGTERM
+            This method is automatically called when SIGINT or SIGTERM is received.
         """
         if self.__state == ServiceStatus.STOPPED:
             self.logger.log(
@@ -574,19 +684,33 @@ class BasicAsyncWorker:
             asyncio.create_task(self._shutdown(), name="Stop")
 
     async def exit(self):
-        """Stops the worker and set the exit event."""
+        """
+        Request exit and wait for the worker to stop.
+
+        Sets the exit_requested event and triggers a graceful shutdown via stop().
+        """
         self.events["exit_requested"].set()
         await self.stop()
 
     @Manager(name="Heartbeat")
     async def _heartbeat_manager(self) -> None:
-        """Continuously repeat Heartbeat procedure."""
+        """
+        Manager that periodically invokes the heartbeat() method.
+
+        Sleeps for heartbeat_interval seconds, then calls heartbeat().
+        Repeats indefinitely until cancelled.
+        """
         await asyncio.sleep(self.heartbeat_interval)
         await self.heartbeat()
 
     @Manager(name="Watchdog")
     async def _watchdog_manager(self) -> None:
-        """Continuously repeat Watchdog procedure."""
+        """
+        Manager that periodically invokes the watchdog() method.
+
+        Sleeps for watchdog_interval seconds, then calls watchdog().
+        Repeats indefinitely until cancelled.
+        """
         await asyncio.sleep(self.watchdog_interval)
         await self.watchdog()
 

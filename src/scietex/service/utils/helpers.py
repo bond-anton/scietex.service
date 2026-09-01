@@ -1,4 +1,9 @@
-"""General helpers functions."""
+"""General helper functions for ``scietex.service``.
+
+Provides ``get_anything_name()`` which extracts a human-readable name
+from any Python object via ``__name__``, ``__class__.__name__``, or
+``str()`` fallback.
+"""
 
 from typing import Any
 

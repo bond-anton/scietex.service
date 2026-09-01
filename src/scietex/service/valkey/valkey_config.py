@@ -1,3 +1,11 @@
+"""Valkey configuration schemas and YAML loader for ``scietex.service``.
+
+Defines typed configuration structures (``ValkeyConfig``, ``ValkeyBaseConfig``,
+``ValkeyAdvancedConfig``, etc.) that map to ``glide`` client configuration
+objects. Includes ``read_valkey_config()`` for YAML file loading and
+``generate_glide_config()`` for converting schemas to ``GlideClientConfiguration``.
+"""
+
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -26,21 +34,38 @@ except ImportError as e:
 
 
 class ValkeyNode(msgspec.Struct, frozen=True):
-    """Valkey Node Schema."""
+    """Represents a single Valkey server node.
+
+    Args:
+        host: Hostname or IP address of the node.
+        port: Port number the node listens on.
+    """
 
     host: str = "localhost"
     port: int = 6379
 
 
 class ValkeyUserCredentials(msgspec.Struct, frozen=True):
-    """Valkey Credentials Schema."""
+    """Authentication credentials for a Valkey server.
+
+    Args:
+        username: User name for authentication.
+        password: Password for authentication.
+    """
 
     username: str
     password: str
 
 
 class ValkeyBackoffStrategy(msgspec.Struct, frozen=True):
-    """Valkey Backoff Strategy Schema."""
+    """Exponential backoff strategy for Valkey reconnection attempts.
+
+    Args:
+        num_of_retries: Maximum number of reconnection attempts.
+        factor: Multiplicative factor for backoff calculation.
+        exponent_base: Base for the exponential backoff function.
+        jitter_percent: Optional jitter percentage to avoid thundering herd.
+    """
 
     num_of_retries: int
     factor: int
@@ -59,7 +84,14 @@ class ValkeyBackoffStrategy(msgspec.Struct, frozen=True):
 
 
 class ValkeyTlsAdvancedConfiguration(msgspec.Struct, frozen=True):
-    """Valkey TLS Advanced Configuration Schema."""
+    """TLS configuration for Valkey connections.
+
+    Args:
+        use_insecure_tls: Skip certificate verification (not recommended
+            for production).
+        root_pem_cacerts: PEM-encoded CA certificates for custom trust
+            store.
+    """
 
     use_insecure_tls: bool = False
     root_pem_cacerts: str | None = None
@@ -73,7 +105,13 @@ class ValkeyTlsAdvancedConfiguration(msgspec.Struct, frozen=True):
 
 
 class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
-    """Valkey Advanced Configuration Schema."""
+    """Advanced connection settings for the Valkey client.
+
+    Args:
+        connection_timeout: Connection timeout in milliseconds.
+        tcp_nodelay: Disable Nagle's algorithm for lower latency.
+        tls_config: TLS configuration for encrypted connections.
+    """
 
     connection_timeout: int | None = 10_000
     tcp_nodelay: bool | None = None
@@ -89,7 +127,25 @@ class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
 
 
 class ValkeyBaseConfig(msgspec.Struct, frozen=True):
-    """Valkey Basic Configuration Schema."""
+    """Basic Valkey connection configuration.
+
+    Maps to ``glide`` client settings including addresses, credentials,
+    TLS, read preferences, and reconnection behavior.
+
+    Args:
+        nodes: List of server node addresses.
+        user_credentials: Authentication credentials.
+        use_tls: Enable TLS encryption.
+        request_timeout: Request timeout in milliseconds.
+        database_id: Logical database index.
+        client_name: Client identifier sent to the server.
+        inflight_requests_limit: Maximum concurrent unacknowledged requests.
+        client_az: Availability zone for cloud deployments.
+        lazy_connect: Defer connection until first command.
+        read_from: Read preference (``"PRIMARY"``, ``"PRIMARY_PREFERRED"``, etc.).
+        backoff_strategy: Reconnection backoff configuration.
+        protocol: Protocol version (``"RESP2"`` or ``"RESP3"``).
+    """
 
     nodes: list[ValkeyNode] = field(
         default_factory=lambda: [ValkeyNode(host="localhost", port=6379)]
@@ -133,14 +189,34 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
 
 
 class ValkeyConfig(msgspec.Struct, frozen=True):
-    """Valkey Configuration Schema."""
+    """Top-level Valkey configuration combining base and advanced settings.
+
+    Args:
+        base_config: Basic connection parameters.
+        advanced_config: Advanced connection settings.
+    """
 
     base_config: ValkeyBaseConfig = ValkeyBaseConfig()
     advanced_config: ValkeyAdvancedConfig = ValkeyAdvancedConfig()
 
 
 def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
-    """Read valkey config from YML file"""
+    """Read Valkey configuration from a YAML file in the given config directory.
+
+    If the YAML file does not exist, creates it with default values.
+    If parsing fails, returns a ``ValkeyConfig`` with defaults and writes
+    the defaults to the file.
+
+    Args:
+        conf_dir: Path to the configuration directory.
+
+    Returns:
+        A ``ValkeyConfig`` instance loaded from ``valkey.yml`` or with
+        default values if the file was missing or invalid.
+
+    Raises:
+        RuntimeError: If ``conf_dir`` is ``None`` or not a directory.
+    """
     if isinstance(conf_dir, Path):
         if not conf_dir.exists():
             try:
@@ -171,7 +247,26 @@ def generate_glide_config(
     listening: bool = False,
     parse_control_message: Callable[[PubSubMsg, Any], None] | None = None,
 ) -> GlideClientConfiguration:
-    """Generate Glide configuration from the Valkey Config Schema."""
+    """Convert a ``ValkeyConfig`` schema into a ``GlideClientConfiguration``.
+
+    Maps the typed configuration to ``glide`` client settings including
+    addresses, credentials, TLS, read preferences, and optional PubSub
+    subscriptions for broadcast messages.
+
+    Args:
+        valkey_config: The typed configuration schema.
+        service_name: Service name used for PubSub channel names.
+        worker_id: Worker identifier used for PubSub channel names.
+        listening: If ``True``, subscribes to service-specific and
+            broadcast channels.
+        parse_control_message: Optional callback for PubSub messages.
+
+    Returns:
+        A fully configured ``GlideClientConfiguration`` instance.
+
+    Raises:
+        ValueError: If ``read_from`` or ``protocol`` contain invalid values.
+    """
     pubsub_subscriptions = None
     if listening:
         pubsub_subscriptions = GlideClientConfiguration.PubSubSubscriptions(
