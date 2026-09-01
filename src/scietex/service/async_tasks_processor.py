@@ -12,7 +12,7 @@ from uuid import UUID
 
 from .basic_async_worker import BasicAsyncWorker
 from .manager import Manager
-from .task_handlers import TaskData, TaskHandler, TaskResult, task_type
+from .task_handler import TaskData, TaskHandler, TaskResult, TaskTracker, task_type
 
 DEFAULT_MAX_TASKS_QUEUE_SIZE = 2
 """Default maximum number of tasks queue size."""
@@ -21,6 +21,14 @@ DEFAULT_MAX_CONCURRENT_TASKS = 2
 
 DEFAULT_TASK_TIMEOUT = 3  # Timeout in seconds for task completion
 """Timeout in seconds for task completion before cancellation."""
+
+TASK_QUEUE_FETCH_TIMEOUT: float = 1
+
+DEFAULT_MANAGER_SLEEP_TIME: float = 0.01
+MIN_MANAGER_SLEEP_TIME: float = 0.001
+MAX_MANAGER_SLEEP_TIME: float = 1
+
+WORKER_TASK_CANCELLATION_TIMEOUT: float = 5
 
 
 class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
@@ -79,40 +87,95 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             **kwargs,
         )
 
-        self._task_handlers_map: dict[task_type, TaskHandler] = {}
+        self.__task_handlers_map: dict[task_type, TaskHandler] = {}
 
         # Initialize queues and tracking structures
-        self.running_tasks: dict[
-            UUID, tuple[asyncio.Task, TaskData, int | float]
-        ] = {}  # Track running tasks and their start times
-        self.queue_size: int = (
+        self.__running_tasks: dict[UUID, TaskTracker] = {}  # Track running tasks
+        self.__queue_size: int = (
             queue_size if queue_size is not None else DEFAULT_MAX_TASKS_QUEUE_SIZE
         )
-        self.max_concurrent_tasks: int = (
-            max_concurrent_tasks
-            if max_concurrent_tasks is not None
-            else DEFAULT_MAX_CONCURRENT_TASKS
+        self.__max_concurrent_tasks: int = max(
+            1, max_concurrent_tasks or DEFAULT_MAX_CONCURRENT_TASKS
         )
-        self.task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(
+
+        self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(
             maxsize=self.queue_size
         )
 
-    def register_task_handler(self, task: task_type, handler_class: type[TaskHandler]) -> None:
-        """Register a task handler for a specific task type."""
-        handler_instance = handler_class(self)
-        self._task_handlers_map[task] = handler_instance
+        self.__task_manager_sleep_time: float = min(
+            MAX_MANAGER_SLEEP_TIME,
+            max(
+                MIN_MANAGER_SLEEP_TIME,
+                kwargs.get("task_manager_sleep_time", DEFAULT_MANAGER_SLEEP_TIME),
+            ),
+        )
 
-    def unregister_task_handler(self, task: task_type) -> None:
+        self.__task_queue_manager_sleep_time: float = min(
+            MAX_MANAGER_SLEEP_TIME,
+            max(
+                MIN_MANAGER_SLEEP_TIME,
+                kwargs.get("task_queue_manager_sleep_time", DEFAULT_MANAGER_SLEEP_TIME),
+            ),
+        )
+
+    @property
+    def task_handlers_map(self) -> dict[task_type, TaskHandler]:
+        return self.__task_handlers_map
+
+    @property
+    def running_tasks(self) -> dict[UUID, TaskTracker]:
+        return self.__running_tasks
+
+    @property
+    def queue_size(self) -> int:
+        return self.__queue_size
+
+    @property
+    def max_concurrent_tasks(self) -> int:
+        return self.__max_concurrent_tasks
+
+    @property
+    def task_queue(self) -> asyncio.Queue[tuple[UUID, TaskData]]:
+        return self.__task_queue
+
+    @property
+    def task_manager_sleep_time(self) -> float:
+        return self.__task_manager_sleep_time
+
+    @task_manager_sleep_time.setter
+    def task_manager_sleep_time(self, delay: float | None) -> None:
+        self.__task_manager_sleep_time: float = min(
+            MAX_MANAGER_SLEEP_TIME,
+            max(MIN_MANAGER_SLEEP_TIME, delay or DEFAULT_MANAGER_SLEEP_TIME),
+        )
+
+    @property
+    def task_queue_manager_sleep_time(self) -> float:
+        return self.__task_queue_manager_sleep_time
+
+    @task_queue_manager_sleep_time.setter
+    def task_queue_manager_sleep_time(self, delay: float | None) -> None:
+        self.__task_queue_manager_sleep_time: float = min(
+            MAX_MANAGER_SLEEP_TIME,
+            max(MIN_MANAGER_SLEEP_TIME, delay or DEFAULT_MANAGER_SLEEP_TIME),
+        )
+
+    def add_task_handler(self, task: task_type, handler_class: type[TaskHandler]) -> None:
+        """Add a task handler for a specific task type."""
+        handler_instance = handler_class(self)
+        self.__task_handlers_map[task] = handler_instance
+
+    def remove_task_handler(self, task: task_type) -> None:
         """
-        Unregister a task handler for a specific task type.
+        Remove a task handler for a specific task type.
 
         Args:
             task_type: The type of task for which to unregister the handler
         """
-        if task in self._task_handlers_map:
+        if task in self.__task_handlers_map:
             # Perform cleanup before removal
-            asyncio.create_task(self._task_handlers_map[task].cleanup())
-            del self._task_handlers_map[task]
+            asyncio.create_task(self.__task_handlers_map[task].cleanup())
+            del self.__task_handlers_map[task]
 
     def _find_task_handler(self, task: str) -> TaskHandler | None:
         """
@@ -124,27 +187,10 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         Returns:
             An instance of the handler or None if not found
         """
-        for _, handler in self._task_handlers_map.items():
+        for _, handler in self.task_handlers_map.items():
             if handler.supports(task):
                 return handler
         return None
-
-    async def initialize(self) -> bool:
-        """
-        Perform any initialization before starting the main loop.
-
-        This method is intended to be overridden by subclasses to perform
-        service-specific initialization such as database connections,
-        API client setup, or other preparatory work.
-        """
-        if self.initialized:
-            self.logger.log(logging.DEBUG, "Already initialized")
-            return True
-
-        if not await super().initialize():
-            return False
-
-        return True
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """
@@ -176,25 +222,29 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         self.logger.debug("Task queue is empty")
 
         # Cancel and requeue running tasks
-        for task_id, (task, task_data, _) in list(self.running_tasks.items()):
-            if not task.done():
-                task.cancel()
-                if task_data.canceled_action == "requeue":
+        for task_id, task_tracker in list(self.running_tasks.items()):
+            if not task_tracker.worker_task.done():
+                task_tracker.worker_task.cancel()
+                if task_tracker.data.canceled_action == "requeue":
                     self.logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
-                    await self.return_task_to_queue(task_id, task_data)
+                    await self.return_task_to_queue(task_id, task_tracker.data)
                 try:
-                    await asyncio.wait_for(task, timeout=5)  # Wait for cancellation to complete
+                    await asyncio.wait_for(
+                        task_tracker.worker_task, timeout=WORKER_TASK_CANCELLATION_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.log(logging.ERROR, "Timeout canceling Task %s.", task_id)
                 except asyncio.CancelledError:
                     pass
         self.logger.debug("All tasks cancelled")
 
         # Cleanup task handlers
         task_handlers_cleanup_tasks = [
-            handler.cleanup() for handler in self._task_handlers_map.values()
+            handler.cleanup() for handler in self.task_handlers_map.values()
         ]
         if task_handlers_cleanup_tasks:
             await asyncio.gather(*task_handlers_cleanup_tasks, return_exceptions=True)
-        self._task_handlers_map.clear()
+        self.task_handlers_map.clear()
         self.logger.debug("All task handlers cleaned up")
 
     async def process_task(self, task_id: UUID, task_data: TaskData) -> TaskResult:
@@ -248,10 +298,6 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
         async def handle_task(t_id: UUID, t_data: TaskData):
             try:
-                # await self.log(
-                #     f"Sending to handler. Task {t_data.task} ({t_id}): {t_data}",
-                #     level=logging.DEBUG,
-                # )
                 await self.process_task(t_id, t_data)
             finally:
                 self.running_tasks.pop(t_id, None)
@@ -259,18 +305,17 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
         if len(self.running_tasks) < self.max_concurrent_tasks:
             try:
-                task_id, task_data = await asyncio.wait_for(self.task_queue.get(), timeout=1)
+                task_id, task_data = await asyncio.wait_for(
+                    self.task_queue.get(), timeout=TASK_QUEUE_FETCH_TIMEOUT
+                )
                 task = asyncio.create_task(handle_task(task_id, task_data))
-                self.running_tasks[task_id] = (
-                    task,
-                    task_data,
-                    time.time(),
-                )  # Track start time
-                # task.add_done_callback(lambda t, _id=task_id: self.running_tasks.pop(_id, None))
+                self.__running_tasks[task_id] = TaskTracker(
+                    worker_task=task, data=task_data, started=time.time()
+                )
             except asyncio.TimeoutError:
                 pass
         else:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(self.task_manager_sleep_time)
 
     async def fetch_tasks(self):
         """
@@ -291,7 +336,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         """
         if not self.task_queue.full():
             await self.fetch_tasks()
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(self.task_queue_manager_sleep_time)
 
     async def watchdog(self):
         """
@@ -302,28 +347,32 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
         queue for potential retry.
         """
         now = time.time()
-        for task_id, (task, task_data, start_time) in list(self.running_tasks.items()):
-            timeout = task_data.timeout.timeout
+        for task_id, task_tracker in list(self.running_tasks.items()):
+            timeout = task_tracker.data.timeout.timeout
             if timeout is None:
                 timeout = DEFAULT_TASK_TIMEOUT
-            if 0 < timeout < (now - start_time) and not task.done():
+            if 0 < timeout < (now - task_tracker.started) and not task_tracker.worker_task.done():
                 self.logger.log(
                     logging.WARNING,
                     "Task %s (%s) exceeded timeout and will be canceled.",
-                    task_data.task,
+                    task_tracker.data.task,
                     task_id,
                 )
-                task.cancel()
-                if task_data.timeout.timeout_action == "requeue":
+                task_tracker.worker_task.cancel()
+                if task_tracker.data.timeout.timeout_action == "requeue":
                     self.logger.log(
                         logging.WARNING,
                         "Task %s (%s) will be returned to queue.",
-                        task_data.task,
+                        task_tracker.data.task,
                         task_id,
                     )
-                    await self.return_task_to_queue(task_id, task_data)
+                    await self.return_task_to_queue(task_id, task_tracker.data)
                     self.running_tasks.pop(task_id, None)
                 try:
-                    await task  # Wait for cancellation to complete
+                    await asyncio.wait_for(
+                        task_tracker.worker_task, timeout=WORKER_TASK_CANCELLATION_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.log(logging.ERROR, "Timeout canceling Task %s.", task_id)
                 except asyncio.CancelledError:
                     pass

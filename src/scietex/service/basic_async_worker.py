@@ -17,13 +17,23 @@ from .logging import LoggerStatus, parse_logging_level
 from .manager import Manager, ManagerStatus
 from .utils import prepare_conf_dir, print_scietex_logo
 
-DEFAULT_HEARTBEAT_INTERVAL: int = 10
-MIN_HEARTBEAT_INTERVAL: int = 1
-MAX_HEARTBEAT_INTERVAL: int = 600
+DEFAULT_HEARTBEAT_INTERVAL: float = 10
+MIN_HEARTBEAT_INTERVAL: float = 0.1
+MAX_HEARTBEAT_INTERVAL: float = 600
 
-DEFAULT_WATCHDOG_INTERVAL: int = 1
-MIN_WATCHDOG_INTERVAL: int = 1
-MAX_WATCHDOG_INTERVAL: int = 600
+DEFAULT_WATCHDOG_INTERVAL: float = 1
+MIN_WATCHDOG_INTERVAL: float = 0.01
+MAX_WATCHDOG_INTERVAL: float = 600
+
+DEFAULT_LOGGER_HANDLER_TIMEOUT: float = 2
+MIN_LOGGER_HANDLER_TIMEOUT: float = 1
+MAX_LOGGER_HANDLER_TIMEOUT: float = 10
+
+DEFAULT_MANAGER_SHUTDOWN_TIMEOUT: float = 2
+MIN_MANAGER_SHUTDOWN_TIMEOUT: float = 1
+MAX_MANAGER_SHUTDOWN_TIMEOUT: float = 10
+
+WAIT_FOR_SERVICE_STOPPED_DELAY: float = 0.1
 
 
 class ServiceStatus(Enum):
@@ -60,6 +70,7 @@ class BasicAsyncWorker:
         logging_level: int | str = logging.DEBUG,
         heartbeat_interval: float | None = None,
         watchdog_interval: float | None = None,
+        **kwargs,
     ):
         """
         Initialize the BasicAsyncWorker.
@@ -105,12 +116,27 @@ class BasicAsyncWorker:
         stdout_handler.setLevel(self.logging_level)
         self._logger.addHandler(stdout_handler)
 
+        self.__logger_handler_timeout = max(
+            MIN_LOGGER_HANDLER_TIMEOUT,
+            min(
+                MAX_LOGGER_HANDLER_TIMEOUT,
+                kwargs.get("logger_handler_timeout", DEFAULT_LOGGER_HANDLER_TIMEOUT),
+            ),
+        )
+
+        self.__manager_shutdown_timeout = max(
+            MIN_MANAGER_SHUTDOWN_TIMEOUT,
+            min(
+                MAX_MANAGER_SHUTDOWN_TIMEOUT,
+                kwargs.get("manager_shutdown_timeout", DEFAULT_MANAGER_SHUTDOWN_TIMEOUT),
+            ),
+        )
+
         # State tracking
 
         self.__loggers_statuses: dict[str, LoggerStatus] = {}
         self.__state: ServiceStatus = ServiceStatus.STOPPED
         self.__start_time: datetime | None = None
-        self.__initialized: bool = False
 
         self.__manager_statuses: dict[str, ManagerStatus] = {}
         self.__manager_tasks: dict[str, asyncio.Task[None]] = {}
@@ -151,6 +177,34 @@ class BasicAsyncWorker:
         return self.__conf_dir
 
     @property
+    def logger_handler_timeout(self) -> float:
+        return self.__logger_handler_timeout
+
+    @logger_handler_timeout.setter
+    def logger_handler_timeout(self, timeout: float | None) -> None:
+        self.__logger_handler_timeout = max(
+            MIN_LOGGER_HANDLER_TIMEOUT,
+            min(
+                MAX_LOGGER_HANDLER_TIMEOUT,
+                timeout or DEFAULT_LOGGER_HANDLER_TIMEOUT,
+            ),
+        )
+
+    @property
+    def manager_shutdown_timeout(self) -> float:
+        return self.__manager_shutdown_timeout
+
+    @manager_shutdown_timeout.setter
+    def manager_shutdown_timeout(self, timeout: float | None) -> None:
+        self.__manager_shutdown_timeout = max(
+            MIN_MANAGER_SHUTDOWN_TIMEOUT,
+            min(
+                MAX_MANAGER_SHUTDOWN_TIMEOUT,
+                timeout or DEFAULT_MANAGER_SHUTDOWN_TIMEOUT,
+            ),
+        )
+
+    @property
     def heartbeat_interval(self) -> float:
         return self.__heartbeat_interval
 
@@ -176,11 +230,6 @@ class BasicAsyncWorker:
     def start_time(self) -> datetime | None:
         """Service start time."""
         return self.__start_time
-
-    @property
-    def initialized(self) -> bool:
-        """Indicates whether the worker has completed initialization."""
-        return self.__initialized
 
     @property
     def logger(self) -> logging.Logger:
@@ -241,7 +290,6 @@ class BasicAsyncWorker:
 
     async def _logger_start_handlers(self) -> None:
         """Initialize all async logging handlers."""
-        per_handler_timeout: float = 2.0
         for handler in self.logger.handlers:
             handler_name = handler.name or handler.__class__.__name__
             if (
@@ -250,7 +298,9 @@ class BasicAsyncWorker:
             ):
                 if isinstance(handler, AsyncBaseHandler):
                     try:
-                        await asyncio.wait_for(handler.start_logging(), timeout=per_handler_timeout)
+                        await asyncio.wait_for(
+                            handler.start_logging(), timeout=self.logger_handler_timeout
+                        )
                     except asyncio.TimeoutError:
                         try:
                             self.logger.warning(
@@ -279,12 +329,13 @@ class BasicAsyncWorker:
         This will attempt to stop each `AsyncBaseHandler` with a per-handler
         timeout to avoid hanging shutdowns if a handler blocks.
         """
-        per_handler_timeout: float = 2.0
         for handler in self.logger.handlers:
             handler_name = handler.name or handler.__class__.__name__
             if isinstance(handler, AsyncBaseHandler):
                 try:
-                    await asyncio.wait_for(handler.stop_logging(), timeout=per_handler_timeout)
+                    await asyncio.wait_for(
+                        handler.stop_logging(), timeout=self.logger_handler_timeout
+                    )
                 except asyncio.TimeoutError:
                     try:
                         self.logger.warning(
@@ -358,13 +409,12 @@ class BasicAsyncWorker:
 
     async def _stop_manager(self, name: str) -> None:
         """Stop manager task."""
-        manager_shutdown_timeout: float = 2.0
         if name not in self.__manager_tasks:
             self.logger.log(logging.DEBUG, "%s is not running", name)
             return
         self.__manager_tasks[name].cancel()
         try:
-            await asyncio.wait_for(self.__manager_tasks[name], manager_shutdown_timeout)
+            await asyncio.wait_for(self.__manager_tasks[name], self.manager_shutdown_timeout)
         except asyncio.TimeoutError:
             self.logger.log(logging.DEBUG, "Timeout during %s shut down", name)
         del self.__manager_tasks[name]
@@ -393,7 +443,7 @@ class BasicAsyncWorker:
                 self.logger.log(logging.INFO, "Waiting for service shutdown complete.")
             self.logger.log(logging.INFO, "Service is starting up.")
             while not self.__state == ServiceStatus.STOPPED:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(WAIT_FOR_SERVICE_STOPPED_DELAY)
             self.logger.log(logging.INFO, "Service is starting up.")
             self.__state = ServiceStatus.STARTING
             print_scietex_logo(service_name=self.service_name, version=self.version)
@@ -404,8 +454,7 @@ class BasicAsyncWorker:
             await self._start_managers()
 
             # Perform any custom initialization and check if successful
-            self.__initialized = await self.initialize()
-            if not self.initialized:
+            if not await self.initialize():
                 raise RuntimeError("Initialization failed")
 
             self.__start_time = datetime.now(timezone.utc)
@@ -466,7 +515,8 @@ class BasicAsyncWorker:
             self.logger.debug("Stopping loggers...")
             # Shut down logging handlers with an overall timeout
             try:
-                await asyncio.wait_for(self._logger_shut_down_handlers(), timeout=5)
+                loggers_timeout = len(self.logger.handlers) * self.logger_handler_timeout + 1
+                await asyncio.wait_for(self._logger_shut_down_handlers(), timeout=loggers_timeout)
             except asyncio.TimeoutError:
                 self.logger.warning("Timeout while shutting down logging handlers")
             except Exception as e:
@@ -475,7 +525,6 @@ class BasicAsyncWorker:
                 except Exception:
                     print("Error shutting down logging handlers:", e)
             self.__start_time = None
-            self.__initialized = False
 
             self.__state = ServiceStatus.STOPPED
 

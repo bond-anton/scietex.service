@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-from scietex.service.task_handlers.basic import TaskHandler
-from scietex.service.task_handlers.schemas import TaskData, TaskResult
+from scietex.service.task_handler.basic import TaskHandler
+from scietex.service.task_handler.schemas import TaskData, TaskResult
 
 
 class DummyWorker(types.SimpleNamespace):

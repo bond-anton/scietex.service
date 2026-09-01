@@ -36,7 +36,7 @@ except ImportError as e:
 from scietex.logging import AsyncValkeyHandler
 
 from ..async_tasks_processor import AsyncTaskProcessor
-from ..task_handlers import TaskData, task_type
+from ..task_handler import TaskData, task_type
 from .schemas import Heartbeat
 from .valkey_config import (
     ValkeyConfig,
@@ -111,15 +111,15 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
                 worker_id=self.worker_id,
                 listening=False,
             )
-        valkey_handler = AsyncValkeyHandler(
+        valkey_logging_handler = AsyncValkeyHandler(
             stream_name=self._log_stream_name,
             service_name=self.service_name,
             worker_id=self.worker_id,
             valkey_config=self._client_config,
             stdout_enable=False,
         )
-        valkey_handler.setLevel(self.logging_level)
-        self.logger.addHandler(valkey_handler)
+        valkey_logging_handler.setLevel(self.logging_level)
+        self.logger.addHandler(valkey_logging_handler)
 
         self._client: GlideClient | None = None
         self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
@@ -215,12 +215,6 @@ class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
         Returns:
             bool: True if both initialization steps succeed, otherwise False.
         """
-        if self.initialized:
-            self.logger.log(logging.DEBUG, "Already initialized")
-            return True
-
-        if not await super().initialize():
-            return False
 
         await self.connect()
         if not self.client:

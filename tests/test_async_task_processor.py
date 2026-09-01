@@ -4,8 +4,8 @@ from uuid import uuid4
 import pytest
 
 from scietex.service.async_tasks_processor import AsyncTaskProcessor
-from scietex.service.task_handlers.basic import TaskHandler
-from scietex.service.task_handlers.schemas import TaskData, TaskResult, TaskTimeout
+from scietex.service.task_handler.basic import TaskHandler
+from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeout
 
 
 class DummyHandler(TaskHandler):
@@ -57,7 +57,7 @@ class DemoProcessor(AsyncTaskProcessor):
 @pytest.mark.asyncio
 async def test_process_task_with_dummy_handler():
     proc = DemoProcessor()
-    proc.register_task_handler("dummy", DummyHandler)
+    proc.add_task_handler("dummy", DummyHandler)
 
     result: TaskResult = await proc.process_task(
         uuid4(), TaskData(task="dummy", payload=b'{"value": 5}')
@@ -70,7 +70,7 @@ async def test_process_task_with_dummy_handler():
 @pytest.mark.asyncio
 async def test_watchdog_requeues_timed_out_task():
     proc = DemoProcessor()
-    proc.register_task_handler("slow", SlowHandler)
+    proc.add_task_handler("slow", SlowHandler)
 
     # start managers (task_manager, task_queue_manager, watchdog)
     await proc.start()

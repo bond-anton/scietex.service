@@ -6,6 +6,7 @@ processors can use consistent typing for `task_data` and returned
 results.
 """
 
+from asyncio import Task
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, TypeVar
@@ -43,3 +44,11 @@ class TaskResult(msgspec.Struct, frozen=True):
     error: str
     processed_at: datetime = datetime.now(timezone.utc)
     payload: bytes = b""
+
+
+class TaskTracker(msgspec.Struct, frozen=True):
+    """Task tracker schema."""
+
+    worker_task: Task
+    data: TaskData
+    started: int | float
