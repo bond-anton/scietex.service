@@ -307,6 +307,7 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
             raise ValueError("Task data must contain 'task' field")
 
         handler = self._find_task_handler(task_type)
+        print("GOT HANDLER", handler)
         if handler and handler.is_ready:
             try:
                 result = await handler.handle(task_data)
@@ -334,16 +335,19 @@ class AsyncTaskProcessor(BasicAsyncWorker, Generic[task_type]):
 
         async def handle_task(t_id: UUID, t_data: TaskData):
             try:
+                print("HANDLING TASK", t_id)
                 await self.process_task(t_id, t_data)
             finally:
                 self.running_tasks.pop(t_id, None)
                 self.task_queue.task_done()
 
         if len(self.running_tasks) < self.max_concurrent_tasks:
+            print("WAITING FOR TASK")
             try:
                 task_id, task_data = await asyncio.wait_for(
                     self.task_queue.get(), timeout=TASK_QUEUE_FETCH_TIMEOUT
                 )
+                print("GOT TASK:", task_id, task_data)
                 task = asyncio.create_task(handle_task(task_id, task_data))
                 self.__running_tasks[task_id] = TaskTracker(
                     worker_task=task, data=task_data, started=time.time()

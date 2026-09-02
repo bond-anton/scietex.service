@@ -16,7 +16,6 @@ from uuid import UUID
 from scietex.service import AsyncTaskProcessor
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, TaskTimeout
 
-
 # ── Handler implementations ──────────────────────────────────────────────
 
 
@@ -170,6 +169,7 @@ class TaskProcessorService(AsyncTaskProcessor):
             task_id, task_data = self._task_source._tasks.pop(0)
             print(task_id, task_data)
             await self.task_queue.put((task_id, task_data))
+            print(self.task_queue.qsize())
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Re-queue tasks that timed out or were canceled."""
@@ -181,10 +181,6 @@ class TaskProcessorService(AsyncTaskProcessor):
 
 
 async def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    )
 
     # Create task source and populate with sample tasks
     task_source = InMemoryTaskSource()
