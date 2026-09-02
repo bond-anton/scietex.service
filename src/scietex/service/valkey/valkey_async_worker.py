@@ -1,6 +1,10 @@
-"""
-Module providing asynchronous worker, which communicates with the Valkey server using glide client.
-Worker provides handling connections, disconnections, initialization, cleanups, and logging.
+"""Valkey-backed async task processor for ``scietex.service``.
+
+Provides ``ValkeyWorker`` — an async worker that extends ``AsyncTaskProcessor``
+with Valkey stream-based task distribution, heartbeat publishing, and async
+logging. Uses the ``glide`` client for all Valkey operations.
+
+Requires the optional ``valkey-glide`` dependency.
 """
 
 import logging
@@ -74,8 +78,12 @@ class ValkeyWorker(AsyncTaskProcessor):
         log_stream_name: str = "scietex:log",
         **kwargs,
     ):
-        """
-        Initialize the ValkeyWorker.
+        """Initialize the ``ValkeyWorker``.
+
+        Configures the Valkey client from ``valkey_config`` or by reading
+        ``valkey.yml`` from the config directory. Sets up stream names for
+        tasks, heartbeat status, and logging. Registers an
+        :class:`~scietex.logging.AsyncValkeyHandler` for async log entries.
 
         Args:
             service_name: Name of the service, used for logging and identification.
@@ -89,10 +97,19 @@ class ValkeyWorker(AsyncTaskProcessor):
             max_concurrent_tasks: Maximum number of tasks processed concurrently.
             valkey_config: Custom Valkey configuration. If ``None``, reads
                 ``valkey.yml`` from the config directory; on failure falls back
-                to minimal defaults.
+                to minimal defaults. Accepts either a :class:`ValkeyConfig`
+                or a raw :class:`~glide.GlideClientConfiguration`.
             log_stream_name: Name of the Valkey stream used for log entries.
             **kwargs: Additional keyword arguments passed to the parent
                 ``AsyncTaskProcessor`` constructor.
+
+        Attributes:
+            _client (GlideClient | None): Valkey client, initialized during
+                :meth:`initialize`.
+            _heartbeat_key (str): Key for the worker status heartbeat entry.
+            _task_stream_name (str): Valkey stream name for task entries.
+            _task_group_name (str): Consumer group name for task fetching.
+            _consumer_name (str): Consumer identifier within the task group.
         """
         super().__init__(
             service_name=service_name,
@@ -138,23 +155,37 @@ class ValkeyWorker(AsyncTaskProcessor):
 
     @property
     def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
-        """Valkey configuration property."""
+        """The Valkey configuration used by this worker.
+
+        Returns either a :class:`ValkeyConfig` schema or a raw
+        :class:`~glide.GlideClientConfiguration`, depending on how the
+        worker was constructed.
+
+        Returns:
+            The Valkey configuration instance.
+        """
         return self._valkey_config
 
     @property
     def client(self) -> GlideClient | None:
-        """Valkey client property."""
+        """The Valkey :class:`~glide.GlideClient` instance.
+
+        ``None`` until :meth:`initialize` completes successfully.
+
+        Returns:
+            The active Valkey client, or ``None`` if not connected.
+        """
         return self._client
 
     async def connect(self) -> bool:
-        """
-        Establishes an asynchronous connection to Valkey.
+        """Establish an asynchronous connection to the Valkey server.
 
-        Attempts to initialize the Valkey client using the specified configuration.
-        Logs successful or unsuccessful connection attempt based on results.
+        Creates a new :class:`~glide.GlideClient` using the configured
+        ``_client_config`` and verifies connectivity with ``PING``.
 
         Returns:
-            bool: True if successfully connected, otherwise False.
+            ``True`` if the connection is established and ``PING``
+            succeeds; ``False`` on connection failure or timeout.
         """
         if self._client is None:
             try:
@@ -171,10 +202,10 @@ class ValkeyWorker(AsyncTaskProcessor):
         return True
 
     async def disconnect(self):
-        """Gracefully close the connection to Valkey.
+        """Gracefully close the connection to the Valkey server.
 
-        Closes the current Valkey client session and clears the internal
-        client reference.
+        Invokes :meth:`~glide.GlideClient.close` on the active client,
+        logs the disconnection, and sets ``_client`` to ``None``.
         """
         if self._client is not None:
             await self._client.close()
@@ -207,9 +238,7 @@ class ValkeyWorker(AsyncTaskProcessor):
                     expiry=ExpirySet(ExpiryType.SEC, int(self.heartbeat_interval * 2)),
                 )
                 duration = (time.monotonic() - start_time) * 1000
-                self.logger.log(
-                    logging.DEBUG, "Heartbeat set in Valkey, duration: %.2f ms", duration
-                )
+                self.logger.log(logging.DEBUG, "Heartbeat set in Valkey, duration: %.2f ms", duration)
             except Exception as exc:
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(
@@ -220,15 +249,21 @@ class ValkeyWorker(AsyncTaskProcessor):
                 )
 
     async def initialize(self) -> bool:
-        """
-        Performs basic initialization steps along with establishing a connection to Valkey.
+        """Initialize the worker and prepare the Valkey task stream.
 
-        Calls the base class's initialize method first, then connects to Valkey.
+        Calls the parent ``AsyncTaskProcessor.initialize()`` to start
+        registered task handlers, then connects to Valkey and creates
+        the consumer group for the task stream (with ``make_stream=True``).
+        Fails silently if the group already exists.
 
         Returns:
-            bool: True if both initialization steps succeed, otherwise False.
+            ``True`` if the parent initialization and Valkey connection
+            succeed, and the consumer group is ready. ``False`` if the
+            parent initialization fails or the client is unavailable.
         """
 
+        if not await super().initialize():
+            return False
         await self.connect()
         if not self.client:
             return False
@@ -247,20 +282,23 @@ class ValkeyWorker(AsyncTaskProcessor):
     async def cleanup(self):
         """Perform cleanup on shutdown.
 
-        Calls the parent ``AsyncTaskProcessor.cleanup()`` to handle task
-        queue drainage and handler cleanup, then closes the Valkey
-        connection via ``disconnect()``.
+        Drains the internal task queue and cancels running tasks via the
+        parent ``AsyncTaskProcessor.cleanup()``, then closes the Valkey
+        connection through :meth:`disconnect`.
         """
         await super().cleanup()
         await self.disconnect()
 
     async def purge_tasks(self):
-        """
-        Purges all pending tasks from the Valkey task stream.
+        """Purge all pending and unacknowledged tasks from the Valkey task stream.
 
-        This method is useful for clearing out any unprocessed tasks, especially during
-        shutdown or when resetting the worker's state. It deletes all entries from the
-        task stream and acknowledges them to ensure they are not reprocessed.
+        Reads and acknowledges every entry in the task stream via
+        ``XREADGROUP`` (both pending and unclaimed), then deletes them
+        with ``XDEL``. Also purges any remaining entries via ``XREAD``.
+
+        Returns:
+            None. Logs a confirmation message on success or an error
+            description on failure.
         """
         if self.client is None:
             print("No Valkey client available to purge tasks")
@@ -327,14 +365,18 @@ class ValkeyWorker(AsyncTaskProcessor):
             self.logger.log(logging.DEBUG, "Failed to purge tasks from Valkey: %s", exc)
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
-        """Return a task to the Valkey task stream.
+        """Re-queue a task by appending it to the Valkey task stream.
 
-        Encodes the ``TaskData`` using msgpack and appends it to the
-        task stream identified by ``self._task_stream_name``.
+        Encodes ``task_data`` with msgpack and appends a new entry to
+        the stream identified by ``self._task_stream_name``. The entry
+        key is the string representation of ``task_id``.
 
         Args:
             task_id: The unique identifier of the task.
-            task_data: The task data to return to the Valkey stream.
+            task_data: The :class:`TaskData` to return to the Valkey stream.
+
+        Returns:
+            None. No-op if the Valkey client is ``None``.
         """
         if self.client:
             t_id: bytes = str(task_id).encode("utf-8")
@@ -345,9 +387,15 @@ class ValkeyWorker(AsyncTaskProcessor):
         """Fetch a single task from the Valkey task stream and enqueue it.
 
         Reads one entry from the task stream using ``XREADGROUP`` with
-        the configured consumer group, decodes the msgpack payload into
-        a ``TaskData`` struct, and puts it into ``self.task_queue``.
-        On read errors, attempts to reconnect to Valkey.
+        ``block_ms=1000`` and the configured consumer group. Decodes the
+        msgpack payload into a :class:`TaskData` struct and puts it into
+        ``self.task_queue`` as a ``(UUID, TaskData)`` tuple. Acknowledges
+        and deletes the entry after successful decoding.
+
+        On read errors, disconnects and attempts to reconnect to Valkey.
+
+        Returns:
+            None. No-op if the Valkey client is ``None``.
         """
 
         if self.client is None:

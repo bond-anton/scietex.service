@@ -40,7 +40,14 @@ WAIT_FOR_SERVICE_STOPPED_DELAY: float = 0.1
 
 
 class ServiceStatus(Enum):
-    """Service Status."""
+    """Lifecycle states of a ``BasicAsyncWorker`` instance.
+
+    Attributes:
+        STOPPED: The service is not running.
+        STARTING: The service is in the process of starting up.
+        RUNNING: The service is actively running and processing.
+        STOPPING: The service is in the process of shutting down.
+    """
 
     STOPPED = "Stopped"
     STARTING = "Starting"
@@ -121,13 +128,9 @@ class BasicAsyncWorker:
         self.__conf_dir: Path = prepare_conf_dir(conf_dir)
 
         # Set up logger with async handler
-        self._logger: logging.Logger = logging.getLogger(
-            f"{self.__service_name}.{self.__worker_id}"
-        )
+        self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}.{self.__worker_id}")
         self._logger.setLevel(self.logging_level)
-        stdout_handler = AsyncBaseHandler(
-            service_name=self.__service_name, worker_id=self.__worker_id
-        )
+        stdout_handler = AsyncBaseHandler(service_name=self.__service_name, worker_id=self.__worker_id)
         stdout_handler.setLevel(self.logging_level)
         self._logger.addHandler(stdout_handler)
 
@@ -166,37 +169,77 @@ class BasicAsyncWorker:
 
     @property
     def state(self) -> ServiceStatus:
-        """Current service status (read-only)."""
+        """Current lifecycle state of the service (read-only).
+
+        Returns:
+            The current ``ServiceStatus`` enum value indicating whether
+            the service is stopped, starting, running, or stopping.
+        """
         return self.__state
 
     @property
     def events(self) -> dict[str, asyncio.Event]:
-        """Dictionary of lifecycle events (exit_requested, exit)."""
+        """Dictionary of lifecycle events for external coordination.
+
+        Contains two events:
+            - ``exit_requested``: Set when an exit is requested (e.g., via signal).
+            - ``exit``: Set when the worker has fully stopped.
+
+        Returns:
+            The internal events dictionary.
+        """
         return self.__events
 
     @property
     def service_name(self) -> str:
-        """Service name string (read-only)."""
+        """Name of the service, used for logging and identification (read-only).
+
+        Returns:
+            The service name string provided during initialization.
+        """
         return self.__service_name
 
     @property
     def worker_id(self) -> int:
-        """Worker id number (read-only)."""
+        """Unique identifier for this worker instance (read-only).
+
+        Returns:
+            The worker ID integer provided during initialization.
+        """
         return self.__worker_id
 
     @property
     def version(self) -> str:
-        """Service version string (read-only)."""
+        """Version string of the service (read-only).
+
+        Returns:
+            The version string provided during initialization.
+        """
         return self.__version
 
     @property
     def conf_dir(self) -> Path:
-        """Configuration directory path (read-only)."""
+        """Resolved configuration directory path (read-only).
+
+        The directory is determined by the precedence rules:
+        ``conf_dir`` argument, ``~/.config/scietex/``, ``/etc/scietex/``,
+        ``/usr/local/etc/scietex/``, or ``./config/`` (CWD).
+
+        Returns:
+            The ``Path`` object pointing to the configuration directory.
+        """
         return self.__conf_dir
 
     @property
     def logger_handler_timeout(self) -> float:
-        """Timeout in seconds for logger handler operations."""
+        """Timeout in seconds for logger handler start/stop operations (read-only).
+
+        Clamped between ``MIN_LOGGER_HANDLER_TIMEOUT`` and
+        ``MAX_LOGGER_HANDLER_TIMEOUT``.
+
+        Returns:
+            The current timeout value in seconds.
+        """
         return self.__logger_handler_timeout
 
     @logger_handler_timeout.setter
@@ -218,7 +261,14 @@ class BasicAsyncWorker:
 
     @property
     def manager_shutdown_timeout(self) -> float:
-        """Timeout in seconds for manager shutdown operations."""
+        """Timeout in seconds for manager task shutdown operations (read-only).
+
+        Clamped between ``MIN_MANAGER_SHUTDOWN_TIMEOUT`` and
+        ``MAX_MANAGER_SHUTDOWN_TIMEOUT``.
+
+        Returns:
+            The current timeout value in seconds.
+        """
         return self.__manager_shutdown_timeout
 
     @manager_shutdown_timeout.setter
@@ -240,7 +290,14 @@ class BasicAsyncWorker:
 
     @property
     def heartbeat_interval(self) -> float:
-        """Interval in seconds between heartbeat calls."""
+        """Interval in seconds between heartbeat calls (read-only).
+
+        Clamped between ``MIN_HEARTBEAT_INTERVAL`` and
+        ``MAX_HEARTBEAT_INTERVAL``.
+
+        Returns:
+            The current heartbeat interval in seconds.
+        """
         return self.__heartbeat_interval
 
     @heartbeat_interval.setter
@@ -259,7 +316,14 @@ class BasicAsyncWorker:
 
     @property
     def watchdog_interval(self) -> float:
-        """Interval in seconds between watchdog checks."""
+        """Interval in seconds between watchdog checks (read-only).
+
+        Clamped between ``MIN_WATCHDOG_INTERVAL`` and
+        ``MAX_WATCHDOG_INTERVAL``.
+
+        Returns:
+            The current watchdog interval in seconds.
+        """
         return self.__watchdog_interval
 
     @watchdog_interval.setter
@@ -278,17 +342,35 @@ class BasicAsyncWorker:
 
     @property
     def start_time(self) -> datetime | None:
-        """Service start time."""
+        """Timestamp when the service started running (read-only).
+
+        Returns:
+            The UTC ``datetime`` when the service transitioned to
+            ``RUNNING`` state, or ``None`` if the service has not
+            started or has been stopped.
+        """
         return self.__start_time
 
     @property
     def logger(self) -> logging.Logger:
-        """Service logger instance."""
+        """Logger instance for the worker.
+
+        The logger is named using the pattern ``{service_name}.{worker_id}``
+        and is configured with an ``AsyncBaseHandler`` for async logging.
+
+        Returns:
+            The ``logging.Logger`` instance associated with this worker.
+        """
         return self._logger
 
     @property
     def logging_level(self) -> int:
-        """Current logging level for the service."""
+        """Current logging level for the worker (read-only).
+
+        Returns:
+            The logging level as an integer constant from the
+            ``logging`` module (e.g., ``logging.DEBUG``, ``logging.INFO``).
+        """
         return self.__logging_level
 
     @logging_level.setter
@@ -361,14 +443,10 @@ class BasicAsyncWorker:
             ):
                 if isinstance(handler, AsyncBaseHandler):
                     try:
-                        await asyncio.wait_for(
-                            handler.start_logging(), timeout=self.logger_handler_timeout
-                        )
+                        await asyncio.wait_for(handler.start_logging(), timeout=self.logger_handler_timeout)
                     except asyncio.TimeoutError:
                         try:
-                            self.logger.warning(
-                                "Timeout starting logging handler %s (%s)", handler_name, handler
-                            )
+                            self.logger.warning("Timeout starting logging handler %s (%s)", handler_name, handler)
                         except Exception:
                             # logger itself may be in a bad state; fallback to print
                             print(f"Timeout starting logging handler {handler_name} ({handler})")
@@ -381,9 +459,7 @@ class BasicAsyncWorker:
                                 e,
                             )
                         except Exception:
-                            print(
-                                f"Failed to start logging handler {handler_name} ({handler}): {e}"
-                            )
+                            print(f"Failed to start logging handler {handler_name} ({handler}): {e}")
                 self.__loggers_statuses[handler_name] = LoggerStatus.RUNNING
 
     async def _logger_shut_down_handlers(self) -> None:
@@ -396,14 +472,10 @@ class BasicAsyncWorker:
             handler_name = handler.name or handler.__class__.__name__
             if isinstance(handler, AsyncBaseHandler):
                 try:
-                    await asyncio.wait_for(
-                        handler.stop_logging(), timeout=self.logger_handler_timeout
-                    )
+                    await asyncio.wait_for(handler.stop_logging(), timeout=self.logger_handler_timeout)
                 except asyncio.TimeoutError:
                     try:
-                        self.logger.warning(
-                            "Timeout stopping logging handler %s (%s)", handler_name, handler
-                        )
+                        self.logger.warning("Timeout stopping logging handler %s (%s)", handler_name, handler)
                     except Exception:
                         # logger itself may be in a bad state; fallback to print
                         print(f"Timeout stopping logging handler {handler_name} ({handler})")
@@ -416,9 +488,7 @@ class BasicAsyncWorker:
                             e,
                         )
                     except Exception:
-                        print(
-                            f"Failed to shut down logging handler {handler_name} ({handler}): {e}"
-                        )
+                        print(f"Failed to shut down logging handler {handler_name} ({handler}): {e}")
             self.__loggers_statuses[handler_name] = LoggerStatus.RUNNING
 
     async def initialize(self) -> bool:
@@ -519,12 +589,22 @@ class BasicAsyncWorker:
         await self._start_manager(name, manager)
 
     async def _start_managers(self) -> None:
-        """Start all registered managers as asyncio tasks."""
+        """Start all registered managers as asyncio tasks.
+
+        Iterates over all ``Manager``-decorated methods found in the
+        class MRO (from most-derived to base classes) and starts each
+        one as a named ``asyncio.Task``.
+        """
         for name, manager in self._iter_manager_definitions():
             await self._start_manager(name, manager)
 
     async def _stop_managers(self) -> None:
-        """Stop all registered managers in order."""
+        """Stop all registered managers in order.
+
+        Iterates over all ``Manager``-decorated methods found in the
+        class MRO and stops each one, waiting up to
+        ``manager_shutdown_timeout`` seconds per manager.
+        """
         for name, _ in self._iter_manager_definitions():
             await self._stop_manager(name)
 
@@ -560,9 +640,7 @@ class BasicAsyncWorker:
                 raise RuntimeError("Initialization failed")
 
             self.__start_time = datetime.now(timezone.utc)
-            self.logger.log(
-                logging.DEBUG, "Worker %s:%d started", self.service_name, self.worker_id
-            )
+            self.logger.log(logging.DEBUG, "Worker %s:%d started", self.service_name, self.worker_id)
             self.__state = ServiceStatus.RUNNING
         except asyncio.CancelledError:
             self.logger.log(logging.INFO, "Startup task canceled.")
@@ -684,10 +762,11 @@ class BasicAsyncWorker:
             asyncio.create_task(self._shutdown(), name="Stop")
 
     async def exit(self):
-        """
-        Request exit and wait for the worker to stop.
+        """Request exit and wait for the worker to fully stop.
 
-        Sets the exit_requested event and triggers a graceful shutdown via stop().
+        Sets the ``exit_requested`` event and triggers a graceful shutdown
+        via ``stop()``. The caller should await ``events["exit"].wait()``
+        to confirm the worker has fully stopped.
         """
         self.events["exit_requested"].set()
         await self.stop()
@@ -715,11 +794,27 @@ class BasicAsyncWorker:
         await self.watchdog()
 
     async def heartbeat(self) -> None:
-        """Heartbeat function to be overwritten."""
+        """Periodic heartbeat callback invoked by the Heartbeat manager.
+
+        Override this method in subclasses to define custom heartbeat
+        behavior, such as health checks or status reporting. The default
+        implementation logs a debug message.
+
+        The Heartbeat manager calls this method every ``heartbeat_interval``
+        seconds.
+        """
         self.logger.debug("💓 Heartbeat")
 
     async def watchdog(self) -> None:
-        """Watchdog function to be overwritten."""
+        """Periodic watchdog callback invoked by the Watchdog manager.
+
+        Override this method in subclasses to define custom watchdog
+        behavior, such as monitoring resource usage or checking
+        dependencies. The default implementation logs a debug message.
+
+        The Watchdog manager calls this method every ``watchdog_interval``
+        seconds.
+        """
         self.logger.debug("🐕 Watchdog")
 
     async def cleanup(self):

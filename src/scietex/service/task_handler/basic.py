@@ -11,17 +11,24 @@ if TYPE_CHECKING:
 
 
 class TaskHandler(ABC):
-    """
-    Abstract base class for all task handlers.
-    Defines the contract that all concrete handlers must implement.
+    """Abstract base class for all task handlers.
+
+    Defines the lifecycle contract (``start``/``stop``), the handler
+    selection mechanism (``supports``), and the task processing method
+    (``handle``) that concrete implementations must provide.
+
+    Subclasses must implement the :attr:`supported_tasks` property and
+    the :meth:`handle` method.
     """
 
     def __init__(self, name: str, worker: "BasicAsyncWorker") -> None:
-        """Initialize the task handler with a reference to the parent worker.
+        """Initialize the task handler.
 
         Args:
+            name: Human-readable name for this handler instance.
             worker: Reference to the parent ``BasicAsyncWorker`` instance,
-                allowing handlers to access shared resources and utilities.
+                providing access to shared resources, logging, and the
+                task queue.
         """
         self.name: str = name
         self.worker: BasicAsyncWorker = worker
@@ -31,7 +38,11 @@ class TaskHandler(ABC):
     @property
     @abstractmethod
     def supported_tasks(self) -> list[str]:
-        """List of supported task names."""
+        """List of task type strings this handler can process.
+
+        Must be implemented by subclasses to declare which task types
+        they support.
+        """
         pass
 
     @abstractmethod
@@ -63,21 +74,30 @@ class TaskHandler(ABC):
         return task_type in self.supported_tasks
 
     async def initialize(self) -> bool:
-        """
-        Optional asynchronous initialization method.
-        Can be overridden by handlers that require setup before processing tasks.
+        """Asynchronous initialization called by :meth:`start`.
+
+        Override this method to perform any setup required before
+        processing tasks (e.g., opening connections, loading data).
+
+        Returns:
+            ``True`` if initialization succeeded, ``False`` otherwise.
         """
         return True
 
     async def cleanup(self) -> None:
-        """
-        Optional cleanup method.
-        Can be used to close connections and perform other cleanup tasks.
+        """Asynchronous cleanup called by :meth:`stop`.
+
+        Override this method to release resources (e.g., close database
+        connections, flush buffers) before the handler is shut down.
         """
         pass
 
     async def start(self) -> None:
-        """Used to start the handler."""
+        """Start the handler.
+
+        Calls :meth:`initialize` and sets :attr:`is_ready` to ``True``.
+        Logs the handler name and supported task types on success.
+        """
         self._is_initialized = await self.initialize()
         self.logger.log(
             logging.INFO,
@@ -87,12 +107,16 @@ class TaskHandler(ABC):
         )
 
     async def stop(self) -> None:
-        """Used to stop the handler."""
+        """Stop the handler.
+
+        Calls :meth:`cleanup` and resets :attr:`is_ready` to ``False``.
+        Logs the handler name on shutdown.
+        """
         await self.cleanup()
         self._is_initialized = False
         self.logger.log(logging.INFO, "Stopped handler: %s", self.name)
 
     @property
     def is_ready(self) -> bool:
-        """Checks if the handler is ready for use (initialized)."""
+        """Whether the handler has been initialized and is ready to process tasks."""
         return self._is_initialized

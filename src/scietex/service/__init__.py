@@ -1,15 +1,25 @@
 """scietex.service — Async worker framework for building background daemon services.
 
-Provides ``BasicAsyncWorker`` for basic async daemon functionality,
-``AsyncTaskProcessor`` for concurrent task processing, and optionally
-``ValkeyWorker`` for Valkey-backed task queues.
+Core classes:
+    - ``BasicAsyncWorker``: Base async worker with signal handling, logging,
+      heartbeat and watchdog managers, and graceful shutdown support.
+    - ``AsyncTaskProcessor``: Extends ``BasicAsyncWorker`` with a task queue,
+      concurrent task processing, handler dispatch, and timeout monitoring.
+    - ``ValkeyWorker``: Extends ``AsyncTaskProcessor`` with Valkey (Redis)
+      integration via the ``glide`` client for distributed task queues.
+      (Requires ``scietex.service[valkey]`` extra.)
+
+Module-level exports:
+    ``__version__``, ``BasicAsyncWorker``, ``AsyncTaskProcessor``, and
+    optionally ``ValkeyWorker`` and its configuration classes.
 """
 
 from .async_tasks_processor import AsyncTaskProcessor
 from .basic_async_worker import BasicAsyncWorker
+from .manager import Manager
 from .version import __version__
 
-__all__ = ["__version__", "BasicAsyncWorker", "AsyncTaskProcessor"]
+__all__ = ["__version__", "AsyncTaskProcessor", "BasicAsyncWorker", "Manager"]
 
 try:
     from .valkey import (

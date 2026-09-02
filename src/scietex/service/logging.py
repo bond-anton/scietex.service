@@ -12,7 +12,12 @@ DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
 
 
 class LoggerStatus(Enum):
-    """Lifecycle status of an async logging handler."""
+    """Lifecycle states of an async logging handler.
+
+    Attributes:
+        STOPPED: The handler is not running.
+        RUNNING: The handler is actively processing log messages.
+    """
 
     STOPPED = "Stopped"
     RUNNING = "Running"

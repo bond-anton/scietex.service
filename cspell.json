@@ -18,13 +18,15 @@
     "pytest",
     "asyncio",
     "xgroup",
+    "xread",
     "xreadgroup",
     "xadd",
     "xack",
     "xdel",
     "keepalive",
     "cacerts",
-    "nodelay"
+    "nodelay",
+    "kwargs"
   ],
   "ignoreWords": [],
   "import": []

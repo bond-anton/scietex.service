@@ -74,7 +74,12 @@ class ValkeyBackoffStrategy(msgspec.Struct, frozen=True):
 
     @property
     def reconnect_strategy(self) -> BackoffStrategy:
-        """BackoffStrategy object generation."""
+        """Create a :class:`~glide.BackoffStrategy` from these settings.
+
+        Returns:
+            A :class:`~glide.BackoffStrategy` instance configured with
+            the same retry count, factor, exponent base, and jitter.
+        """
         return BackoffStrategy(
             num_of_retries=self.num_of_retries,
             factor=self.factor,
@@ -97,7 +102,14 @@ class ValkeyTlsAdvancedConfiguration(msgspec.Struct, frozen=True):
     root_pem_cacerts: str | None = None
 
     def to_tls_advanced_config(self) -> TlsAdvancedConfiguration:
-        """TlsAdvancedConfiguration object generation."""
+        """Convert to a :class:`~glide.TlsAdvancedConfiguration` instance.
+
+        Encodes ``root_pem_cacerts`` to bytes if provided.
+
+        Returns:
+            A :class:`~glide.TlsAdvancedConfiguration` with matching
+            ``use_insecure_tls`` and ``root_pem_cacerts`` values.
+        """
         return TlsAdvancedConfiguration(
             use_insecure_tls=self.use_insecure_tls,
             root_pem_cacerts=self.root_pem_cacerts.encode() if self.root_pem_cacerts else None,
@@ -118,7 +130,15 @@ class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
     tls_config: ValkeyTlsAdvancedConfiguration = ValkeyTlsAdvancedConfiguration()
 
     def to_advanced_config(self) -> AdvancedGlideClientConfiguration:
-        """AdvancedGlideClientConfiguration object generation."""
+        """Convert to an :class:`~glide.AdvancedGlideClientConfiguration` instance.
+
+        Recursively converts ``tls_config`` if present.
+
+        Returns:
+            An :class:`~glide.AdvancedGlideClientConfiguration` with
+            matching ``connection_timeout``, ``tcp_nodelay``, and
+            ``tls_config`` values.
+        """
         return AdvancedGlideClientConfiguration(
             connection_timeout=self.connection_timeout,
             tcp_nodelay=self.tcp_nodelay,
@@ -147,9 +167,7 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
         protocol: Protocol version (``"RESP2"`` or ``"RESP3"``).
     """
 
-    nodes: list[ValkeyNode] = field(
-        default_factory=lambda: [ValkeyNode(host="localhost", port=6379)]
-    )
+    nodes: list[ValkeyNode] = field(default_factory=lambda: [ValkeyNode(host="localhost", port=6379)])
     user_credentials: ValkeyUserCredentials | None = None
     use_tls: bool = False
     request_timeout: int | None = 5_000
@@ -164,12 +182,24 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
 
     @property
     def addresses(self) -> list[NodeAddress]:
-        """NodeAddresses objects generation."""
+        """Create :class:`~glide.NodeAddress` instances for all configured nodes.
+
+        Returns:
+            A list of :class:`~glide.NodeAddress` objects, one per node
+            in ``self.nodes``.
+        """
         return [NodeAddress(node.host, node.port) for node in self.nodes]
 
     @property
     def credentials(self) -> ServerCredentials | None:
-        """ServerCredentials object generation."""
+        """Create :class:`~glide.ServerCredentials` from stored user credentials.
+
+        Returns ``None`` if ``user_credentials`` is not set or if
+        credential construction raises a :class:`~glide.ConfigurationError`.
+
+        Returns:
+            A :class:`~glide.ServerCredentials` instance, or ``None``.
+        """
         if self.user_credentials:
             try:
                 return ServerCredentials(
@@ -182,7 +212,13 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
 
     @property
     def reconnect_strategy(self) -> BackoffStrategy | None:
-        """BackoffStrategy object generation."""
+        """Create a :class:`~glide.BackoffStrategy` from the configured backoff settings.
+
+        Returns ``None`` if ``backoff_strategy`` is not set.
+
+        Returns:
+            A :class:`~glide.BackoffStrategy` instance, or ``None``.
+        """
         if self.backoff_strategy:
             return self.backoff_strategy.reconnect_strategy
         return None
@@ -224,9 +260,7 @@ def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
             except Exception as exc:
                 raise RuntimeError(f"Failed to create configuration directory {conf_dir}!") from exc
         elif not conf_dir.is_dir():
-            raise RuntimeError(
-                f"Provided configuration directory path {conf_dir} is not a directory!"
-            )
+            raise RuntimeError(f"Provided configuration directory path {conf_dir} is not a directory!")
         valkey_yml = conf_dir.joinpath("valkey.yml")
     else:
         raise RuntimeError("Configuration dir was not set!")
@@ -307,9 +341,7 @@ def generate_glide_config(
         inflight_requests_limit=valkey_config.base_config.inflight_requests_limit,
         client_az=valkey_config.base_config.client_az,
         lazy_connect=valkey_config.base_config.lazy_connect,
-        advanced_config=valkey_config.advanced_config.to_advanced_config()
-        if valkey_config.advanced_config
-        else None,
+        advanced_config=valkey_config.advanced_config.to_advanced_config() if valkey_config.advanced_config else None,
         pubsub_subscriptions=pubsub_subscriptions,
     )
     return client_config

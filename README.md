@@ -7,30 +7,31 @@ concurrent task processors with Valkey-backed distributed queues.
 
 **Python ≥ 3.10** · **License: MIT**
 
+## Documentation
+
+- [Overview](docs/index.md) — Core components and architecture
+- [BasicAsyncWorker](docs/basic_async_worker.md) — Signal handling, logging, heartbeat & watchdog managers
+- [AsyncTaskProcessor](docs/async_task_processor.md) — Concurrent task processing, handler dispatch, timeout monitoring
+- [ValkeyWorker](docs/valkey_async_worker.md) — Valkey stream-based task distribution
+- [Task Handler](docs/task_handler.md) — Pluggable handler architecture, typed schemas
+
 ## Installation
 
 ```bash
 # Core package (no Valkey)
-uv pip install scietex.service
+pip install scietex.service
 
 # With Valkey (Redis-compatible) support
-uv pip install "scietex.service[valkey]"
-```
-
-Or with pip:
-
-```bash
-pip install scietex.service
 pip install "scietex.service[valkey]"
 ```
 
-**Dependencies:** `msgspec`, `pyaml`, `scietex.logging`
+**Dependencies:** `msgspec>=0.20.0`, `pyaml>=26.2.1`, `scietex.logging>=0.2.0`
 
 ## Quick Start
 
 ### Basic Async Worker
 
-A minimal daemon with signal handling, heartbeat, and watchdog:
+A minimal daemon with signal handling, heartbeat, and watchdog. See the [full BasicAsyncWorker docs](docs/basic_async_worker.md) for lifecycle, manager system, and configuration details.
 
 ```python
 import asyncio
@@ -69,7 +70,7 @@ Send `SIGINT` (Ctrl+C) or `SIGTERM` to trigger graceful shutdown.
 
 ### Task Processor
 
-Register handlers for different task types and process them concurrently:
+Register handlers for different task types and process them concurrently. See the [full AsyncTaskProcessor docs](docs/async_task_processor.md) for architecture, task processing flow, and best practices.
 
 ```python
 import asyncio
@@ -79,12 +80,14 @@ from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
 
 
 class EmailHandler(TaskHandler):
-    def supports(self, task_type: str) -> bool:
-        return task_type == "send_email"
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["send_email"]
 
-    async def initialize(self) -> None:
+    async def initialize(self) -> bool:
         # Connect to email service, etc.
-        self._is_initialized = True
+        self.logger.info("Email handler initialized")
+        return True
 
     async def handle(self, task_data: TaskData) -> TaskResult:
         try:
@@ -121,7 +124,7 @@ if __name__ == "__main__":
 
 ### Valkey Worker
 
-Distributed task processing backed by a Valkey (Redis-compatible) stream:
+Distributed task processing backed by a Valkey (Redis-compatible) stream. See the [full ValkeyWorker docs](docs/valkey_async_worker.md) for architecture, key naming, configuration reference, and PubSub broadcasting.
 
 ```python
 import asyncio
@@ -172,6 +175,10 @@ group `scietex:{service_name}:{worker_id}:task_group`.
 
 ### Worker Hierarchy
 
+<!-- markdown-link-check-disable -->
+See [BasicAsyncWorker](docs/basic_async_worker.md), [AsyncTaskProcessor](docs/async_task_processor.md), and [ValkeyWorker](docs/valkey_async_worker.md) for detailed architecture diagrams.
+<!-- markdown-link-check-enable -->
+
 ```
 BasicAsyncWorker          — Signal handling, async logging, heartbeat &
                             watchdog managers, graceful shutdown
@@ -195,20 +202,35 @@ discovers them via the class MRO and runs each as an `asyncio.Task`:
 
 ### Task Handler System
 
-1. **Register**: `processor.add_task_handler("type", HandlerClass)`
-2. **Support**: `handler.supports(task_type)` must return `True`
-3. **Initialize**: `handler.is_ready` must be `True` (set by
-   `handler.initialize()`)
-4. **Handle**: `await handler.handle(task_data)` returns a `TaskResult`
+See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle, schema details, and best practices.
+
+1. **Register**: `processor.add_task_handler("type", HandlerClass)` —
+   Registers a handler class under a name. The processor creates
+   handler instances on start.
+2. **Declare support**: `Handler.supported_tasks` property must return
+   a list of task type strings this handler can process.
+3. **Dispatch**: When a task arrives, the processor calls
+   `handler.supports(task_type)` on each registered handler. The first
+   handler returning `True` receives the task.
+4. **Initialize**: `handler.start()` calls `handler.initialize()` and
+   sets `handler.is_ready = True`.
+5. **Handle**: `await handler.handle(task_data)` returns a `TaskResult`
+   with `status` ("success"/"error"), optional `error` message, and
+   optional `payload`.
+6. **Timeout**: Tasks exceeding their `timeout` (default 3s) are
+   canceled and either re-queued or discarded per
+   `TaskTimeout.timeout_action`.
 
 ### Task Schemas
 
+All schemas are frozen `msgspec.Struct` instances (immutable).
+
 | Type | Description |
 |---|---|
-| `TaskData` | Immutable task payload: `task`, `payload`, `timeout`, `canceled_action` |
-| `TaskResult` | Handler result: `status` ("success"/"error"), `error`, `payload` |
-| `TaskTimeout` | Timeout config: `timeout` (seconds), `timeout_action` ("requeue"/"discard") |
-| `TaskTracker` | Internal: tracks running `asyncio.Task`, `TaskData`, and start time |
+| `TaskData` | Immutable task payload: `task` (type string), `payload` (bytes), `timeout` (`TaskTimeout`), `canceled_action` ("requeue"/"discard") |
+| `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes) |
+| `TaskTimeout` | Timeout config: `timeout` (seconds, `None` for default 3s), `timeout_action` ("requeue"/"discard") |
+| `TaskTracker` | Internal: tracks running `asyncio.Task`, associated `TaskData`, and monotonic start time |
 
 ## Configuration
 
@@ -234,20 +256,24 @@ base_config:
   nodes:
     - host: localhost
       port: 6379
+  user_credentials: null
   use_tls: false
   request_timeout: 5000
+  database_id: null
+  client_name: null
+  inflight_requests_limit: null
+  client_az: null
+  lazy_connect: null
   read_from: PRIMARY
+  backoff_strategy: null
   protocol: RESP3
-  backoff_strategy:
-    num_of_retries: 5
-    factor: 2
-    exponent_base: 2
 
 advanced_config:
   connection_timeout: 10000
-  tcp_nodelay: true
+  tcp_nodelay: null
   tls_config:
     use_insecure_tls: false
+    root_pem_cacerts: null
 ```
 
 If the file is missing or invalid, defaults are used and the file is
@@ -261,6 +287,7 @@ created with default values.
 |---|---|
 | `BasicAsyncWorker` | Base async daemon worker |
 | `AsyncTaskProcessor` | Concurrent task processor |
+| `Manager` | Decorator for creating managed async loop methods |
 | `ValkeyWorker` | Valkey-backed distributed worker |
 | `__version__` | Package version string |
 
@@ -273,7 +300,6 @@ created with default values.
 | `TaskResult` | Task result schema |
 | `TaskTimeout` | Timeout configuration schema |
 | `TaskTracker` | Internal task tracker schema |
-| `task_type` | TypeVar for handler registration |
 
 ### Exported from `scietex.service.valkey`
 
@@ -292,21 +318,22 @@ created with default values.
 ### Setup
 
 ```bash
-# Install dev dependencies
-uv pip install -e ".[dev,test,lint]"
+# Clone the repository and install all dependencies
+uv sync --all-extras
 
-# Or with pip
-pip install -e ".[dev,test,lint]"
+# Or install specific extras
+uv sync --extra dev --extra test --extra lint
 ```
 
 ### Commands
 
 | Command | Description |
 |---|---|
-| `uv pip run ruff check src/` | Lint (auto-fix: `ruff check --fix`) |
-| `uv pip run ty check src/` | Type check |
-| `uv pip run ruff format src/` | Format code |
-| `uv pip run pytest tests/` | Run tests |
+| `uv run ruff check src/` | Lint (auto-fix: `ruff check --fix`) |
+| `uv run ty check src/` | Type check |
+| `uv run ruff format src/` | Format code |
+| `uv run pytest tests/` | Run tests |
+| `tox` | Run tests with coverage |
 
 ### Running Examples
 

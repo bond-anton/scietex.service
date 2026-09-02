@@ -54,9 +54,7 @@ async def test_process_task_with_dummy_handler():
     proc.add_task_handler("dummy", DummyHandler)
     await proc._start_task_handler("dummy")
 
-    result: TaskResult = await proc.process_task(
-        uuid4(), TaskData(task="dummy", payload=b'{"value": 5}')
-    )
+    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="dummy", payload=b'{"value": 5}'))
 
     assert result.status == "success"
     assert result.payload.decode("utf-8") == '{"value": 5}'

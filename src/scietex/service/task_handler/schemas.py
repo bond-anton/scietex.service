@@ -1,8 +1,8 @@
-"""Defines types used in task handlers.
+"""Typed schemas for the task handler subsystem.
 
-This module exposes a lightweight `TaskType` helper (existing) and
-TypedDict definitions for task payloads and results so handlers and
-processors can use consistent typing for `task_data` and returned
+Provides frozen :class:`msgspec.Struct` definitions for task data,
+results, timeout configuration, and task tracking so handlers and
+processors can use consistent types for ``task_data`` and returned
 results.
 """
 

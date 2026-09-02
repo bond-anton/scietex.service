@@ -1,7 +1,8 @@
 """Task handler subsystem for ``scietex.service``.
 
-Provides the abstract ``TaskHandler`` base class, typed schemas
+Provides the abstract ``TaskHandler`` base class and typed schemas
 (``TaskData``, ``TaskResult``, ``TaskTimeout``, ``TaskTracker``)
+that define the contract for processing async tasks in the service.
 """
 
 from .basic import TaskHandler

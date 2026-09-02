@@ -36,9 +36,7 @@ def test_generate_glide_config_defaults():
 def test_valkey_node_addresses_roundtrip():
     node = ValkeyNode(host="127.0.0.1", port=6380)
     cfg = ValkeyBaseConfig(nodes=[node])
-    client_cfg = generate_glide_config(
-        ValkeyConfig(base_config=cfg), service_name="svc", worker_id=1
-    )
+    client_cfg = generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id=1)
     assert len(client_cfg.addresses) == 1
 
 
