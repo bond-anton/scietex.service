@@ -1,11 +1,10 @@
 """Task handler subsystem for ``scietex.service``.
 
 Provides the abstract ``TaskHandler`` base class, typed schemas
-(``TaskData``, ``TaskResult``, ``TaskTimeout``, ``TaskTracker``), and
-the ``task_type`` TypeVar used for handler registration.
+(``TaskData``, ``TaskResult``, ``TaskTimeout``, ``TaskTracker``)
 """
 
 from .basic import TaskHandler
-from .schemas import TaskData, TaskResult, TaskTimeout, TaskTracker, task_type
+from .schemas import TaskData, TaskResult, TaskTimeout, TaskTracker
 
-__all__ = ["TaskHandler", "task_type", "TaskTimeout", "TaskData", "TaskResult", "TaskTracker"]
+__all__ = ["TaskData", "TaskHandler", "TaskResult", "TaskTimeout", "TaskTracker"]

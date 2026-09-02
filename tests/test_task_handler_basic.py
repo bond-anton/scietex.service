@@ -1,5 +1,6 @@
 """Tests for TaskHandler base class and a simple concrete implementation."""
 
+import logging
 import types
 
 import pytest
@@ -9,12 +10,13 @@ from scietex.service.task_handler.schemas import TaskData, TaskResult
 
 
 class DummyWorker(types.SimpleNamespace):
+    logger = logging.getLogger(__name__)
     pass
 
 
 class DummyHandler(TaskHandler):
-    def __init__(self, worker):
-        super().__init__(worker)
+    def __init__(self, name, worker):
+        super().__init__(name, worker)
         self.cleaned = False
 
     async def handle(self, task_data: TaskData) -> TaskResult:
@@ -25,8 +27,9 @@ class DummyHandler(TaskHandler):
             payload=f"{task_data.payload.decode('utf-8')}".encode(),
         )
 
-    def supports(self, task_type: str) -> bool:
-        return task_type == "dummy"
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["dummy"]
 
     async def cleanup(self) -> None:
         self.cleaned = True
@@ -36,19 +39,20 @@ class DummyHandler(TaskHandler):
 async def test_taskhandler_is_abstract():
     # Trying to instantiate abstract TaskHandler should raise TypeError
     with pytest.raises(TypeError):
-        TaskHandler(None)  # abstract methods not implemented
+        worker = DummyWorker()
+        TaskHandler("handler", worker)  # abstract methods not implemented
 
 
 @pytest.mark.asyncio
 async def test_dummyhandler_lifecycle():
     worker = DummyWorker()
-    handler = DummyHandler(worker)
+    handler = DummyHandler("dummy", worker)
 
     # initially not ready
     assert not handler.is_ready
 
     # initialize should set is_ready
-    await handler.initialize()
+    await handler.start()
     assert handler.is_ready
 
     # supports should work
@@ -61,5 +65,5 @@ async def test_dummyhandler_lifecycle():
     assert res.payload.decode("utf-8") == '{"value": 123}'
 
     # cleanup should be callable and set the flag
-    await handler.cleanup()
+    await handler.stop()
     assert handler.cleaned

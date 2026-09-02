@@ -9,30 +9,24 @@ from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeo
 
 
 class DummyHandler(TaskHandler):
-    def __init__(self, worker):
-        super().__init__(worker)
-        self._is_initialized = True
-
     async def handle(self, task_data: TaskData) -> TaskResult:
         result = task_data.payload.decode("utf-8")
         return TaskResult(status="success", error="No error", payload=result.encode("utf-8"))
 
-    def supports(self, task_type: str) -> bool:
-        return task_type == "dummy"
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["dummy"]
 
 
 class SlowHandler(TaskHandler):
-    def __init__(self, worker):
-        super().__init__(worker)
-        self._is_initialized = True
-
     async def handle(self, task_data: TaskData) -> TaskResult:
         # simulate long running task
         await asyncio.sleep(2)
         return TaskResult(payload=task_data.payload, status="success", error="No error")
 
-    def supports(self, task_type: str) -> bool:
-        return task_type == "slow"
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["slow"]
 
 
 class DemoProcessor(AsyncTaskProcessor):
@@ -58,6 +52,7 @@ class DemoProcessor(AsyncTaskProcessor):
 async def test_process_task_with_dummy_handler():
     proc = DemoProcessor()
     proc.add_task_handler("dummy", DummyHandler)
+    await proc._start_task_handler("dummy")
 
     result: TaskResult = await proc.process_task(
         uuid4(), TaskData(task="dummy", payload=b'{"value": 5}')

@@ -1,5 +1,6 @@
 """Abstract task handler base class for ``scietex.service``."""
 
+import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -15,22 +16,23 @@ class TaskHandler(ABC):
     Defines the contract that all concrete handlers must implement.
     """
 
-    def __init__(self, worker: "BasicAsyncWorker") -> None:
+    def __init__(self, name: str, worker: "BasicAsyncWorker") -> None:
         """Initialize the task handler with a reference to the parent worker.
 
         Args:
             worker: Reference to the parent ``BasicAsyncWorker`` instance,
                 allowing handlers to access shared resources and utilities.
         """
-        self.worker = worker
-        self._is_initialized = False
+        self.name: str = name
+        self.worker: BasicAsyncWorker = worker
+        self.logger: logging.Logger = self.worker.logger
+        self._is_initialized: bool = False
 
-    async def initialize(self) -> None:
-        """
-        Optional asynchronous initialization method.
-        Can be overridden by handlers that require setup before processing tasks.
-        """
-        self._is_initialized = True
+    @property
+    @abstractmethod
+    def supported_tasks(self) -> list[str]:
+        """List of supported task names."""
+        pass
 
     @abstractmethod
     async def handle(self, task_data: TaskData) -> TaskResult:
@@ -48,7 +50,6 @@ class TaskHandler(ABC):
         """
         pass
 
-    @abstractmethod
     def supports(self, task_type: str) -> bool:
         """Check whether this handler can process the given task type.
 
@@ -59,7 +60,14 @@ class TaskHandler(ABC):
             ``True`` if this handler supports the given task type,
             ``False`` otherwise.
         """
-        pass
+        return task_type in self.supported_tasks
+
+    async def initialize(self) -> bool:
+        """
+        Optional asynchronous initialization method.
+        Can be overridden by handlers that require setup before processing tasks.
+        """
+        return True
 
     async def cleanup(self) -> None:
         """
@@ -67,6 +75,22 @@ class TaskHandler(ABC):
         Can be used to close connections and perform other cleanup tasks.
         """
         pass
+
+    async def start(self) -> None:
+        """Used to start the handler."""
+        self._is_initialized = await self.initialize()
+        self.logger.log(
+            logging.INFO,
+            "Started handler: %s: %s",
+            self.name,
+            self.supported_tasks,
+        )
+
+    async def stop(self) -> None:
+        """Used to stop the handler."""
+        await self.cleanup()
+        self._is_initialized = False
+        self.logger.log(logging.INFO, "Stopped handler: %s", self.name)
 
     @property
     def is_ready(self) -> bool:

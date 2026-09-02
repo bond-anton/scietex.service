@@ -22,17 +22,16 @@ from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, Task
 class DataProcessingHandler(TaskHandler):
     """Processes raw data payloads (e.g. transform, aggregate, validate)."""
 
-    def supports(self, task_type: str) -> bool:
-        return task_type in ("process_data", "validate_data")
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["process_data", "validate_data"]
 
-    async def initialize(self) -> None:
-        self.worker.logger.info("DataProcessingHandler initialized")
-        self._is_initialized = True
+    async def initialize(self) -> bool:
+        self.logger.info("DataProcessingHandler initialized")
+        return True
 
     async def handle(self, task_data: TaskData) -> TaskResult:
-        self.worker.logger.info(
-            "Processing task '%s' with payload: %s", task_data.task, task_data.payload
-        )
+        self.logger.info("Processing task '%s' with payload: %s", task_data.task, task_data.payload)
         try:
             # Decode payload
             payload_str = task_data.payload.decode("utf-8")
@@ -45,11 +44,14 @@ class DataProcessingHandler(TaskHandler):
                 if missing:
                     raise ValueError(f"Missing required fields: {missing}")
                 result = {"validated": True, "fields": list(data.keys())}
-            else:
+            elif task_data.task == "process_data":
                 # Transform: double the value
                 data["value"] = data.get("value", 0) * 2
                 data["processed"] = True
                 result = data
+            else:
+                self.logger.error("Task %s not supported", task_data.task)
+                raise ValueError(f"Task {task_data.task} is not supported")
 
             return TaskResult(
                 status="success",
@@ -67,12 +69,13 @@ class DataProcessingHandler(TaskHandler):
 class ReportGenerationHandler(TaskHandler):
     """Generates reports from task data."""
 
-    def supports(self, task_type: str) -> bool:
-        return task_type == "generate_report"
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["generate_report"]
 
-    async def initialize(self) -> None:
+    async def initialize(self) -> bool:
         self.worker.logger.info("ReportGenerationHandler initialized")
-        self._is_initialized = True
+        return True
 
     async def handle(self, task_data: TaskData) -> TaskResult:
         self.worker.logger.info("Generating report for task: %s", task_data.task)
@@ -101,16 +104,17 @@ class ReportGenerationHandler(TaskHandler):
 class ImageProcessingHandler(TaskHandler):
     """Handles image processing tasks with custom timeout."""
 
-    def supports(self, task_type: str) -> bool:
-        return task_type in ("resize_image", "compress_image", "convert_image")
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["resize_image", "compress_image", "convert_image"]
 
-    async def initialize(self) -> None:
-        self.worker.logger.info("ImageProcessingHandler initialized")
-        self._is_initialized = True
+    async def initialize(self) -> bool:
+        self.logger.info("ImageProcessingHandler initialized")
+        return True
 
     async def handle(self, task_data: TaskData) -> TaskResult:
         operation = task_data.task
-        self.worker.logger.info("Image operation '%s' started", operation)
+        self.logger.info("Image operation '%s' started", operation)
 
         try:
             # Simulate image processing (these are slow operations)
@@ -167,9 +171,7 @@ class TaskProcessorService(AsyncTaskProcessor):
         """Pull pending tasks from the source and enqueue them."""
         while self._task_source._tasks and not self.task_queue.full():
             task_id, task_data = self._task_source._tasks.pop(0)
-            print(task_id, task_data)
             await self.task_queue.put((task_id, task_data))
-            print(self.task_queue.qsize())
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Re-queue tasks that timed out or were canceled."""

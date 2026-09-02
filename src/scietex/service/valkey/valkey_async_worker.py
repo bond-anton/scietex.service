@@ -7,7 +7,6 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generic
 from uuid import UUID
 
 import msgspec
@@ -36,7 +35,7 @@ except ImportError as e:
 from scietex.logging import AsyncValkeyHandler
 
 from ..async_tasks_processor import AsyncTaskProcessor
-from ..task_handler import TaskData, task_type
+from ..task_handler import TaskData
 from .schemas import Heartbeat
 from .valkey_config import (
     ValkeyConfig,
@@ -45,7 +44,7 @@ from .valkey_config import (
 )
 
 
-class ValkeyWorker(AsyncTaskProcessor, Generic[task_type]):
+class ValkeyWorker(AsyncTaskProcessor):
     """
     Async worker backed by a Valkey (Redis) stream for task distribution.
 

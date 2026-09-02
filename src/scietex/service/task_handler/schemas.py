@@ -8,12 +8,9 @@ results.
 
 from asyncio import Task
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Literal, TypeVar
+from typing import Literal
 
 import msgspec
-
-task_type = TypeVar("task_type", bound=Enum)
 
 
 class TaskTimeout(msgspec.Struct, frozen=True):
@@ -59,7 +56,7 @@ class TaskResult(msgspec.Struct, frozen=True):
     """
 
     status: Literal["success", "error"]
-    error: str
+    error: str = ""
     processed_at: datetime = datetime.now(timezone.utc)
     payload: bytes = b""
 
