@@ -9,7 +9,7 @@ watchdog managers, and graceful shutdown support.
 import asyncio
 import logging
 import signal
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -35,6 +35,14 @@ MAX_LOGGER_HANDLER_TIMEOUT: float = 10
 DEFAULT_MANAGER_SHUTDOWN_TIMEOUT: float = 2
 MIN_MANAGER_SHUTDOWN_TIMEOUT: float = 1
 MAX_MANAGER_SHUTDOWN_TIMEOUT: float = 10
+
+DEFAULT_MANAGER_MAX_RETRIES: int = 5
+MIN_MANAGER_MAX_RETRIES: int = 0
+MAX_MANAGER_MAX_RETRIES: int = 100
+
+DEFAULT_MANAGER_RESTART_BACKOFF: float = 1
+MIN_MANAGER_RESTART_BACKOFF: float = 0
+MAX_MANAGER_RESTART_BACKOFF: float = 60
 
 WAIT_FOR_SERVICE_STOPPED_DELAY: float = 0.1
 
@@ -130,9 +138,13 @@ class BasicAsyncWorker:
         # Set up logger with async handler
         self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}.{self.__worker_id}")
         self._logger.setLevel(self.logging_level)
-        stdout_handler = AsyncBaseHandler(service_name=self.__service_name, worker_id=self.__worker_id)
-        stdout_handler.setLevel(self.logging_level)
-        self._logger.addHandler(stdout_handler)
+        # Factories that produce fresh async handlers, keyed by handler name.
+        # Used to re-create handlers after a shutdown, since an
+        # ``AsyncBaseHandler`` is single-use once ``stop_logging()`` closes it.
+        self.__logger_handler_factories: dict[str, Callable[[], AsyncBaseHandler]] = {}
+        self._register_logger_handler(
+            lambda: AsyncBaseHandler(service_name=self.__service_name, worker_id=self.__worker_id)
+        )
 
         self.__logger_handler_timeout = max(
             MIN_LOGGER_HANDLER_TIMEOUT,
@@ -147,6 +159,22 @@ class BasicAsyncWorker:
             min(
                 MAX_MANAGER_SHUTDOWN_TIMEOUT,
                 kwargs.get("manager_shutdown_timeout", DEFAULT_MANAGER_SHUTDOWN_TIMEOUT),
+            ),
+        )
+
+        self.__manager_max_retries = max(
+            MIN_MANAGER_MAX_RETRIES,
+            min(
+                MAX_MANAGER_MAX_RETRIES,
+                kwargs.get("manager_max_retries", DEFAULT_MANAGER_MAX_RETRIES),
+            ),
+        )
+
+        self.__manager_restart_backoff = max(
+            MIN_MANAGER_RESTART_BACKOFF,
+            min(
+                MAX_MANAGER_RESTART_BACKOFF,
+                kwargs.get("manager_restart_backoff", DEFAULT_MANAGER_RESTART_BACKOFF),
             ),
         )
 
@@ -289,6 +317,64 @@ class BasicAsyncWorker:
         )
 
     @property
+    def manager_max_retries(self) -> int:
+        """Maximum consecutive failures before a manager gives up (read-only).
+
+        Clamped between ``MIN_MANAGER_MAX_RETRIES`` and
+        ``MAX_MANAGER_MAX_RETRIES``.
+
+        Returns:
+            The current maximum retry count.
+        """
+        return self.__manager_max_retries
+
+    @manager_max_retries.setter
+    def manager_max_retries(self, retries: int | None) -> None:
+        """
+        Set the maximum consecutive failures before a manager gives up.
+
+        Args:
+            retries: Maximum retry count, clamped between MIN_MANAGER_MAX_RETRIES
+                and MAX_MANAGER_MAX_RETRIES, or None to use DEFAULT_MANAGER_MAX_RETRIES
+        """
+        self.__manager_max_retries = max(
+            MIN_MANAGER_MAX_RETRIES,
+            min(
+                MAX_MANAGER_MAX_RETRIES,
+                retries if retries is not None else DEFAULT_MANAGER_MAX_RETRIES,
+            ),
+        )
+
+    @property
+    def manager_restart_backoff(self) -> float:
+        """Backoff delay in seconds between manager restart attempts (read-only).
+
+        Clamped between ``MIN_MANAGER_RESTART_BACKOFF`` and
+        ``MAX_MANAGER_RESTART_BACKOFF``.
+
+        Returns:
+            The current backoff delay in seconds.
+        """
+        return self.__manager_restart_backoff
+
+    @manager_restart_backoff.setter
+    def manager_restart_backoff(self, backoff: float | None) -> None:
+        """
+        Set the backoff delay between manager restart attempts.
+
+        Args:
+            backoff: Backoff in seconds, clamped between MIN_MANAGER_RESTART_BACKOFF
+                and MAX_MANAGER_RESTART_BACKOFF, or None to use DEFAULT_MANAGER_RESTART_BACKOFF
+        """
+        self.__manager_restart_backoff = max(
+            MIN_MANAGER_RESTART_BACKOFF,
+            min(
+                MAX_MANAGER_RESTART_BACKOFF,
+                backoff if backoff is not None else DEFAULT_MANAGER_RESTART_BACKOFF,
+            ),
+        )
+
+    @property
     def heartbeat_interval(self) -> float:
         """Interval in seconds between heartbeat calls (read-only).
 
@@ -403,15 +489,23 @@ class BasicAsyncWorker:
         """
         Iterate over all registered managers from the class MRO.
 
+        Managers are yielded most-derived-first so that a subclass override
+        of a same-named manager shadows the base definition. Each manager
+        name is yielded at most once.
+
         Yields:
             Tuple of (manager_name, manager) for each Manager decorator found
             in the class hierarchy, processed from most-derived to base classes.
         """
-        for cls in reversed(type(self).__mro__):
+        seen: set[str] = set()
+        for cls in type(self).__mro__:
             for attribute_name, attribute in cls.__dict__.items():
                 if not isinstance(attribute, Manager):
                     continue
                 manager_name = attribute.name or attribute_name
+                if manager_name in seen:
+                    continue
+                seen.add(manager_name)
                 yield manager_name, attribute
 
     def _setup_signal_handlers(self) -> None:
@@ -426,22 +520,58 @@ class BasicAsyncWorker:
             loop.add_signal_handler(sig, lambda: asyncio.create_task(self.exit(), name="StopTask"))
         self.logger.log(logging.DEBUG, "Signal handlers are all setup")
 
+    def _register_logger_handler(
+        self,
+        factory: Callable[[], AsyncBaseHandler],
+        name: str | None = None,
+    ) -> None:
+        """
+        Create an async logging handler from a factory and attach it to the logger.
+
+        The factory is recorded so the handler can be re-created after a
+        shutdown, because an ``AsyncBaseHandler`` is single-use once
+        ``stop_logging()`` closes it.
+
+        Args:
+            factory: Callable returning a fresh ``AsyncBaseHandler``.
+            name: Optional explicit handler name. Defaults to the handler's
+                ``name`` attribute or its class name.
+        """
+        handler = factory()
+        handler.setLevel(self.logging_level)
+        handler_name = name or handler.name or handler.__class__.__name__
+        self.__logger_handler_factories[handler_name] = factory
+        self.logger.addHandler(handler)
+
     async def _logger_start_handlers(self) -> None:
         """
         Start all async logging handlers that are not already running.
 
         Iterates over the logger's handlers and calls start_logging() on each
-        AsyncBaseHandler that is stopped or not yet tracked. Handles timeouts
-        and errors gracefully, falling back to print statements if the logger
-        is in an unrecoverable state.
+        AsyncBaseHandler that is stopped or not yet tracked. A handler that
+        was stopped during a previous shutdown is closed and single-use, so it
+        is replaced with a fresh instance from its registered factory before
+        being started. Handles timeouts and errors gracefully, falling back to
+        print statements if the logger is in an unrecoverable state.
         """
-        for handler in self.logger.handlers:
+        for handler in list(self.logger.handlers):
             handler_name = handler.name or handler.__class__.__name__
             if (
                 handler_name not in self.__loggers_statuses
                 or self.__loggers_statuses[handler_name] == LoggerStatus.STOPPED
             ):
                 if isinstance(handler, AsyncBaseHandler):
+                    # A stopped handler was closed during a previous shutdown
+                    # and cannot be restarted in place; replace it with a fresh
+                    # instance from its factory.
+                    if self.__loggers_statuses.get(handler_name) == LoggerStatus.STOPPED:
+                        factory = self.__logger_handler_factories.get(handler_name)
+                        if factory is not None:
+                            self.logger.removeHandler(handler)
+                            replacement = factory()
+                            replacement.setLevel(self.logging_level)
+                            self.logger.addHandler(replacement)
+                            handler = replacement
                     try:
                         await asyncio.wait_for(handler.start_logging(), timeout=self.logger_handler_timeout)
                     except asyncio.TimeoutError:
@@ -489,7 +619,7 @@ class BasicAsyncWorker:
                         )
                     except Exception:
                         print(f"Failed to shut down logging handler {handler_name} ({handler}): {e}")
-            self.__loggers_statuses[handler_name] = LoggerStatus.RUNNING
+            self.__loggers_statuses[handler_name] = LoggerStatus.STOPPED
 
     async def initialize(self) -> bool:
         """
@@ -505,10 +635,14 @@ class BasicAsyncWorker:
         """
         Execute a manager's lifecycle loop with automatic restart on error.
 
-        Runs the manager's method in an infinite loop. On cancellation, the
-        manager stops cleanly. On any other exception, the error is recorded
-        and the manager is automatically restarted. The finally block handles
-        cleanup and status updates.
+        Runs the manager's method in a loop. On cancellation the manager
+        stops cleanly. On any other exception the error is recorded and the
+        manager is retried after a backoff delay, up to
+        ``manager_max_retries`` consecutive failures, after which it gives
+        up. The retry happens inside this same task, so the manager never
+        cancels itself (which previously deadlocked the restart). The
+        finally block runs cleanup, marks the manager STOPPED, and removes
+        the task from internal tracking.
 
         Args:
             name: Human-readable name for the manager
@@ -516,18 +650,41 @@ class BasicAsyncWorker:
         """
         self.logger.info("🟢 Manager %s started", name)
 
+        consecutive_failures = 0
         try:
             while True:
-                if manager.method:
-                    await manager.method(self)
-                else:
-                    raise RuntimeError("Manager has no associated executable method.")
+                try:
+                    if manager.method:
+                        await manager.method(self)
+                    else:
+                        raise RuntimeError("Manager has no associated executable method.")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.__manager_errors[name] = e
+                    consecutive_failures += 1
+                    if consecutive_failures > self.manager_max_retries:
+                        self.logger.error(
+                            "❌ Manager %s failed %d consecutive times (%s). Giving up.",
+                            name,
+                            consecutive_failures,
+                            e,
+                        )
+                        break
+                    self.logger.error(
+                        "❌ Manager %s error %s. Restarting in %.1fs (attempt %d/%d)",
+                        name,
+                        e,
+                        self.manager_restart_backoff,
+                        consecutive_failures,
+                        self.manager_max_retries,
+                    )
+                    await asyncio.sleep(self.manager_restart_backoff)
+                    continue
+                # A successful iteration resets the failure counter.
+                consecutive_failures = 0
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            self.__manager_errors[name] = e
-            self.logger.error("❌ Manager %s error %s. Restarting", name, e)
-            await self._restart_manager(name, manager)
         finally:
             self.__manager_statuses[name] = ManagerStatus.STOPPING
             self.logger.info("🟡 Manager %s stopping", name)
@@ -535,6 +692,9 @@ class BasicAsyncWorker:
                 await manager.cleanup(self)
             self.__manager_statuses[name] = ManagerStatus.STOPPED
             self.logger.info("🔴 Manager %s stopped", name)
+            # Remove this task from tracking so a later restart is possible.
+            if self.__manager_tasks.get(name) is asyncio.current_task():
+                self.__manager_tasks.pop(name, None)
 
     async def _start_manager(self, name: str, manager: Manager) -> None:
         """
@@ -575,18 +735,9 @@ class BasicAsyncWorker:
             await asyncio.wait_for(self.__manager_tasks[name], self.manager_shutdown_timeout)
         except asyncio.TimeoutError:
             self.logger.log(logging.DEBUG, "Timeout during %s shut down", name)
-        del self.__manager_tasks[name]
-
-    async def _restart_manager(self, name: str, manager: Manager) -> None:
-        """
-        Stop and then restart a manager.
-
-        Args:
-            name: Identifier of the manager to restart
-            manager: The Manager instance to run
-        """
-        await self._stop_manager(name)
-        await self._start_manager(name, manager)
+        # The task removes itself from tracking in its finally block; pop
+        # defensively in case it already did so.
+        self.__manager_tasks.pop(name, None)
 
     async def _start_managers(self) -> None:
         """Start all registered managers as asyncio tasks.

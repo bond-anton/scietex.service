@@ -136,15 +136,16 @@ class ValkeyWorker(AsyncTaskProcessor):
                 worker_id=self.worker_id,
                 listening=False,
             )
-        valkey_logging_handler = AsyncValkeyHandler(
-            stream_name=self._log_stream_name,
-            service_name=self.service_name,
-            worker_id=self.worker_id,
-            valkey_config=self._client_config,
-            stdout_enable=False,
+        self._register_logger_handler(
+            lambda: AsyncValkeyHandler(
+                stream_name=self._log_stream_name,
+                service_name=self.service_name,
+                worker_id=self.worker_id,
+                valkey_config=self._client_config,
+                stdout_enable=False,
+            ),
+            name="AsyncValkeyHandler",
         )
-        valkey_logging_handler.setLevel(self.logging_level)
-        self.logger.addHandler(valkey_logging_handler)
 
         self._client: GlideClient | None = None
         self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"

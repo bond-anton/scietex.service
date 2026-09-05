@@ -7,6 +7,7 @@ into managed loops with automatic restart on error, and
 
 from collections.abc import Callable, Coroutine
 from enum import Enum
+from types import MethodType
 from typing import Any
 
 DEFAULT_MAX_OUTPUT_QUEUE_SIZE = 100
@@ -54,10 +55,10 @@ class Manager:
         self.cleanup: Callable[[Any], Coroutine[None, None, None]] | None = cleanup
         self.method: Callable[[Any], Coroutine[None, None, None]] | None = None
 
-    def __call__(self, method: Callable[[Any], Coroutine[None, None, None]]) -> Callable:
+    def __call__(self, method: Callable[[Any], Coroutine[None, None, None]]) -> "Manager":
         """Apply the decorator to an async method.
 
-        Stores the method reference and returns self so the decorated
+        Stores the method reference and returns ``self`` so the decorated
         method can be used as a ``Manager`` instance by
         ``BasicAsyncWorker._iter_manager_definitions()``.
 
@@ -70,3 +71,24 @@ class Manager:
         """
         self.method = method
         return self
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        """Descriptor protocol: bind the wrapped method to the instance.
+
+        Because ``Manager`` is a descriptor, the decorated method remains
+        callable as a normal bound method (``self._heartbeat_manager()``)
+        while the class attribute still holds the ``Manager`` instance that
+        ``_iter_manager_definitions()`` discovers.
+
+        Args:
+            instance: The worker instance the manager is accessed through,
+                or ``None`` when accessed on the class.
+            owner: The owning class.
+
+        Returns:
+            The bound method when accessed through an instance, otherwise
+            ``self`` (the ``Manager`` instance).
+        """
+        if instance is None or self.method is None:
+            return self
+        return MethodType(self.method, instance)

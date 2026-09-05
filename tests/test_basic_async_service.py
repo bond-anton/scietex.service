@@ -6,6 +6,7 @@ import logging
 import pytest
 
 from scietex.service.basic_async_worker import BasicAsyncWorker, ServiceStatus
+from scietex.service.logging import LoggerStatus
 
 
 @pytest.fixture(scope="module")
@@ -39,3 +40,48 @@ async def test_graceful_shutdown(test_event_loop):
     await worker.exit()
     await asyncio.sleep(5)
     assert worker.events["exit"].is_set()
+
+
+@pytest.mark.asyncio
+async def test_logging_handlers_restartable_after_shutdown():
+    """After a shutdown, logging handlers must be marked STOPPED and be
+    re-created as fresh instances on the next start (AR-004)."""
+    worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
+
+    await worker.start()
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
+
+    statuses = worker._BasicAsyncWorker__loggers_statuses
+    assert statuses.get("AsyncBaseHandler") == LoggerStatus.RUNNING
+    first_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "AsyncBaseHandler")
+
+    await worker.stop()
+    for _ in range(50):
+        if worker.state == ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.STOPPED
+    # Handlers must be recorded as STOPPED after shutdown.
+    assert statuses.get("AsyncBaseHandler") == LoggerStatus.STOPPED
+
+    # Restart: the closed handler must be replaced with a fresh instance.
+    await worker.start()
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
+    assert statuses.get("AsyncBaseHandler") == LoggerStatus.RUNNING
+    second_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "AsyncBaseHandler")
+    assert second_handler is not first_handler, "closed handler should be replaced on restart"
+
+    await worker.stop()
+    for _ in range(50):
+        if worker.state == ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.STOPPED
