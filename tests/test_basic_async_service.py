@@ -45,7 +45,7 @@ async def test_graceful_shutdown(test_event_loop):
 @pytest.mark.asyncio
 async def test_logging_handlers_restartable_after_shutdown():
     """After a shutdown, logging handlers must be marked STOPPED and be
-    re-created as fresh instances on the next start (AR-004)."""
+    restarted in place (same instance) on the next start (scietex.logging >= 1.0)."""
     worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
 
     await worker.start()
@@ -68,7 +68,7 @@ async def test_logging_handlers_restartable_after_shutdown():
     # Handlers must be recorded as STOPPED after shutdown.
     assert statuses.get("AsyncBaseHandler") == LoggerStatus.STOPPED
 
-    # Restart: the closed handler must be replaced with a fresh instance.
+    # Restart: the same handler instance is reused and restarted in place.
     await worker.start()
     for _ in range(50):
         if worker.state == ServiceStatus.RUNNING:
@@ -77,7 +77,7 @@ async def test_logging_handlers_restartable_after_shutdown():
     assert worker.state == ServiceStatus.RUNNING
     assert statuses.get("AsyncBaseHandler") == LoggerStatus.RUNNING
     second_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "AsyncBaseHandler")
-    assert second_handler is not first_handler, "closed handler should be replaced on restart"
+    assert second_handler is first_handler, "handler should be restarted in place, not replaced"
 
     await worker.stop()
     for _ in range(50):
