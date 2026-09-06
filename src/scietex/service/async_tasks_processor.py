@@ -392,6 +392,23 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             task_data: The task data to return to the external queue.
         """
 
+    async def on_task_completed(
+        self,
+        task_id: UUID,
+        task_data: TaskData,
+        task_result: TaskResult | None,
+    ) -> None:
+        """Notify the transport that a task's processing has terminated.
+
+        Called by ``handle_task`` when a task's work ends — on success, on
+        a terminal error, or on cancellation — with the final
+        ``TaskResult``, or ``None`` when the task was cancelled before
+        producing a result. Subclasses that source tasks from a durable
+        transport (e.g. ``ValkeyWorker``) override this to acknowledge the
+        transport entry so it is removed only after the handler's work on
+        it is done (at-least-once). The default is a no-op.
+        """
+
     async def initialize(self) -> bool:
         """Start all registered task handlers.
 
@@ -419,26 +436,34 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         releasing resources, or sending final status updates.
         """
         await super().cleanup()
-        # Return tasks in worker queue to external queue
+        # Drain the in-process queue. Items fetched from a durable transport
+        # (e.g. a Valkey stream) are still pending there and will be
+        # redelivered on restart, so they must NOT be re-enqueued here (that
+        # would duplicate them). Subclasses whose transport does not keep
+        # items pending after enqueue must override cleanup to requeue drained
+        # items.
         while not self.task_queue.empty():
-            task_id, task_data = await self.task_queue.get()
-            await self.return_task_to_queue(task_id, task_data)
+            self.task_queue.get_nowait()
             self.task_queue.task_done()
         self.logger.debug("Task queue is empty")
 
-        # Cancel and requeue running tasks
+        # Cancel and requeue running tasks. A task is requeued only after its
+        # handler has actually stopped (handle_task's finally acknowledges the
+        # transport entry); a handler that ignores cancellation is left pending
+        # so a restart redelivers it rather than running it twice.
         for task_id, task_tracker in list(self.running_tasks.items()):
             if not task_tracker.worker_task.done():
                 task_tracker.worker_task.cancel()
-                if task_tracker.data.canceled_action == "requeue":
+                # asyncio.wait, not wait_for (see watchdog for why): wait_for
+                # re-cancels on its timeout and blocks on a handler that
+                # swallows cancellation, hanging shutdown.
+                await asyncio.wait(
+                    [task_tracker.worker_task],
+                    timeout=WORKER_TASK_CANCELLATION_TIMEOUT,
+                )
+                if task_tracker.worker_task.done() and task_tracker.data.canceled_action == "requeue":
                     self.logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
                     await self.return_task_to_queue(task_id, task_tracker.data)
-                try:
-                    await asyncio.wait_for(task_tracker.worker_task, timeout=WORKER_TASK_CANCELLATION_TIMEOUT)
-                except asyncio.TimeoutError:
-                    self.logger.log(logging.ERROR, "Timeout canceling Task %s.", task_id)
-                except asyncio.CancelledError:
-                    pass
         self.logger.debug("All tasks cancelled")
 
         # Cleanup task handlers
@@ -500,6 +525,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         """
 
         async def handle_task(t_id: UUID, t_data: TaskData):
+            result: TaskResult | None = None
             try:
                 result = await self.process_task(t_id, t_data)
                 self.logger.log(
@@ -524,6 +550,22 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             finally:
                 self.running_tasks.pop(t_id, None)
                 self.task_queue.task_done()
+                try:
+                    # Ack the transport entry exactly when the handler's work
+                    # on it ends (success, error, or cancellation). On
+                    # CancelledError, result is None and the hook still runs.
+                    await self.on_task_completed(t_id, t_data, result)
+                except Exception as exc:
+                    # A transport ack failure must never crash handle_task or
+                    # leak into the unawaited task; the entry stays pending
+                    # and is redelivered on restart (at-least-once).
+                    self.logger.log(
+                        logging.ERROR,
+                        "Failed to acknowledge task %s (%s): %s",
+                        t_data.task,
+                        t_id,
+                        exc,
+                    )
 
         if len(self.running_tasks) < self.max_concurrent_tasks:
             try:
@@ -584,18 +626,38 @@ class AsyncTaskProcessor(BasicAsyncWorker):
                     task_id,
                 )
                 task_tracker.worker_task.cancel()
-                if task_tracker.data.timeout.timeout_action == "requeue":
+                # asyncio.wait, not wait_for: wait_for (3.13+) re-cancels the
+                # task on its timeout and then blocks until a handler that
+                # swallows cancellation eventually finishes, hanging the
+                # watchdog. wait() returns after the timeout with the task
+                # still pending when the handler ignored the cancellation.
+                await asyncio.wait(
+                    [task_tracker.worker_task],
+                    timeout=WORKER_TASK_CANCELLATION_TIMEOUT,
+                )
+                if task_tracker.worker_task.done():
+                    # The handler actually stopped; handle_task's finally has
+                    # already acknowledged the transport entry. Requeue a fresh
+                    # delivery only now, so a handler that ignores cancellation
+                    # cannot cause the task to run twice.
+                    if task_tracker.data.timeout.timeout_action == "requeue":
+                        self.logger.log(
+                            logging.WARNING,
+                            "Task %s (%s) will be returned to queue.",
+                            task_tracker.data.task,
+                            task_id,
+                        )
+                        await self.return_task_to_queue(task_id, task_tracker.data)
+                else:
+                    # The handler ignored cancellation and is still running. It
+                    # will acknowledge its entry when it eventually finishes;
+                    # requeueing now would run the task twice. Leave the entry
+                    # pending so a restart redelivers it if the handler never
+                    # returns.
                     self.logger.log(
-                        logging.WARNING,
-                        "Task %s (%s) will be returned to queue.",
+                        logging.ERROR,
+                        "Task %s (%s) ignored cancellation; not requeueing to avoid duplicate work.",
                         task_tracker.data.task,
                         task_id,
                     )
-                    await self.return_task_to_queue(task_id, task_tracker.data)
-                    self.running_tasks.pop(task_id, None)
-                try:
-                    await asyncio.wait_for(task_tracker.worker_task, timeout=WORKER_TASK_CANCELLATION_TIMEOUT)
-                except asyncio.TimeoutError:
-                    self.logger.log(logging.ERROR, "Timeout canceling Task %s.", task_id)
-                except asyncio.CancelledError:
-                    pass
+                self.running_tasks.pop(task_id, None)

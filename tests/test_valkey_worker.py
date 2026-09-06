@@ -14,9 +14,13 @@ from scietex.service.valkey.valkey_config import (
 class DummyClient:
     """Mocking Valkey client."""
 
-    def __init__(self, ping_ok=True):
+    def __init__(self, ping_ok=True, xreadgroup_result=None, xautoclaim_result=None):
         self._ping_ok = ping_ok
         self.closed = False
+        self.xreadgroup_result = xreadgroup_result
+        self.xautoclaim_result = xautoclaim_result
+        self.acked: list = []
+        self.deleted: list = []
 
     async def xgroup_create(self, *args, **kwargs):
         pass
@@ -25,13 +29,16 @@ class DummyClient:
         pass
 
     async def xack(self, *args, **kwargs):
-        pass
+        self.acked.append(args)
 
     async def xdel(self, *args, **kwargs):
-        pass
+        self.deleted.append(args)
 
     async def xreadgroup(self, *args, **kwargs):
-        return None
+        return self.xreadgroup_result
+
+    async def xautoclaim(self, *args, **kwargs):
+        return self.xautoclaim_result
 
     async def ping(self):
         return self._ping_ok
@@ -140,3 +147,79 @@ async def test_connect_create_failure_leaves_client_none(monkeypatch):
     ok = await worker.connect()
     assert ok is False
     assert worker.client is None
+
+
+def _entry(entry_id: bytes, task_id: str, payload: bytes):
+    """Build an xreadgroup/xautoclaim result mapping for one stream entry."""
+    return {b"stream": {entry_id: [[task_id.encode("utf-8"), payload]]}}
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_does_not_ack_on_enqueue():
+    """fetch_tasks must not XACK/XDEL on enqueue; it records the entry id so
+    the entry stays pending until the handler completes (AR-005)."""
+    import msgspec
+
+    from scietex.service.task_handler.schemas import TaskData
+
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = msgspec.msgpack.encode(task_data)
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker._client = client
+
+    await worker.fetch_tasks()
+
+    assert client.acked == [], "fetch_tasks must not ack on enqueue"
+    assert client.deleted == [], "fetch_tasks must not delete on enqueue"
+    assert not worker.task_queue.empty()
+    t_id, t_data = worker.task_queue.get_nowait()
+    assert t_data.task == "dummy"
+    assert worker._task_entry_ids[t_id] == b"1-0"
+
+
+@pytest.mark.asyncio
+async def test_on_task_completed_acks_and_deletes_entry():
+    """on_task_completed must XACK+XDEL the recorded entry id and clear the map (AR-005)."""
+    from uuid import UUID
+
+    client = DummyClient()
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker._client = client
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    worker._task_entry_ids[t_id] = b"1-0"
+
+    await worker.on_task_completed(t_id, None, None)
+
+    assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
+    assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
+    assert t_id not in worker._task_entry_ids
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_enqueues_pending_entries():
+    """_recover_pending_tasks must claim idle pending entries and enqueue them,
+    recording their entry ids for later ack (AR-005)."""
+    import msgspec
+
+    from scietex.service.task_handler.schemas import TaskData
+
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = msgspec.msgpack.encode(task_data)
+    # xautoclaim returns [next_start, {entry_id: [[field, value]]}, [deleted_ids]]
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ]
+    )
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker._client = client
+
+    await worker._recover_pending_tasks()
+
+    assert not worker.task_queue.empty()
+    t_id, t_data = worker.task_queue.get_nowait()
+    assert t_data.task == "dummy"
+    assert worker._task_entry_ids[t_id] == b"9-0"

@@ -166,3 +166,96 @@ async def test_initialize_returns_false_when_handler_start_fails():
     proc.add_task_handler("failing", FailingStartHandler)
     ok = await proc.initialize()
     assert ok is False
+
+
+class RecordingProcessor(DemoProcessor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.completed: list = []
+
+    async def on_task_completed(self, task_id, task_data, task_result):
+        self.completed.append((task_id, task_data, task_result))
+
+
+@pytest.mark.asyncio
+async def test_handle_task_invokes_completion_hook():
+    """handle_task must invoke on_task_completed with the final result (AR-005)."""
+    proc = RecordingProcessor()
+    proc.add_task_handler("dummy", DummyHandler)
+    await proc._start_task_handler("dummy")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        await proc.task_queue.put((t_id, TaskData(task="dummy", payload=b'{"value": 5}')))
+        for _ in range(100):
+            if proc.completed:
+                break
+            await asyncio.sleep(0.01)
+        assert len(proc.completed) == 1
+        cid, cdata, cresult = proc.completed[0]
+        assert cid == t_id
+        assert cdata.task == "dummy"
+        assert cresult.status == "success"
+    finally:
+        await proc.stop()
+
+
+class StubbornHandler(TaskHandler):
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        try:
+            await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            # Swallow cancellation and keep running briefly.
+            await asyncio.sleep(0.3)
+        return TaskResult(status="success", error="No error")
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["stubborn"]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monkeypatch):
+    """A handler that swallows CancelledError must not be requeued by the
+    watchdog: it is still running, so requeueing would run it twice (AR-005)."""
+    import scietex.service.async_tasks_processor as mod
+
+    # Shorten the cancellation wait so the test does not block for 5s.
+    monkeypatch.setattr(mod, "WORKER_TASK_CANCELLATION_TIMEOUT", 0.05)
+    proc = DemoProcessor()
+    proc.add_task_handler("stubborn", StubbornHandler)
+    await proc._start_task_handler("stubborn")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        await proc.task_queue.put(
+            (
+                t_id,
+                TaskData(
+                    task="stubborn",
+                    payload=b"{}",
+                    timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
+                ),
+            )
+        )
+        # Wait past the watchdog interval (default 1s) plus the cancel wait so
+        # the watchdog has acted and decided not to requeue.
+        await asyncio.sleep(1.6)
+        assert not any(tid == t_id for tid, _ in proc.requeued)
+        # Let the stubborn handler finish so no dangling task remains.
+        await asyncio.sleep(0.5)
+    finally:
+        await proc.stop()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_drain_does_not_requeue_queued_tasks():
+    """cleanup must drop queued-but-undispatched tasks without requeueing
+    them: their transport entries stay pending and are redelivered on
+    restart, so an XADD here would duplicate them (AR-005)."""
+    proc = DemoProcessor()
+    t_id = uuid4()
+    await proc.task_queue.put((t_id, TaskData(task="dummy", payload=b"{}")))
+    await proc.cleanup()
+    assert not any(tid == t_id for tid, _ in proc.requeued)
+    assert proc.task_queue.empty()

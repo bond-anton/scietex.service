@@ -9,6 +9,7 @@ Requires the optional ``valkey-glide`` dependency.
 
 import logging
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -39,7 +40,7 @@ except ImportError as e:
 from scietex.logging import AsyncValkeyHandler
 
 from ..async_tasks_processor import AsyncTaskProcessor
-from ..task_handler import TaskData
+from ..task_handler import TaskData, TaskResult
 from .schemas import Heartbeat
 from .valkey_config import (
     ValkeyConfig,
@@ -167,6 +168,14 @@ class ValkeyWorker(AsyncTaskProcessor):
         self._task_group_name = f"scietex:{self.service_name}:{self.worker_id}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
         self.__encoder = msgspec.msgpack.Encoder()
+
+        # Maps a task UUID to the stream entry id it was read from, so the
+        # entry can be acknowledged when the handler completes (at-least-once).
+        self._task_entry_ids: dict[UUID, str | bytes] = {}
+
+        # True once pending-entry recovery has run (start of the first
+        # fetch_tasks), so a crash's unacked entries are redelivered once.
+        self._recovered: bool = False
 
     @property
     def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
@@ -412,32 +421,81 @@ class ValkeyWorker(AsyncTaskProcessor):
             packed = msgspec.msgpack.encode(task_data)  # bytes
             await self.client.xadd(self._task_stream_name, [(t_id, packed)])
 
+    async def _recover_pending_tasks(self) -> None:
+        """Re-enqueue stream entries left pending by a previous run.
+
+        Uses ``XAUTOCLAIM`` to claim every entry in the consumer group's
+        pending list that is idle (``min_idle_time_ms=0``) and enqueue it, so
+        tasks that were read but never acknowledged before a crash are
+        redelivered (at-least-once). Called once from the first
+        ``fetch_tasks``, before any ``'>'`` read, when no tasks are in flight.
+
+        Returns:
+            None. No-op if the Valkey client is ``None``.
+        """
+        if self.client is None:
+            return
+        try:
+            start: str | bytes = "0-0"
+            while True:
+                res = await self.client.xautoclaim(
+                    self._task_stream_name,
+                    self._task_group_name,
+                    self._consumer_name,
+                    0,
+                    start,
+                    count=10,
+                )
+                # glide types xautoclaim's return as a heterogeneous list;
+                # narrow the positions we read (next_start, entries) first.
+                next_start = res[0]
+                entries = res[1]
+                if not isinstance(next_start, (str, bytes)) or not isinstance(entries, Mapping):
+                    break
+                for entry_id, pairs in entries.items():
+                    for field, payload_bytes in pairs:
+                        task_id = field.decode("utf-8") if isinstance(field, bytes) else field
+                        try:
+                            task_data = msgspec.msgpack.decode(payload_bytes, type=TaskData)
+                            await self.task_queue.put((UUID(task_id), task_data))
+                            self._task_entry_ids[UUID(task_id)] = entry_id
+                        except Exception as exc:
+                            self.logger.error("Failed to decode recovered task data: %s", exc)
+                if next_start == b"0-0" or next_start == "0-0":
+                    break
+                start = next_start
+        except Exception as exc:
+            self.logger.log(logging.ERROR, "Failed to recover pending tasks: %s", exc)
+
     async def fetch_tasks(self):
-        """Fetch a single task from the Valkey task stream and enqueue it.
+        """Fetch a single new task from the Valkey task stream and enqueue it.
 
         Reads one entry from the task stream using ``XREADGROUP`` with
         ``block_ms=1000`` and the configured consumer group. Decodes the
         msgpack payload into a :class:`TaskData` struct and puts it into
-        ``self.task_queue`` as a ``(UUID, TaskData)`` tuple. Acknowledges
-        and deletes the entry after successful decoding.
+        ``self.task_queue`` as a ``(UUID, TaskData)`` tuple. The stream entry
+        is NOT acknowledged here: it stays in the consumer group's pending
+        list until the handler completes (see :meth:`on_task_completed`), so a
+        crash after enqueue redelivers the task (at-least-once). The entry id
+        is recorded in ``_task_entry_ids`` for the later acknowledgement.
 
         On read errors, disconnects and attempts to reconnect to Valkey.
 
         Returns:
             None. No-op if the Valkey client is ``None``.
         """
-
         if self.client is None:
             return
+        if not self._recovered:
+            self._recovered = True
+            await self._recover_pending_tasks()
         try:
-            # Attempt to call the method in a forgiving way.
             res = await self.client.xreadgroup(
                 {self._task_stream_name: ">"},
                 self._task_group_name,
                 self._consumer_name,
                 StreamReadGroupOptions(count=1, block_ms=1000),
             )
-
             if res:
                 for stream, entries in res.items():
                     for entry_id, pairs in entries.items():
@@ -450,17 +508,40 @@ class ValkeyWorker(AsyncTaskProcessor):
                             try:
                                 task_data = msgspec.msgpack.decode(payload_bytes, type=TaskData)
                                 await self.task_queue.put((UUID(task_id), task_data))
+                                self._task_entry_ids[UUID(task_id)] = entry_id
                             except Exception as exc:
                                 self.logger.error("Failed to decode task data: %s", exc)
                                 continue
-                        await self.client.xack(
-                            self._task_stream_name,
-                            self._task_group_name,
-                            [entry_id],
-                        )
-                        await self.client.xdel(self._task_stream_name, [entry_id])
-
         except Exception as exc:
             self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
             await self.disconnect()
             await self.connect()
+
+    async def on_task_completed(
+        self,
+        task_id: UUID,
+        task_data: TaskData,
+        task_result: TaskResult | None,
+    ) -> None:
+        """Acknowledge and delete the stream entry for a completed task.
+
+        Called by the base ``AsyncTaskProcessor.handle_task`` when a task's
+        processing terminates (success, error, or cancellation). Looks up the
+        stream entry id recorded at fetch time and ``XACK``s + ``XDEL``s it, so
+        the entry leaves the consumer group's pending list only after the
+        handler's work on it is done (at-least-once). ``task_result`` is
+        ``None`` when the task was cancelled before producing a result.
+
+        Args:
+            task_id: The unique identifier of the task.
+            task_data: The task data that was processed.
+            task_result: The final ``TaskResult``, or ``None`` on cancellation.
+        """
+        entry_id = self._task_entry_ids.pop(task_id, None)
+        if entry_id is None or self.client is None:
+            return
+        try:
+            await self.client.xack(self._task_stream_name, self._task_group_name, [entry_id])
+            await self.client.xdel(self._task_stream_name, [entry_id])
+        except Exception as exc:
+            self.logger.log(logging.ERROR, "Failed to acknowledge task %s: %s", task_id, exc)

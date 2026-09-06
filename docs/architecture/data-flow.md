@@ -26,9 +26,11 @@ transformations, and any async boundaries (queues/events/tasks).
 5. Exceptions from `handle()` are converted into
    `TaskResult(status="error", error=str(e))`; no handler → error result.
 
-**Destination:** the `TaskResult` is returned to `handle_task`, which **only
-logs at DEBUG and discards it** (there is no result sink, ack, or delivery).
-`running_tasks` entry is popped and `task_queue.task_done()` called.
+**Destination:** the `TaskResult` is returned to `handle_task`, which logs it
+at DEBUG and invokes `on_task_completed(task_id, task_data, task_result)` in
+its `finally` — the transport-agnostic ack/result-sink seam. `ValkeyWorker`
+overrides it to `XACK`+`XDEL` the stream entry. `running_tasks` entry is
+popped and `task_queue.task_done()` called.
 
 **Async boundaries:** `asyncio.Queue` (bounded, `queue_size` default 2) between
 intake and dispatch; per-task `asyncio.Task`; concurrency cap
@@ -39,21 +41,24 @@ intake and dispatch; per-task `asyncio.Task`; concurrency cap
 **Source:** external producer writes task entries into Valkey stream
 `scietex:{service}:{worker_id}:tasks`. Entry shape: one field-value pair per
 message — **field = task UUID string, value = msgpack-encoded `TaskData`**
-(written by `return_task_to_queue`, `valkey_async_worker.py:367-384`).
+(written by `return_task_to_queue`, `valkey_async_worker.py:405`).
 
-**Processing chain (`fetch_tasks`, 386):**
-1. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
+**Processing chain (`fetch_tasks`, 470):**
+1. On the first call only, `_recover_pending_tasks` runs `XAUTOCLAIM` to
+   re-enqueue entries left pending by a previous crash (at-least-once).
+2. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
    `block_ms=1000`.
-2. Per entry: decode field → UUID, decode value →
+3. Per entry: decode field → UUID, decode value →
    `msgspec.msgpack.decode(payload, type=TaskData)`; `await
-   task_queue.put((UUID(task_id), task_data))` — now flows through F1.
-3. After successful put: `XACK` + `XDEL` the entry.
+   task_queue.put((UUID(task_id), task_data))` — now flows through F1. The
+   entry id is recorded in `_task_entry_ids[task_id]`.
 4. Decode errors: logged, entry skipped. Read errors: `disconnect()` +
-   `connect()` (reconnect), task lost to retry by group semantics.
+   `connect()` (reconnect).
 
 **Transformation:** msgpack `bytes` → `TaskData` struct → typed in-memory queue
-items. The stream entry is **acknowledged/deleted on enqueue**, i.e. once in
-the in-process queue the Valkey copy is gone.
+items. The stream entry is **NOT acknowledged on enqueue**; it stays in the
+consumer group's pending list until `on_task_completed` acks it after the
+handler's work terminates (see F1 destination note).
 
 **Destination:** internal `task_queue` of the worker → F1.
 
@@ -62,19 +67,24 @@ the in-process queue the Valkey copy is gone.
 **Source/trigger:** (a) watchdog timeout, (b) worker shutdown drain, (c) task
 cancellation during cleanup.
 
-**Path:** `AsyncTaskProcessor.watchdog` (530) cancels `worker_task` when
-`elapsed > task_data.timeout.timeout` (or `DEFAULT_TASK_TIMEOUT=3`); if
-`timeout_action == "requeue"`, calls `return_task_to_queue(task_id,
-task_data)`. Base `return_task_to_queue` (371) is a no-op; `ValkeyWorker`
-(367) does `XADD` back to the same task stream (tail), re-entering F2/F1.
+**Path:** `AsyncTaskProcessor.watchdog` (604) cancels `worker_task` when
+`elapsed > task_data.timeout.timeout` (or `DEFAULT_TASK_TIMEOUT=3`), waits up
+to `WORKER_TASK_CANCELLATION_TIMEOUT`, and only if the handler actually
+stopped (`worker_task.done()`) calls `return_task_to_queue(task_id,
+task_data)` when `timeout_action == "requeue"`. Base `return_task_to_queue`
+(383) is a no-op; `ValkeyWorker` (405) does `XADD` back to the same task
+stream (tail), re-entering F2/F1. A handler that ignores cancellation is not
+requeued (its entry stays pending and is redelivered on restart).
 
-**Shutdown drain** (`AsyncTaskProcessor.cleanup`, 397): remaining
-`task_queue` items and in-flight running tasks are requeued through the same
-hook when `canceled_action == "requeue"`.
+**Shutdown drain** (`AsyncTaskProcessor.cleanup`, 430): queued-but-undispatched
+items are dropped (their transport entries stay pending and are redelivered on
+restart); in-flight running tasks are requeued through the same hook only after
+their handler is confirmed stopped, when `canceled_action == "requeue"`.
 
 **Note:** requeue via `XADD` appends to the **tail** of the stream — original
-ordering is not preserved, and a task can be re-enqueued even if the underlying
-handler ignores cancellation (see §H8).
+ordering is not preserved. The original entry is acknowledged by
+`handle_task`'s `finally` when the handler stops, so a requeued task yields
+exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
 
 ## F4. Handler dispatch (selection)
 
