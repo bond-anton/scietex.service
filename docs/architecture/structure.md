@@ -17,19 +17,19 @@ Layout of the repository and the Python package.
 | `AGENTS.md`, `README.md`, `LICENSE` | Developer instructions, public docs, MIT license |
 
 > Pytest configuration lives only in `pyproject.toml`
-> (`[tool.pytest.ini_options]`, lines 39–41); `pytest.ini` was deleted (AR-013).
+> (`[tool.pytest.ini_options]`, lines 46–48); `pytest.ini` was deleted (AR-013).
 
 ## Package layout (`src/scietex/service/`)
 
 | Module | Responsibility |
 |---|---|
-| `__init__.py` | Public API. Always exports `__version__`, `BasicAsyncWorker`, `AsyncTaskProcessor`, `Manager`. In a guarded `try/except Exception` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types). The broad guard makes the package importable without `valkey-glide` |
-| `version.py` | Single source `__version__ = "3.0.0"` (also read by setuptools dynamic version) |
+| `__init__.py` | Public API. Always exports `__version__`, `BasicAsyncWorker`, `AsyncTaskProcessor`, `Manager`. In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
+| `version.py` | Single source `__version__ = "3.1.0"` (also read by setuptools dynamic version) |
 | `manager.py` | `Manager` class-decorator (name + optional cleanup callable, stores `method`) and `ManagerStatus` enum |
 | `manager_runtime.py` | `ManagerRuntime(worker)`: manager discovery across the class MRO (`iter_manager_definitions`), start/stop bookkeeping (`statuses`/`tasks`/`errors`), and the bounded restart-on-error loop (`run_manager`). Extracted from `BasicAsyncWorker` (AR-003) |
 | `logging_lifecycle.py` | `LoggingLifecycle(worker)`: async logging-handler registration and start/stop with `statuses` bookkeeping. Extracted from `BasicAsyncWorker` (AR-003) |
 | `basic_async_worker.py` | `BasicAsyncWorker` + `ServiceStatus`. Owns identity/config, the lifecycle state machine, signal handlers (registered in `start()`), startup/shutdown orchestration, and the built-in `Heartbeat`/`Watchdog` managers. Delegates manager runtime and logging lifecycle to `ManagerRuntime`/`LoggingLifecycle` via forwarding wrappers |
-| `logging.py` | `LoggerStatus` (STOPPED/RUNNING), `parse_logging_level()`, `DEFAULT_LOGGING_LEVEL` |
+| `logging.py` | `LoggerStatus` (STOPPED/RUNNING/FAILED), `parse_logging_level()`, `DEFAULT_LOGGING_LEVEL` |
 | `async_tasks_processor.py` | `AsyncTaskProcessor(BasicAsyncWorker)`. Task registry maps (`__task_handlers_map` class→instance, `__task_handlers` active instances), bounded task queue (accessed via `enqueue_task`/`dequeue_task`/`task_queue_empty`/`task_queue_full` — the raw `task_queue` is no longer public), `running_tasks` (`UUID → TaskTracker`), `@Manager("TaskManager") task_manager`, `@Manager("TaskQueueManager") task_queue_manager`, `process_task()`, watchdog timeout logic, handler start/stop, drain-and-cancel cleanup, `on_task_completed()` ack seam |
 | `task_handler/__init__.py` | Re-exports `TaskHandler`, `TaskHandlerContext`, `TaskData`, `TaskResult`, `TaskTimeout`, `TaskTracker` |
 | `task_handler/context.py` | `TaskHandlerContext` — frozen dataclass (`service_name`, `worker_id`, `logger`) passed to handlers instead of the full worker |

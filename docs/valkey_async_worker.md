@@ -125,6 +125,7 @@ to Valkey, and creates the consumer group for the task stream (with
 |---|---|---|---|
 | `valkey_config` | `ValkeyConfig \| GlideClientConfiguration` | — | The Valkey configuration used by this worker |
 | `client` | `GlideClient \| None` | `None` | The active Valkey client (``None`` until connected) |
+| `logging_connected` | `bool` | `False` | Whether the logging handler has a live Valkey client (``True`` only when a registered `AsyncValkeyHandler` exists and its `client` is not ``None``) |
 
 ### Inherited from AsyncTaskProcessor
 
@@ -150,6 +151,7 @@ ValkeyWorker(
     max_concurrent_tasks: int | None = None,
     valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
     log_stream_name: str = "scietex:log",
+    share_glide_client: bool = False,
     **kwargs,
 )
 ```
@@ -168,6 +170,7 @@ ValkeyWorker(
 | `valkey_config` | `None` | Custom Valkey configuration. If ``None``, reads
 ``valkey.yml`` from the config directory |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
+| `share_glide_client` | `False` | Reserved feature flag for a single shared `GlideClient` across the task client and the logging handler. The external `scietex.logging` handler does not yet accept an injected client, so `True` logs a warning and falls back to the handler owning its own client |
 | `**kwargs` | — | Additional kwargs passed to `AsyncTaskProcessor` |
 
 ## Methods
@@ -564,14 +567,19 @@ heartbeat interval.
 
 ## PubSub Broadcasting
 
-`ValkeyWorker` supports PubSub broadcasting for inter-worker
-communication. When `listening=True` is passed to
-`generate_glide_config()`, the client subscribes to:
+> **Not implemented.** `ValkeyWorker` always creates its client with
+> `listening=False` (`generate_glide_config(..., listening=False)`), so the
+> PubSub path described below is not active. Inter-worker PubSub
+> communication is reserved for future work and is documented here only
+> as a design note.
+
+The `generate_glide_config()` helper accepts a `listening` parameter.
+Were `listening=True` passed, the client would subscribe to:
 
 | Channel | Pattern | Description |
 |---|---|---|
 | `scietex:{service_name}:{worker_id}` | Exact | Service-specific channel for this worker |
 | `scietex:broadcast` | Exact | Broadcast channel for all workers in the service |
 
-A `parse_control_message` callback can be provided to handle incoming
+A `parse_control_message` callback could be provided to handle incoming
 PubSub messages.

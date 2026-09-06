@@ -10,17 +10,17 @@ transformations, and any async boundaries (queues/events/tasks).
 `enqueue_task()` directly.
 
 **Processing chain:**
-1. `AsyncTaskProcessor.task_queue_manager` (`async_tasks_processor.py:515`,
+1. `AsyncTaskProcessor.task_queue_manager` (`async_tasks_processor.py:670`,
    `@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
    subclass/`ValkeyWorker` `fetch_tasks()`; then sleeps
    `task_queue_manager_sleep_time` (default 0.01 s).
-2. `AsyncTaskProcessor.task_manager` (`async_tasks_processor.py:476`,
+2. `AsyncTaskProcessor.task_manager` (`async_tasks_processor.py:595`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `(task_id, task_data)` off `task_queue` with a 1 s fetch timeout,
    wraps `handle_task` in an `asyncio.Task`, records
    `running_tasks[task_id] = TaskTracker(...)`.
-3. `handle_task` (inner, 489) calls `process_task(task_id, task_data)`.
-4. `process_task` (433): validates `task_data.task`, selects a handler with
+3. `handle_task` (inner, 608) calls `process_task(task_id, task_data)`.
+4. `process_task` (544): validates `task_data.task`, selects a handler with
    `_find_task_handler` (`handler.supports(task_type)`, first match among
    **active/started** handlers), calls `await handler.handle(task_data)`.
 5. Exceptions from `handle()` are converted into
@@ -41,9 +41,9 @@ intake and dispatch; per-task `asyncio.Task`; concurrency cap
 **Source:** external producer writes task entries into Valkey stream
 `scietex:{service}:{worker_id}:tasks`. Entry shape: one field-value pair per
 message — **field = task UUID string, value = msgpack-encoded `TaskData`**
-(written by `return_task_to_queue`, `valkey_async_worker.py:405`).
+(written by `return_task_to_queue`, `valkey_async_worker.py:499`).
 
-**Processing chain (`fetch_tasks`, 470):**
+**Processing chain (`fetch_tasks`, 574):**
 1. On the first call only, `_recover_pending_tasks` runs `XAUTOCLAIM` to
    re-enqueue entries left pending by a previous crash (at-least-once).
 2. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
@@ -68,16 +68,16 @@ handler's work terminates (see F1 destination note).
 **Source/trigger:** (a) watchdog timeout, (b) worker shutdown drain, (c) task
 cancellation during cleanup.
 
-**Path:** `AsyncTaskProcessor.watchdog` (604) cancels `worker_task` when
+**Path:** `AsyncTaskProcessor.watchdog` (685) cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or `DEFAULT_TASK_TIMEOUT=3`), waits up
 to `WORKER_TASK_CANCELLATION_TIMEOUT`, and only if the handler actually
 stopped (`worker_task.done()`) calls `return_task_to_queue(task_id,
 task_data)` when `timeout_action == "requeue"`. Base `return_task_to_queue`
-(383) is a no-op; `ValkeyWorker` (405) does `XADD` back to the same task
+(451) is a no-op; `ValkeyWorker` (499) does `XADD` back to the same task
 stream (tail), re-entering F2/F1. A handler that ignores cancellation is not
 requeued (its entry stays pending and is redelivered on restart).
 
-**Shutdown drain** (`AsyncTaskProcessor.cleanup`, 430): queued-but-undispatched
+**Shutdown drain** (`AsyncTaskProcessor.cleanup`, 498): queued-but-undispatched
 items are dropped (their transport entries stay pending and are redelivered on
 restart); in-flight running tasks are requeued through the same hook only after
 their handler is confirmed stopped, when `canceled_action == "requeue"`.
@@ -90,7 +90,7 @@ exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
 ## F4. Handler dispatch (selection)
 
 **Source:** `TaskData.task` string. **Processing:** `_find_task_handler`
-(353) iterates `task_handlers` dict (active instances) and returns the first
+(433) iterates `task_handlers` dict (active instances) and returns the first
 `handler.supports(task_type)`. **Destination:** `handler.handle(task_data)`.
 Selection is by `supported_tasks` membership, **not** by the registration key
 used in `add_task_handler` (keys are registry names; one key maps to one class
@@ -100,14 +100,14 @@ may match several handlers — first active wins).
 ## F5. Heartbeat flow
 
 **Source:** `@Manager("Heartbeat") _heartbeat_manager`
-(`basic_async_worker.py:774`) — sleeps `heartbeat_interval`, calls
-`self.heartbeat()`, repeats. `ValkeyWorker.heartbeat` (215) is the only
+(`basic_async_worker.py:810`) — sleeps `heartbeat_interval`, calls
+`self.heartbeat()`, repeats. `ValkeyWorker.heartbeat` (352) is the only
 concrete override.
 
 **Processing/destination:** encodes `Heartbeat` struct (msgpack) and writes it
 to key `scietex:{service}:{worker_id}:status` with TTL = 2 ×
 `heartbeat_interval` (glide `ExpirySet`). Skipped when `client is None` or
-`start_time is None`. **Errors are swallowed** (logged at DEBUG) — a failed
+`start_time is None`. **Errors are swallowed** (logged at WARNING) — a failed
 heartbeat never surfaces.
 
 ## F6. Log flow
@@ -117,20 +117,20 @@ heartbeat never surfaces.
 **Processing:** standard `logging` → attached handlers:
 - `AsyncBaseHandler` (console; registered in `BasicAsyncWorker.__init__`
   (`basic_async_worker.py:153`) via `LoggingLifecycle.register_logger_handler`
-  (`logging_lifecycle.py:55`)) — `emit()` puts each record into an internal
+  (`logging_lifecycle.py:37`)) — `emit()` puts each record into an internal
   `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`
   and writes to stdout.
 - `AsyncValkeyHandler` (added in `ValkeyWorker.__init__`,
-  `valkey_async_worker.py:139-147`, `stdout_enable=False`) — its own
+  `valkey_async_worker.py:200-209`, `stdout_enable=False`) — its own
   `GlideClient`; formats records to a dict and `xadd`s to log stream
   `scietex:log` (default).
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
-`LoggingLifecycle.start_handlers` (`logging_lifecycle.py:57`) /
-`shut_down_handlers` (`logging_lifecycle.py:93`), exposed as worker wrappers
-`_logger_start_handlers` (`basic_async_worker.py:541`) /
-`_logger_shut_down_handlers` (`basic_async_worker.py:549`), with a per-handler
+`LoggingLifecycle.start_handlers` (`logging_lifecycle.py:62`) /
+`shut_down_handlers` (`logging_lifecycle.py:104`), exposed as worker wrappers
+`_logger_start_handlers` (`basic_async_worker.py:558`) /
+`_logger_shut_down_handlers` (`basic_async_worker.py:566`), with a per-handler
 timeout (`logger_handler_timeout`, default 2 s).
 
 ## F7. Configuration flow
@@ -139,18 +139,18 @@ timeout (`logger_handler_timeout`, default 2 s).
 `utils/conf.py:33`), i.e. `valkey.yml` in the chosen dir, or programmatic
 `ValkeyConfig`.
 
-**Path:** `ValkeyWorker.__init__` (127-138): if no `valkey_config` argument,
+**Path:** `ValkeyWorker.__init__` (162-174): if no `valkey_config` argument,
 `read_valkey_config(self.conf_dir)` loads or creates `valkey.yml`
 (msgspec YAML, strict decode; a present-but-invalid file raises `RuntimeError`,
 only a missing file is created with defaults) →
 `ValkeyConfig` → `generate_glide_config(...)` → `GlideClientConfiguration`
-→ `GlideClient.create` in `connect()` (180).
+→ `GlideClient.create` in `connect()` (319).
 
 ## F8. Control / PubSub (defined but unused in package)
 
 `generate_glide_config` supports `listening=True` + `parse_control_message`
 callback → subscribes to channels `scietex:{service}:{worker_id}` and
-`scietex:broadcast` (valkey_config.py:304-315). **`ValkeyWorker` always
+`scietex:broadcast` (valkey_config.py:314-325). **`ValkeyWorker` always
 passes `listening=False`**; nothing in the package consumes control messages.
 The PubSub path exists only in config/translation code (`UNKNOWN` consumers —
 likely future or external).

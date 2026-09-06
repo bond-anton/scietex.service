@@ -155,6 +155,11 @@ class TaskResult(msgspec.Struct, frozen=True):
     error: str = ""
     processed_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
     payload: bytes = b""
+    error_code: str = ""
+    retryable: bool = False
+    retry_count: int = 0
+    partial: bool = False
+    requeue: bool | None = None
 ```
 
 | Field | Type | Default | Description |
@@ -163,6 +168,15 @@ class TaskResult(msgspec.Struct, frozen=True):
 | `error` | `str` | `""` | Error message (empty on success) |
 | `processed_at` | `datetime` | current UTC | Timestamp when result was created |
 | `payload` | `bytes` | `b""` | Optional result payload |
+| `error_code` | `str` | `""` | Structured error taxonomy code (e.g. `"PERMANENT"` or `"TRANSIENT"`, or a domain-specific code). Empty means unset |
+| `retryable` | `bool` | `False` | Whether the failure is retryable (transient) vs permanent |
+| `retry_count` | `int` | `0` | Number of processing attempts so far |
+| `partial` | `bool` | `False` | Whether partial progress was made before the error |
+| `requeue` | `bool \| None` | `None` | Explicit requeue intent overriding `canceled_action`/`timeout_action`. `None` means no explicit intent |
+
+The error-taxonomy fields (`error_code`, `retryable`, `retry_count`,
+`partial`, `requeue`) all default to "no extra information", so handlers
+that only set `status` and `error` keep working unchanged.
 
 ### TaskTimeout
 
@@ -208,6 +222,20 @@ processor = AsyncTaskProcessor(service_name="my_service", version="1.0.0")
 # Register a handler class (not an instance — processor creates instances)
 processor.add_task_handler("send_email", EmailHandler)
 processor.add_task_handler("process_data", DataHandler)
+```
+
+`add_task_handler()` accepts an optional third argument, `supported_tasks`,
+used only to validate the registration name. It defaults to the handler
+class's declared `supported_tasks`. The name is a lifecycle handle, not a
+dispatch key — dispatch selects handlers by their `supported_tasks`
+membership — so when the name is not among the effective
+`supported_tasks`, a warning is logged (such a name can never be
+dispatched to):
+
+```python
+processor.add_task_handler("email", EmailHandler)
+# Explicit override of the validation list:
+processor.add_task_handler("email", EmailHandler, supported_tasks=["email", "report"])
 ```
 
 A handler can support multiple task types by returning them all from
@@ -263,9 +291,15 @@ class ImageHandler(TaskHandler):
 
 ### Error Handling
 
-Always return a `TaskResult` with `status="error"` for exceptions.
-The processor wraps unexpected errors automatically, but explicit
-error handling provides better context:
+The processor distinguishes three failure outcomes via `process_task()`:
+
+- A handler that **raises** produces `TaskResult(status="error",
+  retryable=True)` — a raise is treated as a transient failure.
+- A handler that **returns** its own `TaskResult` controls all fields,
+  including `retryable` (which defaults to `False`). Set
+  `retryable=True` on transient errors that may succeed on retry.
+- Framework failures (empty `task` field, no matching handler) are
+  permanent and leave `retryable=False`.
 
 ```python
 async def handle(self, task_data: TaskData) -> TaskResult:
@@ -273,12 +307,15 @@ async def handle(self, task_data: TaskData) -> TaskResult:
         result = await self._do_work(task_data)
         return TaskResult(status="success", payload=result)
     except ValidationError as exc:
-        # Client error — don't retry
+        # Permanent client error — not retryable
         return TaskResult(status="error", error=str(exc))
     except ConnectionError as exc:
-        # Retryable error
-        return TaskResult(status="error", error=str(exc))
+        # Transient error — mark retryable
+        return TaskResult(status="error", error=str(exc), retryable=True)
 ```
+
+Raising instead of returning an error result is also acceptable: the
+processor marks the resulting error `retryable=True` by default.
 
 ### Resource Management
 

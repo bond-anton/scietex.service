@@ -3,7 +3,7 @@
 Locations where the codebase shows structural tension. Each entry records
 **what the code does** and **why it is significant**; it does **not** propose a
 fix. Items are *analysis* unless stated otherwise. Verified-by-execution facts
-are flagged. Entries resolved by the AR-003..AR-016 refactors are marked
+are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 **Resolved** and retained for change history.
 
 ## Status summary
@@ -16,16 +16,16 @@ are flagged. Entries resolved by the AR-003..AR-016 refactors are marked
 | H4 | Resolved | 2026-09-06 — handlers restartable in place |
 | H5 | Resolved | AR-007 — `initialize()` before `_start_managers()` |
 | H6 | Resolved | AR-015 + AR-008 — signals in `start()`; read-only views |
-| H7 | Open | shutdown cancellation path |
+| H7 | Resolved | AR-017 — `_force_stopped()` forces STOPPED on cancellation |
 | H8 | Resolved | AR-005 — at-least-once delivery |
-| H9 | Partial | AR-018 — unified health reporting shipped; single client pending external `scietex.logging` injection |
+| H9 | Resolved | AR-018 — health reporting + `share_glide_client` seam shipped; single client deferred to v4 (ROADMAP) |
 | H10 | Resolved | AR-006 + AR-010 — truthful `connect()` |
-| H11 | Open | per-`worker_id` stream/group naming |
+| H11 | Open | per-`worker_id` stream/group naming — deferred to v4 (AR-023, ROADMAP) |
 | H12 | Open | usage docs still drift (out of scope here) |
 | H13 | Resolved | AR-013 — single pytest config |
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
-| H16 | Open | coarse error policy |
+| H16 | Resolved | AR-022 — structured error taxonomy fields on `TaskResult` |
 
 ## H1. `BasicAsyncWorker` is a large, multi-responsibility class
 
@@ -73,7 +73,7 @@ tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
 
-- **Location:** `logging_lifecycle.py:93-122` (`shut_down_handlers`), plus
+- **Location:** `logging_lifecycle.py:104-133` (`shut_down_handlers`), plus
   external `scietex.logging` (`stop_logging()` calls `self.close()`).
 - **What:** after shutdown, each `AsyncBaseHandler` was closed yet recorded as
   RUNNING, so a later start skipped it.
@@ -94,7 +94,7 @@ restarts the same handler instances. See
   `initialize()`-created resources could race.
 
 **Resolved (AR-007):** `_startup` now calls `initialize()` before
-`_start_managers()` (basic_async_worker.py:637-641).
+`_start_managers()` (basic_async_worker.py:650-658).
 
 ## H6. Single-worker-per-process assumption (signal + event ownership)
 
@@ -107,15 +107,15 @@ restarts the same handler instances. See
   and could not construct workers outside a running loop.
 
 **Resolved (AR-015 + AR-008):** signal handlers are registered in `start()`
-(`_setup_signal_handlers`, basic_async_worker.py:497, Windows-safe no-op) and
-removed in `stop()` (`_remove_signal_handlers`, 514); `__init__` no longer
+(`_setup_signal_handlers`, basic_async_worker.py:501, Windows-safe no-op) and
+removed in `stop()` (`_remove_signal_handlers`, 531); `__init__` no longer
 touches the loop, so workers may be constructed outside a running loop.
-`events` (basic_async_worker.py:207), `task_handlers` (async_tasks_processor.py:154)
+`events` (basic_async_worker.py:212), `task_handlers` (async_tasks_processor.py:154)
 and `running_tasks` (166) now return read-only `MappingProxyType` views.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 
-- **Location:** `basic_async_worker.py:681-722` (`_shutdown`).
+- **Location:** `basic_async_worker.py:713-755` (`_shutdown`).
 - **What:** `_shutdown` has no rollback if it is cancelled mid-way (e.g. during
   `_stop_managers`); its `except asyncio.CancelledError` swallows the
   cancellation without re-raising or forcing STOPPED/`exit`.
@@ -123,6 +123,12 @@ and `running_tasks` (166) now return read-only `MappingProxyType` views.
   STOPPING and `exit` unset, and `start()` in that state waits on a poll loop.
   Cleanup ordering (managers → cleanup → loggers) is sequential and
   timeout-guarded, but an unexpected cancellation path is not.
+
+**Resolved (AR-017):** `_shutdown` (and `_startup`) now catch `CancelledError`,
+call `_force_stopped()` (basic_async_worker.py:699) — which sets
+`state = STOPPED`, clears `start_time`, and sets the `exit` event if
+`exit_requested` — then re-raise, so a cancelled startup/shutdown always lands
+in a terminal state and the worker can be restarted.
 
 ## H8. Task completion results are dropped; retry/duplicate semantics are loose
 
@@ -134,9 +140,9 @@ and `running_tasks` (166) now return read-only `MappingProxyType` views.
 - **Why significant:** the distributed contract was effectively at-most-once.
 
 **Resolved (AR-005):** delivery is now at-least-once. `fetch_tasks`
-(valkey_async_worker.py:480) records the entry id in `_task_entry_ids` without
-acking; `on_task_completed` (539) `XACK`+`XDEL`s the entry only after the
-handler's work terminates. `_recover_pending_tasks` (424) uses `XAUTOCLAIM` on
+(valkey_async_worker.py:574) records the entry id in `_task_entry_ids` without
+acking; `on_task_completed` (633) `XACK`+`XDEL`s the entry only after the
+handler's work terminates. `_recover_pending_tasks` (518) uses `XAUTOCLAIM` on
 the first fetch to redeliver entries left pending by a crash. Enqueue is
 non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 (AR-016).
@@ -153,20 +159,21 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
   `stop_logging`). Connection failure modes and resource accounting are split
   across two owners.
 
-**Partially resolved (AR-018, in-repo):** the two-lifecycle model is now
-documented explicitly on `ValkeyWorker`, and health is reported for **both**
-clients. `logging_connected` exposes the logging handler's client state, and
-`connect()` warns when the two clients diverge (worker up / logging down, or
-vice versa), so a half-connected worker is observable. A `share_glide_client`
-feature-flag seam is reserved for a single shared client. **True
-single-connection unification remains blocked** on the external
-`scietex.logging` `AsyncValkeyHandler` gaining a client-injection parameter
-(see docs/ROADMAP.md); until then the handler keeps its own client, and the
-worker does not close it — the handler owns its teardown via `stop_logging`.
+**Resolved (AR-018):** the two-lifecycle model is now documented explicitly on
+`ValkeyWorker`, and health is reported for **both** clients. `logging_connected`
+(valkey_async_worker.py:258) exposes the logging handler's client state, and
+`connect()` (295) reports divergence via `_log_connection_divergence` (273) —
+warning when the worker client and logging client disagree — so a
+half-connected worker is observable. A `share_glide_client` constructor flag
+(108) and `_handler_supports_client_injection` (54) are the reserved seam for a
+single shared client. **True single-connection unification** is deferred to v4
+(see docs/ROADMAP.md): it is gated on the external `scietex.logging`
+`AsyncValkeyHandler` gaining a client-injection parameter; until then the
+handler keeps its own client and owns its teardown via `stop_logging`.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
-- **Location:** `valkey_async_worker.py:204-240` (`connect`), 289-318
+- **Location:** `valkey_async_worker.py:295-339` (`connect`), 388-421
   (`initialize`).
 - **What:** on `GlideClient.create` exception, `connect` returned False and left
   `_client=None`; on a **failed PING**, it previously left `_client` set, so
@@ -175,13 +182,13 @@ worker does not close it — the handler owns its teardown via `stop_logging`.
 - **Why significant:** connectivity success was not consistently propagated.
 
 **Resolved (AR-006 + AR-010):** `connect()` assigns `_client` only after PING
-succeeds (229) and closes a client that failed its ping (236-239), so
+succeeds (326) and closes a client that failed its ping (334-338), so
 `self.client` truthiness is a reliable connectivity signal and a half-connected
 worker is never observable.
 
 ## H11. Task stream and group are namespaced per `worker_id`
 
-- **Location:** `valkey_async_worker.py:166-169`.
+- **Location:** `valkey_async_worker.py:212-215`.
 - **What:** stream, group, and consumer names embed `service_name` **and**
   `worker_id`. Two `ValkeyWorker`s with different `worker_id`s read **different
   streams**; horizontal scale-out requires replicas that share the same
@@ -191,6 +198,11 @@ worker is never observable.
   stream*. This naming couples scaling topology to the worker_id identity and
   to the runtime key conventions.
 
+*Deferred to v4 (AR-023):* the stream/group namespace is planned to be separated
+from the consumer/status namespace (docs/ROADMAP.md) so replicas can share one
+stream. This is a deliberate v3 constraint, not a bug — tracked as a breaking
+change for the next major version.
+
 ## H12. Usage documentation diverges from the code
 
 - **Location:** `docs/basic_async_worker.md`, `docs/async_task_processor.md`,
@@ -199,7 +211,7 @@ worker is never observable.
 - **What:** the usage docs are not kept in lockstep with the code. Discrepancies
   previously noted — MRO discovery order and import-time `processed_at` /
   `timestamp` defaults — are fixed in the source (AR-003, AR-012), but the
-  usage docs themselves have not been re-verified against v3.0.0 in this
+  usage docs themselves have not been re-verified against v3.1.0 in this
   rewrite.
 - **Why significant:** the docs are the intended-architecture record; drift
   between usage guides and the code marks where design intent and implementation
@@ -213,7 +225,7 @@ worker is never observable.
 - **Why significant:** divergent import paths between test and package.
 
 **Resolved (AR-013):** `pytest.ini` was deleted; pytest configuration lives only
-in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 39-41).
+in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 46-48).
 
 ## H14. `pyaml` dependency is unused; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` is dead
 
@@ -236,12 +248,12 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 39-41).
 
 **Resolved (AR-012):** both fields now use
 `msgspec.field(default_factory=lambda: datetime.now(timezone.utc))`
-(`task_handler/schemas.py:60`, `valkey/schemas.py:38`), producing a per-instance
+(`task_handler/schemas.py:76`, `valkey/schemas.py:38`), producing a per-instance
 value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `async_tasks_processor.py:509-547` (`process_task`), 314-416
+- **Location:** `async_tasks_processor.py:544-593` (`process_task`), 314-431
   (handler registry).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no
@@ -252,3 +264,18 @@ value.
   `TaskHandler` contract (declares `supported_tasks`, implements `handle`) has
   no way to express partial progress or custom requeue intent, so all recovery
   is delegated to `return_task_to_queue` at the processor level.
+
+**Resolved (AR-022, additive contract):** `TaskResult` now carries optional
+structured error-taxonomy fields — `error_code`, `retryable`, `retry_count`,
+`partial`, `requeue` (task_handler/schemas.py:78-82) — all defaulting to "no
+extra information" so existing handlers keep working. `process_task` marks a
+handler that *raises* as `retryable=True` (a raise is treated as transient) and
+passes a handler-returned `TaskResult` through unchanged; framework-level
+failures (empty `task` field, no matching handler) remain permanent
+(`retryable=False`). Registration is also reconciled with dispatch: the
+`add_task_handler` `supported_tasks` parameter (314-358) validates the
+registration name against the handler's declared task types and warns when the
+name can never be dispatched to. Honoring `requeue`/`retryable` on the *error*
+path (requeueing a failed task rather than a timed-out one) is still future
+work gated on result availability (see `watchdog` docstring, 693-702), and the
+key-based registration API remains deprecated until v4 (docs/ROADMAP.md).

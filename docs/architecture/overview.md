@@ -89,14 +89,14 @@ asyncio.run(main())  # SIGINT/SIGTERM → exit() → STOPPED
 ```
 
 Two constraints now derive from signal handling in `BasicAsyncWorker.start` /
-`stop` (basic_async_worker.py:678, 745):
+`stop` (basic_async_worker.py:696, 778):
 
 1. A worker can be constructed **anywhere** — `__init__` no longer calls
    `asyncio.get_running_loop()`; the running loop is only touched in `start()`
    and `stop()`.
 2. Signal handlers (SIGINT/SIGTERM) are registered per instance in `start()`
-   (`_setup_signal_handlers`, 497) and removed in `stop()`
-   (`_remove_signal_handlers`, 514). Registration is a Windows-safe no-op when
+   (`_setup_signal_handlers`, 501) and removed in `stop()`
+   (`_remove_signal_handlers`, 531). Registration is a Windows-safe no-op when
    `loop.add_signal_handler` is unavailable. Because registration happens on
    `start()` rather than construction, the **last started worker in a process**
    owns the signals.

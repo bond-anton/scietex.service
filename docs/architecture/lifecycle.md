@@ -14,31 +14,31 @@ Two coordination events exist per worker in `self.events` (a read-only
 
 ### Startup
 
-Public: `worker.start()` (653). It:
+Public: `worker.start()` (671). It:
 1. Guards: if RUNNING or STARTING → warn and return.
 2. If STOPPING/STOPPED → registers signal handlers (`_setup_signal_handlers`,
-   678) and spawns task `"Start"` running `_startup()` (608).
+   696) and spawns task `"Start"` running `_startup()` (625).
 
 `_startup()`:
 1. If not STOPPED, waits (0.1 s poll) for a prior shutdown to finish.
 2. Sets STARTING; prints logo.
-3. `_logger_start_handlers()` (541) → `LoggingLifecycle.start_handlers()` —
+3. `_logger_start_handlers()` (558) → `LoggingLifecycle.start_handlers()` —
    starts each async handler not yet running, with `logger_handler_timeout`.
-4. `initialize()` (558) — subclass hook; must return truthy.
-   - `AsyncTaskProcessor.initialize` (447) starts every registered task handler
+4. `initialize()` (575) — subclass hook; must return truthy.
+   - `AsyncTaskProcessor.initialize` (480) starts every registered task handler
      (`_start_task_handler`, awaited per handler).
-   - `ValkeyWorker.initialize` (289) calls super then `connect()` and creates
+   - `ValkeyWorker.initialize` (388) calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows
      "already exists" errors).
-5. `_start_managers()` (592) → `ManagerRuntime.start_managers()` — discover
+5. `_start_managers()` (609) → `ManagerRuntime.start_managers()` — discover
    `@Manager`s via `ManagerRuntime.iter_manager_definitions()`
    (manager_runtime.py:39) and start each as a named task.
 6. Sets `start_time` (UTC) and state = RUNNING.
 
 Failure: if `initialize()` returns `False` → `RuntimeError("Initialization
 failed")` → `_startup` calls `stop()` → shutdown begins. If `_startup` is
-cancelled, it logs and re-raises (state may remain STARTING — *analysis*: no
-reset branch).
+cancelled, it logs, forces `_force_stopped()` (STOPPED + `exit` event), and
+re-raises — no stranded STARTING state (AR-017).
 
 > Ordering note: `initialize()` runs **before** `_start_managers()` (steps 4
 > and 5). Managers and handlers may depend on resources created by
@@ -58,38 +58,39 @@ reset branch).
 
 ### Shutdown
 
-Signal (`SIGINT`/`SIGTERM`) → `exit()` (767) sets `exit_requested`, calls
+Signal (`SIGINT`/`SIGTERM`) → `exit()` (800) sets `exit_requested`, calls
 `stop()`.
 
-`stop()` (724):
+`stop()` (757):
 - STOPPED → clear/set exit events, remove signal handlers
-  (`_remove_signal_handlers`, 745), return.
+  (`_remove_signal_handlers`, 778), return.
 - STOPPING → set exit event if `exit_requested`, return.
-- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (681).
+- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (713).
 
 `_shutdown()`:
 1. State = STOPPING.
-2. `_stop_managers()` (600) → `ManagerRuntime.stop_managers()` — cancel each
+2. `_stop_managers()` (617) → `ManagerRuntime.stop_managers()` — cancel each
    manager task; wait per-manager up to `manager_shutdown_timeout` (default 2 s).
 3. `cleanup()` — subclass hook. Chain:
-   - `AsyncTaskProcessor.cleanup` (465): drain `task_queue` (items fetched from
+   - `AsyncTaskProcessor.cleanup` (498): drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
      cancel running per-task workers (wait up to
      `WORKER_TASK_CANCELLATION_TIMEOUT=5 s`); requeue only if the handler
      actually stopped and `canceled_action=="requeue"`; stop all task handlers
      (`_stop_task_handler`, per-handler 5 s timeout).
-   - `ValkeyWorker.cleanup` (320): super then `disconnect()` (close glide
+   - `ValkeyWorker.cleanup` (423): super then `disconnect()` (close glide
      client).
-4. `_logger_shut_down_handlers()` (549) →
+4. `_logger_shut_down_handlers()` (566) →
    `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
    with per-handler timeout; overall `loggers_timeout =
    handlers × logger_handler_timeout + 1`.
 5. `start_time = None`; state = STOPPED.
 6. If `exit_requested` was set → clear it, set `exit` event.
 
-If `_shutdown` is cancelled, it logs "Shutdown task cancelled" and swallows the
-cancellation without re-raising (*analysis*: state can be left at STOPPING and
-`exit` unset — see §H7).
+If `_shutdown` is cancelled, it logs "Shutdown task cancelled", forces
+`_force_stopped()` (STOPPED + `exit` event if `exit_requested` was set), then
+re-raises — so a cancelled shutdown never strands the worker in STOPPING
+(AR-017, §H7).
 
 ### `exit()` vs waiting
 
@@ -102,7 +103,7 @@ pattern `await worker.events["exit"].wait()` blocks until `_shutdown` sets the
 States: `ManagerStatus` STARTING → RUNNING → STOPPING → STOPPED, tracked by
 `ManagerRuntime` (manager_runtime.py).
 
-1. `ManagerRuntime.start_manager` (127): if task exists → debug-return; set
+1. `ManagerRuntime.start_manager` (130): if task exists → debug-return; set
    STARTING, clear error, `create_task(run_manager(name, manager))`.
 2. `ManagerRuntime.run_manager` (62): logs start; `while True: await
    manager.method(self.worker)`.
@@ -136,7 +137,9 @@ RUNNING) / `remove_task_handler`.
   `start_logging()`/`stop_logging()` may be called repeatedly on the same event
   loop. `start_handlers` starts each handler whose recorded status is not
   RUNNING; `shut_down_handlers` calls the idempotent `stop_logging()` and
-  records STOPPED. `statuses` tracks STOPPED/RUNNING per handler name.
+  records STOPPED. `statuses` tracks STOPPED/RUNNING/FAILED per handler name
+  (a handler that fails to start is recorded FAILED so it is retried on the
+  next `start_handlers`, AR-020).
 
 ## Resource ownership map
 

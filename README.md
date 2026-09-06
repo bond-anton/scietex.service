@@ -124,7 +124,7 @@ if __name__ == "__main__":
 
 ### Valkey Worker
 
-Distributed task processing backed by a Valkey (Redis-compatible) stream. See the [full ValkeyWorker docs](docs/valkey_async_worker.md) for architecture, key naming, configuration reference, and PubSub broadcasting.
+Distributed task processing backed by a Valkey (Redis-compatible) stream. See the [full ValkeyWorker docs](docs/valkey_async_worker.md) for architecture, key naming, and configuration reference.
 
 ```python
 import asyncio
@@ -206,7 +206,9 @@ See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle
 
 1. **Register**: `processor.add_task_handler("type", HandlerClass)` —
    Registers a handler class under a name. The processor creates
-   handler instances on start.
+   handler instances on start. The name is validated against the
+   handler's `supported_tasks` (a warning is logged when it isn't
+   among them, since such a name can never be dispatched to).
 2. **Declare support**: `Handler.supported_tasks` property must return
    a list of task type strings this handler can process.
 3. **Dispatch**: When a task arrives, the processor calls
@@ -228,7 +230,7 @@ All schemas are frozen `msgspec.Struct` instances (immutable).
 | Type | Description |
 |---|---|
 | `TaskData` | Immutable task payload: `task` (type string), `payload` (bytes), `timeout` (`TaskTimeout`), `canceled_action` ("requeue"/"discard") |
-| `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes) |
+| `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes), plus error-taxonomy fields `error_code`, `retryable`, `retry_count`, `partial`, `requeue` |
 | `TaskTimeout` | Timeout config: `timeout` (seconds, `None` for default 3s), `timeout_action` ("requeue"/"discard") |
 | `TaskTracker` | Internal: tracks running `asyncio.Task`, associated `TaskData`, and monotonic start time |
 
@@ -239,10 +241,13 @@ All schemas are frozen `msgspec.Struct` instances (immutable).
 The worker searches for a config directory in this order:
 
 1. `conf_dir` argument (if provided and is a directory)
-2. `~/.config/scietex/`
-3. `/etc/scietex/`
-4. `/usr/local/etc/scietex/`
-5. `./config/` (current working directory)
+2. `SCIETEX_CONFIG_DIR` environment variable
+3. `$XDG_CONFIG_HOME/scietex/`
+4. `~/.config/scietex/`
+5. `/etc/scietex/`
+6. `/usr/local/etc/scietex/`
+7. `./config/` (current working directory)
+8. `~/.config/scietex/` — created if none of the above exist
 
 The first existing directory is used. If none exist, `~/.config/scietex/`
 is created.

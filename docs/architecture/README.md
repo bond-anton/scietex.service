@@ -1,7 +1,7 @@
 # scietex.service — Architecture Map
 
-Structural documentation for the `scietex.service` package (v3.0.0, commit
-`c3a36ce`). This map describes the system **as it currently exists**. It is a
+Structural documentation for the `scietex.service` package (v3.1.0, commit
+`5e2f079`). This map describes the system **as it currently exists**. It is a
 factual baseline for a later architectural review; it deliberately does not
 propose changes.
 

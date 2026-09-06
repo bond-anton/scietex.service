@@ -233,10 +233,13 @@ BasicAsyncWorker(
 The configuration directory is resolved in this order:
 
 1. `conf_dir` argument (if provided and is a directory)
-2. `~/.config/scietex/`
-3. `/etc/scietex/`
-4. `/usr/local/etc/scietex/`
-5. `./config/` (current working directory)
+2. `SCIETEX_CONFIG_DIR` environment variable
+3. `$XDG_CONFIG_HOME/scietex/`
+4. `~/.config/scietex/`
+5. `/etc/scietex/`
+6. `/usr/local/etc/scietex/`
+7. `./config/` (current working directory)
+8. `~/.config/scietex/` — created if none of the above exist
 
 ### Logging Level Strings
 

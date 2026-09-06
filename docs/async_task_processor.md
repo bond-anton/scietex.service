@@ -168,6 +168,20 @@ processor.add_task_handler("email", EmailHandler)
 processor.add_task_handler("report", ReportHandler)
 ```
 
+`add_task_handler()` accepts an optional third argument, `supported_tasks`,
+used only to validate the registration name. It defaults to the handler
+class's declared `supported_tasks`. The name is a lifecycle handle, not a
+dispatch key (dispatch selects handlers by their `supported_tasks`
+membership), so when the name is not among the effective
+`supported_tasks`, a warning is logged — such a name can never be
+dispatched to:
+
+```python
+processor.add_task_handler("email", EmailHandler)
+# Explicit override of the validation list:
+processor.add_task_handler("email", EmailHandler, supported_tasks=["email", "report"])
+```
+
 Handlers can be registered before or after `start()`. If the worker is
 already running, the handler is started asynchronously.
 
@@ -504,9 +518,16 @@ task = TaskData(
 
 ### Error Handling in Handlers
 
-Always return `TaskResult` with explicit status. The processor wraps
-unexpected exceptions automatically, but explicit error handling
-provides better context:
+`process_task()` applies an error taxonomy to the `TaskResult` it
+produces:
+
+- A handler that **raises** yields
+  `TaskResult(status="error", retryable=True)` — a raise is treated as a
+  transient (retryable) failure.
+- A handler that **returns** its own `TaskResult` controls all fields,
+  including `retryable` (which defaults to `False`).
+- Framework failures (empty `task` field, no matching handler) are
+  permanent and leave `retryable=False`.
 
 ```python
 async def handle(self, task_data: TaskData) -> TaskResult:
@@ -514,12 +535,15 @@ async def handle(self, task_data: TaskData) -> TaskResult:
         result = await self._do_work(task_data)
         return TaskResult(status="success", payload=result)
     except ValidationError as exc:
-        # Client error — result is recorded but not retried
+        # Permanent client error — not retryable
         return TaskResult(status="error", error=str(exc))
     except ConnectionError as exc:
-        # Retryable — task may be requeued by watchdog
-        return TaskResult(status="error", error=str(exc))
+        # Transient error — mark retryable
+        return TaskResult(status="error", error=str(exc), retryable=True)
 ```
+
+Raising instead of returning an error result is also acceptable: the
+processor marks the resulting error `retryable=True` by default.
 
 ### Sleep Time Tuning
 

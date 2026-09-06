@@ -8,7 +8,7 @@ they are structurally significant.
 
 ```
 scietex.service (public API)                 __init__.py
-   │  guarded re-export (swallow Exception)
+   │  guarded re-export (swallow ImportError)
    ▼
 valkey  (valkey/valkey_async_worker.py)
    │ extends │ imports
@@ -31,7 +31,7 @@ glide (valkey-glide, optional)                              [external]
 | From | To | Kind | Notes |
 |---|---|---|---|
 | `scietex.service/__init__` | `async_tasks_processor`, `basic_async_worker`, `manager`, `version` | import | unconditional |
-| `scietex.service/__init__` | `valkey` | import | inside `try/except Exception` — optional feature |
+| `scietex.service/__init__` | `valkey` | import | inside `try/except ImportError` — optional feature |
 | `basic_async_worker` | `.manager` | import | `Manager` |
 | `basic_async_worker` | `.manager_runtime` | import | `ManagerRuntime` (owns `ManagerStatus` bookkeeping) |
 | `basic_async_worker` | `.logging` | import | `parse_logging_level` |
@@ -71,9 +71,10 @@ glide (valkey-glide, optional)                              [external]
   external handlers. `ValkeyWorker` therefore couples to `glide` **twice** —
   directly (`self._client`) and inside the logging handler.
 - **Public API re-export guard**: the only place core code tolerates a missing
-  optional extra is `__init__.py`. A broken `valkey` import is silently
-  swallowed, making the failure hard to observe (a design choice documented in
-  its own comment, `__init__.py:24-53`).
+  optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
+  `ImportError`, which is caught (`__init__.py:54`) and reported via a warning
+  plus the `VALKEY_AVAILABLE` flag; any other exception propagates so real
+  Valkey bugs surface at import (AR-019).
 
 ## Circular dependencies
 
@@ -90,7 +91,7 @@ glide (valkey-glide, optional)                              [external]
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
 | `scietex.logging>=1.1.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
-| `pyyaml>=6.0` | core deps (`pyproject.toml:18`) | **not imported anywhere in `src/`** | No — declared but unused in `src/` |
+| `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
 
 ## Important dependency chains
