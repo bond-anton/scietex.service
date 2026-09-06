@@ -1,9 +1,14 @@
 """Valkey async task processor testing."""
 
 import pytest
+from scietex.logging import AsyncValkeyHandler
 
 from scietex.service import ValkeyWorker
-from scietex.service.valkey.valkey_config import ValkeyConfig
+from scietex.service.valkey.valkey_config import (
+    ValkeyBaseConfig,
+    ValkeyConfig,
+    ValkeyUserCredentials,
+)
 
 
 class DummyClient:
@@ -72,3 +77,29 @@ def _make_msg(channel: bytes | str, message: bytes | str):
             self.message = message
 
     return Msg(channel, message)
+
+
+def _find_valkey_handler(worker: ValkeyWorker) -> AsyncValkeyHandler:
+    for handler in worker.logger.handlers:
+        if isinstance(handler, AsyncValkeyHandler):
+            return handler
+    raise AssertionError("AsyncValkeyHandler not registered on worker logger")
+
+
+@pytest.mark.asyncio
+async def test_log_handler_receives_credentials():
+    cfg = ValkeyConfig(
+        base_config=ValkeyBaseConfig(user_credentials=ValkeyUserCredentials(username="myuser", password="secret"))
+    )
+    worker = ValkeyWorker(service_name="creds-test", valkey_config=cfg)
+    client_config = _find_valkey_handler(worker).client_config
+    assert client_config["username"] == "myuser"
+    assert client_config["password"] == "secret"
+
+
+@pytest.mark.asyncio
+async def test_log_handler_receives_no_credentials_by_default():
+    worker = ValkeyWorker(service_name="nocreds-test", valkey_config=ValkeyConfig())
+    client_config = _find_valkey_handler(worker).client_config
+    assert client_config["username"] is None
+    assert client_config["password"] is None

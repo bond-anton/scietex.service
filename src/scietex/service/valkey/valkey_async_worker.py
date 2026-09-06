@@ -136,8 +136,11 @@ class ValkeyWorker(AsyncTaskProcessor):
                 worker_id=self.worker_id,
                 listening=False,
             )
+        credentials = self._client_config.credentials
         log_valkey_config = {
             "addresses": [(node.host, node.port) for node in self._client_config.addresses],
+            "username": credentials.username if credentials else None,
+            "password": credentials.password if credentials else None,
             "use_tls": self._client_config.use_tls,
             "request_timeout": self._client_config.request_timeout,
             "database_id": self._client_config.database_id,
