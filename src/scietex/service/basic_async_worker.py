@@ -9,7 +9,7 @@ watchdog managers, and graceful shutdown support.
 import asyncio
 import logging
 import signal
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -138,13 +138,9 @@ class BasicAsyncWorker:
         # Set up logger with async handler
         self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}.{self.__worker_id}")
         self._logger.setLevel(self.logging_level)
-        # Factories that produce fresh async handlers, keyed by handler name.
-        # Used to re-create handlers after a shutdown, since an
-        # ``AsyncBaseHandler`` is single-use once ``stop_logging()`` closes it.
-        self.__logger_handler_factories: dict[str, Callable[[], AsyncBaseHandler]] = {}
-        self._register_logger_handler(
-            lambda: AsyncBaseHandler(service_name=self.__service_name, worker_id=self.__worker_id)
-        )
+        # Async handlers are restartable in place (scietex.logging >= 1.0), so a
+        # single instance is registered once and restarted on each start cycle.
+        self._register_logger_handler(AsyncBaseHandler(service_name=self.__service_name, worker_id=self.__worker_id))
 
         self.__logger_handler_timeout = max(
             MIN_LOGGER_HANDLER_TIMEOUT,
@@ -522,25 +518,22 @@ class BasicAsyncWorker:
 
     def _register_logger_handler(
         self,
-        factory: Callable[[], AsyncBaseHandler],
+        handler: AsyncBaseHandler,
         name: str | None = None,
     ) -> None:
         """
-        Create an async logging handler from a factory and attach it to the logger.
+        Attach an async logging handler to the logger.
 
-        The factory is recorded so the handler can be re-created after a
-        shutdown, because an ``AsyncBaseHandler`` is single-use once
-        ``stop_logging()`` closes it.
+        The handler is restartable in place (``start_logging``/``stop_logging``
+        may be called repeatedly on the same event loop), so a single instance
+        is registered once and reused across start/stop cycles.
 
         Args:
-            factory: Callable returning a fresh ``AsyncBaseHandler``.
-            name: Optional explicit handler name. Defaults to the handler's
-                ``name`` attribute or its class name.
+            handler: The ``AsyncBaseHandler`` (or subclass) to attach.
+            name: Optional handler name, accepted for compatibility with
+                subclasses that pass an explicit name.
         """
-        handler = factory()
         handler.setLevel(self.logging_level)
-        handler_name = name or handler.name or handler.__class__.__name__
-        self.__logger_handler_factories[handler_name] = factory
         self.logger.addHandler(handler)
 
     async def _logger_start_handlers(self) -> None:
@@ -548,11 +541,10 @@ class BasicAsyncWorker:
         Start all async logging handlers that are not already running.
 
         Iterates over the logger's handlers and calls start_logging() on each
-        AsyncBaseHandler that is stopped or not yet tracked. A handler that
-        was stopped during a previous shutdown is closed and single-use, so it
-        is replaced with a fresh instance from its registered factory before
-        being started. Handles timeouts and errors gracefully, falling back to
-        print statements if the logger is in an unrecoverable state.
+        AsyncBaseHandler whose recorded status is not RUNNING. Handlers are
+        restartable in place, so no replacement is needed. Handles timeouts and
+        errors gracefully, falling back to print statements if the logger is in
+        an unrecoverable state.
         """
         for handler in list(self.logger.handlers):
             handler_name = handler.name or handler.__class__.__name__
@@ -561,17 +553,6 @@ class BasicAsyncWorker:
                 or self.__loggers_statuses[handler_name] == LoggerStatus.STOPPED
             ):
                 if isinstance(handler, AsyncBaseHandler):
-                    # A stopped handler was closed during a previous shutdown
-                    # and cannot be restarted in place; replace it with a fresh
-                    # instance from its factory.
-                    if self.__loggers_statuses.get(handler_name) == LoggerStatus.STOPPED:
-                        factory = self.__logger_handler_factories.get(handler_name)
-                        if factory is not None:
-                            self.logger.removeHandler(handler)
-                            replacement = factory()
-                            replacement.setLevel(self.logging_level)
-                            self.logger.addHandler(replacement)
-                            handler = replacement
                     try:
                         await asyncio.wait_for(handler.start_logging(), timeout=self.logger_handler_timeout)
                     except asyncio.TimeoutError:
@@ -596,7 +577,9 @@ class BasicAsyncWorker:
         """Cleanly shut down all async logging handlers.
 
         This will attempt to stop each `AsyncBaseHandler` with a per-handler
-        timeout to avoid hanging shutdowns if a handler blocks.
+        timeout to avoid hanging shutdowns if a handler blocks. `stop_logging`
+        is idempotent in scietex.logging >= 1.0, so it is safe to call on every
+        handler regardless of its current state.
         """
         for handler in self.logger.handlers:
             handler_name = handler.name or handler.__class__.__name__
