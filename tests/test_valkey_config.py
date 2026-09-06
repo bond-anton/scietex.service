@@ -24,6 +24,29 @@ def test_read_valkey_config_creates_file(tmp_path: Path):
     assert valkey_yml.exists()
 
 
+def test_read_valkey_config_invalid_file_raises_and_preserves(tmp_path: Path):
+    conf_dir = tmp_path
+    valkey_yml = conf_dir / "valkey.yml"
+    malformed = b"not: [valid: yaml\n  base_config: broken"
+    valkey_yml.write_bytes(malformed)
+
+    with pytest.raises(RuntimeError):
+        read_valkey_config(conf_dir)
+
+    assert valkey_yml.read_bytes() == malformed
+
+
+def test_read_valkey_config_missing_file_creates_defaults(tmp_path: Path):
+    conf_dir = tmp_path
+    valkey_yml = conf_dir / "valkey.yml"
+    assert not valkey_yml.exists()
+
+    cfg = read_valkey_config(conf_dir)
+
+    assert isinstance(cfg, ValkeyConfig)
+    assert valkey_yml.exists()
+
+
 def test_generate_glide_config_defaults():
     cfg = ValkeyConfig()
     client_cfg = generate_glide_config(cfg, service_name="svc", worker_id=1)

@@ -239,19 +239,20 @@ class ValkeyConfig(msgspec.Struct, frozen=True):
 def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
     """Read Valkey configuration from a YAML file in the given config directory.
 
-    If the YAML file does not exist, creates it with default values.
-    If parsing fails, returns a ``ValkeyConfig`` with defaults and writes
-    the defaults to the file.
+    If the YAML file does not exist, it is created with default values.
+    If the file exists but cannot be parsed, a ``RuntimeError`` is raised and
+    the file is left untouched.
 
     Args:
         conf_dir: Path to the configuration directory.
 
     Returns:
         A ``ValkeyConfig`` instance loaded from ``valkey.yml`` or with
-        default values if the file was missing or invalid.
+        default values if the file was missing.
 
     Raises:
-        RuntimeError: If ``conf_dir`` is ``None`` or not a directory.
+        RuntimeError: If ``conf_dir`` is ``None``, not a directory, or if the
+            ``valkey.yml`` file is present but invalid.
     """
     if isinstance(conf_dir, Path):
         if not conf_dir.exists():
@@ -264,14 +265,18 @@ def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
         valkey_yml = conf_dir.joinpath("valkey.yml")
     else:
         raise RuntimeError("Configuration dir was not set!")
-    try:
-        with open(valkey_yml, "rb") as f:
-            valkey_config = msgspec.yaml.decode(f.read(), type=ValkeyConfig, strict=True)
-    except Exception:
+    if not valkey_yml.exists():
         valkey_config = ValkeyConfig()
         with open(valkey_yml, "wb") as f:
             f.write(msgspec.yaml.encode(valkey_config))
-    return valkey_config
+        return valkey_config
+    try:
+        with open(valkey_yml, "rb") as f:
+            return msgspec.yaml.decode(f.read(), type=ValkeyConfig, strict=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to parse Valkey configuration file {valkey_yml}. Fix the file or remove it to regenerate defaults."
+        ) from exc
 
 
 def generate_glide_config(
