@@ -41,9 +41,6 @@ class DemoProcessor(AsyncTaskProcessor):
         # record requeued tasks for assertions
         self.requeued.append((task_id, task_data))
 
-    async def _logger_init_handlers(self) -> None:  # disable real logging start
-        return None
-
     async def _logger_shut_down_handlers(self) -> None:  # disable real logging stop
         return None
 
