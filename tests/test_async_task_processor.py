@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from uuid import uuid4
 
 import pytest
@@ -55,6 +56,44 @@ async def test_process_task_with_dummy_handler():
 
     assert result.status == "success"
     assert result.payload.decode("utf-8") == '{"value": 5}'
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_warns_when_name_not_in_supported_tasks(caplog):
+    """A registration key outside the handler's supported_tasks must log a
+    WARNING but still register the handler: the key is a lifecycle handle, not
+    a dispatch key (AR-022)."""
+    proc = DemoProcessor()
+    with caplog.at_level(logging.WARNING):
+        proc.add_task_handler("not_dummy", DummyHandler)
+
+    assert any(record.levelno == logging.WARNING and "not_dummy" in record.getMessage() for record in caplog.records)
+    # The handler is still registered under the given name despite the warning.
+    await proc._start_task_handler("not_dummy")
+    assert "not_dummy" in proc.task_handlers
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_explicit_supported_tasks_overrides_validation(caplog):
+    """An explicit supported_tasks argument overrides the class default for the
+    registration-key validation: a key present in the override must not warn
+    even when it is absent from the class's declared supported_tasks (AR-022)."""
+    proc = DemoProcessor()
+    with caplog.at_level(logging.WARNING):
+        proc.add_task_handler("not_dummy", DummyHandler, supported_tasks=["not_dummy"])
+
+    assert not any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_name_in_supported_tasks_does_not_warn(caplog):
+    """A registration key that is among the handler's supported_tasks must not
+    log a WARNING (AR-022)."""
+    proc = DemoProcessor()
+    with caplog.at_level(logging.WARNING):
+        proc.add_task_handler("dummy", DummyHandler)
+
+    assert not any(record.levelno == logging.WARNING for record in caplog.records)
 
 
 @pytest.mark.asyncio
