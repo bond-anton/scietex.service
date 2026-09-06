@@ -94,6 +94,84 @@ async def test_process_task_empty_task_returns_error_result():
     result: TaskResult = await proc.process_task(uuid4(), TaskData(task="", payload=b"{}"))
     assert result.status == "error"
     assert "task" in result.error
+    assert result.retryable is False
+
+
+class RaisingHandler(TaskHandler):
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        raise ValueError("boom")
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["raiser"]
+
+
+class ReturningErrorHandler(TaskHandler):
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(
+            status="error",
+            error="x",
+            retryable=False,
+            error_code="PERMANENT",
+            retry_count=2,
+            partial=True,
+            requeue=False,
+        )
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["error_returner"]
+
+
+@pytest.mark.asyncio
+async def test_process_task_handler_exception_is_retryable():
+    """A handler that raises must yield an error TaskResult marked retryable
+    by default, with the exception message in ``error`` (AR-022)."""
+    proc = DemoProcessor()
+    proc.add_task_handler("raiser", RaisingHandler)
+    await proc._start_task_handler("raiser")
+
+    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="raiser", payload=b"{}"))
+
+    assert result.status == "error"
+    assert result.error == "boom"
+    assert result.retryable is True
+    assert result.error_code == ""
+    assert result.retry_count == 0
+    assert result.partial is False
+    assert result.requeue is None
+
+
+@pytest.mark.asyncio
+async def test_process_task_preserves_handler_returned_result_fields():
+    """A handler that returns a TaskResult controls its own error-taxonomy
+    fields; process_task must pass them through unchanged (AR-022)."""
+    proc = DemoProcessor()
+    proc.add_task_handler("error_returner", ReturningErrorHandler)
+    await proc._start_task_handler("error_returner")
+
+    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="error_returner", payload=b"{}"))
+
+    assert result.status == "error"
+    assert result.error == "x"
+    assert result.retryable is False
+    assert result.error_code == "PERMANENT"
+    assert result.retry_count == 2
+    assert result.partial is True
+    assert result.requeue is False
+
+
+@pytest.mark.asyncio
+async def test_process_task_no_handler_is_not_retryable():
+    """The 'no handler found' framework error is permanent: retryable stays
+    False (AR-022)."""
+    proc = DemoProcessor()
+    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="unknown", payload=b"{}"))
+
+    assert result.status == "error"
+    assert "No handler" in result.error
+    assert result.retryable is False
+    assert result.error_code == ""
 
 
 class ExplodingSupportsHandler(TaskHandler):

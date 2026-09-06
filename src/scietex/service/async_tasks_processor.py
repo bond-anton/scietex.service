@@ -519,6 +519,13 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         Returns a ``TaskResult`` with ``status="error"`` if no handler
         is found or an exception occurs.
 
+        A handler that raises produces an error result marked
+        ``retryable=True`` (a raise is treated as a transient failure).
+        A handler that returns a ``TaskResult`` controls its own fields
+        and is passed through unchanged. The framework-level failures
+        (empty ``task`` field, no matching handler) are permanent and
+        leave ``retryable=False``.
+
         Args:
             task_id: Identifier of the task to process.
             task_data: The data associated with the task.
@@ -544,7 +551,11 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             try:
                 result = await handler.handle(task_data)
             except Exception as e:
-                result = TaskResult(status="error", error=str(e))
+                # A handler raising is treated as a transient (retryable)
+                # failure by default: the exception is unclassified, so the
+                # framework opts into retry and lets the caller override via
+                # the handler's own returned TaskResult when it knows better.
+                result = TaskResult(status="error", error=str(e), retryable=True)
         else:
             result = TaskResult(status="error", error=f"No handler found for task type '{task_type}'")
 
@@ -648,6 +659,17 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         exceeded their configured ``timeout`` (or ``DEFAULT_TASK_TIMEOUT``
         if no timeout is set). Tasks with ``timeout_action="requeue"`` are
         returned to the external queue for potential retry.
+
+        Requeue boundary: timeout-driven requeue is governed solely by the
+        task's ``timeout_action`` literal, because the handler's final
+        ``TaskResult`` (with its ``requeue``/``retryable`` fields) lives in
+        the ``handle_task`` closure and is not accessible here. A handler
+        can express requeue intent for the *error* path via
+        ``TaskResult.requeue``/``TaskResult.retryable``; honoring that
+        intent in ``process_task``/``handle_task`` (i.e. requeueing a task
+        that *failed* rather than timed out) is future work gated on result
+        availability. Until then, error-path requeue is not performed and
+        timeout requeue remains driven by ``timeout_action``.
 
         Override this method in subclasses to add additional watchdog
         logic. The default implementation handles task timeout detection

@@ -53,12 +53,33 @@ class TaskResult(msgspec.Struct, frozen=True):
         error: Error message string; empty on success.
         processed_at: UTC timestamp when the result was created.
         payload: Optional raw bytes payload from the handler.
+        error_code: Structured error taxonomy code (e.g. ``"PERMANENT"``
+            or ``"TRANSIENT"``, or a domain-specific code). Empty string
+            means unset.
+        retryable: Whether the failure is retryable (transient) vs
+            permanent. Handlers that raise are marked retryable by the
+            processor by default.
+        retry_count: Number of processing attempts so far.
+        partial: Whether partial progress was made before the error.
+        requeue: Explicit requeue intent overriding the coarse
+            ``canceled_action``/``timeout_action`` literals. ``None``
+            means no explicit intent and the processor falls back to the
+            existing literals.
+
+    All error-taxonomy fields are optional and default to "no extra
+    information", so handlers that only set ``status`` and ``error``
+    keep working unchanged.
     """
 
     status: Literal["success", "error"]
     error: str = ""
     processed_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
     payload: bytes = b""
+    error_code: str = ""
+    retryable: bool = False
+    retry_count: int = 0
+    partial: bool = False
+    requeue: bool | None = None
 
 
 class TaskTracker(msgspec.Struct, frozen=True):
