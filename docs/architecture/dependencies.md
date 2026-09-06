@@ -32,8 +32,10 @@ glide (valkey-glide, optional)                              [external]
 |---|---|---|---|
 | `scietex.service/__init__` | `async_tasks_processor`, `basic_async_worker`, `manager`, `version` | import | unconditional |
 | `scietex.service/__init__` | `valkey` | import | inside `try/except Exception` — optional feature |
-| `basic_async_worker` | `.manager` | import | `Manager`, `ManagerStatus` |
-| `basic_async_worker` | `.logging` | import | `LoggerStatus`, `parse_logging_level` |
+| `basic_async_worker` | `.manager` | import | `Manager` |
+| `basic_async_worker` | `.manager_runtime` | import | `ManagerRuntime` (owns `ManagerStatus` bookkeeping) |
+| `basic_async_worker` | `.logging` | import | `parse_logging_level` |
+| `basic_async_worker` | `.logging_lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
 | `basic_async_worker` | `.utils` | import | `prepare_conf_dir`, `print_scietex_logo` |
 | `basic_async_worker` | `scietex.logging` | import (external) | `AsyncBaseHandler` |
 | `utils.logo` | `..version` | import | `__version__` |
@@ -41,7 +43,7 @@ glide (valkey-glide, optional)                              [external]
 | `async_tasks_processor` | `.manager` | import | for `@Manager` decorators |
 | `async_tasks_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskResult`, `TaskTracker` |
 | `task_handler.basic` | `.schemas` | import | runtime |
-| `task_handler.basic` | `basic_async_worker` | TYPE_CHECKING only | no runtime edge (avoids cycle) |
+| `task_handler.basic` | `.context` | import | `TaskHandlerContext` (narrow context; no worker reference) |
 | `valkey.valkey_async_worker` | `async_tasks_processor` | inheritance | `ValkeyWorker(AsyncTaskProcessor)` |
 | `valkey.valkey_async_worker` | `.task_handler` | import | `TaskData` |
 | `valkey.valkey_async_worker` | `.valkey_config`, `.schemas` | import | |
@@ -58,8 +60,9 @@ glide (valkey-glide, optional)                              [external]
   sits *under* the worker in the class hierarchy (`ValkeyWorker extends
   AsyncTaskProcessor`), so direction is **feature → core**, never core → feature.
 - **Cross-module**: `task_handler` is depended on by the processor, but the
-  handler ABC deliberately keeps no runtime import of the worker
-  (`TYPE_CHECKING`) — a clean boundary.
+  handler ABC keeps no import of the worker at all — it receives a narrow
+  `TaskHandlerContext` (`service_name`, `worker_id`, `logger`) instead of the
+  worker instance, so the boundary is clean in both directions.
 - **Configuration split**: `valkey_config` is independent of
   `valkey_async_worker`; only `read_valkey_config`/`generate_glide_config`
   flow into the worker.
@@ -74,13 +77,12 @@ glide (valkey-glide, optional)                              [external]
 
 ## Circular dependencies
 
-- **None at runtime.** The single `TYPE_CHECKING` back-reference
-  (`task_handler/basic.py:9-10`) prevents what would otherwise be a
-  handler ↔ worker cycle.
-- Note that `task_handler` types are imported by `async_tasks_processor`,
-  which is imported by `basic_async_worker`? No — `basic_async_worker` does
-  not import `task_handler`; the cycle `task_handler → basic_async_worker` is
-  only type-level.
+- **None at runtime.** `task_handler` never imports the worker (it depends only
+  on `.context` and `.schemas`), so there is no handler ↔ worker cycle in
+  either direction.
+- `task_handler` types are imported by `async_tasks_processor`, which extends
+  `basic_async_worker`; the worker does not import `task_handler`, so the
+  dependency direction is strictly feature → core.
 
 ## Third-party packages (dependency relevance)
 
@@ -88,11 +90,8 @@ glide (valkey-glide, optional)                              [external]
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
 | `scietex.logging>=1.1.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
-| `pyaml>=26.2.1` | core deps (`pyproject.toml:18`) | **not imported anywhere in `src/`** | No — likely legacy (see §H14) |
+| `pyyaml>=6.0` | core deps (`pyproject.toml:18`) | **not imported anywhere in `src/`** | No — declared but unused in `src/` |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
-
-`UNKNOWN` — whether `pyaml` is required by `scietex.logging` transitively; no
-evidence found in this repo of a direct need.
 
 ## Important dependency chains
 
@@ -108,5 +107,6 @@ evidence found in this repo of a direct need.
    → internal asyncio queues → console worker; or `AsyncValkeyHandler._worker`
    → its own `GlideClient.xadd` → stream.
 4. **Manager runtime chain**: `@Manager`-decorated method →
-   `_iter_manager_definitions` (MRO scan) → `_run_manager` (loop) →
-   `_start_manager` (task) → restart path on error.
+   `ManagerRuntime.iter_manager_definitions` (MRO scan) →
+   `ManagerRuntime.start_manager` (task) → `ManagerRuntime.run_manager`
+   (loop; restart inlined on error).

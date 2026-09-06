@@ -7,7 +7,7 @@ transformations, and any async boundaries (queues/events/tasks).
 
 **Source:** external caller/enqueue sites — subclass `fetch_tasks()` puts
 `(UUID, TaskData)` tuples into the worker's internal queue, or a producer calls
-`task_queue.put()` directly.
+`enqueue_task()` directly.
 
 **Processing chain:**
 1. `AsyncTaskProcessor.task_queue_manager` (`async_tasks_processor.py:515`,
@@ -49,9 +49,10 @@ message — **field = task UUID string, value = msgpack-encoded `TaskData`**
 2. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
    `block_ms=1000`.
 3. Per entry: decode field → UUID, decode value →
-   `msgspec.msgpack.decode(payload, type=TaskData)`; `await
-   task_queue.put((UUID(task_id), task_data))` — now flows through F1. The
-   entry id is recorded in `_task_entry_ids[task_id]`.
+   `msgspec.msgpack.decode(payload, type=TaskData)`; `enqueue_task(UUID(task_id),
+   task_data)` (non-blocking; a full queue leaves the entry pending — its id is
+   not recorded — to be redelivered on a later poll) — now flows through F1. On
+   success the entry id is recorded in `_task_entry_ids[task_id]`.
 4. Decode errors: logged, entry skipped. Read errors: `disconnect()` +
    `connect()` (reconnect).
 
@@ -114,8 +115,9 @@ heartbeat never surfaces.
 **Source:** any `self.logger.*` call inside workers/handlers.
 
 **Processing:** standard `logging` → attached handlers:
-- `AsyncBaseHandler` (console; added in `BasicAsyncWorker.__init__`,
-  `basic_async_worker.py:133`) — `emit()` puts each record into an internal
+- `AsyncBaseHandler` (console; registered in `BasicAsyncWorker.__init__`
+  (`basic_async_worker.py:153`) via `LoggingLifecycle.register_logger_handler`
+  (`logging_lifecycle.py:55`)) — `emit()` puts each record into an internal
   `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`
   and writes to stdout.
 - `AsyncValkeyHandler` (added in `ValkeyWorker.__init__`,
@@ -125,8 +127,11 @@ heartbeat never surfaces.
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
-`BasicAsyncWorker._logger_start_handlers` (429) / `_logger_shut_down_handlers`
-(465) with a per-handler timeout (`logger_handler_timeout`, default 2 s).
+`LoggingLifecycle.start_handlers` (`logging_lifecycle.py:57`) /
+`shut_down_handlers` (`logging_lifecycle.py:93`), exposed as worker wrappers
+`_logger_start_handlers` (`basic_async_worker.py:541`) /
+`_logger_shut_down_handlers` (`basic_async_worker.py:549`), with a per-handler
+timeout (`logger_handler_timeout`, default 2 s).
 
 ## F7. Configuration flow
 
@@ -136,7 +141,8 @@ asyncio queues + worker tasks; lifecycle driven by
 
 **Path:** `ValkeyWorker.__init__` (127-138): if no `valkey_config` argument,
 `read_valkey_config(self.conf_dir)` loads or creates `valkey.yml`
-(msgspec YAML, strict decode, silent fallback to defaults on any error) →
+(msgspec YAML, strict decode; a present-but-invalid file raises `RuntimeError`,
+only a missing file is created with defaults) →
 `ValkeyConfig` → `generate_glide_config(...)` → `GlideClientConfiguration`
 → `GlideClient.create` in `connect()` (180).
 

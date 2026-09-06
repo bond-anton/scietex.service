@@ -25,7 +25,7 @@ pip install scietex.service
 pip install "scietex.service[valkey]"
 ```
 
-**Dependencies:** `msgspec>=0.20.0`, `pyaml>=26.2.1`, `scietex.logging>=1.0.0`
+**Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=1.1.0`
 
 ## Quick Start
 
@@ -101,8 +101,8 @@ class EmailHandler(TaskHandler):
 class MyProcessor(AsyncTaskProcessor):
     async def fetch_tasks(self) -> None:
         # Pull tasks from your source (DB, API, queue, etc.)
-        # and put them into self.task_queue:
-        #     await self.task_queue.put((task_id, task_data))
+        # and enqueue them for processing:
+        #     self.enqueue_task(task_id, task_data)
         pass
 
 
@@ -276,8 +276,9 @@ advanced_config:
     root_pem_cacerts: null
 ```
 
-If the file is missing or invalid, defaults are used and the file is
-created with default values.
+If the file is missing, it is created with default values. If the file is
+present but invalid, a ``RuntimeError`` is raised and the file is left
+untouched.
 
 ## API Reference
 

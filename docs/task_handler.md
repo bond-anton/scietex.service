@@ -66,9 +66,12 @@ concrete handlers must implement.
 | Attribute | Type | Description |
 |---|---|---|
 | `name` | `str` | Handler name (set at construction) |
-| `worker` | `BasicAsyncWorker` | Reference to the parent worker |
+| `context` | `TaskHandlerContext` | Narrow context exposing `service_name`, `worker_id`, `logger` |
 | `logger` | `logging.Logger` | Logger instance from the parent worker |
 | `is_ready` | `bool` | Whether the handler is initialized and ready |
+
+The `worker` attribute no longer exists — handlers receive only the narrow
+`TaskHandlerContext`, which cannot reach processor internals.
 
 ### Example Handler
 
@@ -150,7 +153,7 @@ Standardized result returned from task handlers.
 class TaskResult(msgspec.Struct, frozen=True):
     status: Literal["success", "error"]
     error: str = ""
-    processed_at: datetime = datetime.now(timezone.utc)
+    processed_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
     payload: bytes = b""
 ```
 

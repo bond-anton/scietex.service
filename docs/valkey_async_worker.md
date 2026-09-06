@@ -106,12 +106,11 @@ and `worker_id`:
             _startup()      initialize()     _shutdown()
                    │              │               │
                    ▼              ▼               ▼
-            print logo    connect Valkey     purge_tasks()
-            start loggers  create stream       disconnect
-            start managers start handlers      stop managers
-            start managers  start managers      empty queue
-                                start managers   cancel running tasks
-                               start managers   stop handlers
+            print logo    connect Valkey     disconnect
+            start loggers  create stream      stop managers
+            start managers start handlers     empty queue
+                                 start        cancel running tasks
+                                 managers      stop handlers
 ```
 
 The `initialize()` method starts all registered task handlers, connects
@@ -133,9 +132,8 @@ to Valkey, and creates the consumer group for the task stream (with
 |---|---|---|---|
 | `queue_size` | `int` | `2` | Maximum size of the internal task queue |
 | `max_concurrent_tasks` | `int` | `2` | Maximum tasks processed in parallel |
-| `task_queue` | `asyncio.Queue` | — | The internal async queue holding `(UUID, TaskData)` tuples |
-| `task_handlers` | `dict[str, TaskHandler]` | — | Currently active (started) handlers |
-| `running_tasks` | `dict[UUID, TaskTracker]` | — | Currently running tasks and their trackers |
+| `task_handlers` | `Mapping[str, TaskHandler]` | — | Currently active (started) handlers, as a read-only `MappingProxyType` view |
+| `running_tasks` | `Mapping[UUID, TaskTracker]` | — | Currently running tasks and their trackers, as a read-only `MappingProxyType` view |
 
 ## Constructor
 
@@ -264,15 +262,55 @@ Fetch a single task from the Valkey task stream and enqueue it.
 
 ```python
 async def fetch_tasks(self):
-    """XREADGROUP with block_ms=1000, decode msgpack, ack+delete, enqueue."""
+    """XREADGROUP with block_ms=1000, decode msgpack, enqueue (non-blocking)."""
 ```
 
-Reads one entry from the task stream using `XREADGROUP` with
-`block_ms=1000` and the configured consumer group. Decodes the msgpack
-payload into a `TaskData` struct and puts it into `self.task_queue` as a
-`(UUID, TaskData)` tuple. Acknowledges and deletes the entry after
-successful decoding. On read errors, disconnects and attempts to
-reconnect to Valkey.
+On the first call, recovers entries left pending by a previous run (see
+[At-Least-Once Delivery](#at-least-once-delivery)). Then reads one entry
+from the task stream using `XREADGROUP` with `block_ms=1000` and the
+configured consumer group, decodes the msgpack payload into a `TaskData`
+struct, and enqueues it via the non-blocking `enqueue_task()` as a
+`(UUID, TaskData)` tuple. The stream entry is NOT acknowledged here — it
+stays in the consumer group's pending list until `on_task_completed()`
+acks it after the handler finishes. If the queue is full, the entry is
+left pending (deferred) and is never blocking. On read errors,
+disconnects and attempts to reconnect to Valkey.
+
+### on_task_completed()
+
+Acknowledge the stream entry for a completed task.
+
+```python
+async def on_task_completed(self, task_id, task_data, task_result):
+    """XACK + XDEL the entry recorded in _task_entry_ids for task_id."""
+```
+
+Called by the base `AsyncTaskProcessor` when a task's processing
+terminates (success, error, or cancellation). Looks up the stream entry
+id recorded at fetch time and `XACK`s + `XDEL`s it, so the entry leaves
+the consumer group's pending list only after the handler's work on it is
+done. `task_result` is `None` when the task was cancelled before
+producing a result.
+
+## At-Least-Once Delivery
+
+`ValkeyWorker` delivers each task at least once: a stream entry is
+acknowledged and deleted only after its handler finishes, so a crash
+mid-processing redelivers the task on restart.
+
+- `_recover_pending_tasks()` — On the first `fetch_tasks()`, uses
+  `XAUTOCLAIM` to claim every entry in the consumer group's pending list
+  and re-enqueue it, redelivering tasks that were read but never
+  acknowledged before a crash.
+- `_task_entry_ids` — A `dict[UUID, str | bytes]` mapping each enqueued
+  task's UUID to the stream entry id it was read from, recorded at fetch
+  time so it can be acknowledged later.
+- `on_task_completed()` — Called when a task's processing terminates.
+  Looks up the recorded entry id and `XACK`s + `XDEL`s it, removing the
+  entry from the pending list only after the handler's work is done.
+
+If the queue is full when fetching (or during recovery), the entry is
+left pending and redelivered on a later poll rather than dropped.
 
 ## Example
 
@@ -342,7 +380,8 @@ if __name__ == "__main__":
 
 `ValkeyWorker` reads configuration from `valkey.yml` in the config
 directory. The file is created automatically with default values if it
-does not exist.
+does not exist. If the file exists but is invalid (unparseable), a
+`RuntimeError` is raised and the file is left untouched.
 
 ```yaml
 base_config:
@@ -398,6 +437,15 @@ config = ValkeyConfig(
 
 worker = MyValkeyWorker(valkey_config=config)
 ```
+
+### Async Logging Credentials
+
+The worker resolves the generated `GlideClientConfiguration.credentials`
+and passes them — along with the node addresses, TLS setting, request
+timeout, database id, client name, and related connection settings — to
+the `AsyncValkeyHandler` used for async log entries. Logging therefore
+uses the same Valkey connectivity (including authentication) as the task
+client.
 
 ## Configuration Reference
 

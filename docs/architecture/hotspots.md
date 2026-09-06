@@ -3,97 +3,119 @@
 Locations where the codebase shows structural tension. Each entry records
 **what the code does** and **why it is significant**; it does **not** propose a
 fix. Items are *analysis* unless stated otherwise. Verified-by-execution facts
-are flagged.
+are flagged. Entries resolved by the AR-003..AR-016 refactors are marked
+**Resolved** and retained for change history.
+
+## Status summary
+
+| # | Status | Resolution |
+|---|---|---|
+| H1 | Resolved | AR-003 — split into `ManagerRuntime` + `LoggingLifecycle` |
+| H2 | Resolved | AR-003 — bounded restart in `ManagerRuntime.run_manager` |
+| H3 | Resolved | AR-003 — retry inlined; no self-cancel |
+| H4 | Resolved | 2026-09-06 — handlers restartable in place |
+| H5 | Resolved | AR-007 — `initialize()` before `_start_managers()` |
+| H6 | Resolved | AR-015 + AR-008 — signals in `start()`; read-only views |
+| H7 | Open | shutdown cancellation path |
+| H8 | Resolved | AR-005 — at-least-once delivery |
+| H9 | Open | two GlideClients |
+| H10 | Resolved | AR-006 + AR-010 — truthful `connect()` |
+| H11 | Open | per-`worker_id` stream/group naming |
+| H12 | Open | usage docs still drift (out of scope here) |
+| H13 | Resolved | AR-013 — single pytest config |
+| H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
+| H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
+| H16 | Open | coarse error policy |
 
 ## H1. `BasicAsyncWorker` is a large, multi-responsibility class
 
-- **Location:** `src/scietex/service/basic_async_worker.py:58` (~770 lines of
-  the 827-line module).
-- **What:** a single class owns: identity/configuration, the lifecycle state
+- **Location:** `src/scietex/service/basic_async_worker.py:69`.
+- **What:** a single class owned: identity/configuration, the lifecycle state
   machine, signal registration, async-logging handler lifecycle, the manager
-  discovery + task runtime (`_run/_start/_stop/_restart_manager`), startup and
-  shutdown orchestration, and the default heartbeat/watchdog hooks.
-- **Why significant:** every subclass inherits all of these; the class is the
-  de-facto "service container". Extension points are interleaved with
-  machinery, and manager-task bookkeeping lives in the same object as
-  domain hooks. Hard to reason about or extend in isolation.
+  discovery + task runtime, startup and shutdown orchestration, and the default
+  heartbeat/watchdog hooks.
+- **Why significant:** every subclass inherited all of these; the class was the
+  de-facto "service container".
+
+**Resolved (AR-003):** manager discovery/runtime and logging-handler lifecycle
+were extracted to `ManagerRuntime` (manager_runtime.py) and `LoggingLifecycle`
+(logging_lifecycle.py). `BasicAsyncWorker` now keeps identity/config, the state
+machine, and forwarding wrappers (`_run_manager`, `_start_managers`,
+`_logger_start_handlers`, etc.) that delegate to the extracted components.
 
 ## H2. Manager error-handling relies on private per-worker bookkeeping
 
-- **Location:** `basic_async_worker.py:504-589` (`_run_manager`,
-  `_start_manager`, `_stop_manager`, `_restart_manager`).
-- **What:** managers are restarted "automatically on error": any non-cancelled
-  exception is recorded in `__manager_errors` and `_restart_manager` is awaited
-  inside the except branch.
-- **Why significant:** restart is unbounded (no backoff/limit) → a persistently
-  failing manager yields a restart loop that also re-runs its `finally`
-  cleanup each cycle. The error record `__manager_errors` is only cleared on the
-  next `_start_manager`. Behavior under repeated failure is unverified
-  (`UNKNOWN`).
+- **Location:** was `basic_async_worker.py` (`_run_manager`/`_restart_manager`);
+  now `manager_runtime.py:62-125`.
+- **What:** managers were restarted "automatically on error" with unbounded
+  restart and no backoff.
+- **Why significant:** a persistently failing manager yielded an unbounded
+  restart loop.
+
+**Resolved (AR-003):** restart moved into `ManagerRuntime.run_manager`, which is
+bounded by `manager_max_retries` (default 5) with a `manager_restart_backoff`
+delay (default 1 s) between attempts; the error record lives in
+`ManagerRuntime.errors`.
 
 ## H3. Manager "restart" path appears to cancel the running task itself
 
-- **Location:** `basic_async_worker.py:580-589` (`_restart_manager`) calling
-  `_stop_manager` (560), which does `self.__manager_tasks[name].cancel()` and
-  then `await asyncio.wait_for(self.__manager_tasks[name], ...)`.
-- **What:** when a manager method raises, the except branch cancels and awaits
-  the **same currently-executing task** (`asyncio` treats `CancelledError` as
-  `BaseException`, so the surrounding `except Exception` cannot contain it).
-- **Why significant:** the documented "restart on error" (README, docstrings,
-  AGENTS) contradicts the mechanics. A controlled simulation of this exact
-  control flow (self-cancel inside the except branch) ended the manager task
-  with `CancelledError` and never spawned a replacement — i.e. the automatic
-  restart appears ineffective. Flagged for verification in the real worker
-  (`UNKNOWN` until exercised).
+- **Location:** was `_restart_manager`; now inlined in
+  `manager_runtime.py:62-125`.
+- **What:** the old restart path cancelled and awaited the **same
+  currently-executing task**.
+- **Why significant:** a raising manager ended as `CancelledError` rather than
+  restarting.
+
+**Resolved (AR-003):** `run_manager` retries inside its own `while True` loop
+(83–111) — the manager task never cancels itself; `CancelledError` stops it
+cleanly and the `finally` block (116–125) runs cleanup and removes the task from
+tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
 
-- **Location:** `basic_async_worker.py:465-492`
-  (`_logger_shut_down_handlers`), plus external
-  `scietex.logging/basic_handler.py` (`stop_logging()` calls `self.close()`).
-- **What:** after shutdown, each `AsyncBaseHandler` is closed, yet
-  `__loggers_statuses[handler]` is set to `LoggerStatus.RUNNING` (line 492,
-  not STOPPED). A later `_logger_start_handlers` skips handlers whose recorded
-  status is RUNNING.
+- **Location:** `logging_lifecycle.py:93-122` (`shut_down_handlers`), plus
+  external `scietex.logging` (`stop_logging()` calls `self.close()`).
+- **What:** after shutdown, each `AsyncBaseHandler` was closed yet recorded as
+  RUNNING, so a later start skipped it.
 - **Why significant:** the state model for logging handlers and the actual
-  handler lifecycle are inconsistent; restarting the same worker instance after
-  a stop leaves the logger non-functional. Tension between "service restartable"
-  (state machine supports STOPPED → RUNNING again) and handler one-shotness.
+  handler lifecycle were inconsistent.
 
-**Resolved (2026-09-06):** `_logger_shut_down_handlers` records STOPPED, and
+**Resolved (2026-09-06):** `shut_down_handlers` records STOPPED, and
 scietex.logging >= 1.0 handlers are restartable in place, so a second `start()`
-restarts the same handler instances. See `docs/reviews/architecture/2026-09-05.md`.
+restarts the same handler instances. See
+`docs/reviews/architecture/2026-09-05.md`.
 
 ## H5. Managers are started before `initialize()` completes
 
-- **Location:** `basic_async_worker.py:636-640` (`_startup`: `_start_managers`
-  precedes `initialize()`).
-- **What:** manager tasks are spawned and begin running before the subclass
-  `initialize()` hook returns; `ValkeyWorker` connects to Valkey only inside
-  `initialize()`.
-- **Why significant:** built-in managers defensively no-op (heartbeat checks
-  `start_time`/`client`; task intake checks `client`), but the contract is
-  implicit — a custom `@Manager` or task handler that depends on
-  `initialize()`-created resources can race. Relies on ordering luck rather
-  than an explicit barrier.
+- **Location:** was `_startup` (`_start_managers` preceded `initialize()`).
+- **What:** manager tasks spawned and ran before the subclass `initialize()`
+  hook returned; `ValkeyWorker` connects to Valkey only inside `initialize()`.
+- **Why significant:** a custom `@Manager` or handler depending on
+  `initialize()`-created resources could race.
+
+**Resolved (AR-007):** `_startup` now calls `initialize()` before
+`_start_managers()` (basic_async_worker.py:637-641).
 
 ## H6. Single-worker-per-process assumption (signal + event ownership)
 
-- **Location:** `basic_async_worker.py:417-427` (`_setup_signal_handlers`,
-  called from `__init__`); `events` property (181).
-- **What:** every constructed worker registers SIGINT/SIGTERM on the running
-  loop; later registrations replace earlier ones, so only the **last
-  constructed** worker reacts to signals. The `events` dict is handed out by
-  reference (external code can set/clear it).
-- **Why significant:** the framework implicitly assumes one worker per process.
-  Multiple workers in one process (allowed by the constructor) break signal
-  shutdown and share one event loop. Also, `__init__` calls
-  `asyncio.get_running_loop()`, so workers cannot be constructed outside a
-  running loop.
+- **Location:** was `basic_async_worker.py` (`_setup_signal_handlers` called
+  from `__init__`); `events` property.
+- **What:** every constructed worker registered SIGINT/SIGTERM on the running
+  loop; only the last constructed worker reacted to signals; `events` was handed
+  out by reference. `__init__` called `asyncio.get_running_loop()`.
+- **Why significant:** the framework implicitly assumed one worker per process
+  and could not construct workers outside a running loop.
+
+**Resolved (AR-015 + AR-008):** signal handlers are registered in `start()`
+(`_setup_signal_handlers`, basic_async_worker.py:497, Windows-safe no-op) and
+removed in `stop()` (`_remove_signal_handlers`, 514); `__init__` no longer
+touches the loop, so workers may be constructed outside a running loop.
+`events` (basic_async_worker.py:207), `task_handlers` (async_tasks_processor.py:154)
+and `running_tasks` (166) now return read-only `MappingProxyType` views.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 
-- **Location:** `basic_async_worker.py:679-720` (`_shutdown`).
+- **Location:** `basic_async_worker.py:681-722` (`_shutdown`).
 - **What:** `_shutdown` has no rollback if it is cancelled mid-way (e.g. during
   `_stop_managers`); its `except asyncio.CancelledError` swallows the
   cancellation without re-raising or forcing STOPPED/`exit`.
@@ -104,25 +126,26 @@ restarts the same handler instances. See `docs/reviews/architecture/2026-09-05.m
 
 ## H8. Task completion results are dropped; retry/duplicate semantics are loose
 
-- **Location:** `async_tasks_processor.py:489-502` (`handle_task` inner
-  wrapper) and `process_task` (433); `watchdog` (530); `ValkeyWorker.fetch_tasks`
-  ack-on-enqueue (`valkey_async_worker.py:386`).
-- **What:** `TaskResult` is logged and discarded — never acked to the
-  transport, published, or stored. Valkey stream entries are `XACK`+`XDEL`ed as
-  soon as they enter the in-process queue, so a crash/exception after that point
-  loses the task. On timeout, watchdog cancels the task and re-`XADD`s it
-  regardless of whether the handler actually stopped (handler may swallow
-  cancellation); requeue appends to the stream tail (ordering lost).
-- **Why significant:** the distributed contract is effectively
-  at-most-once-once-enqueued with re-enqueue on timeout, but nothing enforces
-  dedup, ordering, or result delivery. Whether callers rely on results is
-  `UNKNOWN`.
+- **Location:** was `handle_task`/`process_task` + ack-on-enqueue in
+  `fetch_tasks`.
+- **What:** `TaskResult` was logged and discarded; Valkey stream entries were
+  `XACK`+`XDEL`ed as soon as they entered the in-process queue, so a crash after
+  that point lost the task.
+- **Why significant:** the distributed contract was effectively at-most-once.
+
+**Resolved (AR-005):** delivery is now at-least-once. `fetch_tasks`
+(valkey_async_worker.py:480) records the entry id in `_task_entry_ids` without
+acking; `on_task_completed` (539) `XACK`+`XDEL`s the entry only after the
+handler's work terminates. `_recover_pending_tasks` (424) uses `XAUTOCLAIM` on
+the first fetch to redeliver entries left pending by a crash. Enqueue is
+non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
+(AR-016).
 
 ## H9. `ValkeyWorker` opens two independent GlideClients
 
-- **Location:** `valkey_async_worker.py:139-147` (constructs
-  `AsyncValkeyHandler`, which owns a client) and 192 (`self._client =
-  await GlideClient.create(...)`).
+- **Location:** `valkey_async_worker.py:154-163` (constructs
+  `AsyncValkeyHandler`, which owns a client) and 223 (`GlideClient.create` in
+  `connect`).
 - **What:** task/heartbeat traffic uses one `GlideClient`; log traffic uses a
   second client inside the external logging handler, each configured from the
   same `_client_config`.
@@ -133,20 +156,22 @@ restarts the same handler instances. See `docs/reviews/architecture/2026-09-05.m
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
-- **Location:** `valkey_async_worker.py:180-202` (`connect`), 251-280
+- **Location:** `valkey_async_worker.py:204-240` (`connect`), 289-318
   (`initialize`).
-- **What:** on `GlideClient.create` exception, `connect` returns False and
-  leaves `_client=None` (initialize then fails); on a **failed PING**,
-  `connect` prints and returns False but leaves `_client` set, so
-  `initialize()` (which only checks `client is not None`) proceeds as if
+- **What:** on `GlideClient.create` exception, `connect` returned False and left
+  `_client=None`; on a **failed PING**, it previously left `_client` set, so
+  `initialize()` (which only checks `client is not None`) proceeded as if
   connected.
-- **Why significant:** connectivity success is not consistently propagated;
-  heartbeat/fetch later guard on `client` truthiness. Reconnect logic exists
-  only in `fetch_tasks`'s exception handler (436-437), nowhere else.
+- **Why significant:** connectivity success was not consistently propagated.
+
+**Resolved (AR-006 + AR-010):** `connect()` assigns `_client` only after PING
+succeeds (229) and closes a client that failed its ping (236-239), so
+`self.client` truthiness is a reliable connectivity signal and a half-connected
+worker is never observable.
 
 ## H11. Task stream and group are namespaced per `worker_id`
 
-- **Location:** `valkey_async_worker.py:151-153`.
+- **Location:** `valkey_async_worker.py:166-169`.
 - **What:** stream, group, and consumer names embed `service_name` **and**
   `worker_id`. Two `ValkeyWorker`s with different `worker_id`s read **different
   streams**; horizontal scale-out requires replicas that share the same
@@ -161,55 +186,53 @@ restarts the same handler instances. See `docs/reviews/architecture/2026-09-05.m
 - **Location:** `docs/basic_async_worker.md`, `docs/async_task_processor.md`,
   `docs/task_handler.md`, `docs/valkey_async_worker.md`, plus `README.md`,
   `AGENTS.md`.
-- **What (verified vs source):** MRO discovery order described as
-  most-derived→base but code iterates `reversed(mro)` (base first); config-dir
-  precedence tables omit `SCIETEX_CONFIG_DIR` / XDG / create-default steps;
-  `TaskResult.processed_at` and `Heartbeat.timestamp` defaults are evaluated at
-  import time (single shared value), though docs imply per-record timestamps;
-  `valkey_async_worker.md` shows `purge_tasks()` in shutdown though no shutdown
-  path calls it; one doc example claims `_find_task_handler("email")` returns a
-  handler whose `supported_tasks` is `["send_email"]`.
-- **Why significant:** the docs are the intended-architecture record for the
-  next review; discrepancies mark where design intent and implementation have
-  drifted.
+- **What:** the usage docs are not kept in lockstep with the code. Discrepancies
+  previously noted — MRO discovery order and import-time `processed_at` /
+  `timestamp` defaults — are fixed in the source (AR-003, AR-012), but the
+  usage docs themselves have not been re-verified against v3.0.0 in this
+  rewrite.
+- **Why significant:** the docs are the intended-architecture record; drift
+  between usage guides and the code marks where design intent and implementation
+  have diverged. (Out of scope for this architecture-map rewrite.)
 
 ## H13. Duplicated/inconsistent developer configuration
 
-- **Location:** `pyproject.toml` (`[tool.pytest.ini_options] pythonpath =
-  ["src"]`) vs `pytest.ini` (`pythonpath = .`, `addopts = --capture=no`); the
-  `build/` and `src/scietex.service.egg-info/` artifacts and stale `*.pyc`
-  (e.g. removed `redis_async_worker`, `utils/managers`, `utils/helpers`) sit
-  inside the repo tree.
-- **Why significant:** two pytest config sources with different `pythonpath`
-  can make test-time imports diverge from installed-package imports; stale
-  compiled modules hint at a removed Redis worker and older manager subsystem
-  that the current `@Manager` design replaced (relevant to change history).
+- **Location:** was `pyproject.toml` `[tool.pytest.ini_options]` vs `pytest.ini`.
+- **What:** two pytest config sources with different `pythonpath` could make
+  test-time imports diverge from installed-package imports.
+- **Why significant:** divergent import paths between test and package.
+
+**Resolved (AR-013):** `pytest.ini` was deleted; pytest configuration lives only
+in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 39-41).
 
 ## H14. `pyaml` dependency is unused; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` is dead
 
-- **Location:** `pyproject.toml:18` (declares `pyaml>=26.2.1`); `manager.py:12`.
-- **What:** no import of `pyaml` exists in `src/`, `tests/`, or `examples/`;
-  YAML handling uses `msgspec.yaml`. `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` is never
-  referenced.
-- **Why significant:** possible legacy cruft in the declared dependency surface
-  that the next review may want to trace (including whether `scietex.logging`
-  requires `pyaml` transitively — `UNKNOWN`).
+- **Location:** was `pyproject.toml:18` (`pyaml>=26.2.1`) and `manager.py:12`.
+- **What:** no import of `pyaml` existed anywhere; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE`
+  was never referenced.
+- **Why significant:** legacy cruft in the declared dependency surface.
+
+**Resolved (AR-013):** `pyaml` was dropped and `pyyaml>=6.0` added (required by
+`msgspec.yaml`); `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` was removed from `manager.py`.
 
 ## H15. Typed schemas contain time/identity defaults evaluated once at import
 
-- **Location:** `task_handler/schemas.py:60` (`TaskResult.processed_at =
-  datetime.now(timezone.utc)`), `valkey/schemas.py:38` (`Heartbeat.timestamp`).
-- **What:** `msgspec.Struct` defaults are class-level; `datetime.now(...)` runs
-  once at import, so any `TaskResult`/`Heartbeat` constructed without an
-  explicit timestamp shares the module-import timestamp.
-- **Why significant:** the fields *look* like per-instance times. Handlers that
-  omit `processed_at` all stamp the same value. (Valkey heartbeat always passes
-  an explicit timestamp, so the practical impact is limited to task results.)
+- **Location:** was `task_handler/schemas.py` (`TaskResult.processed_at =
+  datetime.now(...)`) and `valkey/schemas.py` (`Heartbeat.timestamp`).
+- **What:** `msgspec.Struct` defaults were class-level; `datetime.now(...)` ran
+  once at import, so instances without an explicit timestamp shared the import
+  timestamp.
+- **Why significant:** the fields *looked* like per-instance times.
+
+**Resolved (AR-012):** both fields now use
+`msgspec.field(default_factory=lambda: datetime.now(timezone.utc))`
+(`task_handler/schemas.py:60`, `valkey/schemas.py:38`), producing a per-instance
+value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `async_tasks_processor.py:433-474` (`process_task`),
-  284-369 (handler registry).
+- **Location:** `async_tasks_processor.py:509-547` (`process_task`), 314-416
+  (handler registry).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no
   per-task backoff; dispatch is first-match over active handlers by

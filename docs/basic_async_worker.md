@@ -44,10 +44,9 @@ Subclasses should override:
             _startup()      initialize()     _shutdown()
                    │              │               │
                    ▼              ▼               ▼
-            print logo    custom init logic   stop managers
-            start loggers start managers      cleanup()
-                                       start managers
-                                       stop loggers
+            print logo    custom init logic  stop managers
+            start loggers                    cleanup()
+            start managers                   stop loggers
 ```
 
 ### Starting
@@ -62,8 +61,8 @@ The `start()` method creates a task that runs `_startup()`, which:
 1. Waits for any previous shutdown to complete
 2. Prints the service logo
 3. Starts async logging handlers
-4. Starts all `@Manager`-decorated methods as asyncio tasks
-5. Calls `initialize()` (subclass override point)
+4. Calls `initialize()` (subclass override point)
+5. Starts all `@Manager`-decorated methods as asyncio tasks
 6. Sets `start_time` and transitions to `RUNNING`
 
 If `initialize()` returns `False`, a `RuntimeError` is raised and the
@@ -176,7 +175,7 @@ behavior.
 |---|---|---|
 | `state` | `ServiceStatus` | Current lifecycle state (read-only) |
 | `start_time` | `datetime \| None` | UTC timestamp when service started (read-only) |
-| `events` | `dict[str, asyncio.Event]` | Lifecycle events dict (`exit_requested`, `exit`) |
+| `events` | `Mapping[str, asyncio.Event]` | Lifecycle events read-only view (`exit_requested`, `exit`) |
 
 ### Configuration
 

@@ -57,7 +57,7 @@ python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide
 
 **Valkey config:**
 - Reads `valkey.yml` from config dir (YAML, uses `msgspec.yaml.decode`)
-- Falls back to defaults if file missing/invalid
+- Raises RuntimeError if the file is present but invalid; creates defaults only if missing
 - Install extras: `uv sync --extra valkey` or `pip install "scietex.service[valkey]"`
 
 ## Task Handler System

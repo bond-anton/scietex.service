@@ -90,7 +90,16 @@ the worker enters `RUNNING` state.
 |---|---|---|---|
 | `queue_size` | `int` | `2` | Maximum size of the internal task queue |
 | `max_concurrent_tasks` | `int` | `2` | Maximum tasks processed in parallel |
-| `task_queue` | `asyncio.Queue` | — | The internal async queue holding `(UUID, TaskData)` tuples |
+
+The internal queue is private. Access it through these non-blocking
+methods:
+
+| Method | Returns | Description |
+|---|---|---|
+| `enqueue_task(task_id, task_data)` | `bool` | Non-blocking `put_nowait`; returns `False` if the queue is full |
+| `dequeue_task()` | `tuple[UUID, TaskData] \| None` | Non-blocking `get_nowait`; returns `None` if empty |
+| `task_queue_empty()` | `bool` | `True` if the queue has no pending tasks |
+| `task_queue_full()` | `bool` | `True` if the queue has reached its maximum size |
 
 ### Timing
 
@@ -105,8 +114,8 @@ the worker enters `RUNNING` state.
 
 | Property | Type | Description |
 |---|---|---|
-| `task_handlers` | `dict[str, TaskHandler]` | Currently active (started) handlers |
-| `running_tasks` | `dict[UUID, TaskTracker]` | Currently running tasks and their trackers |
+| `task_handlers` | `Mapping[str, TaskHandler]` | Currently active (started) handlers, as a read-only `MappingProxyType` view |
+| `running_tasks` | `Mapping[UUID, TaskTracker]` | Currently running tasks and their trackers, as a read-only `MappingProxyType` view |
 
 All timing properties are clamped to their min/max bounds. Setters
 accept `None` to reset to the default value.
@@ -220,13 +229,22 @@ running tasks for timeouts:
 ```python
 async def watchdog(self) -> None:
     now = time.time()
-    for task_id, tracker in self.running_tasks.items():
-        timeout = tracker.data.timeout.timeout or DEFAULT_TASK_TIMEOUT
-        if 0 < timeout < (now - tracker.started):
-            # Task exceeded its timeout
+    for task_id, tracker in list(self.running_tasks.items()):
+        timeout = tracker.data.timeout.timeout
+        if timeout is None:
+            timeout = DEFAULT_TASK_TIMEOUT
+        if 0 < timeout < (now - tracker.started) and not tracker.worker_task.done():
+            # Task exceeded its timeout and is still running
             tracker.worker_task.cancel()
-            if tracker.data.timeout.timeout_action == "requeue":
-                await self.return_task_to_queue(task_id, tracker.data)
+            await asyncio.wait(
+                [tracker.worker_task],
+                timeout=WORKER_TASK_CANCELLATION_TIMEOUT,
+            )
+            if tracker.worker_task.done():
+                # Handler actually stopped; requeue a fresh delivery only now
+                if tracker.data.timeout.timeout_action == "requeue":
+                    await self.return_task_to_queue(task_id, tracker.data)
+            # else: handler ignored cancellation — requeueing would run it twice
 ```
 
 Timeout behavior is controlled by `TaskTimeout`:
@@ -247,7 +265,7 @@ Override to retrieve tasks from an external source and enqueue them:
 class MyWorker(AsyncTaskProcessor):
     async def fetch_tasks(self) -> None:
         """Pull tasks from a message queue."""
-        while not self.task_queue.full():
+        while not self.task_queue_full():
             try:
                 raw = await self.message_queue.get(timeout=0.1)
                 task_id = uuid4()
@@ -256,7 +274,7 @@ class MyWorker(AsyncTaskProcessor):
                     payload=raw["payload"].encode(),
                     timeout=TaskTimeout(timeout=raw.get("timeout")),
                 )
-                self.task_queue.put_nowait((task_id, task_data))
+                self.enqueue_task(task_id, task_data)
             except Empty:
                 break
 ```
@@ -282,10 +300,16 @@ class MyWorker(AsyncTaskProcessor):
 
 Override to add custom cleanup logic. The base implementation already:
 
-1. Calls `super().cleanup()` (stops managers, shuts down loggers)
-2. Returns pending tasks from the internal queue
-3. Cancels and requeues running tasks
+1. Calls `super().cleanup()` (a no-op on `BasicAsyncWorker`)
+2. Drains the internal queue by dropping items — they stay pending in the
+   transport and are redelivered on restart (subclasses whose transport
+   does not keep items pending must override to requeue drained items)
+3. Cancels running tasks; a task is requeued via `return_task_to_queue()`
+   only after its handler actually stops, honoring `canceled_action`
 4. Stops all task handlers
+
+It does not stop managers or shut down loggers — `BasicAsyncWorker`
+handles those during shutdown.
 
 ```python
 async def cleanup(self) -> None:
@@ -371,7 +395,7 @@ class MyTaskWorker(AsyncTaskProcessor):
 
     async def fetch_tasks(self) -> None:
         """Pull tasks from the simulated external queue."""
-        while not self.task_queue.full():
+        while not self.task_queue_full():
             if not self._external_queue:
                 break
             item = self._external_queue.pop(0)
@@ -381,7 +405,7 @@ class MyTaskWorker(AsyncTaskProcessor):
                 payload=json.dumps(item["payload"]).encode(),
                 timeout=TaskTimeout(timeout=item.get("timeout")),
             )
-            self.task_queue.put_nowait((task_id, task_data))
+            self.enqueue_task(task_id, task_data)
 
     async def return_task_to_queue(self, task_id: uuid.UUID, task_data: TaskData) -> None:
         """Re-queue timed-out tasks."""
@@ -395,10 +419,12 @@ class MyTaskWorker(AsyncTaskProcessor):
 
     async def cleanup(self) -> None:
         """Flush any remaining tasks back to the external queue."""
-        while not self.task_queue.empty():
-            task_id, task_data = await self.task_queue.get()
+        while True:
+            task = self.dequeue_task()
+            if task is None:
+                break
+            task_id, task_data = task
             await self.return_task_to_queue(task_id, task_data)
-            self.task_queue.task_done()
         await super().cleanup()
 
 
