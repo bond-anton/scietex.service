@@ -15,7 +15,7 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 requires-python = ">=3.10"
-dependencies = ["msgspec>=0.20.0", "pyaml>=26.2.1", "scietex.logging>=1.1.0"]
+dependencies = ["msgspec>=0.20.0", "scietex.logging>=1.1.0"]
 
 [project.urls]
 "Homepage" = "https://github.com/bond-anton/scietex.service"
@@ -38,3 +38,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+addopts = "--capture=no"

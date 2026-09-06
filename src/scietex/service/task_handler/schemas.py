@@ -57,7 +57,7 @@ class TaskResult(msgspec.Struct, frozen=True):
 
     status: Literal["success", "error"]
     error: str = ""
-    processed_at: datetime = datetime.now(timezone.utc)
+    processed_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
     payload: bytes = b""
 
 

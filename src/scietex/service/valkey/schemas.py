@@ -35,4 +35,4 @@ class Heartbeat(msgspec.Struct, frozen=True):
     status: Literal["active", "inactive"]
     heartbeat_interval: float
     start_time: datetime
-    timestamp: datetime = datetime.now(timezone.utc)
+    timestamp: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))

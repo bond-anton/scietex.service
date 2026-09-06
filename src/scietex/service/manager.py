@@ -10,8 +10,6 @@ from enum import Enum
 from types import MethodType
 from typing import Any
 
-DEFAULT_MAX_OUTPUT_QUEUE_SIZE = 100
-
 
 class ManagerStatus(Enum):
     """Lifecycle status of a ``Manager``-decorated loop."""
