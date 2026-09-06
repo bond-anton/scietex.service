@@ -14,16 +14,24 @@ from scietex.service.valkey.valkey_config import (
 class DummyClient:
     """Mocking Valkey client."""
 
-    def __init__(self, ping_ok=True, xreadgroup_result=None, xautoclaim_result=None):
+    def __init__(
+        self,
+        ping_ok=True,
+        xreadgroup_result=None,
+        xautoclaim_result=None,
+        xgroup_create_error=None,
+    ):
         self._ping_ok = ping_ok
         self.closed = False
         self.xreadgroup_result = xreadgroup_result
         self.xautoclaim_result = xautoclaim_result
+        self.xgroup_create_error = xgroup_create_error
         self.acked: list = []
         self.deleted: list = []
 
     async def xgroup_create(self, *args, **kwargs):
-        pass
+        if self.xgroup_create_error is not None:
+            raise self.xgroup_create_error
 
     async def xadd(self, *args, **kwargs):
         pass
@@ -147,6 +155,45 @@ async def test_connect_create_failure_leaves_client_none(monkeypatch):
     ok = await worker.connect()
     assert ok is False
     assert worker.client is None
+
+
+@pytest.mark.asyncio
+async def test_initialize_group_already_exists_succeeds(monkeypatch):
+    # A BUSYGROUP error means the consumer group already exists and must be
+    # ignored; initialize still reports success (AR-021).
+    import scietex.service.valkey.valkey_async_worker as mod
+
+    async def create_mock(cfg):
+        return DummyClient(
+            ping_ok=True,
+            xgroup_create_error=mod.RequestError("BUSYGROUP Consumer Group name already exists"),
+        )
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    ok = await worker.initialize()
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_initialize_group_create_failure_fails(monkeypatch):
+    # A genuine xgroup_create failure must fail initialize so the worker
+    # does not run with no consumer group (AR-021).
+    import scietex.service.valkey.valkey_async_worker as mod
+
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=True, xgroup_create_error=mod.RequestError("NOAUTH Authentication required"))
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    ok = await worker.initialize()
+    assert ok is False
 
 
 def _entry(entry_id: bytes, task_id: str, payload: bytes):

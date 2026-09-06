@@ -10,36 +10,32 @@ from scietex.service.logging import LoggerStatus
 from scietex.service.manager import Manager
 
 
-@pytest.fixture(scope="module")
-def test_event_loop():
-    """Fixture to create asyncio event loop for testing."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest.mark.asyncio
-async def test_graceful_shutdown(test_event_loop):
+async def test_graceful_shutdown():
     """Start the worker, enqueue some logs, then stop and ensure drain."""
     worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
 
     # Start worker (initializes logging handlers and managers)
     await worker.start()
-    await asyncio.sleep(5)
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
 
     # Put some log messages into the queue
     worker.logger.log(logging.INFO, "first message")
     worker.logger.log(logging.WARNING, "second message")
-    await asyncio.sleep(5)
 
     # Ensure stop works
     await worker.stop()
-    await asyncio.sleep(5)
-
+    for _ in range(50):
+        if worker.state == ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
     assert worker.state == ServiceStatus.STOPPED
 
     await worker.exit()
-    await asyncio.sleep(5)
     assert worker.events["exit"].is_set()
 
 
@@ -127,3 +123,129 @@ async def test_initialize_runs_before_managers_start():
 
     await worker.stop()
     await worker.exit()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancellation_forces_stopped():
+    """A cancelled shutdown must force STOPPED and allow a clean restart.
+
+    Regression test for AR-017: if the _shutdown task is cancelled mid-shutdown,
+    the worker must reach STOPPED (not remain STOPPING) so a later start() is
+    not blocked.
+    """
+
+    class SlowCleanupWorker(BasicAsyncWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.cleanup_started = asyncio.Event()
+            self.block_cleanup = True
+
+        async def cleanup(self):
+            self.cleanup_started.set()
+            if self.block_cleanup:
+                await asyncio.sleep(3600)
+
+    worker = SlowCleanupWorker(service_name="test_service", version="1.0.0")
+
+    await worker.start()
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
+
+    await worker.stop()
+    await worker.cleanup_started.wait()
+    assert worker.state == ServiceStatus.STOPPING
+
+    stop_task = next(t for t in asyncio.all_tasks() if t.get_name() == "Stop")
+    stop_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stop_task
+
+    assert worker.state == ServiceStatus.STOPPED
+
+    # A cancelled shutdown must not block a subsequent start.
+    worker.block_cleanup = False
+    await worker.start()
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
+
+    await worker.stop()
+    for _ in range(50):
+        if worker.state == ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_signal_handler_no_reentry():
+    """Firing the exit handler twice must run only one shutdown (AR-033)."""
+
+    class CountingWorker(BasicAsyncWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.shutdown_calls = 0
+
+        async def _shutdown(self):
+            self.shutdown_calls += 1
+            await super()._shutdown()
+
+    worker = CountingWorker(service_name="test_service", version="1.0.0")
+
+    await worker.start()
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
+
+    worker._request_exit()
+    worker._request_exit()
+
+    for _ in range(50):
+        if worker.state == ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
+
+    assert worker.state == ServiceStatus.STOPPED
+    assert worker.shutdown_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_first_heartbeat_fires_promptly():
+    """The first heartbeat must fire promptly, not after a full interval (AR-040)."""
+
+    class HeartbeatWorker(BasicAsyncWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.heartbeat_count = 0
+
+        async def heartbeat(self):
+            self.heartbeat_count += 1
+
+    worker = HeartbeatWorker(
+        service_name="test_service",
+        version="1.0.0",
+        heartbeat_interval=5,
+    )
+
+    await worker.start()
+    # The first beat must fire well before the 5s interval elapses.
+    for _ in range(50):
+        if worker.heartbeat_count >= 1:
+            break
+        await asyncio.sleep(0.05)
+
+    assert worker.heartbeat_count >= 1
+
+    await worker.stop()
+    for _ in range(50):
+        if worker.state == ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.STOPPED

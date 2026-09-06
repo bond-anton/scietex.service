@@ -255,3 +255,69 @@ async def test_cleanup_drain_does_not_requeue_queued_tasks():
     await proc.cleanup()
     assert not any(tid == t_id for tid, _ in proc.requeued)
     assert proc.task_queue_empty()
+
+
+class RaisingStartHandler(TaskHandler):
+    async def initialize(self) -> bool:
+        raise RuntimeError("start failed")
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="error", error="never ready")
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["raising"]
+
+
+@pytest.mark.asyncio
+async def test_start_task_handler_removes_handler_on_start_failure():
+    """A handler whose start() raises must be removed from the active handlers
+    dict so dispatch never iterates a dead handler (AR-029)."""
+    proc = DemoProcessor()
+    proc.add_task_handler("raising", RaisingStartHandler)
+    ok = await proc._start_task_handler("raising")
+    assert ok is False
+    assert "raising" not in proc.task_handlers
+
+
+class NeverFinishesHandler(TaskHandler):
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        # Block until cancelled so the task stays running for the test.
+        await asyncio.Event().wait()
+        return TaskResult(status="success", error="No error")
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["never"]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_ignores_non_positive_timeout():
+    """timeout <= 0 means 'no timeout': the watchdog must never cancel the
+    task (AR-034)."""
+    proc = DemoProcessor(watchdog_interval=0.05)
+    proc.add_task_handler("never", NeverFinishesHandler)
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(
+            t_id,
+            TaskData(
+                task="never",
+                payload=b"{}",
+                timeout=TaskTimeout(timeout=0, timeout_action="requeue"),
+            ),
+        )
+        # Wait until the task has been dispatched, then let the watchdog run
+        # several times (interval 50ms). The task must still be running and
+        # must not have been requeued.
+        for _ in range(100):
+            if t_id in proc.running_tasks:
+                break
+            await asyncio.sleep(0.01)
+        assert t_id in proc.running_tasks
+        await asyncio.sleep(0.3)
+        assert t_id in proc.running_tasks
+        assert not any(tid == t_id for tid, _ in proc.requeued)
+    finally:
+        await proc.stop()
