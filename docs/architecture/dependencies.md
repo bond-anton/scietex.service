@@ -87,7 +87,7 @@ glide (valkey-glide, optional)                              [external]
 | Package | Declared in | Used for | Structurally significant? |
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
-| `scietex.logging>=0.2.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
+| `scietex.logging>=1.0.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
 | `pyaml>=26.2.1` | core deps (`pyproject.toml:18`) | **not imported anywhere in `src/`** | No — likely legacy (see §H14) |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
 

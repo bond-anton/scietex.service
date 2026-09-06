@@ -122,15 +122,12 @@ Processor starts handlers in `initialize` (before RUNNING) and stops them in
 - Started in `_logger_start_handlers` (startup), stopped in
   `_logger_shut_down_handlers` (shutdown), each bounded by
   `logger_handler_timeout`.
-- The external `scietex.logging` handlers spawn their own internal worker tasks
-  on `start_logging()` and call `self.close()` at the end of `stop_logging()`
-  (`basic_handler.py:235`) — the handler is **closed** after shutdown.
-
-> *Analysis* — after one shutdown the logger handlers are closed but
-> `__loggers_statuses` is left as RUNNING (`_logger_shut_down_handlers`,
-> basic_async_worker.py:492), so a second `start()` on the same instance skips
-> restarting them. Instance reuse across start/stop cycles appears unreliable
-> (§H4).
+- The external `scietex.logging` handlers (>= 1.0) are restartable in place:
+  `start_logging()`/`stop_logging()` may be called repeatedly on the same event
+  loop. `_logger_start_handlers` starts each handler whose recorded status is
+  not RUNNING; `_logger_shut_down_handlers` calls the idempotent
+  `stop_logging()` and records STOPPED. `__loggers_statuses` tracks
+  STOPPED/RUNNING per handler name.
 
 ## Resource ownership map
 

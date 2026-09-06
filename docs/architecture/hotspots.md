@@ -60,6 +60,10 @@ are flagged.
   a stop leaves the logger non-functional. Tension between "service restartable"
   (state machine supports STOPPED → RUNNING again) and handler one-shotness.
 
+**Resolved (2026-09-06):** `_logger_shut_down_handlers` records STOPPED, and
+scietex.logging >= 1.0 handlers are restartable in place, so a second `start()`
+restarts the same handler instances. See `docs/reviews/architecture/2026-09-05.md`.
+
 ## H5. Managers are started before `initialize()` completes
 
 - **Location:** `basic_async_worker.py:636-640` (`_startup`: `_start_managers`

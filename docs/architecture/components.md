@@ -215,7 +215,7 @@ by `ValkeyWorker.heartbeat`.
 
 ## 11. External async logging backend — `scietex.logging`
 
-Installed dependency (>=0.2.0). The package embeds this framework's log sink.
+Installed dependency (>=1.0.0). The package embeds this framework's log sink.
 Consumed classes:
 - `AsyncBaseHandler(logging.Handler)` — per-backend `asyncio.Queue`s +
   worker coroutines; `start_logging()`/`stop_logging()`/`emit()`. Console
