@@ -25,6 +25,7 @@ try:
         ExpiryType,
         GlideClient,
         GlideClientConfiguration,
+        RequestError,
         StreamGroupOptions,
         StreamReadGroupOptions,
     )
@@ -222,16 +223,16 @@ class ValkeyWorker(AsyncTaskProcessor):
         try:
             client = await GlideClient.create(self._client_config)
         except (GlideConnectionError, GlideTimeoutError):
-            print("Error connecting to Valkey")
+            self.logger.error("Error connecting to Valkey")
             return False
         try:
             if await client.ping():
                 self._client = client
                 self.logger.log(logging.INFO, "Connected to Valkey")
                 return True
-            print("Error pinging Valkey")
+            self.logger.error("Error pinging Valkey")
         except (GlideConnectionError, GlideTimeoutError):
-            print("Error connecting to Valkey")
+            self.logger.error("Error connecting to Valkey")
         # Ping failed or raised: never leave a half-connected client behind.
         try:
             await client.close()
@@ -255,7 +256,7 @@ class ValkeyWorker(AsyncTaskProcessor):
 
         Encodes a ``Heartbeat`` struct with service metadata and writes it
         to ``self._heartbeat_key`` with a TTL set to twice the heartbeat
-        interval. Logs duration and any errors at DEBUG level.
+        interval. Logs the duration at DEBUG and any failure at WARNING.
         """
 
         if self.client and self.start_time:
@@ -280,7 +281,7 @@ class ValkeyWorker(AsyncTaskProcessor):
             except Exception as exc:
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(
-                    logging.DEBUG,
+                    logging.WARNING,
                     "Failed to set heartbeat in Valkey: %s. Duration: %.2f ms",
                     exc,
                     duration,
@@ -292,12 +293,14 @@ class ValkeyWorker(AsyncTaskProcessor):
         Calls the parent ``AsyncTaskProcessor.initialize()`` to start
         registered task handlers, then connects to Valkey and creates
         the consumer group for the task stream (with ``make_stream=True``).
-        Fails silently if the group already exists.
+        A pre-existing group (``BUSYGROUP``) is ignored; any other group
+        creation error fails initialization.
 
         Returns:
             ``True`` if the parent initialization and Valkey connection
-            succeed, and the consumer group is ready. ``False`` if the
-            parent initialization fails or the client is unavailable.
+            succeed and the consumer group is ready. ``False`` if the
+            parent initialization fails, the client is unavailable, or
+            the consumer group could not be created.
         """
 
         if not await super().initialize():
@@ -313,8 +316,10 @@ class ValkeyWorker(AsyncTaskProcessor):
                 "0-0",  # Use "$" to start from new messages, "0-0" to process existing ones
                 StreamGroupOptions(make_stream=True),
             )
-        except Exception as exc:
-            self.logger.log(logging.DEBUG, "Valkey: %s", exc)
+        except RequestError as exc:
+            if "BUSYGROUP" not in str(exc):
+                self.logger.error("Failed to create consumer group %s: %s", self._task_group_name, exc)
+                return False
         return True
 
     async def cleanup(self):
@@ -339,68 +344,59 @@ class ValkeyWorker(AsyncTaskProcessor):
             description on failure.
         """
         if self.client is None:
-            print("No Valkey client available to purge tasks")
+            self.logger.warning("No Valkey client available to purge tasks")
             return
+        client = self.client
         try:
-            while True:
-                # print("PURGING OLD TASKS")
-                res = await self.client.xreadgroup(
-                    {self._task_stream_name: "0-0"},
-                    self._task_group_name,
-                    self._consumer_name,
-                    # StreamReadGroupOptions(count=100, block_ms=1000),
-                )
-                if not res:
-                    break  # No results for stream_name, exit the loop
-                # print("  OLD TASKS", res)
-                entries = res[self._task_stream_name.encode("utf-8")]
-                if not entries:
-                    break  # No entries, exit the loop
-                entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(entries.keys())
-                await self.client.xack(
-                    self._task_stream_name,
-                    self._task_group_name,
-                    entries_ids,
-                )
-                await self.client.xdel(self._task_stream_name, entries_ids)
-            while True:
-                # print("PURGING PENDING TASKS")
-                res = await self.client.xreadgroup(
-                    {self._task_stream_name: ">"},
-                    self._task_group_name,
-                    self._consumer_name,
-                    # StreamReadGroupOptions(count=100, block_ms=1000),
-                )
-                if not res:
-                    break  # No results for stream_name, exit the loop
-                # print("  PENDING TASKS", res)
-                entries = res[self._task_stream_name.encode("utf-8")]
-                if not entries:
-                    break  # No entries, exit the loop
-                entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(entries.keys())
-                await self.client.xack(
-                    self._task_stream_name,
-                    self._task_group_name,
-                    entries_ids,
-                )
-                await self.client.xdel(self._task_stream_name, entries_ids)
-            while True:
-                # print("PURGING STREAM")
-                res = await self.client.xread(
-                    {self._task_stream_name: "0-0"},
-                    # StreamReadOptions(count=100, block_ms=1000),
-                )
-                if not res:
-                    break  # No results for stream_name, exit the loop
-                # print("  STREAM DATA", res)
-                entries = res[self._task_stream_name.encode("utf-8")]
-                if not entries:
-                    break  # No entries, exit the loop
-                entries_ids: list[str | bytes | bytearray | memoryview[int]] = list(entries.keys())
-                await self.client.xdel(self._task_stream_name, entries_ids)
+            # Entries already delivered to the group (pending + delivered).
+            await self._purge_group_entries(client, "0-0")
+            # Entries not yet delivered to the group.
+            await self._purge_group_entries(client, ">")
+            # Entries in the stream the group never saw.
+            await self._purge_stream_entries(client)
             self.logger.log(logging.INFO, "All pending tasks purged from Valkey")
         except Exception as exc:
-            self.logger.log(logging.DEBUG, "Failed to purge tasks from Valkey: %s", exc)
+            self.logger.log(logging.ERROR, "Failed to purge tasks from Valkey: %s", exc)
+
+    async def _purge_group_entries(self, client: GlideClient, start: str) -> None:
+        """Read, acknowledge, and delete group entries from the task stream.
+
+        Reads entries via ``XREADGROUP`` from ``start``, acknowledges them
+        with ``XACK`` so they leave the pending list, then deletes them
+        with ``XDEL``. Loops until ``XREADGROUP`` returns no more entries.
+        """
+        while True:
+            res = await client.xreadgroup(
+                {self._task_stream_name: start},
+                self._task_group_name,
+                self._consumer_name,
+            )
+            entry_ids = self._stream_entry_ids(res)
+            if not entry_ids:
+                return
+            await client.xack(self._task_stream_name, self._task_group_name, entry_ids)
+            await client.xdel(self._task_stream_name, entry_ids)
+
+    async def _purge_stream_entries(self, client: GlideClient) -> None:
+        """Delete every remaining entry in the task stream.
+
+        Reads all stream entries via ``XREAD`` (independent of the consumer
+        group) and deletes them with ``XDEL``. Loops until ``XREAD`` returns
+        no more entries.
+        """
+        while True:
+            res = await client.xread({self._task_stream_name: "0-0"})
+            entry_ids = self._stream_entry_ids(res)
+            if not entry_ids:
+                return
+            await client.xdel(self._task_stream_name, entry_ids)
+
+    def _stream_entry_ids(self, res) -> list[str | bytes | bytearray | memoryview]:
+        """Extract stream entry ids from an XREADGROUP/XREAD result mapping."""
+        if not res:
+            return []
+        entries = res[self._task_stream_name.encode("utf-8")]
+        return list(entries.keys()) if entries else []
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Re-queue a task by appending it to the Valkey task stream.

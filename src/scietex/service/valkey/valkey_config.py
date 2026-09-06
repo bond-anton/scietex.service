@@ -297,7 +297,9 @@ def generate_glide_config(
         service_name: Service name used for PubSub channel names.
         worker_id: Worker identifier used for PubSub channel names.
         listening: If ``True``, subscribes to service-specific and
-            broadcast channels.
+            broadcast channels. Currently unused by the package
+            (``ValkeyWorker`` always passes ``False``) and reserved for
+            future control-plane use.
         parse_control_message: Optional callback for PubSub messages.
 
     Returns:
@@ -306,6 +308,9 @@ def generate_glide_config(
     Raises:
         ValueError: If ``read_from`` or ``protocol`` contain invalid values.
     """
+    # Reserved for future control-plane use: the package never passes
+    # ``listening=True`` (``ValkeyWorker`` hardcodes ``False``), so this
+    # branch is dead in practice but kept to preserve the public signature.
     pubsub_subscriptions = None
     if listening:
         pubsub_subscriptions = GlideClientConfiguration.PubSubSubscriptions(

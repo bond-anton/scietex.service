@@ -359,12 +359,15 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             await asyncio.wait_for(self.__task_handlers[handler_name].start(), timeout=self.task_handler_start_timeout)
         except asyncio.TimeoutError:
             self.logger.log(logging.ERROR, "Timeout while starting Task handler %s", handler_name)
+            del self.__task_handlers[handler_name]
             return False
         except Exception as exc:
             self.logger.log(logging.ERROR, "Failed to start Task handler %s: %s", handler_name, exc)
+            del self.__task_handlers[handler_name]
             return False
         if not self.__task_handlers[handler_name].is_ready:
             self.logger.log(logging.ERROR, "Task handler %s failed to become ready", handler_name)
+            del self.__task_handlers[handler_name]
             return False
         return True
 
@@ -475,8 +478,10 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         # (e.g. a Valkey stream) are still pending there and will be
         # redelivered on restart, so they must NOT be re-enqueued here (that
         # would duplicate them). Subclasses whose transport does not keep
-        # items pending after enqueue must override cleanup to requeue drained
-        # items.
+        # items pending after enqueue (i.e. non-durable in-memory transports)
+        # MUST override cleanup to requeue drained items before calling
+        # super().cleanup(); otherwise queued-but-undispatched tasks are
+        # silently lost on shutdown.
         while not self.__task_queue.empty():
             self.__task_queue.get_nowait()
             self.__task_queue.task_done()
@@ -543,7 +548,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         else:
             result = TaskResult(status="error", error=f"No handler found for task type '{task_type}'")
 
-        self.logger.log(logging.DEBUG, "Task %s (%s) completed with result: {result}", task_data, task_id)
+        self.logger.log(logging.DEBUG, "Task %s (%s) completed with result: %s", task_data, task_id, result)
         return result
 
     @Manager("TaskManager")
@@ -653,7 +658,9 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             timeout = task_tracker.data.timeout.timeout
             if timeout is None:
                 timeout = DEFAULT_TASK_TIMEOUT
-            if 0 < timeout < (now - task_tracker.started) and not task_tracker.worker_task.done():
+            # A non-positive timeout means "no timeout": the watchdog never
+            # cancels the task (timeout <= 0 is treated as unbounded).
+            if timeout > 0 and (now - task_tracker.started) > timeout and not task_tracker.worker_task.done():
                 self.logger.log(
                     logging.WARNING,
                     "Task %s (%s) exceeded timeout and will be canceled.",
