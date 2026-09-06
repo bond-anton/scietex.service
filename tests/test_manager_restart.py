@@ -81,7 +81,7 @@ async def test_manager_gives_up_and_removes_stale_task_entry():
             await asyncio.sleep(0.05)
         assert worker.attempts >= 3, f"expected give-up after retries, got {worker.attempts} attempts"
         # The task must have removed itself from tracking (no stale entry).
-        assert "Doomed" not in worker._BasicAsyncWorker__manager_tasks
+        assert "Doomed" not in worker._manager_runtime.tasks
     finally:
         await worker.stop()
 
@@ -97,12 +97,12 @@ async def test_manager_can_restart_after_giving_up():
                 break
             await asyncio.sleep(0.05)
         assert worker.attempts >= 2
-        assert "Doomed" not in worker._BasicAsyncWorker__manager_tasks
+        assert "Doomed" not in worker._manager_runtime.tasks
 
         # A fresh start of the same manager must succeed (task entry was cleared).
         manager = AlwaysFailingWorker.__dict__["_doomed_manager"]
         await worker._start_manager("Doomed", manager)
-        assert "Doomed" in worker._BasicAsyncWorker__manager_tasks
+        assert "Doomed" in worker._manager_runtime.tasks
     finally:
         await worker.stop()
 

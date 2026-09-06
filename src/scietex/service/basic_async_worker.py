@@ -16,8 +16,10 @@ from pathlib import Path
 
 from scietex.logging import AsyncBaseHandler
 
-from .logging import LoggerStatus, parse_logging_level
-from .manager import Manager, ManagerStatus
+from .logging import parse_logging_level
+from .logging_lifecycle import LoggingLifecycle
+from .manager import Manager
+from .manager_runtime import ManagerRuntime
 from .utils import prepare_conf_dir, print_scietex_logo
 
 DEFAULT_HEARTBEAT_INTERVAL: float = 10
@@ -135,6 +137,13 @@ class BasicAsyncWorker:
         # Config dir setup
         self.__conf_dir: Path = prepare_conf_dir(conf_dir)
 
+        # Extracted components own their respective bookkeeping; the worker
+        # keeps only identity/config and the lifecycle state machine. They are
+        # constructed before the logger handler registration below, which
+        # forwards into the logging component.
+        self._manager_runtime = ManagerRuntime(self)
+        self._logging_lifecycle = LoggingLifecycle(self)
+
         # Set up logger with async handler
         self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}.{self.__worker_id}")
         self._logger.setLevel(self.logging_level)
@@ -176,13 +185,8 @@ class BasicAsyncWorker:
 
         # State tracking
 
-        self.__loggers_statuses: dict[str, LoggerStatus] = {}
         self.__state: ServiceStatus = ServiceStatus.STOPPED
         self.__start_time: datetime | None = None
-
-        self.__manager_statuses: dict[str, ManagerStatus] = {}
-        self.__manager_tasks: dict[str, asyncio.Task[None]] = {}
-        self.__manager_errors: dict[str, Exception | None] = {}
 
         self.__events: dict[str, asyncio.Event] = {
             "exit_requested": asyncio.Event(),
@@ -482,27 +486,12 @@ class BasicAsyncWorker:
         self.logger.debug("Logging level set to %s", logging.getLevelName(self.logging_level))
 
     def _iter_manager_definitions(self) -> Generator[tuple[str, Manager]]:
-        """
-        Iterate over all registered managers from the class MRO.
+        """Iterate over all registered managers from the class MRO.
 
-        Managers are yielded most-derived-first so that a subclass override
-        of a same-named manager shadows the base definition. Each manager
-        name is yielded at most once.
-
-        Yields:
-            Tuple of (manager_name, manager) for each Manager decorator found
-            in the class hierarchy, processed from most-derived to base classes.
+        Forwarding wrapper over ``ManagerRuntime.iter_manager_definitions``,
+        kept for subclass/test compatibility.
         """
-        seen: set[str] = set()
-        for cls in type(self).__mro__:
-            for attribute_name, attribute in cls.__dict__.items():
-                if not isinstance(attribute, Manager):
-                    continue
-                manager_name = attribute.name or attribute_name
-                if manager_name in seen:
-                    continue
-                seen.add(manager_name)
-                yield manager_name, attribute
+        return self._manager_runtime.iter_manager_definitions()
 
     def _setup_signal_handlers(self) -> None:
         """
@@ -521,88 +510,30 @@ class BasicAsyncWorker:
         handler: AsyncBaseHandler,
         name: str | None = None,
     ) -> None:
-        """
-        Attach an async logging handler to the logger.
+        """Attach an async logging handler to the logger.
 
-        The handler is restartable in place (``start_logging``/``stop_logging``
-        may be called repeatedly on the same event loop), so a single instance
-        is registered once and reused across start/stop cycles.
-
-        Args:
-            handler: The ``AsyncBaseHandler`` (or subclass) to attach.
-            name: Optional handler name, accepted for compatibility with
-                subclasses that pass an explicit name.
+        Forwarding wrapper over ``LoggingLifecycle.register_logger_handler``,
+        kept for subclass compatibility (``ValkeyWorker`` passes an explicit
+        ``name``).
         """
-        handler.setLevel(self.logging_level)
-        self.logger.addHandler(handler)
+        self._logging_lifecycle.register_logger_handler(handler, name)
 
     async def _logger_start_handlers(self) -> None:
-        """
-        Start all async logging handlers that are not already running.
+        """Start all async logging handlers that are not already running.
 
-        Iterates over the logger's handlers and calls start_logging() on each
-        AsyncBaseHandler whose recorded status is not RUNNING. Handlers are
-        restartable in place, so no replacement is needed. Handles timeouts and
-        errors gracefully, falling back to print statements if the logger is in
-        an unrecoverable state.
+        Forwarding wrapper over ``LoggingLifecycle.start_handlers``, kept for
+        subclass/test compatibility.
         """
-        for handler in list(self.logger.handlers):
-            handler_name = handler.name or handler.__class__.__name__
-            if (
-                handler_name not in self.__loggers_statuses
-                or self.__loggers_statuses[handler_name] == LoggerStatus.STOPPED
-            ):
-                if isinstance(handler, AsyncBaseHandler):
-                    try:
-                        await asyncio.wait_for(handler.start_logging(), timeout=self.logger_handler_timeout)
-                    except asyncio.TimeoutError:
-                        try:
-                            self.logger.warning("Timeout starting logging handler %s (%s)", handler_name, handler)
-                        except Exception:
-                            # logger itself may be in a bad state; fallback to print
-                            print(f"Timeout starting logging handler {handler_name} ({handler})")
-                    except Exception as e:
-                        try:
-                            self.logger.error(
-                                "Failed to start logging handler %s (%s): %s",
-                                handler_name,
-                                handler,
-                                e,
-                            )
-                        except Exception:
-                            print(f"Failed to start logging handler {handler_name} ({handler}): {e}")
-                self.__loggers_statuses[handler_name] = LoggerStatus.RUNNING
+        await self._logging_lifecycle.start_handlers()
 
     async def _logger_shut_down_handlers(self) -> None:
         """Cleanly shut down all async logging handlers.
 
-        This will attempt to stop each `AsyncBaseHandler` with a per-handler
-        timeout to avoid hanging shutdowns if a handler blocks. `stop_logging`
-        is idempotent in scietex.logging >= 1.0, so it is safe to call on every
-        handler regardless of its current state.
+        Forwarding wrapper over ``LoggingLifecycle.shut_down_handlers``, kept
+        for subclass/test compatibility (``DemoProcessor`` overrides this to
+        disable the real logging stop).
         """
-        for handler in self.logger.handlers:
-            handler_name = handler.name or handler.__class__.__name__
-            if isinstance(handler, AsyncBaseHandler):
-                try:
-                    await asyncio.wait_for(handler.stop_logging(), timeout=self.logger_handler_timeout)
-                except asyncio.TimeoutError:
-                    try:
-                        self.logger.warning("Timeout stopping logging handler %s (%s)", handler_name, handler)
-                    except Exception:
-                        # logger itself may be in a bad state; fallback to print
-                        print(f"Timeout stopping logging handler {handler_name} ({handler})")
-                except Exception as e:
-                    try:
-                        self.logger.error(
-                            "Failed to shut down logging handler %s (%s): %s",
-                            handler_name,
-                            handler,
-                            e,
-                        )
-                    except Exception:
-                        print(f"Failed to shut down logging handler {handler_name} ({handler}): {e}")
-            self.__loggers_statuses[handler_name] = LoggerStatus.STOPPED
+        await self._logging_lifecycle.shut_down_handlers()
 
     async def initialize(self) -> bool:
         """
@@ -615,140 +546,53 @@ class BasicAsyncWorker:
         return True
 
     async def _run_manager(self, name: str, manager: Manager) -> None:
+        """Execute a manager's lifecycle loop with automatic restart on error.
+
+        Forwarding wrapper over ``ManagerRuntime.run_manager``, kept for
+        subclass/test compatibility.
         """
-        Execute a manager's lifecycle loop with automatic restart on error.
-
-        Runs the manager's method in a loop. On cancellation the manager
-        stops cleanly. On any other exception the error is recorded and the
-        manager is retried after a backoff delay, up to
-        ``manager_max_retries`` consecutive failures, after which it gives
-        up. The retry happens inside this same task, so the manager never
-        cancels itself (which previously deadlocked the restart). The
-        finally block runs cleanup, marks the manager STOPPED, and removes
-        the task from internal tracking.
-
-        Args:
-            name: Human-readable name for the manager
-            manager: The Manager instance whose method will be executed
-        """
-        self.logger.info("🟢 Manager %s started", name)
-
-        consecutive_failures = 0
-        try:
-            while True:
-                try:
-                    if manager.method:
-                        await manager.method(self)
-                    else:
-                        raise RuntimeError("Manager has no associated executable method.")
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    self.__manager_errors[name] = e
-                    consecutive_failures += 1
-                    if consecutive_failures > self.manager_max_retries:
-                        self.logger.error(
-                            "❌ Manager %s failed %d consecutive times (%s). Giving up.",
-                            name,
-                            consecutive_failures,
-                            e,
-                        )
-                        break
-                    self.logger.error(
-                        "❌ Manager %s error %s. Restarting in %.1fs (attempt %d/%d)",
-                        name,
-                        e,
-                        self.manager_restart_backoff,
-                        consecutive_failures,
-                        self.manager_max_retries,
-                    )
-                    await asyncio.sleep(self.manager_restart_backoff)
-                    continue
-                # A successful iteration resets the failure counter.
-                consecutive_failures = 0
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self.__manager_statuses[name] = ManagerStatus.STOPPING
-            self.logger.info("🟡 Manager %s stopping", name)
-            if manager.cleanup:
-                await manager.cleanup(self)
-            self.__manager_statuses[name] = ManagerStatus.STOPPED
-            self.logger.info("🔴 Manager %s stopped", name)
-            # Remove this task from tracking so a later restart is possible.
-            if self.__manager_tasks.get(name) is asyncio.current_task():
-                self.__manager_tasks.pop(name, None)
+        await self._manager_runtime.run_manager(name, manager)
 
     async def _start_manager(self, name: str, manager: Manager) -> None:
+        """Start a named manager as an asyncio task.
+
+        Forwarding wrapper over ``ManagerRuntime.start_manager``, kept for
+        subclass/test compatibility.
         """
-        Start a named manager as an asyncio task.
-
-        Args:
-            name: Identifier for the manager
-            manager: The Manager instance to execute
-        """
-        if name in self.__manager_tasks:
-            self.logger.log(logging.DEBUG, "%s is already running", name)
-            return
-        self.__manager_statuses[name] = ManagerStatus.STARTING
-        self.__manager_errors[name] = None
-
-        task = asyncio.create_task(
-            self._run_manager(name, manager),
-            name=name,
-        )
-
-        self.__manager_tasks[name] = task
+        await self._manager_runtime.start_manager(name, manager)
 
     async def _stop_manager(self, name: str) -> None:
-        """
-        Stop a named manager task with a timeout.
+        """Stop a named manager task with a timeout.
 
-        Cancels the task and waits up to `manager_shutdown_timeout` seconds
-        for it to complete. Removes the task from internal tracking.
-
-        Args:
-            name: Identifier of the manager to stop
+        Forwarding wrapper over ``ManagerRuntime.stop_manager``, kept for
+        subclass/test compatibility.
         """
-        if name not in self.__manager_tasks:
-            self.logger.log(logging.DEBUG, "%s is not running", name)
-            return
-        self.__manager_tasks[name].cancel()
-        try:
-            await asyncio.wait_for(self.__manager_tasks[name], self.manager_shutdown_timeout)
-        except asyncio.TimeoutError:
-            self.logger.log(logging.DEBUG, "Timeout during %s shut down", name)
-        # The task removes itself from tracking in its finally block; pop
-        # defensively in case it already did so.
-        self.__manager_tasks.pop(name, None)
+        await self._manager_runtime.stop_manager(name)
 
     async def _start_managers(self) -> None:
         """Start all registered managers as asyncio tasks.
 
-        Iterates over all ``Manager``-decorated methods found in the
-        class MRO (from most-derived to base classes) and starts each
-        one as a named ``asyncio.Task``.
+        Forwarding wrapper over ``ManagerRuntime.start_managers``, kept for
+        subclass/test compatibility.
         """
-        for name, manager in self._iter_manager_definitions():
-            await self._start_manager(name, manager)
+        await self._manager_runtime.start_managers()
 
     async def _stop_managers(self) -> None:
         """Stop all registered managers in order.
 
-        Iterates over all ``Manager``-decorated methods found in the
-        class MRO and stops each one, waiting up to
-        ``manager_shutdown_timeout`` seconds per manager.
+        Forwarding wrapper over ``ManagerRuntime.stop_managers``, kept for
+        subclass/test compatibility.
         """
-        for name, _ in self._iter_manager_definitions():
-            await self._stop_manager(name)
+        await self._manager_runtime.stop_managers()
 
     async def _startup(self):
         """
         Execute the full startup sequence for the worker.
 
         Waits for any previous shutdown to complete, prints the service logo,
-        starts logging handlers, starts all managers, runs custom initialization
-        via initialize(), sets the start time, and transitions to RUNNING state.
+        starts logging handlers, runs custom initialization via initialize(),
+        then starts all managers, sets the start time, and transitions to
+        RUNNING state.
 
         Raises:
             asyncio.CancelledError: If the startup process is cancelled
@@ -766,12 +610,15 @@ class BasicAsyncWorker:
             # Init Logging Handlers
             await self._logger_start_handlers()
 
-            # Start managers
-            await self._start_managers()
-
-            # Perform any custom initialization and check if successful
+            # Perform any custom initialization and check if successful.
+            # Must run before managers start: managers/handlers may depend on
+            # resources created by initialize() (e.g. a Valkey client) and
+            # would otherwise race a not-yet-ready resource.
             if not await self.initialize():
                 raise RuntimeError("Initialization failed")
+
+            # Start managers
+            await self._start_managers()
 
             self.__start_time = datetime.now(timezone.utc)
             self.logger.log(logging.DEBUG, "Worker %s:%d started", self.service_name, self.worker_id)

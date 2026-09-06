@@ -7,6 +7,7 @@ import pytest
 
 from scietex.service.basic_async_worker import BasicAsyncWorker, ServiceStatus
 from scietex.service.logging import LoggerStatus
+from scietex.service.manager import Manager
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +56,7 @@ async def test_logging_handlers_restartable_after_shutdown():
         await asyncio.sleep(0.05)
     assert worker.state == ServiceStatus.RUNNING
 
-    statuses = worker._BasicAsyncWorker__loggers_statuses
+    statuses = worker._logging_lifecycle.statuses
     assert statuses.get("AsyncBaseHandler") == LoggerStatus.RUNNING
     first_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "AsyncBaseHandler")
 
@@ -85,3 +86,44 @@ async def test_logging_handlers_restartable_after_shutdown():
             break
         await asyncio.sleep(0.05)
     assert worker.state == ServiceStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_initialize_runs_before_managers_start():
+    """initialize() must complete before any @Manager-decorated method runs.
+
+    Managers may depend on resources created in initialize() (e.g. a Valkey
+    client), so a manager must never race a not-yet-initialized worker.
+    """
+
+    class OrderingWorker(BasicAsyncWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.order: list[str] = []
+
+        async def initialize(self) -> bool:
+            # Yield once so that, if managers were already started (the old,
+            # buggy ordering), their first iteration would run before this
+            # method records its event.
+            await asyncio.sleep(0)
+            self.order.append("initialize")
+            return True
+
+        @Manager(name="Ordering")
+        async def _ordering_manager(self):
+            self.order.append("manager")
+            # Block so the manager records its event only once per iteration.
+            await asyncio.sleep(3600)
+
+    worker = OrderingWorker(service_name="test_service", version="1.0.0")
+
+    await worker.start()
+    for _ in range(100):
+        if "manager" in worker.order:
+            break
+        await asyncio.sleep(0.05)
+
+    assert worker.order.index("initialize") < worker.order.index("manager")
+
+    await worker.stop()
+    await worker.exit()
