@@ -172,8 +172,8 @@ async def test_fetch_tasks_does_not_ack_on_enqueue():
 
     assert client.acked == [], "fetch_tasks must not ack on enqueue"
     assert client.deleted == [], "fetch_tasks must not delete on enqueue"
-    assert not worker.task_queue.empty()
-    t_id, t_data = worker.task_queue.get_nowait()
+    assert not worker.task_queue_empty()
+    t_id, t_data = worker.dequeue_task()
     assert t_data.task == "dummy"
     assert worker._task_entry_ids[t_id] == b"1-0"
 
@@ -219,7 +219,7 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
 
     await worker._recover_pending_tasks()
 
-    assert not worker.task_queue.empty()
-    t_id, t_data = worker.task_queue.get_nowait()
+    assert not worker.task_queue_empty()
+    t_id, t_data = worker.dequeue_task()
     assert t_data.task == "dummy"
     assert worker._task_entry_ids[t_id] == b"9-0"

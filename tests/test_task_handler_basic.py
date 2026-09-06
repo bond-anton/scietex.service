@@ -1,22 +1,17 @@
 """Tests for TaskHandler base class and a simple concrete implementation."""
 
 import logging
-import types
 
 import pytest
 
 from scietex.service.task_handler.basic import TaskHandler
+from scietex.service.task_handler.context import TaskHandlerContext
 from scietex.service.task_handler.schemas import TaskData, TaskResult
 
 
-class DummyWorker(types.SimpleNamespace):
-    logger = logging.getLogger(__name__)
-    pass
-
-
 class DummyHandler(TaskHandler):
-    def __init__(self, name, worker):
-        super().__init__(name, worker)
+    def __init__(self, name, context):
+        super().__init__(name, context)
         self.cleaned = False
 
     async def handle(self, task_data: TaskData) -> TaskResult:
@@ -39,14 +34,22 @@ class DummyHandler(TaskHandler):
 async def test_taskhandler_is_abstract():
     # Trying to instantiate abstract TaskHandler should raise TypeError
     with pytest.raises(TypeError):
-        worker = DummyWorker()
-        TaskHandler("handler", worker)  # abstract methods not implemented
+        context = TaskHandlerContext(
+            service_name="test",
+            worker_id=1,
+            logger=logging.getLogger(__name__),
+        )
+        TaskHandler("handler", context)  # abstract methods not implemented
 
 
 @pytest.mark.asyncio
 async def test_dummyhandler_lifecycle():
-    worker = DummyWorker()
-    handler = DummyHandler("dummy", worker)
+    context = TaskHandlerContext(
+        service_name="test",
+        worker_id=1,
+        logger=logging.getLogger(__name__),
+    )
+    handler = DummyHandler("dummy", context)
 
     # initially not ready
     assert not handler.is_ready

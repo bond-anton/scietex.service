@@ -67,15 +67,13 @@ async def test_watchdog_requeues_timed_out_task():
 
     # push a task that will timeout quickly
     t_id = uuid4()
-    await proc.task_queue.put(
-        (
-            t_id,
-            TaskData(
-                task="slow",
-                payload=b'{"value": 5}',
-                timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
-            ),
-        )
+    proc.enqueue_task(
+        t_id,
+        TaskData(
+            task="slow",
+            payload=b'{"value": 5}',
+            timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
+        ),
     )
 
     # allow some time for task_manager to pick up and watchdog to act
@@ -130,10 +128,10 @@ async def test_task_manager_consumes_handler_exception_without_leaking():
     await proc.start()
     try:
         t_id = uuid4()
-        await proc.task_queue.put((t_id, TaskData(task="exploding", payload=b"{}")))
+        proc.enqueue_task(t_id, TaskData(task="exploding", payload=b"{}"))
         # Wait until task_manager has consumed the task from the queue.
         for _ in range(100):
-            if proc.task_queue.empty():
+            if proc.task_queue_empty():
                 break
             await asyncio.sleep(0.01)
         # Let the spawned handle_task coroutine run to completion.
@@ -186,7 +184,7 @@ async def test_handle_task_invokes_completion_hook():
     await proc.start()
     try:
         t_id = uuid4()
-        await proc.task_queue.put((t_id, TaskData(task="dummy", payload=b'{"value": 5}')))
+        proc.enqueue_task(t_id, TaskData(task="dummy", payload=b'{"value": 5}'))
         for _ in range(100):
             if proc.completed:
                 break
@@ -228,15 +226,13 @@ async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monke
     await proc.start()
     try:
         t_id = uuid4()
-        await proc.task_queue.put(
-            (
-                t_id,
-                TaskData(
-                    task="stubborn",
-                    payload=b"{}",
-                    timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
-                ),
-            )
+        proc.enqueue_task(
+            t_id,
+            TaskData(
+                task="stubborn",
+                payload=b"{}",
+                timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
+            ),
         )
         # Wait past the watchdog interval (default 1s) plus the cancel wait so
         # the watchdog has acted and decided not to requeue.
@@ -255,7 +251,7 @@ async def test_cleanup_drain_does_not_requeue_queued_tasks():
     restart, so an XADD here would duplicate them (AR-005)."""
     proc = DemoProcessor()
     t_id = uuid4()
-    await proc.task_queue.put((t_id, TaskData(task="dummy", payload=b"{}")))
+    proc.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
     await proc.cleanup()
     assert not any(tid == t_id for tid, _ in proc.requeued)
-    assert proc.task_queue.empty()
+    assert proc.task_queue_empty()

@@ -6,6 +6,14 @@ that define the contract for processing async tasks in the service.
 """
 
 from .basic import TaskHandler
+from .context import TaskHandlerContext
 from .schemas import TaskData, TaskResult, TaskTimeout, TaskTracker
 
-__all__ = ["TaskData", "TaskHandler", "TaskResult", "TaskTimeout", "TaskTracker"]
+__all__ = [
+    "TaskData",
+    "TaskHandler",
+    "TaskHandlerContext",
+    "TaskResult",
+    "TaskTimeout",
+    "TaskTracker",
+]

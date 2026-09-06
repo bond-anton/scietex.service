@@ -457,10 +457,20 @@ class ValkeyWorker(AsyncTaskProcessor):
                         task_id = field.decode("utf-8") if isinstance(field, bytes) else field
                         try:
                             task_data = msgspec.msgpack.decode(payload_bytes, type=TaskData)
-                            await self.task_queue.put((UUID(task_id), task_data))
-                            self._task_entry_ids[UUID(task_id)] = entry_id
                         except Exception as exc:
                             self.logger.error("Failed to decode recovered task data: %s", exc)
+                            continue
+                        if not self.enqueue_task(UUID(task_id), task_data):
+                            # Queue full mid-recovery; stop claiming so the
+                            # remaining pending entries stay pending and are
+                            # redelivered on a later poll.
+                            self.logger.log(
+                                logging.DEBUG,
+                                "Task queue full during recovery; deferring task %s",
+                                task_id,
+                            )
+                            return
+                        self._task_entry_ids[UUID(task_id)] = entry_id
                 if next_start == b"0-0" or next_start == "0-0":
                     break
                 start = next_start
@@ -472,8 +482,8 @@ class ValkeyWorker(AsyncTaskProcessor):
 
         Reads one entry from the task stream using ``XREADGROUP`` with
         ``block_ms=1000`` and the configured consumer group. Decodes the
-        msgpack payload into a :class:`TaskData` struct and puts it into
-        ``self.task_queue`` as a ``(UUID, TaskData)`` tuple. The stream entry
+        msgpack payload into a :class:`TaskData` struct and enqueues it via
+        ``enqueue_task()`` as a ``(UUID, TaskData)`` tuple. The stream entry
         is NOT acknowledged here: it stays in the consumer group's pending
         list until the handler completes (see :meth:`on_task_completed`), so a
         crash after enqueue redelivers the task (at-least-once). The entry id
@@ -507,11 +517,20 @@ class ValkeyWorker(AsyncTaskProcessor):
                                 continue
                             try:
                                 task_data = msgspec.msgpack.decode(payload_bytes, type=TaskData)
-                                await self.task_queue.put((UUID(task_id), task_data))
-                                self._task_entry_ids[UUID(task_id)] = entry_id
                             except Exception as exc:
                                 self.logger.error("Failed to decode task data: %s", exc)
                                 continue
+                            if not self.enqueue_task(UUID(task_id), task_data):
+                                # Queue is full; leave the stream entry pending
+                                # (do not record its id) so the next poll
+                                # redelivers it. Never block the intake manager.
+                                self.logger.log(
+                                    logging.DEBUG,
+                                    "Task queue full; deferring task %s",
+                                    task_id,
+                                )
+                                continue
+                            self._task_entry_ids[UUID(task_id)] = entry_id
         except Exception as exc:
             self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
             await self.disconnect()

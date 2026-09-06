@@ -2,12 +2,9 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
 
+from .context import TaskHandlerContext
 from .schemas import TaskData, TaskResult
-
-if TYPE_CHECKING:
-    from ..basic_async_worker import BasicAsyncWorker
 
 
 class TaskHandler(ABC):
@@ -21,18 +18,17 @@ class TaskHandler(ABC):
     the :meth:`handle` method.
     """
 
-    def __init__(self, name: str, worker: "BasicAsyncWorker") -> None:
+    def __init__(self, name: str, context: TaskHandlerContext) -> None:
         """Initialize the task handler.
 
         Args:
             name: Human-readable name for this handler instance.
-            worker: Reference to the parent ``BasicAsyncWorker`` instance,
-                providing access to shared resources, logging, and the
-                task queue.
+            context: Narrow context (service name, worker id, logger)
+                provided by the owning processor.
         """
         self.name: str = name
-        self.worker: BasicAsyncWorker = worker
-        self.logger: logging.Logger = self.worker.logger
+        self.context: TaskHandlerContext = context
+        self.logger: logging.Logger = context.logger
         self._is_initialized: bool = False
 
     @property

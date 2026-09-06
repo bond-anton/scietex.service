@@ -9,10 +9,11 @@ watchdog managers, and graceful shutdown support.
 import asyncio
 import logging
 import signal
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 
 from scietex.logging import AsyncBaseHandler
 
@@ -193,8 +194,6 @@ class BasicAsyncWorker:
             "exit": asyncio.Event(),
         }
 
-        self._setup_signal_handlers()
-
     @property
     def state(self) -> ServiceStatus:
         """Current lifecycle state of the service (read-only).
@@ -206,7 +205,7 @@ class BasicAsyncWorker:
         return self.__state
 
     @property
-    def events(self) -> dict[str, asyncio.Event]:
+    def events(self) -> Mapping[str, asyncio.Event]:
         """Dictionary of lifecycle events for external coordination.
 
         Contains two events:
@@ -214,9 +213,11 @@ class BasicAsyncWorker:
             - ``exit``: Set when the worker has fully stopped.
 
         Returns:
-            The internal events dictionary.
+            A read-only mapping view of the internal events dictionary. The
+            ``asyncio.Event`` values remain mutable and may be awaited or
+            inspected, but the mapping itself cannot be modified.
         """
-        return self.__events
+        return MappingProxyType(self.__events)
 
     @property
     def service_name(self) -> str:
@@ -499,11 +500,30 @@ class BasicAsyncWorker:
 
         Registers handlers for SIGINT and SIGTERM signals that will
         trigger a graceful shutdown of the worker.
+
+        No-ops on platforms without ``loop.add_signal_handler`` support
+        (e.g. Windows).
         """
         loop = asyncio.get_running_loop()
+        if not hasattr(loop, "add_signal_handler"):
+            return
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(self.exit(), name="StopTask"))
         self.logger.log(logging.DEBUG, "Signal handlers are all setup")
+
+    def _remove_signal_handlers(self) -> None:
+        """
+        Remove the signal handlers registered for graceful shutdown.
+
+        Mirrors ``_setup_signal_handlers`` and no-ops on platforms without
+        ``loop.remove_signal_handler`` support (e.g. Windows).
+        """
+        loop = asyncio.get_running_loop()
+        if not hasattr(loop, "remove_signal_handler"):
+            return
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
+        self.logger.log(logging.DEBUG, "Signal handlers removed")
 
     def _register_logger_handler(
         self,
@@ -655,6 +675,7 @@ class BasicAsyncWorker:
             )
             return
         if self.__state in (ServiceStatus.STOPPING, ServiceStatus.STOPPED):
+            self._setup_signal_handlers()
             asyncio.create_task(self._startup(), name="Start")
 
     async def _shutdown(self) -> None:
@@ -694,8 +715,8 @@ class BasicAsyncWorker:
             self.__state = ServiceStatus.STOPPED
 
             if self.events["exit_requested"].is_set():
-                self.events["exit_requested"].clear()
-                self.events["exit"].set()
+                self.__events["exit_requested"].clear()
+                self.__events["exit"].set()
         except asyncio.CancelledError:
             self.logger.log(logging.ERROR, "Shutdown task cancelled")
             pass
@@ -719,8 +740,9 @@ class BasicAsyncWorker:
                 self.worker_id,
             )
             if self.events["exit_requested"].is_set() and not self.events["exit"].is_set():
-                self.events["exit_requested"].clear()
-                self.events["exit"].set()
+                self.__events["exit_requested"].clear()
+                self.__events["exit"].set()
+            self._remove_signal_handlers()
             return
         if self.__state == ServiceStatus.STOPPING:
             self.logger.log(
@@ -730,8 +752,8 @@ class BasicAsyncWorker:
                 self.worker_id,
             )
             if self.events["exit_requested"].is_set() and not self.events["exit"].is_set():
-                self.events["exit_requested"].clear()
-                self.events["exit"].set()
+                self.__events["exit_requested"].clear()
+                self.__events["exit"].set()
             return
         if self.__state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):
             self.logger.log(
@@ -749,7 +771,7 @@ class BasicAsyncWorker:
         via ``stop()``. The caller should await ``events["exit"].wait()``
         to confirm the worker has fully stopped.
         """
-        self.events["exit_requested"].set()
+        self.__events["exit_requested"].set()
         await self.stop()
 
     @Manager(name="Heartbeat")

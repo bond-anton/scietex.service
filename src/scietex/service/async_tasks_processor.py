@@ -9,12 +9,14 @@ monitoring (watchdog), handler dispatch, and graceful shutdown support.
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from uuid import UUID
 
 from .basic_async_worker import BasicAsyncWorker, ServiceStatus
 from .manager import Manager
-from .task_handler import TaskData, TaskHandler, TaskResult, TaskTracker
+from .task_handler import TaskData, TaskHandler, TaskHandlerContext, TaskResult, TaskTracker
 
 DEFAULT_MAX_TASKS_QUEUE_SIZE = 2
 """Default maximum number of tasks queue size."""
@@ -150,21 +152,21 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         )
 
     @property
-    def task_handlers(self) -> dict[str, TaskHandler]:
+    def task_handlers(self) -> Mapping[str, TaskHandler]:
         """Dictionary of currently active (started) task handlers.
 
         Keys are handler names and values are the corresponding
         ``TaskHandler`` instances that have been initialized.
 
         Returns:
-            The internal task handlers dictionary.
+            A read-only mapping view of the active task handlers.
         """
-        return self.__task_handlers
+        return MappingProxyType(self.__task_handlers)
 
     @property
-    def running_tasks(self) -> dict[UUID, TaskTracker]:
-        """Dictionary of currently running tasks and their trackers."""
-        return self.__running_tasks
+    def running_tasks(self) -> Mapping[UUID, TaskTracker]:
+        """Read-only mapping of currently running tasks and their trackers."""
+        return MappingProxyType(self.__running_tasks)
 
     @property
     def queue_size(self) -> int:
@@ -176,10 +178,38 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         """Maximum number of tasks that can be processed concurrently."""
         return self.__max_concurrent_tasks
 
-    @property
-    def task_queue(self) -> asyncio.Queue[tuple[UUID, TaskData]]:
-        """The internal async queue holding pending tasks."""
-        return self.__task_queue
+    def enqueue_task(self, task_id: UUID, task_data: TaskData) -> bool:
+        """Enqueue a task for processing without blocking.
+
+        Non-blocking: if the bounded queue is full the task is not enqueued
+        and ``False`` is returned so the caller can retry later (e.g. on the
+        next intake poll). Returns ``True`` on success.
+        """
+        try:
+            self.__task_queue.put_nowait((task_id, task_data))
+        except asyncio.QueueFull:
+            return False
+        return True
+
+    def task_queue_empty(self) -> bool:
+        """Whether the internal task queue has no pending tasks."""
+        return self.__task_queue.empty()
+
+    def task_queue_full(self) -> bool:
+        """Whether the internal task queue has reached its maximum size."""
+        return self.__task_queue.full()
+
+    def dequeue_task(self) -> tuple[UUID, TaskData] | None:
+        """Remove and return the next pending task without blocking.
+
+        Returns:
+            The ``(task_id, task_data)`` tuple, or ``None`` if the queue is
+            empty.
+        """
+        try:
+            return self.__task_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
 
     @property
     def task_manager_sleep_time(self) -> float:
@@ -318,7 +348,12 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             self.logger.log(logging.DEBUG, "Task handler %s not found", handler_name)
             return False
         handler_class = self.__task_handlers_map[handler_name]
-        handler_instance = handler_class(handler_name, self)
+        context = TaskHandlerContext(
+            service_name=self.service_name,
+            worker_id=self.worker_id,
+            logger=self.logger,
+        )
+        handler_instance = handler_class(handler_name, context)
         self.__task_handlers[handler_name] = handler_instance
         try:
             await asyncio.wait_for(self.__task_handlers[handler_name].start(), timeout=self.task_handler_start_timeout)
@@ -442,9 +477,9 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         # would duplicate them). Subclasses whose transport does not keep
         # items pending after enqueue must override cleanup to requeue drained
         # items.
-        while not self.task_queue.empty():
-            self.task_queue.get_nowait()
-            self.task_queue.task_done()
+        while not self.__task_queue.empty():
+            self.__task_queue.get_nowait()
+            self.__task_queue.task_done()
         self.logger.debug("Task queue is empty")
 
         # Cancel and requeue running tasks. A task is requeued only after its
@@ -548,8 +583,8 @@ class AsyncTaskProcessor(BasicAsyncWorker):
                     exc,
                 )
             finally:
-                self.running_tasks.pop(t_id, None)
-                self.task_queue.task_done()
+                self.__running_tasks.pop(t_id, None)
+                self.__task_queue.task_done()
                 try:
                     # Ack the transport entry exactly when the handler's work
                     # on it ends (success, error, or cancellation). On
@@ -569,7 +604,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
         if len(self.running_tasks) < self.max_concurrent_tasks:
             try:
-                task_id, task_data = await asyncio.wait_for(self.task_queue.get(), timeout=TASK_QUEUE_FETCH_TIMEOUT)
+                task_id, task_data = await asyncio.wait_for(self.__task_queue.get(), timeout=TASK_QUEUE_FETCH_TIMEOUT)
                 task = asyncio.create_task(handle_task(task_id, task_data))
                 self.__running_tasks[task_id] = TaskTracker(worker_task=task, data=task_data, started=time.time())
             except asyncio.TimeoutError:
@@ -582,8 +617,8 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
         Override this method in subclasses to implement the specific
         logic for retrieving tasks from external sources such as message
-        queues, databases, or APIs, and putting them into
-        ``self.task_queue`` as ``(UUID, TaskData)`` tuples.
+        queues, databases, or APIs, and enqueuing them via
+        ``enqueue_task()`` as ``(UUID, TaskData)`` tuples.
         """
 
     @Manager("TaskQueueManager")
@@ -597,7 +632,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         This method is decorated with ``@Manager`` and runs as an
         infinite loop managed by ``BasicAsyncWorker``.
         """
-        if not self.task_queue.full():
+        if not self.__task_queue.full():
             await self.fetch_tasks()
         await asyncio.sleep(self.task_queue_manager_sleep_time)
 
@@ -660,4 +695,4 @@ class AsyncTaskProcessor(BasicAsyncWorker):
                         task_tracker.data.task,
                         task_id,
                     )
-                self.running_tasks.pop(task_id, None)
+                self.__running_tasks.pop(task_id, None)

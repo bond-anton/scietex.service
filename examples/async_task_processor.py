@@ -62,7 +62,7 @@ class DataProcessingHandler(TaskHandler):
             return TaskResult(status="error", error=str(exc))
 
     async def cleanup(self) -> None:
-        self.worker.logger.info("DataProcessingHandler cleaned up")
+        self.logger.info("DataProcessingHandler cleaned up")
         await super().cleanup()
 
 
@@ -74,11 +74,11 @@ class ReportGenerationHandler(TaskHandler):
         return ["generate_report"]
 
     async def initialize(self) -> bool:
-        self.worker.logger.info("ReportGenerationHandler initialized")
+        self.logger.info("ReportGenerationHandler initialized")
         return True
 
     async def handle(self, task_data: TaskData) -> TaskResult:
-        self.worker.logger.info("Generating report for task: %s", task_data.task)
+        self.logger.info("Generating report for task: %s", task_data.task)
         try:
             # Simulate report generation
             await asyncio.sleep(0.5)
@@ -169,9 +169,9 @@ class TaskProcessorService(AsyncTaskProcessor):
 
     async def fetch_tasks(self) -> None:
         """Pull pending tasks from the source and enqueue them."""
-        while self._task_source._tasks and not self.task_queue.full():
+        while self._task_source._tasks and not self.task_queue_full():
             task_id, task_data = self._task_source._tasks.pop(0)
-            await self.task_queue.put((task_id, task_data))
+            self.enqueue_task(task_id, task_data)
 
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Re-queue tasks that timed out or were canceled."""
