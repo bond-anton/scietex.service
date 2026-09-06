@@ -136,12 +136,23 @@ class ValkeyWorker(AsyncTaskProcessor):
                 worker_id=self.worker_id,
                 listening=False,
             )
+        log_valkey_config = {
+            "addresses": [(node.host, node.port) for node in self._client_config.addresses],
+            "use_tls": self._client_config.use_tls,
+            "request_timeout": self._client_config.request_timeout,
+            "database_id": self._client_config.database_id,
+            "client_name": self._client_config.client_name,
+            "inflight_requests_limit": self._client_config.inflight_requests_limit,
+            "client_az": self._client_config.client_az,
+            "lazy_connect": self._client_config.lazy_connect,
+            "read_only": self._client_config.read_only,
+        }
         self._register_logger_handler(
-            lambda: AsyncValkeyHandler(
+            AsyncValkeyHandler(
                 stream_name=self._log_stream_name,
                 service_name=self.service_name,
                 worker_id=self.worker_id,
-                valkey_config=self._client_config,
+                valkey_config=log_valkey_config,
                 stdout_enable=False,
             ),
             name="AsyncValkeyHandler",
