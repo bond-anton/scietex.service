@@ -15,7 +15,7 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 requires-python = ">=3.10"
-dependencies = ["msgspec>=0.20.0", "scietex.logging>=1.1.0"]
+dependencies = ["msgspec>=0.20.0", "pyyaml>=6.0", "scietex.logging>=1.1.0"]
 
 [project.urls]
 "Homepage" = "https://github.com/bond-anton/scietex.service"
