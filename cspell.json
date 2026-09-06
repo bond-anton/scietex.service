@@ -26,7 +26,10 @@
     "keepalive",
     "cacerts",
     "nodelay",
-    "kwargs"
+    "kwargs",
+    "addopts",
+    "unretrieved",
+    "pyyaml"
   ],
   "ignoreWords": [],
   "import": []

@@ -73,10 +73,12 @@ Pattern (all examples and README follow it):
 
 ```python
 async def main():
-    worker = MyWorker(...)          # constructed INSIDE a running loop
-    await worker.start()            # spawns "Start" task → RUNNING
+    worker = MyWorker(...)  # constructed INSIDE a running loop
+    await worker.start()  # spawns "Start" task → RUNNING
     await worker.events["exit"].wait()
-asyncio.run(main())                 # SIGINT/SIGTERM → exit() → STOPPED
+
+
+asyncio.run(main())  # SIGINT/SIGTERM → exit() → STOPPED
 ```
 
 Two important constraints derive from `BasicAsyncWorker.__init__` /
