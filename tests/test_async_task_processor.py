@@ -87,3 +87,82 @@ async def test_watchdog_requeues_timed_out_task():
 
     # stop processor to cleanup background tasks
     await proc.stop()
+
+
+@pytest.mark.asyncio
+async def test_process_task_empty_task_returns_error_result():
+    """An empty task type must yield an error TaskResult, not raise (AR-010)."""
+    proc = DemoProcessor()
+    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="", payload=b"{}"))
+    assert result.status == "error"
+    assert "task" in result.error
+
+
+class ExplodingSupportsHandler(TaskHandler):
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="success", error="No error")
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["exploding"]
+
+    def supports(self, task_type: str) -> bool:
+        raise RuntimeError("supports() exploded")
+
+
+@pytest.mark.asyncio
+async def test_task_manager_consumes_handler_exception_without_leaking():
+    """An exception raised outside process_task's try/except (e.g. in a
+    handler's supports()) must be caught by handle_task so it does not surface
+    as an unretrieved task exception (AR-010)."""
+    import gc
+
+    loop = asyncio.get_running_loop()
+    leaked: list[str] = []
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: leaked.append(str(ctx.get("message", ""))))
+    proc = DemoProcessor()
+    proc.add_task_handler("exploding", ExplodingSupportsHandler)
+    # Start the handler first so it is ready before the managers consume the
+    # task; otherwise _find_task_handler would see an empty registry and the
+    # exploding supports() path would never run.
+    await proc._start_task_handler("exploding")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        await proc.task_queue.put((t_id, TaskData(task="exploding", payload=b"{}")))
+        # Wait until task_manager has consumed the task from the queue.
+        for _ in range(100):
+            if proc.task_queue.empty():
+                break
+            await asyncio.sleep(0.01)
+        # Let the spawned handle_task coroutine run to completion.
+        await asyncio.sleep(0.05)
+        # Force GC so any unretrieved task exception is reported deterministically.
+        gc.collect()
+        await asyncio.sleep(0.05)
+        assert not any("never retrieved" in m for m in leaked), f"leaked: {leaked}"
+    finally:
+        loop.set_exception_handler(old_handler)
+        await proc.stop()
+
+
+class FailingStartHandler(TaskHandler):
+    async def initialize(self) -> bool:
+        return False
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="error", error="never ready")
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["failing"]
+
+
+@pytest.mark.asyncio
+async def test_initialize_returns_false_when_handler_start_fails():
+    """A handler that fails to start must make initialize() return False (AR-010)."""
+    proc = DemoProcessor()
+    proc.add_task_handler("failing", FailingStartHandler)
+    ok = await proc.initialize()
+    assert ok is False

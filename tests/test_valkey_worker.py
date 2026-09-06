@@ -103,3 +103,40 @@ async def test_log_handler_receives_no_credentials_by_default():
     client_config = _find_valkey_handler(worker).client_config
     assert client_config["username"] is None
     assert client_config["password"] is None
+
+
+@pytest.mark.asyncio
+async def test_connect_ping_failure_clears_client(monkeypatch):
+    # A failed PING must leave _client as None so initialize() does not
+    # treat the worker as connected (AR-006).
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=False)
+
+    import scietex.service.valkey.valkey_async_worker as mod
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    ok = await worker.connect()
+    assert ok is False
+    assert worker.client is None, "failed ping must clear _client"
+
+
+@pytest.mark.asyncio
+async def test_connect_create_failure_leaves_client_none(monkeypatch):
+    # A GlideClient.create exception must leave _client as None (AR-006).
+    async def create_mock(cfg):
+        raise RuntimeError("create failed")
+
+    import scietex.service.valkey.valkey_async_worker as mod
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    ok = await worker.connect()
+    assert ok is False
+    assert worker.client is None

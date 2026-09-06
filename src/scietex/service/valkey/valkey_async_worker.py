@@ -198,23 +198,37 @@ class ValkeyWorker(AsyncTaskProcessor):
         Creates a new :class:`~glide.GlideClient` using the configured
         ``_client_config`` and verifies connectivity with ``PING``.
 
+        ``_client`` is assigned only after ``PING`` succeeds, so a failed
+        create or ping leaves ``_client`` as ``None`` and ``connect()``
+        returns ``False``. This keeps the return value a reliable
+        connectivity signal: callers that guard on ``self.client`` (e.g.
+        ``initialize``) never see a half-connected worker.
+
         Returns:
             ``True`` if the connection is established and ``PING``
             succeeds; ``False`` on connection failure or timeout.
         """
-        if self._client is None:
-            try:
-                self._client = await GlideClient.create(self._client_config)
-
-                if await self._client.ping():
-                    self.logger.log(logging.INFO, "Connected to Valkey")
-                    return True
-                print("Error pinging Valkey")
-                return False
-            except (GlideConnectionError, GlideTimeoutError):
-                print("Error connecting to Valkey")
-                return False
-        return True
+        if self._client is not None:
+            return True
+        try:
+            client = await GlideClient.create(self._client_config)
+        except (GlideConnectionError, GlideTimeoutError):
+            print("Error connecting to Valkey")
+            return False
+        try:
+            if await client.ping():
+                self._client = client
+                self.logger.log(logging.INFO, "Connected to Valkey")
+                return True
+            print("Error pinging Valkey")
+        except (GlideConnectionError, GlideTimeoutError):
+            print("Error connecting to Valkey")
+        # Ping failed or raised: never leave a half-connected client behind.
+        try:
+            await client.close()
+        except Exception:
+            pass  # best-effort close; the client is unusable either way
+        return False
 
     async def disconnect(self):
         """Gracefully close the connection to the Valkey server.

@@ -297,7 +297,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         if self.state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):
             asyncio.create_task(self._start_task_handler(handler_name))
 
-    async def _start_task_handler(self, handler_name) -> None:
+    async def _start_task_handler(self, handler_name) -> bool:
         """Start a registered task handler and initialize it.
 
         Creates an instance of the handler class, stores it in the
@@ -306,13 +306,17 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
         Args:
             handler_name: The name of the handler to start.
+
+        Returns:
+            ``True`` if the handler started and became ready; ``False``
+            if it timed out, raised, or was not registered.
         """
         if handler_name in self.__task_handlers:
             self.logger.log(logging.DEBUG, "Task handler %s is already started", handler_name)
-            return
+            return True
         if handler_name not in self.__task_handlers_map:
             self.logger.log(logging.DEBUG, "Task handler %s not found", handler_name)
-            return
+            return False
         handler_class = self.__task_handlers_map[handler_name]
         handler_instance = handler_class(handler_name, self)
         self.__task_handlers[handler_name] = handler_instance
@@ -320,6 +324,14 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             await asyncio.wait_for(self.__task_handlers[handler_name].start(), timeout=self.task_handler_start_timeout)
         except asyncio.TimeoutError:
             self.logger.log(logging.ERROR, "Timeout while starting Task handler %s", handler_name)
+            return False
+        except Exception as exc:
+            self.logger.log(logging.ERROR, "Failed to start Task handler %s: %s", handler_name, exc)
+            return False
+        if not self.__task_handlers[handler_name].is_ready:
+            self.logger.log(logging.ERROR, "Task handler %s failed to become ready", handler_name)
+            return False
+        return True
 
     async def _stop_task_handler(self, handler_name) -> None:
         """Stop a running task handler and remove it from active handlers.
@@ -388,10 +400,14 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         the RUNNING state.
 
         Returns:
-            ``True`` to indicate successful initialization.
+            ``True`` if every registered handler started successfully;
+            ``False`` if any handler failed to start (timeout or error),
+            so the worker fails fast instead of running with a handler
+            that never became ready.
         """
         for handler_name in self.__task_handlers_map:
-            await self._start_task_handler(handler_name)
+            if not await self._start_task_handler(handler_name):
+                return False
         return True
 
     async def cleanup(self):
@@ -444,9 +460,6 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
         Returns:
             A ``TaskResult`` with the processing outcome.
-
-        Raises:
-            ValueError: If ``task_data.task`` is missing or empty.
         """
         self.logger.log(logging.DEBUG, "Processing task %s (%s): %s", task_data.task, task_id, task_data)
 
@@ -459,7 +472,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
                 task_id,
                 task_data,
             )
-            raise ValueError("Task data must contain 'task' field")
+            return TaskResult(status="error", error="Task data must contain 'task' field")
 
         handler = self._find_task_handler(task_type)
         if handler and handler.is_ready:
@@ -488,7 +501,26 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
         async def handle_task(t_id: UUID, t_data: TaskData):
             try:
-                await self.process_task(t_id, t_data)
+                result = await self.process_task(t_id, t_data)
+                self.logger.log(
+                    logging.DEBUG,
+                    "Task %s (%s) finished with status %s",
+                    t_data.task,
+                    t_id,
+                    result.status,
+                )
+            except Exception as exc:
+                # process_task is expected to return an error TaskResult for
+                # every failure, but a defensive catch guarantees no exception
+                # escapes into the unawaited task (which would surface as an
+                # unretrieved task exception).
+                self.logger.log(
+                    logging.ERROR,
+                    "Task %s (%s) raised unexpectedly: %s",
+                    t_data.task,
+                    t_id,
+                    exc,
+                )
             finally:
                 self.running_tasks.pop(t_id, None)
                 self.task_queue.task_done()
