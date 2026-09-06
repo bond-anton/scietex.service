@@ -15,7 +15,14 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 requires-python = ">=3.10"
-dependencies = ["msgspec>=0.20.0", "pyyaml>=6.0", "scietex.logging>=1.1.0"]
+dependencies = [
+  "msgspec>=0.20.0",
+  # msgspec.yaml.encode/decode import PyYAML lazily at call time, so it is a
+  # required runtime dependency for read_valkey_config even though no src/
+  # module imports yaml directly.
+  "pyyaml>=6.0",
+  "scietex.logging>=1.1.0",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/bond-anton/scietex.service"

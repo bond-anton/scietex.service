@@ -178,6 +178,22 @@ class TaskProcessorService(AsyncTaskProcessor):
         self.logger.warning("Re-queuing task '%s' (id=%s)", task_data.task, task_id)
         self._task_source.add_task(task_data)
 
+    async def cleanup(self) -> None:
+        """Requeue drained tasks, then run the base cleanup.
+
+        The in-memory source is non-durable: tasks already drained from the
+        source into the processor's queue would be silently lost if dropped on
+        shutdown. Requeue them before ``super().cleanup()``, which drains the
+        queue without requeueing (correct only for durable transports).
+        """
+        while True:
+            item = self.dequeue_task()
+            if item is None:
+                break
+            task_id, task_data = item
+            await self.return_task_to_queue(task_id, task_data)
+        await super().cleanup()
+
 
 # ── Main ─────────────────────────────────────────────────────────────────
 

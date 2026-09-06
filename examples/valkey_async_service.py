@@ -43,4 +43,4 @@ if __name__ == "__main__":
         ),
     )
 
-    asyncio.run(main(None))
+    asyncio.run(main(valkey_config))
