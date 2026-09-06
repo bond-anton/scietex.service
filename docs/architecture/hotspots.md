@@ -18,7 +18,7 @@ are flagged. Entries resolved by the AR-003..AR-016 refactors are marked
 | H6 | Resolved | AR-015 + AR-008 — signals in `start()`; read-only views |
 | H7 | Open | shutdown cancellation path |
 | H8 | Resolved | AR-005 — at-least-once delivery |
-| H9 | Open | two GlideClients |
+| H9 | Partial | AR-018 — unified health reporting shipped; single client pending external `scietex.logging` injection |
 | H10 | Resolved | AR-006 + AR-010 — truthful `connect()` |
 | H11 | Open | per-`worker_id` stream/group naming |
 | H12 | Open | usage docs still drift (out of scope here) |
@@ -143,9 +143,8 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 
 ## H9. `ValkeyWorker` opens two independent GlideClients
 
-- **Location:** `valkey_async_worker.py:154-163` (constructs
-  `AsyncValkeyHandler`, which owns a client) and 223 (`GlideClient.create` in
-  `connect`).
+- **Location:** `valkey_async_worker.py` (constructs `AsyncValkeyHandler`, which
+  owns a client) and `connect` (`GlideClient.create`).
 - **What:** task/heartbeat traffic uses one `GlideClient`; log traffic uses a
   second client inside the external logging handler, each configured from the
   same `_client_config`.
@@ -153,6 +152,17 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
   (worker `disconnect()` in `cleanup`; handler `disconnect()` in
   `stop_logging`). Connection failure modes and resource accounting are split
   across two owners.
+
+**Partially resolved (AR-018, in-repo):** the two-lifecycle model is now
+documented explicitly on `ValkeyWorker`, and health is reported for **both**
+clients. `logging_connected` exposes the logging handler's client state, and
+`connect()` warns when the two clients diverge (worker up / logging down, or
+vice versa), so a half-connected worker is observable. A `share_glide_client`
+feature-flag seam is reserved for a single shared client. **True
+single-connection unification remains blocked** on the external
+`scietex.logging` `AsyncValkeyHandler` gaining a client-injection parameter
+(see docs/ROADMAP.md); until then the handler keeps its own client, and the
+worker does not close it — the handler owns its teardown via `stop_logging`.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
