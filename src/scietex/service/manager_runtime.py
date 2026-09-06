@@ -76,7 +76,7 @@ class ManagerRuntime:
             name: Human-readable name for the manager
             manager: The Manager instance whose method will be executed
         """
-        self.worker.logger.info("🟢 Manager %s started", name)
+        self.worker.logger.info("[START] Manager %s started", name)
 
         consecutive_failures = 0
         try:
@@ -93,14 +93,14 @@ class ManagerRuntime:
                     consecutive_failures += 1
                     if consecutive_failures > self.worker.manager_max_retries:
                         self.worker.logger.error(
-                            "❌ Manager %s failed %d consecutive times (%s). Giving up.",
+                            "[GIVE-UP] Manager %s failed %d consecutive times (%s). Giving up.",
                             name,
                             consecutive_failures,
                             e,
                         )
                         break
                     self.worker.logger.error(
-                        "❌ Manager %s error %s. Restarting in %.1fs (attempt %d/%d)",
+                        "[ERROR] Manager %s error %s. Restarting in %.1fs (attempt %d/%d)",
                         name,
                         e,
                         self.worker.manager_restart_backoff,
@@ -115,14 +115,17 @@ class ManagerRuntime:
             pass
         finally:
             self.statuses[name] = ManagerStatus.STOPPING
-            self.worker.logger.info("🟡 Manager %s stopping", name)
-            if manager.cleanup:
-                await manager.cleanup(self.worker)
-            self.statuses[name] = ManagerStatus.STOPPED
-            self.worker.logger.info("🔴 Manager %s stopped", name)
-            # Remove this task from tracking so a later restart is possible.
-            if self.tasks.get(name) is asyncio.current_task():
-                self.tasks.pop(name, None)
+            self.worker.logger.info("[STOP] Manager %s stopping", name)
+            try:
+                if manager.cleanup:
+                    await manager.cleanup(self.worker)
+            finally:
+                self.statuses[name] = ManagerStatus.STOPPED
+                self.worker.logger.info("[STOP] Manager %s stopped", name)
+                # Remove this task from tracking so a later restart is
+                # possible, even if cleanup raised.
+                if self.tasks.get(name) is asyncio.current_task():
+                    self.tasks.pop(name, None)
 
     async def start_manager(self, name: str, manager: Manager) -> None:
         """
@@ -150,7 +153,9 @@ class ManagerRuntime:
         Stop a named manager task with a timeout.
 
         Cancels the task and waits up to `manager_shutdown_timeout` seconds
-        for it to complete. Removes the task from internal tracking.
+        for it to complete. Removes the task from internal tracking on
+        success; on timeout the still-running task stays tracked so a later
+        start cannot double-spawn the same name.
 
         Args:
             name: Identifier of the manager to stop
@@ -162,7 +167,10 @@ class ManagerRuntime:
         try:
             await asyncio.wait_for(self.tasks[name], self.worker.manager_shutdown_timeout)
         except asyncio.TimeoutError:
+            # The task is still running; keep it tracked so a later
+            # start_manager cannot double-spawn the same name.
             self.worker.logger.log(logging.DEBUG, "Timeout during %s shut down", name)
+            return
         # The task removes itself from tracking in its finally block; pop
         # defensively in case it already did so.
         self.tasks.pop(name, None)

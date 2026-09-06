@@ -17,10 +17,12 @@ class LoggerStatus(Enum):
     Attributes:
         STOPPED: The handler is not running.
         RUNNING: The handler is actively processing log messages.
+        FAILED: The handler failed to start and will be retried.
     """
 
     STOPPED = "Stopped"
     RUNNING = "Running"
+    FAILED = "Failed"
 
 
 def parse_logging_level(level: int | str | None) -> int:

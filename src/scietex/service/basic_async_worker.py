@@ -194,6 +194,10 @@ class BasicAsyncWorker:
             "exit": asyncio.Event(),
         }
 
+        # Reference to the pending signal-triggered stop task, used to guard
+        # against spawning a new exit() per signal (AR-033).
+        self.__stop_task: asyncio.Task | None = None
+
     @property
     def state(self) -> ServiceStatus:
         """Current lifecycle state of the service (read-only).
@@ -452,7 +456,7 @@ class BasicAsyncWorker:
 
     @property
     def logging_level(self) -> int:
-        """Current logging level for the worker (read-only).
+        """Current logging level for the worker (configurable).
 
         Returns:
             The logging level as an integer constant from the
@@ -508,8 +512,21 @@ class BasicAsyncWorker:
         if not hasattr(loop, "add_signal_handler"):
             return
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.exit(), name="StopTask"))
+            loop.add_signal_handler(sig, self._request_exit)
         self.logger.log(logging.DEBUG, "Signal handlers are all setup")
+
+    def _request_exit(self) -> None:
+        """Spawn a single exit task, guarding against re-entry.
+
+        Repeated signals must not each spawn their own exit() task. A pending
+        stop task or an already-requested exit short-circuits so only one
+        shutdown runs.
+        """
+        if self.__stop_task is not None and not self.__stop_task.done():
+            return
+        if self.events["exit_requested"].is_set():
+            return
+        self.__stop_task = asyncio.create_task(self.exit(), name="StopTask")
 
     def _remove_signal_handlers(self) -> None:
         """
@@ -645,6 +662,7 @@ class BasicAsyncWorker:
             self.__state = ServiceStatus.RUNNING
         except asyncio.CancelledError:
             self.logger.log(logging.INFO, "Startup task canceled.")
+            self._force_stopped()
             raise
         except RuntimeError as e:
             self.logger.log(logging.ERROR, "Initialization failed, shutting down. Error: %s", e)
@@ -677,6 +695,20 @@ class BasicAsyncWorker:
         if self.__state in (ServiceStatus.STOPPING, ServiceStatus.STOPPED):
             self._setup_signal_handlers()
             asyncio.create_task(self._startup(), name="Start")
+
+    def _force_stopped(self) -> None:
+        """Force the worker into a terminal STOPPED state.
+
+        Used by the startup/shutdown cancellation handlers so a cancelled task
+        never strands the worker in STARTING or STOPPING, which would block a
+        later start() (AR-017). If an exit was requested, surface it as a
+        completed exit instead of leaving the exit event dangling.
+        """
+        self.__state = ServiceStatus.STOPPED
+        self.__start_time = None
+        if self.events["exit_requested"].is_set():
+            self.__events["exit_requested"].clear()
+            self.__events["exit"].set()
 
     async def _shutdown(self) -> None:
         """
@@ -719,7 +751,8 @@ class BasicAsyncWorker:
                 self.__events["exit"].set()
         except asyncio.CancelledError:
             self.logger.log(logging.ERROR, "Shutdown task cancelled")
-            pass
+            self._force_stopped()
+            raise
 
     async def stop(self) -> None:
         """
@@ -779,22 +812,22 @@ class BasicAsyncWorker:
         """
         Manager that periodically invokes the heartbeat() method.
 
-        Sleeps for heartbeat_interval seconds, then calls heartbeat().
-        Repeats indefinitely until cancelled.
+        Calls heartbeat() immediately, then sleeps for heartbeat_interval
+        seconds. Repeats indefinitely until cancelled.
         """
-        await asyncio.sleep(self.heartbeat_interval)
         await self.heartbeat()
+        await asyncio.sleep(self.heartbeat_interval)
 
     @Manager(name="Watchdog")
     async def _watchdog_manager(self) -> None:
         """
         Manager that periodically invokes the watchdog() method.
 
-        Sleeps for watchdog_interval seconds, then calls watchdog().
-        Repeats indefinitely until cancelled.
+        Calls watchdog() immediately, then sleeps for watchdog_interval
+        seconds. Repeats indefinitely until cancelled.
         """
-        await asyncio.sleep(self.watchdog_interval)
         await self.watchdog()
+        await asyncio.sleep(self.watchdog_interval)
 
     async def heartbeat(self) -> None:
         """Periodic heartbeat callback invoked by the Heartbeat manager.
@@ -806,7 +839,7 @@ class BasicAsyncWorker:
         The Heartbeat manager calls this method every ``heartbeat_interval``
         seconds.
         """
-        self.logger.debug("💓 Heartbeat")
+        self.logger.debug("[HEARTBEAT] Heartbeat")
 
     async def watchdog(self) -> None:
         """Periodic watchdog callback invoked by the Watchdog manager.
@@ -818,7 +851,7 @@ class BasicAsyncWorker:
         The Watchdog manager calls this method every ``watchdog_interval``
         seconds.
         """
-        self.logger.debug("🐕 Watchdog")
+        self.logger.debug("[WATCHDOG] Watchdog")
 
     async def cleanup(self):
         """

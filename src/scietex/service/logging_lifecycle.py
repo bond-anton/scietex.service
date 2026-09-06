@@ -37,6 +37,8 @@ class LoggingLifecycle:
     def register_logger_handler(
         self,
         handler: AsyncBaseHandler,
+        # Unused: kept only for the `_register_logger_handler` forwarding wrapper
+        # in `BasicAsyncWorker` (AR-031); remove once that caller drops it.
         name: str | None = None,
     ) -> None:
         """
@@ -48,8 +50,11 @@ class LoggingLifecycle:
 
         Args:
             handler: The ``AsyncBaseHandler`` (or subclass) to attach.
-            name: Optional handler name, accepted for compatibility with
-                subclasses that pass an explicit name.
+            name: Unused. Accepted only because ``BasicAsyncWorker``'s
+                ``_register_logger_handler`` forwarding wrapper passes it
+                positionally; statuses are keyed by ``handler.name`` or
+                ``handler.__class__.__name__`` instead. Scheduled for removal
+                once that wrapper is updated (AR-031).
         """
         handler.setLevel(self.worker.logging_level)
         self.worker.logger.addHandler(handler)
@@ -60,34 +65,40 @@ class LoggingLifecycle:
 
         Iterates over the logger's handlers and calls start_logging() on each
         AsyncBaseHandler whose recorded status is not RUNNING. Handlers are
-        restartable in place, so no replacement is needed. Handles timeouts and
-        errors gracefully, falling back to print statements if the logger is in
-        an unrecoverable state.
+        restartable in place, so no replacement is needed. A handler that fails
+        to start (timeout or exception) is recorded as FAILED so it is retried
+        on the next start_handlers call. Handles timeouts and errors gracefully,
+        falling back to print statements if the logger is in an unrecoverable
+        state.
         """
         for handler in list(self.worker.logger.handlers):
             handler_name = handler.name or handler.__class__.__name__
-            if handler_name not in self.statuses or self.statuses[handler_name] == LoggerStatus.STOPPED:
-                if isinstance(handler, AsyncBaseHandler):
-                    try:
-                        await asyncio.wait_for(handler.start_logging(), timeout=self.worker.logger_handler_timeout)
-                    except asyncio.TimeoutError:
-                        try:
-                            self.worker.logger.warning(
-                                "Timeout starting logging handler %s (%s)", handler_name, handler
-                            )
-                        except Exception:
-                            # logger itself may be in a bad state; fallback to print
-                            print(f"Timeout starting logging handler {handler_name} ({handler})")
-                    except Exception as e:
-                        try:
-                            self.worker.logger.error(
-                                "Failed to start logging handler %s (%s): %s",
-                                handler_name,
-                                handler,
-                                e,
-                            )
-                        except Exception:
-                            print(f"Failed to start logging handler {handler_name} ({handler}): {e}")
+            if handler_name in self.statuses and self.statuses[handler_name] == LoggerStatus.RUNNING:
+                continue
+            if not isinstance(handler, AsyncBaseHandler):
+                self.statuses[handler_name] = LoggerStatus.RUNNING
+                continue
+            try:
+                await asyncio.wait_for(handler.start_logging(), timeout=self.worker.logger_handler_timeout)
+            except asyncio.TimeoutError:
+                self.statuses[handler_name] = LoggerStatus.FAILED
+                try:
+                    self.worker.logger.warning("Timeout starting logging handler %s (%s)", handler_name, handler)
+                except Exception:
+                    # logger itself may be in a bad state; fallback to print
+                    print(f"Timeout starting logging handler {handler_name} ({handler})")
+            except Exception as e:
+                self.statuses[handler_name] = LoggerStatus.FAILED
+                try:
+                    self.worker.logger.error(
+                        "Failed to start logging handler %s (%s): %s",
+                        handler_name,
+                        handler,
+                        e,
+                    )
+                except Exception:
+                    print(f"Failed to start logging handler {handler_name} ({handler}): {e}")
+            else:
                 self.statuses[handler_name] = LoggerStatus.RUNNING
 
     async def shut_down_handlers(self) -> None:
