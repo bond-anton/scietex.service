@@ -61,7 +61,7 @@ glide (valkey-glide, optional)                              [external]
   AsyncTaskProcessor`), so direction is **feature → core**, never core → feature.
 - **Cross-module**: `task_handler` is depended on by the processor, but the
   handler ABC keeps no import of the worker at all — it receives a narrow
-  `TaskHandlerContext` (`service_name`, `worker_id`, `logger`) instead of the
+  `TaskHandlerContext` (`service_name`, `instance_id`, `logger`) instead of the
   worker instance, so the boundary is clean in both directions.
 - **Configuration split**: `valkey_config` is independent of
   `valkey_async_worker`; only `read_valkey_config`/`generate_glide_config`

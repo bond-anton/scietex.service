@@ -20,7 +20,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H8 | Resolved | AR-005 — at-least-once delivery |
 | H9 | Resolved | AR-018 — single shared GlideClient shipped in v3 |
 | H10 | Resolved | AR-006 + AR-010 — truthful `connect()` |
-| H11 | Open | per-`worker_id` stream/group naming — deferred to v4 (AR-023, ROADMAP) |
+| H11 | Resolved | AR-023 — shared-queue topology (service-scoped stream/group) |
 | H12 | Open | usage docs still drift (out of scope here) |
 | H13 | Resolved | AR-013 — single pytest config |
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
@@ -186,20 +186,26 @@ worker is never observable.
 
 ## H11. Task stream and group are namespaced per `worker_id`
 
-- **Location:** `valkey_async_worker.py:212-215`.
-- **What:** stream, group, and consumer names embed `service_name` **and**
+- **Location:** `valkey_async_worker.py` key construction (now ~162-166).
+- **What:** in v3, stream, group, and consumer names embed `service_name` **and**
   `worker_id`. Two `ValkeyWorker`s with different `worker_id`s read **different
-  streams**; horizontal scale-out requires replicas that share the same
+  streams**; horizontal scale-out required replicas that share the same
   `(service_name, worker_id)` to form a consumer group on one stream.
 - **Why significant:** the intended distribution model ("distributed task
   queues", docstring) is more precisely *replicated consumers of a per-identity
-  stream*. This naming couples scaling topology to the worker_id identity and
+  stream*. This naming coupled scaling topology to the worker_id identity and
   to the runtime key conventions.
 
-*Deferred to v4 (AR-023):* the stream/group namespace is planned to be separated
-from the consumer/status namespace (docs/ROADMAP.md) so replicas can share one
-stream. This is a deliberate v3 constraint, not a bug — tracked as a breaking
-change for the next major version.
+*Resolved (AR-023, v4.0.0):* the key space is split. The task stream
+(`scietex:{service}:tasks`) and consumer group (`scietex:{service}:task_group`)
+are now **service-scoped**, so multiple replicas consume one shared queue.
+The consumer (`scietex:{service}:{instance_id}`) and status key
+(`scietex:{service}:{instance_id}:status`) remain **worker-scoped** per
+auto-generated `instance_id`. A service-scoped worker registry set
+(`scietex:{service}:workers`) was added (SADD on startup, SREM on shutdown),
+and the XAUTOCLAIM recovery floor was raised to `DEFAULT_CLAIM_MIN_IDLE_MS = 1000`
+so a replica's startup recovery does not reclaim entries a slow-but-alive
+handler on another replica is still processing.
 
 ## H12. Usage documentation diverges from the code
 

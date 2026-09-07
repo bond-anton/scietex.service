@@ -32,7 +32,7 @@ Layout of the repository and the Python package.
 | `logging.py` | `LoggerStatus` (STOPPED/RUNNING/FAILED), `parse_logging_level()`, `DEFAULT_LOGGING_LEVEL` |
 | `async_tasks_processor.py` | `AsyncTaskProcessor(BasicAsyncWorker)`. Task registry maps (`__task_handlers_map` class→instance, `__task_handlers` active instances), bounded task queue (accessed via `enqueue_task`/`dequeue_task`/`task_queue_empty`/`task_queue_full` — the raw `task_queue` is no longer public), `running_tasks` (`UUID → TaskTracker`), `@Manager("TaskManager") task_manager`, `@Manager("TaskQueueManager") task_queue_manager`, `process_task()`, watchdog timeout logic, handler start/stop, drain-and-cancel cleanup, `on_task_completed()` ack seam |
 | `task_handler/__init__.py` | Re-exports `TaskHandler`, `TaskHandlerContext`, `TaskData`, `TaskResult`, `TaskTimeout`, `TaskTracker` |
-| `task_handler/context.py` | `TaskHandlerContext` — frozen dataclass (`service_name`, `worker_id`, `logger`) passed to handlers instead of the full worker |
+| `task_handler/context.py` | `TaskHandlerContext` — frozen dataclass (`service_name`, `instance_id`, `logger`) passed to handlers instead of the full worker |
 | `task_handler/schemas.py` | Frozen `msgspec.Struct` schemas (see [`components.md`](./components.md)) |
 | `task_handler/basic.py` | `TaskHandler(ABC)`; imports `.context` (no reference to `BasicAsyncWorker`) |
 | `utils/__init__.py` | Re-exports `prepare_conf_dir`, `print_scietex_logo` |

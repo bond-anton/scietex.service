@@ -8,7 +8,7 @@ dependencies, dependents. Line numbers refer to the module given.
 **File:** `src/scietex/service/basic_async_worker.py`
 
 **Purpose:** Foundation for daemon workers: identity (`service_name`,
-`worker_id`, `version`), lifecycle state machine, signal-driven graceful
+`instance_id`, `version`), lifecycle state machine, signal-driven graceful
 shutdown, async logging handler management, and subclass hooks for
 heartbeat/watchdog/initialize/cleanup. Manager discovery/runtime and
 logging-handler lifecycle are delegated to `ManagerRuntime` and
@@ -41,7 +41,7 @@ config, and the state machine.
 **Public interface:** constructor + read-only properties (with setters where
 config is mutable at runtime): `state`, `events` (read-only `MappingProxyType`
 of two `asyncio.Event`s: `"exit_requested"`, `"exit"`), `service_name`,
-`worker_id`, `version`, `conf_dir`, `logger`, `logging_level`,
+`instance_id`, `version`, `conf_dir`, `logger`, `logging_level`,
 `heartbeat_interval`, `watchdog_interval`, `start_time`,
 `logger_handler_timeout`, `manager_shutdown_timeout`, `manager_max_retries`,
 `manager_restart_backoff`. Extension contract: override
@@ -173,7 +173,7 @@ contract; a narrow context decouples handlers from the worker.
 
 **Main symbols / interface:**
 - `TaskHandlerContext` (context.py:7) — frozen dataclass with `service_name`,
-  `worker_id`, `logger`; replaces the full worker reference.
+  `instance_id`, `logger`; replaces the full worker reference.
 - `__init__(name, context)` (21) — stores `name`, `context`, `logger =
   context.logger`, `_is_initialized=False` (no `self.worker`)
 - abstract `supported_tasks -> list[str]` (34), abstract `handle(task_data) ->
@@ -258,11 +258,14 @@ logging handler. `_ensure_logging_handler` (207) constructs the
 `connect()`, and `disconnect()` (277) clears the handler's reference before
 closing the shared client — the worker is the sole teardown owner (see §H9).
 
-**Key names** (constructed in `__init__`, lines 162–165): status key
-`scietex:{service}:{worker_id}:status`, task stream
-`scietex:{service}:{worker_id}:tasks`, group
-`scietex:{service}:{worker_id}:task_group`, consumer
-`scietex:{service}:{worker_id}`. `_task_entry_ids` (170) maps task UUID → stream
+**Key names** (constructed in `__init__`): status key
+`scietex:{service}:{instance_id}:status`, task stream
+`scietex:{service}:tasks`, group
+`scietex:{service}:task_group`, consumer
+`scietex:{service}:{instance_id}`, registry set
+`scietex:{service}:workers`. The stream and group are service-scoped so
+replicas share one queue; the consumer/status keys are worker-scoped per
+auto-generated `instance_id`. `_task_entry_ids` (170) maps task UUID → stream
 entry id for deferred acknowledgement; `_recovered` (174) guards one-time
 pending recovery.
 
@@ -302,7 +305,7 @@ subscriptions when `listening=True`).
 
 **File:** `src/scietex/service/valkey/schemas.py`
 **Purpose/content:** `Heartbeat` (16) (frozen Struct) with `service`,
-`worker_id`, `status`, `heartbeat_interval`, `start_time`, `timestamp` —
+`instance_id`, `status`, `heartbeat_interval`, `start_time`, `timestamp` —
 `timestamp` uses `msgspec.field(default_factory=...)` (38) for a per-instance
 value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 

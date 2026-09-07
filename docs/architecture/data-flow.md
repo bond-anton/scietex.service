@@ -39,7 +39,7 @@ intake and dispatch; per-task `asyncio.Task`; concurrency cap
 ## F2. Valkey task intake / transport (ValkeyWorker)
 
 **Source:** external producer writes task entries into Valkey stream
-`scietex:{service}:{worker_id}:tasks`. Entry shape: one field-value pair per
+`scietex:{service}:tasks`. Entry shape: one field-value pair per
 message — **field = task UUID string, value = msgpack-encoded `TaskData`**
 (written by `return_task_to_queue`, `valkey_async_worker.py:499`).
 
@@ -104,7 +104,7 @@ so the same class cannot be registered under several keys).
 concrete override.
 
 **Processing/destination:** encodes `Heartbeat` struct (msgpack) and writes it
-to key `scietex:{service}:{worker_id}:status` with TTL = 2 ×
+to key `scietex:{service}:{instance_id}:status` with TTL = 2 ×
 `heartbeat_interval` (glide `ExpirySet`). Skipped when `client is None` or
 `start_time is None`. **Errors are swallowed** (logged at WARNING) — a failed
 heartbeat never surfaces.
@@ -150,7 +150,7 @@ only a missing file is created with defaults) →
 ## F8. Control / PubSub (defined but unused in package)
 
 `generate_glide_config` supports `listening=True` + `parse_control_message`
-callback → subscribes to channels `scietex:{service}:{worker_id}` and
+callback → subscribes to channels `scietex:{service}:{instance_id}` and
 `scietex:broadcast` (valkey_config.py:314-325). **`ValkeyWorker` always
 passes `listening=False`**; nothing in the package consumes control messages.
 The PubSub path exists only in config/translation code (`UNKNOWN` consumers —
