@@ -17,12 +17,12 @@ class Heartbeat(msgspec.Struct, frozen=True):
     """Heartbeat data published by :class:`~scietex.service.valkey.ValkeyWorker` to track worker status.
 
     Serialized as msgpack and stored at a key like
-    ``scietex:{service_name}:{worker_id}:status`` with a TTL set to
+    ``scietex:{service_name}:{instance_id}:status`` with a TTL set to
     twice the heartbeat interval.
 
     Attributes:
         service: Name of the publishing service.
-        worker_id: Unique identifier of the worker instance.
+        instance_id: Unique identifier of the worker instance.
         status: Current worker status — ``"active"`` or ``"inactive"``.
         heartbeat_interval: Interval in seconds between heartbeats.
         start_time: UTC timestamp when the worker started.
@@ -31,7 +31,7 @@ class Heartbeat(msgspec.Struct, frozen=True):
     """
 
     service: str
-    worker_id: int
+    instance_id: str
     status: Literal["active", "inactive"]
     heartbeat_interval: float
     start_time: datetime

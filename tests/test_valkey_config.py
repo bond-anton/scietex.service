@@ -49,7 +49,7 @@ def test_read_valkey_config_missing_file_creates_defaults(tmp_path: Path):
 
 def test_generate_glide_config_defaults():
     cfg = ValkeyConfig()
-    client_cfg = generate_glide_config(cfg, service_name="svc", worker_id=1)
+    client_cfg = generate_glide_config(cfg, service_name="svc", worker_id="abc")
     # basic shape checks
     assert hasattr(client_cfg, "addresses")
     assert isinstance(client_cfg.addresses, list)
@@ -59,7 +59,7 @@ def test_generate_glide_config_defaults():
 def test_valkey_node_addresses_roundtrip():
     node = ValkeyNode(host="127.0.0.1", port=6380)
     cfg = ValkeyBaseConfig(nodes=[node])
-    client_cfg = generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id=1)
+    client_cfg = generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")
     assert len(client_cfg.addresses) == 1
 
 
@@ -76,10 +76,10 @@ def test_invalid_read_from_raises():
     # inject invalid value
     cfg = ValkeyBaseConfig(read_from="INVALID")
     with pytest.raises(ValueError):
-        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id=1)
+        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")
 
 
 def test_invalid_protocol_raises():
     cfg = ValkeyBaseConfig(protocol="NOPE")
     with pytest.raises(ValueError):
-        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id=1)
+        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")

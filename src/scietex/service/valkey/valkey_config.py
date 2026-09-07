@@ -282,7 +282,7 @@ def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
 def generate_glide_config(
     valkey_config: ValkeyConfig,
     service_name: str,
-    worker_id: str | int,
+    worker_id: str,
     listening: bool = False,
     parse_control_message: Callable[[PubSubMsg, Any], None] | None = None,
 ) -> GlideClientConfiguration:
@@ -295,7 +295,7 @@ def generate_glide_config(
     Args:
         valkey_config: The typed configuration schema.
         service_name: Service name used for PubSub channel names.
-        worker_id: Worker identifier used for PubSub channel names.
+        worker_id: Instance identifier used for PubSub channel names.
         listening: If ``True``, subscribes to service-specific and
             broadcast channels. Currently unused by the package
             (``ValkeyWorker`` always passes ``False``) and reserved for
