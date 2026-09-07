@@ -9,6 +9,7 @@ watchdog managers, and graceful shutdown support.
 import asyncio
 import logging
 import signal
+import uuid
 from collections.abc import Generator, Mapping
 from datetime import datetime, timezone
 from enum import Enum
@@ -82,7 +83,7 @@ class BasicAsyncWorker:
 
     Properties:
         service_name (str): Name of the service (read-only).
-        worker_id (int): Unique identifier for this worker (read-only).
+        instance_id (str): Unique identifier for this worker instance (read-only).
         version (str): Version string of the service (read-only).
         logger (logging.Logger): Logger instance for the worker.
         logging_level (int): Current logging level (configurable).
@@ -94,7 +95,6 @@ class BasicAsyncWorker:
         self,
         service_name: str = "service",
         version: str = "0.0.1",
-        worker_id: int = 1,
         conf_dir: str | Path | None = None,
         logging_level: int | str = logging.DEBUG,
         heartbeat_interval: float | None = None,
@@ -107,7 +107,6 @@ class BasicAsyncWorker:
         Args:
             service_name: Name of the service, used for logging and identification.
             version: Version string of the service.
-            worker_id: Unique identifier for this worker instance.
             conf_dir: Directory to use for configuration files.
             logging_level: Logging level as string or integer.
                 If invalid, defaults to ``DEFAULT_LOGGING_LEVEL`` (DEBUG).
@@ -118,11 +117,12 @@ class BasicAsyncWorker:
                 ``manager_shutdown_timeout``: Timeout for manager shutdown.
 
         Note:
-            Within a single process, the ``(service_name, worker_id)``
-            combination should be unique to ensure separate logger names.
+            Each instance auto-generates a unique ``instance_id`` used for
+            logger names and (in ``ValkeyWorker``) consumer/status keys, so
+            multiple instances of the same service can coexist in one process.
         """
         self.__service_name: str = service_name
-        self.__worker_id: int = worker_id
+        self.__instance_id: str = uuid.uuid4().hex
         self.__version: str = version
         self.__logging_level: int = parse_logging_level(logging_level)
 
@@ -146,11 +146,19 @@ class BasicAsyncWorker:
         self._logging_lifecycle = LoggingLifecycle(self)
 
         # Set up logger with async handler
-        self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}.{self.__worker_id}")
+        self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}.{self.__instance_id}")
         self._logger.setLevel(self.logging_level)
         # Async handlers are restartable in place (scietex.logging >= 1.0), so a
         # single instance is registered once and restarted on each start cycle.
-        self._register_logger_handler(AsyncBaseHandler(service_name=self.__service_name, worker_id=self.__worker_id))
+        # The external handler types worker_id:int but only stringifies it, so
+        # passing the instance id string is safe at runtime. The ignore can be
+        # removed once scietex.logging widens its annotation to str | int.
+        self._register_logger_handler(
+            AsyncBaseHandler(
+                service_name=self.__service_name,
+                worker_id=self.__instance_id,  # ty: ignore[invalid-argument-type]
+            )
+        )
 
         self.__logger_handler_timeout = max(
             MIN_LOGGER_HANDLER_TIMEOUT,
@@ -233,13 +241,13 @@ class BasicAsyncWorker:
         return self.__service_name
 
     @property
-    def worker_id(self) -> int:
+    def instance_id(self) -> str:
         """Unique identifier for this worker instance (read-only).
 
         Returns:
-            The worker ID integer provided during initialization.
+            The auto-generated instance ID string (``uuid4().hex``).
         """
-        return self.__worker_id
+        return self.__instance_id
 
     @property
     def version(self) -> str:
@@ -446,7 +454,7 @@ class BasicAsyncWorker:
     def logger(self) -> logging.Logger:
         """Logger instance for the worker.
 
-        The logger is named using the pattern ``{service_name}.{worker_id}``
+        The logger is named using the pattern ``{service_name}.{instance_id}``
         and is configured with an ``AsyncBaseHandler`` for async logging.
 
         Returns:
@@ -654,11 +662,15 @@ class BasicAsyncWorker:
             if not await self.initialize():
                 raise RuntimeError("Initialization failed")
 
+            # Register with any external registry only after initialize()
+            # succeeded (transport/client exists) and before managers start.
+            await self._register_instance()
+
             # Start managers
             await self._start_managers()
 
             self.__start_time = datetime.now(timezone.utc)
-            self.logger.log(logging.DEBUG, "Worker %s:%d started", self.service_name, self.worker_id)
+            self.logger.log(logging.DEBUG, "Worker %s:%s started", self.service_name, self.instance_id)
             self.__state = ServiceStatus.RUNNING
         except asyncio.CancelledError:
             self.logger.log(logging.INFO, "Startup task canceled.")
@@ -679,17 +691,17 @@ class BasicAsyncWorker:
         if self.__state == ServiceStatus.RUNNING:
             self.logger.log(
                 logging.WARNING,
-                "Worker %s:%d is already running",
+                "Worker %s:%s is already running",
                 self.service_name,
-                self.worker_id,
+                self.instance_id,
             )
             return
         if self.__state == ServiceStatus.STARTING:
             self.logger.log(
                 logging.WARNING,
-                "Worker %s:%d is already starting up",
+                "Worker %s:%s is already starting up",
                 self.service_name,
-                self.worker_id,
+                self.instance_id,
             )
             return
         if self.__state in (ServiceStatus.STOPPING, ServiceStatus.STOPPED):
@@ -727,6 +739,9 @@ class BasicAsyncWorker:
             self.__state = ServiceStatus.STOPPING
             self.logger.log(logging.DEBUG, "Worker stopped.")
             await self._stop_managers()
+            # Unregister while the transport is still open (cleanup() may
+            # disconnect it). Framework-owned, not part of user cleanup().
+            await self._unregister_instance()
             self.logger.debug("Cleaning up...")
             await self.cleanup()
 
@@ -768,9 +783,9 @@ class BasicAsyncWorker:
         if self.__state == ServiceStatus.STOPPED:
             self.logger.log(
                 logging.DEBUG,
-                "Worker %s:%d is not running",
+                "Worker %s:%s is not running",
                 self.service_name,
-                self.worker_id,
+                self.instance_id,
             )
             if self.events["exit_requested"].is_set() and not self.events["exit"].is_set():
                 self.__events["exit_requested"].clear()
@@ -780,9 +795,9 @@ class BasicAsyncWorker:
         if self.__state == ServiceStatus.STOPPING:
             self.logger.log(
                 logging.DEBUG,
-                "Worker %s:%d is already shutting down",
+                "Worker %s:%s is already shutting down",
                 self.service_name,
-                self.worker_id,
+                self.instance_id,
             )
             if self.events["exit_requested"].is_set() and not self.events["exit"].is_set():
                 self.__events["exit_requested"].clear()
@@ -791,9 +806,9 @@ class BasicAsyncWorker:
         if self.__state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):
             self.logger.log(
                 logging.DEBUG,
-                "Worker %s:%d is going to SHUT DOWN",
+                "Worker %s:%s is going to SHUT DOWN",
                 self.service_name,
-                self.worker_id,
+                self.instance_id,
             )
             asyncio.create_task(self._shutdown(), name="Stop")
 
@@ -860,4 +875,24 @@ class BasicAsyncWorker:
         This method is intended to be overridden by subclasses to perform
         service-specific cleanup such as closing database connections,
         releasing resources, or sending final status updates.
+        """
+
+    async def _register_instance(self) -> None:
+        """Register this worker instance with any external registry.
+
+        Called once by ``_startup()`` after ``initialize()`` succeeds and
+        before managers start. The base implementation is a no-op (a single
+        worker has no external registry); subclasses override to add their
+        instance id to a transport-scoped registry. Best-effort: a failure
+        must not fail startup (log and continue).
+        """
+
+    async def _unregister_instance(self) -> None:
+        """Unregister this worker instance from any external registry.
+
+        Called once by ``_shutdown()`` after managers stop and before
+        ``cleanup()`` tears down the transport, so the transport is still
+        open for the removal. The base implementation is a no-op; subclasses
+        override to remove their instance id. Best-effort: a failure must
+        not fail shutdown (log and continue).
         """
