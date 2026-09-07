@@ -199,9 +199,9 @@ drains/cancels in-flight work.
 **Main symbols:** `class AsyncTaskProcessor(BasicAsyncWorker)` (46).
 Properties: `task_handlers` 154, `running_tasks` 166 (read-only
 `MappingProxyType` views), `queue_size` 171, `max_concurrent_tasks` 176.
-Registry/dispatch: `add_task_handler` 314 (optional `supported_tasks` override
-validates the registration name against the handler's declared task types and
-warns when it can never be dispatched to — 339–354), `_start_task_handler` 360
+Registry/dispatch: `add_task_handler` 314 (takes only the handler class; the
+lifecycle key is `handler_class.__name__` — single instance per class, a
+duplicate class name raises), `_start_task_handler` 360
 (builds a `TaskHandlerContext` at 381–385), `_stop_task_handler` 404,
 `remove_task_handler` 423, `_find_task_handler` 433, `process_task` 544.
 Queue access: `enqueue_task` 181, `dequeue_task` 202, `task_queue_empty` 194,

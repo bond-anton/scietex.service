@@ -113,7 +113,7 @@ async def main() -> None:
         queue_size=100,
         max_concurrent_tasks=5,
     )
-    processor.add_task_handler("send_email", EmailHandler)
+    processor.add_task_handler(EmailHandler)
     await processor.start()
     await processor.events["exit"].wait()
 
@@ -204,11 +204,11 @@ discovers them via the class MRO and runs each as an `asyncio.Task`:
 
 See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle, schema details, and best practices.
 
-1. **Register**: `processor.add_task_handler("type", HandlerClass)` —
-   Registers a handler class under a name. The processor creates
-   handler instances on start. The name is validated against the
-   handler's `supported_tasks` (a warning is logged when it isn't
-   among them, since such a name can never be dispatched to).
+1. **Register**: `processor.add_task_handler(HandlerClass)` —
+   Registers a handler class under its class name. The processor
+   creates a single handler instance on start. Dispatch is driven by
+   the handler's `supported_tasks` declaration, not by a registration
+   key.
 2. **Declare support**: `Handler.supported_tasks` property must return
    a list of task type strings this handler can process.
 3. **Dispatch**: When a task arrives, the processor calls
@@ -230,7 +230,7 @@ All schemas are frozen `msgspec.Struct` instances (immutable).
 | Type | Description |
 |---|---|
 | `TaskData` | Immutable task payload: `task` (type string), `payload` (bytes), `timeout` (`TaskTimeout`), `canceled_action` ("requeue"/"discard") |
-| `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes), plus error-taxonomy fields `error_code`, `retryable`, `retry_count`, `partial`, `requeue` |
+| `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes), plus error-taxonomy fields `error_code`, `retryable`, `partial` |
 | `TaskTimeout` | Timeout config: `timeout` (seconds, `None` for default 3s), `timeout_action` ("requeue"/"discard") |
 | `TaskTracker` | Internal: tracks running `asyncio.Task`, associated `TaskData`, and monotonic start time |
 

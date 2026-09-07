@@ -354,7 +354,7 @@ class MyValkeyWorker(ValkeyWorker):
 
     async def initialize(self) -> bool:
         """Register handlers and prepare Valkey resources."""
-        self.add_task_handler("email", EmailHandler)
+        self.add_task_handler(EmailHandler)
         return await super().initialize()
 
 

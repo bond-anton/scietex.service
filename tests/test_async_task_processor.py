@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from uuid import uuid4
 
 import pytest
@@ -46,8 +45,8 @@ class DemoProcessor(AsyncTaskProcessor):
 @pytest.mark.asyncio
 async def test_process_task_with_dummy_handler():
     proc = DemoProcessor()
-    proc.add_task_handler("dummy", DummyHandler)
-    await proc._start_task_handler("dummy")
+    proc.add_task_handler(DummyHandler)
+    await proc._start_task_handler("DummyHandler")
 
     result: TaskResult = await proc.process_task(uuid4(), TaskData(task="dummy", payload=b'{"value": 5}'))
 
@@ -75,47 +74,9 @@ async def test_add_task_handler_duplicate_class_raises():
 
 
 @pytest.mark.asyncio
-async def test_add_task_handler_warns_when_name_not_in_supported_tasks(caplog):
-    """A registration key outside the handler's supported_tasks must log a
-    WARNING but still register the handler: the key is a lifecycle handle, not
-    a dispatch key (AR-022)."""
-    proc = DemoProcessor()
-    with caplog.at_level(logging.WARNING):
-        proc.add_task_handler("not_dummy", DummyHandler)
-
-    assert any(record.levelno == logging.WARNING and "not_dummy" in record.getMessage() for record in caplog.records)
-    # The handler is still registered under the given name despite the warning.
-    await proc._start_task_handler("not_dummy")
-    assert "not_dummy" in proc.task_handlers
-
-
-@pytest.mark.asyncio
-async def test_add_task_handler_explicit_supported_tasks_overrides_validation(caplog):
-    """An explicit supported_tasks argument overrides the class default for the
-    registration-key validation: a key present in the override must not warn
-    even when it is absent from the class's declared supported_tasks (AR-022)."""
-    proc = DemoProcessor()
-    with caplog.at_level(logging.WARNING):
-        proc.add_task_handler("not_dummy", DummyHandler, supported_tasks=["not_dummy"])
-
-    assert not any(record.levelno == logging.WARNING for record in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_add_task_handler_name_in_supported_tasks_does_not_warn(caplog):
-    """A registration key that is among the handler's supported_tasks must not
-    log a WARNING (AR-022)."""
-    proc = DemoProcessor()
-    with caplog.at_level(logging.WARNING):
-        proc.add_task_handler("dummy", DummyHandler)
-
-    assert not any(record.levelno == logging.WARNING for record in caplog.records)
-
-
-@pytest.mark.asyncio
 async def test_watchdog_requeues_timed_out_task():
     proc = DemoProcessor()
-    proc.add_task_handler("slow", SlowHandler)
+    proc.add_task_handler(SlowHandler)
 
     # start managers (task_manager, task_queue_manager, watchdog)
     await proc.start()
@@ -185,8 +146,8 @@ async def test_process_task_handler_exception_is_retryable():
     """A handler that raises must yield an error TaskResult marked retryable
     by default, with the exception message in ``error`` (AR-022)."""
     proc = DemoProcessor()
-    proc.add_task_handler("raiser", RaisingHandler)
-    await proc._start_task_handler("raiser")
+    proc.add_task_handler(RaisingHandler)
+    await proc._start_task_handler("RaisingHandler")
 
     result: TaskResult = await proc.process_task(uuid4(), TaskData(task="raiser", payload=b"{}"))
 
@@ -204,8 +165,8 @@ async def test_process_task_preserves_handler_returned_result_fields():
     """A handler that returns a TaskResult controls its own error-taxonomy
     fields; process_task must pass them through unchanged (AR-022)."""
     proc = DemoProcessor()
-    proc.add_task_handler("error_returner", ReturningErrorHandler)
-    await proc._start_task_handler("error_returner")
+    proc.add_task_handler(ReturningErrorHandler)
+    await proc._start_task_handler("ReturningErrorHandler")
 
     result: TaskResult = await proc.process_task(uuid4(), TaskData(task="error_returner", payload=b"{}"))
 
@@ -255,11 +216,11 @@ async def test_task_manager_consumes_handler_exception_without_leaking():
     old_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, ctx: leaked.append(str(ctx.get("message", ""))))
     proc = DemoProcessor()
-    proc.add_task_handler("exploding", ExplodingSupportsHandler)
+    proc.add_task_handler(ExplodingSupportsHandler)
     # Start the handler first so it is ready before the managers consume the
     # task; otherwise _find_task_handler would see an empty registry and the
     # exploding supports() path would never run.
-    await proc._start_task_handler("exploding")
+    await proc._start_task_handler("ExplodingSupportsHandler")
     await proc.start()
     try:
         t_id = uuid4()
@@ -297,7 +258,7 @@ class FailingStartHandler(TaskHandler):
 async def test_initialize_returns_false_when_handler_start_fails():
     """A handler that fails to start must make initialize() return False (AR-010)."""
     proc = DemoProcessor()
-    proc.add_task_handler("failing", FailingStartHandler)
+    proc.add_task_handler(FailingStartHandler)
     ok = await proc.initialize()
     assert ok is False
 
@@ -315,8 +276,8 @@ class RecordingProcessor(DemoProcessor):
 async def test_handle_task_invokes_completion_hook():
     """handle_task must invoke on_task_completed with the final result (AR-005)."""
     proc = RecordingProcessor()
-    proc.add_task_handler("dummy", DummyHandler)
-    await proc._start_task_handler("dummy")
+    proc.add_task_handler(DummyHandler)
+    await proc._start_task_handler("DummyHandler")
     await proc.start()
     try:
         t_id = uuid4()
@@ -358,8 +319,8 @@ async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monke
     # Shorten the cancellation wait so the test does not block for 5s.
     monkeypatch.setattr(mod, "WORKER_TASK_CANCELLATION_TIMEOUT", 0.05)
     proc = DemoProcessor()
-    proc.add_task_handler("stubborn", StubbornHandler)
-    await proc._start_task_handler("stubborn")
+    proc.add_task_handler(StubbornHandler)
+    await proc._start_task_handler("StubbornHandler")
     await proc.start()
     try:
         t_id = uuid4()
@@ -412,10 +373,10 @@ async def test_start_task_handler_removes_handler_on_start_failure():
     """A handler whose start() raises must be removed from the active handlers
     dict so dispatch never iterates a dead handler (AR-029)."""
     proc = DemoProcessor()
-    proc.add_task_handler("raising", RaisingStartHandler)
-    ok = await proc._start_task_handler("raising")
+    proc.add_task_handler(RaisingStartHandler)
+    ok = await proc._start_task_handler("RaisingStartHandler")
     assert ok is False
-    assert "raising" not in proc.task_handlers
+    assert "RaisingStartHandler" not in proc.task_handlers
 
 
 class NeverFinishesHandler(TaskHandler):
@@ -434,7 +395,7 @@ async def test_watchdog_ignores_non_positive_timeout():
     """timeout <= 0 means 'no timeout': the watchdog must never cancel the
     task (AR-034)."""
     proc = DemoProcessor(watchdog_interval=0.05)
-    proc.add_task_handler("never", NeverFinishesHandler)
+    proc.add_task_handler(NeverFinishesHandler)
     await proc.start()
     try:
         t_id = uuid4()

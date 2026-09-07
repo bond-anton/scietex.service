@@ -63,7 +63,7 @@ python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide
 ## Task Handler System
 
 **Workflow:**
-1. Register handler: `processor.add_task_handler("task_type", HandlerClass)`
+1. Register handler: `processor.add_task_handler(HandlerClass)`
 2. Handler `supports(task_type)` must return `True`
 3. Handler `is_ready` (initialized) required before processing
 4. `handle(task_data)` returns `TaskResult`

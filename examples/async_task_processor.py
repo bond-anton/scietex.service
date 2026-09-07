@@ -217,12 +217,11 @@ async def main() -> None:
         max_concurrent_tasks=3,
     )
 
-    # One registration per handler class covers all of its supported_tasks:
-    # dispatch is driven by supported_tasks membership, so each task type is
-    # routed to its handler regardless of the registration key used here.
-    processor.add_task_handler("process_data", DataProcessingHandler)
-    processor.add_task_handler("generate_report", ReportGenerationHandler)
-    processor.add_task_handler("resize_image", ImageProcessingHandler)
+    # Register each handler class once: dispatch is driven by
+    # supported_tasks membership, so one class covers all of its task types.
+    processor.add_task_handler(DataProcessingHandler)
+    processor.add_task_handler(ReportGenerationHandler)
+    processor.add_task_handler(ImageProcessingHandler)
 
     # Start processing
     await processor.start()

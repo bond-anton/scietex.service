@@ -92,10 +92,9 @@ exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
 **Source:** `TaskData.task` string. **Processing:** `_find_task_handler`
 (433) iterates `task_handlers` dict (active instances) and returns the first
 `handler.supports(task_type)`. **Destination:** `handler.handle(task_data)`.
-Selection is by `supported_tasks` membership, **not** by the registration key
-used in `add_task_handler` (keys are registry names; one key maps to one class
-but the same class may be registered under several keys, and the same task type
-may match several handlers — first active wins).
+Selection is by `supported_tasks` membership, **not** by a registration key
+(the `add_task_handler` key is the handler class name; one instance per class,
+so the same class cannot be registered under several keys).
 
 ## F5. Heartbeat flow
 

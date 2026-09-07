@@ -164,23 +164,15 @@ Plus all `BasicAsyncWorker` kwargs (`logger_handler_timeout`,
 processor = AsyncTaskProcessor(service_name="task_worker", version="1.0.0")
 
 # Register handler classes (processor creates instances)
-processor.add_task_handler("email", EmailHandler)
-processor.add_task_handler("report", ReportHandler)
+processor.add_task_handler(EmailHandler)
+processor.add_task_handler(ReportHandler)
 ```
 
-`add_task_handler()` accepts an optional third argument, `supported_tasks`,
-used only to validate the registration name. It defaults to the handler
-class's declared `supported_tasks`. The name is a lifecycle handle, not a
-dispatch key (dispatch selects handlers by their `supported_tasks`
-membership), so when the name is not among the effective
-`supported_tasks`, a warning is logged — such a name can never be
-dispatched to:
-
-```python
-processor.add_task_handler("email", EmailHandler)
-# Explicit override of the validation list:
-processor.add_task_handler("email", EmailHandler, supported_tasks=["email", "report"])
-```
+`add_task_handler()` takes only the handler class. The lifecycle key is the
+class name (`handler_class.__name__`), and a single instance per class is
+created on start. Dispatch selects handlers by their `supported_tasks`
+membership, not by the registration key, so registering the same class
+twice raises a `ValueError`.
 
 Handlers can be registered before or after `start()`. If the worker is
 already running, the handler is started asynchronously.
@@ -404,7 +396,7 @@ class MyTaskWorker(AsyncTaskProcessor):
 
     async def initialize(self) -> bool:
         """Register handlers and connect to external services."""
-        self.add_task_handler("email", EmailHandler)
+        self.add_task_handler(EmailHandler)
         return await super().initialize()
 
     async def fetch_tasks(self) -> None:
@@ -488,12 +480,12 @@ the handler is ready:
 
 ```python
 # Best: register before start
-processor.add_task_handler("email", EmailHandler)
+processor.add_task_handler(EmailHandler)
 await processor.start()
 
 # Acceptable: register immediately after start
 await processor.start()
-processor.add_task_handler("email", EmailHandler)
+processor.add_task_handler(EmailHandler)
 ```
 
 ### Timeout Configuration

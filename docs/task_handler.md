@@ -34,7 +34,7 @@ Each handler goes through a well-defined lifecycle managed by
               handler name     handler state set      handler state reset
 ```
 
-1. **Registration** — `processor.add_task_handler("name", HandlerClass)`
+1. **Registration** — `processor.add_task_handler(HandlerClass)`
 2. **Start** — `handler.start()` calls `handler.initialize()` and sets
    `is_ready = True`
 3. **Processing** — Tasks are dispatched to `handler.handle(task_data)`
@@ -220,23 +220,14 @@ The `AsyncTaskProcessor` manages task handler registration and dispatch.
 processor = AsyncTaskProcessor(service_name="my_service", version="1.0.0")
 
 # Register a handler class (not an instance — processor creates instances)
-processor.add_task_handler("send_email", EmailHandler)
-processor.add_task_handler("process_data", DataHandler)
+processor.add_task_handler(EmailHandler)
+processor.add_task_handler(DataHandler)
 ```
 
-`add_task_handler()` accepts an optional third argument, `supported_tasks`,
-used only to validate the registration name. It defaults to the handler
-class's declared `supported_tasks`. The name is a lifecycle handle, not a
-dispatch key — dispatch selects handlers by their `supported_tasks`
-membership — so when the name is not among the effective
-`supported_tasks`, a warning is logged (such a name can never be
-dispatched to):
-
-```python
-processor.add_task_handler("email", EmailHandler)
-# Explicit override of the validation list:
-processor.add_task_handler("email", EmailHandler, supported_tasks=["email", "report"])
-```
+`add_task_handler()` takes only the handler class. The lifecycle key is the
+class name (`handler_class.__name__`), and a single instance per class is
+created on start. Dispatch selects handlers by their `supported_tasks`
+membership, so registering the same class twice raises a `ValueError`.
 
 A handler can support multiple task types by returning them all from
 `supported_tasks`. The processor matches incoming tasks by calling
@@ -272,14 +263,12 @@ class MyWorker(AsyncTaskProcessor):
 
 ### Handler Registration
 
-Register handlers by their task type names. A single handler class can
-serve multiple task types:
+Register each handler class once. A single handler class can serve
+multiple task types by declaring them all in `supported_tasks`:
 
 ```python
-# Each task type gets its own registration
-processor.add_task_handler("resize_image", ImageHandler)
-processor.add_task_handler("compress_image", ImageHandler)
-processor.add_task_handler("convert_image", ImageHandler)
+# One registration per class covers all its supported task types
+processor.add_task_handler(ImageHandler)
 
 
 # Handler declares all supported types
