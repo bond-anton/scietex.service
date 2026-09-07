@@ -155,7 +155,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
     def task_handlers(self) -> Mapping[str, TaskHandler]:
         """Dictionary of currently active (started) task handlers.
 
-        Keys are handler names and values are the corresponding
+        Keys are handler class names and values are the corresponding
         ``TaskHandler`` instances that have been initialized.
 
         Returns:
@@ -311,47 +311,25 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             ),
         )
 
-    def add_task_handler(
-        self,
-        handler_name: str,
-        handler_class: type[TaskHandler],
-        supported_tasks: list[str] | None = None,
-    ) -> None:
-        """Register a task handler class under a handler name.
+    def add_task_handler(self, handler_class: type[TaskHandler]) -> None:
+        """Register a task handler class.
 
-        The handler class is stored in the internal map under ``handler_name``.
-        If the worker is already running or starting, the handler is started
-        asynchronously.
-
-        ``handler_name`` is a lifecycle handle, not a dispatch key: dispatch is
+        The handler class is stored in the internal map under its class name
+        (``handler_class.__name__``), which is the lifecycle key. Dispatch is
         driven by ``_find_task_handler``, which selects handlers by their
-        ``supported_tasks`` membership. The name is validated against the
-        effective ``supported_tasks``, and a warning is logged when it is not
-        among them, since such a name can never be dispatched to.
+        ``supported_tasks`` membership — the class-level declaration is the
+        dispatch contract, not an argument. A single instance per class is
+        created on start; registering the same class twice raises.
 
         Args:
-            handler_name: Unique identifier (lifecycle handle) for the handler.
             handler_class: The ``TaskHandler`` subclass to register.
-            supported_tasks: Optional override for the handler's declared task
-                types, used only for the registration-key validation. Defaults
-                to ``handler_class.supported_tasks``.
+
+        Raises:
+            ValueError: If ``handler_class`` is already registered.
         """
-        if supported_tasks is None:
-            # ``supported_tasks`` is declared as a property on TaskHandler
-            # subclasses, so accessing it on the class object yields the
-            # property descriptor rather than its value; resolve the declared
-            # task type list via the descriptor's getter.
-            supported_tasks = getattr(handler_class, "supported_tasks").fget(handler_class)
-        if handler_name not in supported_tasks:
-            self.logger.log(
-                logging.WARNING,
-                "Task handler %r registered under name %r, which is not among its "
-                "supported_tasks %r; dispatch is by supported_tasks membership, so "
-                "this name will never be dispatched to.",
-                handler_class.__name__,
-                handler_name,
-                supported_tasks,
-            )
+        handler_name = handler_class.__name__
+        if handler_name in self.__task_handlers_map:
+            raise ValueError(f"Task handler {handler_name!r} is already registered")
         self.__task_handlers_map[handler_name] = handler_class
         self.logger.log(logging.INFO, "Added Task handler: %s", handler_name)
         if self.state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):

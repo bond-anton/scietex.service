@@ -56,6 +56,25 @@ async def test_process_task_with_dummy_handler():
 
 
 @pytest.mark.asyncio
+async def test_add_task_handler_registers_by_class_name():
+    """add_task_handler takes only the handler class; the lifecycle key is the
+    class name (AR-022 v4)."""
+    proc = DemoProcessor()
+    proc.add_task_handler(DummyHandler)
+    await proc._start_task_handler("DummyHandler")
+    assert "DummyHandler" in proc.task_handlers
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_duplicate_class_raises():
+    """Registering the same handler class twice must raise (AR-022 v4)."""
+    proc = DemoProcessor()
+    proc.add_task_handler(DummyHandler)
+    with pytest.raises(ValueError):
+        proc.add_task_handler(DummyHandler)
+
+
+@pytest.mark.asyncio
 async def test_add_task_handler_warns_when_name_not_in_supported_tasks(caplog):
     """A registration key outside the handler's supported_tasks must log a
     WARNING but still register the handler: the key is a lifecycle handle, not
