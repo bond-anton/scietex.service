@@ -13,5 +13,5 @@ class TaskHandlerContext:
     """
 
     service_name: str
-    worker_id: int
+    instance_id: str
     logger: logging.Logger

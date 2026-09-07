@@ -58,7 +58,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
     Properties:
         service_name (str): Name of the service (read-only).
-        worker_id (int): Unique identifier for this worker (read-only).
+        instance_id (str): Unique identifier for this worker instance (read-only).
         version (str): Version string of the service (read-only).
         logger (logging.Logger): Logger instance for the worker.
         logging_level (int): Current logging level (configurable).
@@ -71,7 +71,6 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
-        worker_id: int = 1,
         conf_dir: str | Path | None = None,
         logging_level: int | str = logging.DEBUG,
         heartbeat_interval: float | None = None,
@@ -86,7 +85,6 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         Args:
             service_name: Name of the service, used for logging and identification.
             version: Version string of the service.
-            worker_id: Unique identifier for this worker instance.
             conf_dir: Directory to use for configuration files.
             logging_level: Logging level as string or integer.
             heartbeat_interval: Heartbeat interval in seconds.
@@ -101,7 +99,6 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         super().__init__(
             service_name=service_name,
             version=version,
-            worker_id=worker_id,
             conf_dir=conf_dir,
             logging_level=logging_level,
             heartbeat_interval=heartbeat_interval,
@@ -358,7 +355,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         handler_class = self.__task_handlers_map[handler_name]
         context = TaskHandlerContext(
             service_name=self.service_name,
-            worker_id=self.worker_id,
+            instance_id=self.instance_id,
             logger=self.logger,
         )
         handler_instance = handler_class(handler_name, context)

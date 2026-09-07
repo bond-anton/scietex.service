@@ -37,7 +37,7 @@ async def test_taskhandler_is_abstract():
     with pytest.raises(TypeError):
         context = TaskHandlerContext(
             service_name="test",
-            worker_id=1,
+            instance_id="abc123",
             logger=logging.getLogger(__name__),
         )
         TaskHandler("handler", context)  # abstract methods not implemented
@@ -47,7 +47,7 @@ async def test_taskhandler_is_abstract():
 async def test_dummyhandler_lifecycle():
     context = TaskHandlerContext(
         service_name="test",
-        worker_id=1,
+        instance_id="abc123",
         logger=logging.getLogger(__name__),
     )
     handler = DummyHandler("dummy", context)
