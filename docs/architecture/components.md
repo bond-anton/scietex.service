@@ -150,15 +150,14 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 |---|---|
 | `TaskTimeout` (16) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
 | `TaskData` (30) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
-| `TaskResult` (48) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `retry_count: int`, `partial: bool`, `requeue: bool\|None` |
+| `TaskResult` (48) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
 | `TaskTracker` (85) | `worker_task: asyncio.Task`, `data: TaskData`, `started: int\|float` |
 
 `TaskResult.processed_at` uses `msgspec.field(default_factory=lambda:
 datetime.now(timezone.utc))` (76) so each instance gets its own timestamp
-(AR-012). The error-taxonomy fields (`error_code`/`retryable`/`retry_count`/
-`partial`/`requeue`, added AR-022) are optional and default to "no extra
-information", so handlers that only set `status`/`error` keep working
-unchanged.
+(AR-012). The error-taxonomy fields (`error_code`/`retryable`/`partial`,
+added AR-022) are optional and default to "no extra information", so
+handlers that only set `status`/`error` keep working unchanged.
 
 **Public interface:** constructors only (frozen). **Dependencies:** `msgspec`.
 **Depended on by:** `task_handler.basic`, `async_tasks_processor`,

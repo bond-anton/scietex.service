@@ -513,11 +513,12 @@ task = TaskData(
 `process_task()` applies an error taxonomy to the `TaskResult` it
 produces:
 
-- A handler that **raises** yields
-  `TaskResult(status="error", retryable=True)` — a raise is treated as a
-  transient (retryable) failure.
-- A handler that **returns** its own `TaskResult` controls all fields,
-  including `retryable` (which defaults to `False`).
+- A handler that **raises** is treated as **permanent**
+  (`retryable=False`). An unhandled exception is unclassified, so it
+  must not create an infinite requeue loop under retry-once.
+- A handler that **returns** its own `TaskResult` controls `retryable`
+  (which defaults to `False`). Set `retryable=True` on transient errors
+  to trigger the framework's single retry.
 - Framework failures (empty `task` field, no matching handler) are
   permanent and leave `retryable=False`.
 
@@ -530,12 +531,9 @@ async def handle(self, task_data: TaskData) -> TaskResult:
         # Permanent client error — not retryable
         return TaskResult(status="error", error=str(exc))
     except ConnectionError as exc:
-        # Transient error — mark retryable
+        # Transient error — mark retryable to trigger the single retry
         return TaskResult(status="error", error=str(exc), retryable=True)
 ```
-
-Raising instead of returning an error result is also acceptable: the
-processor marks the resulting error `retryable=True` by default.
 
 ### Sleep Time Tuning
 

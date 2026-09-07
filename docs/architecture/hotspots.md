@@ -263,17 +263,16 @@ value.
   no way to express partial progress or custom requeue intent, so all recovery
   is delegated to `return_task_to_queue` at the processor level.
 
-**Resolved (AR-022, additive contract):** `TaskResult` now carries optional
-structured error-taxonomy fields — `error_code`, `retryable`, `retry_count`,
-`partial`, `requeue` (task_handler/schemas.py:78-82) — all defaulting to "no
-extra information" so existing handlers keep working. `process_task` marks a
-handler that *raises* as `retryable=True` (a raise is treated as transient) and
-passes a handler-returned `TaskResult` through unchanged; framework-level
-failures (empty `task` field, no matching handler) remain permanent
-(`retryable=False`). Registration is also reconciled with dispatch: the
-`add_task_handler` `supported_tasks` parameter (314-358) validates the
-registration name against the handler's declared task types and warns when the
-name can never be dispatched to. Honoring `requeue`/`retryable` on the *error*
-path (requeueing a failed task rather than a timed-out one) is still future
-work gated on result availability (see `watchdog` docstring, 693-702), and the
-key-based registration API remains deprecated until v4 (docs/ROADMAP.md).
+**Resolved (AR-022, v4):** `TaskResult` carries the error-taxonomy fields
+`error_code`, `retryable`, `partial` (task_handler/schemas.py:78-81) — all
+defaulting to "no extra information" so existing handlers keep working; the
+redundant `retry_count`/`requeue` fields are dropped. `process_task` treats a
+handler that *raises* as permanent (`retryable=False`) and passes a
+handler-returned `TaskResult` through unchanged; framework-level failures
+(empty `task` field, no matching handler) remain permanent. `handle_task`
+executes a single retry: a `retryable=True` error is requeued via
+`return_task_to_queue` before the transport entry is acked (XADD then XACK);
+permanent errors are acked and dropped. Registration is class-only:
+`add_task_handler` takes only the handler class, with `handler_class.__name__`
+as the lifecycle key (single instance per class, a duplicate class name
+raises).

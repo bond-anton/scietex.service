@@ -157,9 +157,7 @@ class TaskResult(msgspec.Struct, frozen=True):
     payload: bytes = b""
     error_code: str = ""
     retryable: bool = False
-    retry_count: int = 0
     partial: bool = False
-    requeue: bool | None = None
 ```
 
 | Field | Type | Default | Description |
@@ -169,14 +167,12 @@ class TaskResult(msgspec.Struct, frozen=True):
 | `processed_at` | `datetime` | current UTC | Timestamp when result was created |
 | `payload` | `bytes` | `b""` | Optional result payload |
 | `error_code` | `str` | `""` | Structured error taxonomy code (e.g. `"PERMANENT"` or `"TRANSIENT"`, or a domain-specific code). Empty means unset |
-| `retryable` | `bool` | `False` | Whether the failure is retryable (transient) vs permanent |
-| `retry_count` | `int` | `0` | Number of processing attempts so far |
+| `retryable` | `bool` | `False` | The single retry signal: whether the failure is transient and may succeed on retry. `True` triggers the framework's one retry |
 | `partial` | `bool` | `False` | Whether partial progress was made before the error |
-| `requeue` | `bool \| None` | `None` | Explicit requeue intent overriding `canceled_action`/`timeout_action`. `None` means no explicit intent |
 
-The error-taxonomy fields (`error_code`, `retryable`, `retry_count`,
-`partial`, `requeue`) all default to "no extra information", so handlers
-that only set `status` and `error` keep working unchanged.
+The error-taxonomy fields (`error_code`, `retryable`, `partial`) all
+default to "no extra information", so handlers that only set `status`
+and `error` keep working unchanged.
 
 ### TaskTimeout
 
@@ -280,13 +276,14 @@ class ImageHandler(TaskHandler):
 
 ### Error Handling
 
-The processor distinguishes three failure outcomes via `process_task()`:
+The processor distinguishes failure outcomes via `process_task()`:
 
-- A handler that **raises** produces `TaskResult(status="error",
-  retryable=True)` — a raise is treated as a transient failure.
-- A handler that **returns** its own `TaskResult` controls all fields,
-  including `retryable` (which defaults to `False`). Set
-  `retryable=True` on transient errors that may succeed on retry.
+- A handler that **raises** is treated as **permanent**
+  (`retryable=False`). An unhandled exception is unclassified, so it
+  must not create an infinite requeue loop under retry-once.
+- A handler that **returns** its own `TaskResult` controls `retryable`
+  (which defaults to `False`). Set `retryable=True` on transient errors
+  that may succeed on retry.
 - Framework failures (empty `task` field, no matching handler) are
   permanent and leave `retryable=False`.
 
@@ -299,12 +296,9 @@ async def handle(self, task_data: TaskData) -> TaskResult:
         # Permanent client error — not retryable
         return TaskResult(status="error", error=str(exc))
     except ConnectionError as exc:
-        # Transient error — mark retryable
+        # Transient error — mark retryable to trigger the single retry
         return TaskResult(status="error", error=str(exc), retryable=True)
 ```
-
-Raising instead of returning an error result is also acceptable: the
-processor marks the resulting error `retryable=True` by default.
 
 ### Resource Management
 
