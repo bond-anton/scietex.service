@@ -66,7 +66,7 @@ concrete handlers must implement.
 | Attribute | Type | Description |
 |---|---|---|
 | `name` | `str` | Handler name (set at construction) |
-| `context` | `TaskHandlerContext` | Narrow context exposing `service_name`, `worker_id`, `logger` |
+| `context` | `TaskHandlerContext` | Narrow context exposing `service_name`, `instance_id`, `logger` |
 | `logger` | `logging.Logger` | Logger instance from the parent worker |
 | `is_ready` | `bool` | Whether the handler is initialized and ready |
 

@@ -126,7 +126,6 @@ accept `None` to reset to the default value.
 AsyncTaskProcessor(
     service_name: str = "service",
     version: str = "0.0.1",
-    worker_id: int = 1,
     conf_dir: str | Path | None = None,
     logging_level: int | str = logging.DEBUG,
     heartbeat_interval: float | None = None,

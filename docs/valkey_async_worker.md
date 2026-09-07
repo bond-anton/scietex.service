@@ -77,16 +77,18 @@ pip install scietex.service[valkey]
 
 ## Key Names
 
-All Valkey resources follow a naming convention based on `service_name`
-and `worker_id`:
+The Valkey key space is split into two namespaces. Service-scoped keys are
+shared across all replicas of a service; worker-scoped keys are unique per
+`instance_id` (auto-generated):
 
-| Resource | Key Pattern |
-|---|---|
-| Task stream | `scietex:{service_name}:{worker_id}:tasks` |
-| Consumer group | `scietex:{service_name}:{worker_id}:task_group` |
-| Consumer name | `scietex:{service_name}:{worker_id}` |
-| Heartbeat key | `scietex:{service_name}:{worker_id}:status` |
-| Log stream | `scietex:log` (configurable via `log_stream_name`) |
+| Resource | Key Pattern | Scope |
+|---|---|---|
+| Task stream | `scietex:{service_name}:tasks` | service-scoped |
+| Consumer group | `scietex:{service_name}:task_group` | service-scoped |
+| Worker registry | `scietex:{service_name}:workers` | service-scoped |
+| Consumer name | `scietex:{service_name}:{instance_id}` | worker-scoped |
+| Heartbeat key | `scietex:{service_name}:{instance_id}:status` | worker-scoped |
+| Log stream | `scietex:log` (configurable via `log_stream_name`) | — |
 
 ## Constants
 
@@ -141,7 +143,6 @@ to Valkey, and creates the consumer group for the task stream (with
 ValkeyWorker(
     service_name: str = "service",
     version: str = "0.0.1",
-    worker_id: int = 1,
     conf_dir: str | Path | None = None,
     logging_level: int | str = logging.DEBUG,
     heartbeat_interval: float | None = None,
@@ -158,7 +159,6 @@ ValkeyWorker(
 |---|---|---|
 | `service_name` | `"service"` | Name of the service, used for key naming and logging |
 | `version` | `"0.0.1"` | Version string of the service |
-| `worker_id` | `1` | Unique identifier for this worker instance |
 | `conf_dir` | `None` | Directory to use for configuration files |
 | `logging_level` | `logging.DEBUG` | Logging level as string or integer |
 | `heartbeat_interval` | `None` (uses `DEFAULT_HEARTBEAT_INTERVAL`) | Heartbeat interval in seconds |
@@ -203,7 +203,7 @@ async def heartbeat(self) -> None:
 ```
 
 The heartbeat is serialized as msgpack and stored at
-`scietex:{service_name}:{worker_id}:status` with a TTL set to twice the
+`scietex:{service_name}:{instance_id}:status` with a TTL set to twice the
 heartbeat interval.
 
 ### initialize()
@@ -348,7 +348,6 @@ class MyValkeyWorker(ValkeyWorker):
         super().__init__(
             service_name="email_service",
             version="1.0.0",
-            worker_id=1,
             **kwargs,
         )
 
@@ -550,13 +549,13 @@ TLS configuration for encrypted connections.
 
 Heartbeat data published by `ValkeyWorker` to track worker status.
 Serialized as msgpack and stored at
-`scietex:{service_name}:{worker_id}:status` with a TTL set to twice the
+`scietex:{service_name}:{instance_id}:status` with a TTL set to twice the
 heartbeat interval.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `service` | `str` | *(required)* | Name of the publishing service |
-| `worker_id` | `int` | *(required)* | Unique identifier of the worker instance |
+| `instance_id` | `str` | *(required)* | Unique identifier of the worker instance |
 | `status` | `Literal["active", "inactive"]` | *(required)* | Current worker status |
 | `heartbeat_interval` | `float` | *(required)* | Interval in seconds between heartbeats |
 | `start_time` | `datetime` | *(required)* | UTC timestamp when the worker started |
@@ -575,7 +574,7 @@ Were `listening=True` passed, the client would subscribe to:
 
 | Channel | Pattern | Description |
 |---|---|---|
-| `scietex:{service_name}:{worker_id}` | Exact | Service-specific channel for this worker |
+| `scietex:{service_name}:{instance_id}` | Exact | Service-specific channel for this worker |
 | `scietex:broadcast` | Exact | Broadcast channel for all workers in the service |
 
 A `parse_control_message` callback could be provided to handle incoming

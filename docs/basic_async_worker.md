@@ -166,7 +166,7 @@ behavior.
 | Property | Type | Description |
 |---|---|---|
 | `service_name` | `str` | Name of the service (read-only) |
-| `worker_id` | `int` | Unique identifier for this worker (read-only) |
+| `instance_id` | `str` | Unique identifier for this worker instance, auto-generated (read-only) |
 | `version` | `str` | Version string of the service (read-only) |
 
 ### State
@@ -192,7 +192,7 @@ behavior.
 
 | Property | Type | Description |
 |---|---|---|
-| `logger` | `logging.Logger` | Logger instance (named `{service_name}.{worker_id}`) |
+| `logger` | `logging.Logger` | Logger instance (named `{service_name}.{instance_id}`) |
 
 ## Configuration
 
@@ -202,7 +202,6 @@ behavior.
 BasicAsyncWorker(
     service_name: str = "service",
     version: str = "0.0.1",
-    worker_id: int = 1,
     conf_dir: str | Path | None = None,
     logging_level: int | str = logging.DEBUG,
     heartbeat_interval: float | None = None,
@@ -215,7 +214,6 @@ BasicAsyncWorker(
 |---|---|---|
 | `service_name` | `"service"` | Service name for logging and identification |
 | `version` | `"0.0.1"` | Version string |
-| `worker_id` | `1` | Unique worker identifier |
 | `conf_dir` | `None` | Configuration directory (see precedence below) |
 | `logging_level` | `logging.DEBUG` | Logging level as string or integer |
 | `heartbeat_interval` | `None` (uses default) | Heartbeat interval in seconds |
@@ -291,7 +289,6 @@ async def main():
     worker = MyService(
         service_name="my_daemon",
         version="1.0.0",
-        worker_id=1,
         heartbeat_interval=15,
         watchdog_interval=5,
         logging_level="INFO",
@@ -309,17 +306,17 @@ if __name__ == "__main__":
 
 ### Worker Uniqueness
 
-Within a single process, the `(service_name, worker_id)` combination
-should be unique to ensure separate logger names and avoid conflicts:
+Each instance auto-generates a unique `instance_id` (`uuid4().hex`) used for
+logger names and (in `ValkeyWorker`) consumer/status keys, so multiple
+instances of the same service can coexist in one process without any
+manual id management:
 
 ```python
-# Good: separate logger names
-worker_a = MyService(service_name="worker", worker_id=1)
-worker_b = MyService(service_name="worker", worker_id=2)
+# Both instances get distinct logger names automatically
+worker_a = MyService(service_name="worker")
+worker_b = MyService(service_name="worker")
 
-# Avoid: duplicate names in same process
-worker_a = MyService(service_name="worker", worker_id=1)
-worker_b = MyService(service_name="worker", worker_id=1)  # Same logger!
+assert worker_a.instance_id != worker_b.instance_id
 ```
 
 ### Manager Error Recovery

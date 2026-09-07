@@ -152,7 +152,6 @@ async def main() -> None:
     worker = ValkeyWorker(
         service_name="distributed_worker",
         version="1.0.0",
-        worker_id=1,
         logging_level=logging.DEBUG,
         heartbeat_interval=10,
         valkey_config=config,
@@ -168,8 +167,8 @@ if __name__ == "__main__":
 ```
 
 Tasks are stored in a Valkey stream named
-`scietex:{service_name}:{worker_id}:tasks` and consumed via a consumer
-group `scietex:{service_name}:{worker_id}:task_group`.
+`scietex:{service_name}:tasks` and consumed via a consumer
+group `scietex:{service_name}:task_group`.
 
 ## Architecture
 
