@@ -18,7 +18,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H6 | Resolved | AR-015 + AR-008 — signals in `start()`; read-only views |
 | H7 | Resolved | AR-017 — `_force_stopped()` forces STOPPED on cancellation |
 | H8 | Resolved | AR-005 — at-least-once delivery |
-| H9 | Resolved | AR-018 — health reporting + `share_glide_client` seam shipped; single client deferred to v4 (ROADMAP) |
+| H9 | Resolved | AR-018 — single shared GlideClient shipped in v3 |
 | H10 | Resolved | AR-006 + AR-010 — truthful `connect()` |
 | H11 | Open | per-`worker_id` stream/group naming — deferred to v4 (AR-023, ROADMAP) |
 | H12 | Open | usage docs still drift (out of scope here) |
@@ -159,17 +159,15 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
   `stop_logging`). Connection failure modes and resource accounting are split
   across two owners.
 
-**Resolved (AR-018):** the two-lifecycle model is now documented explicitly on
-`ValkeyWorker`, and health is reported for **both** clients. `logging_connected`
-(valkey_async_worker.py:258) exposes the logging handler's client state, and
-`connect()` (295) reports divergence via `_log_connection_divergence` (273) —
-warning when the worker client and logging client disagree — so a
-half-connected worker is observable. A `share_glide_client` constructor flag
-(108) and `_handler_supports_client_injection` (54) are the reserved seam for a
-single shared client. **True single-connection unification** is deferred to v4
-(see docs/ROADMAP.md): it is gated on the external `scietex.logging`
-`AsyncValkeyHandler` gaining a client-injection parameter; until then the
-handler keeps its own client and owns its teardown via `stop_logging`.
+**Resolved (AR-018):** `ValkeyWorker` now runs a single `GlideClient` shared
+with the logging handler. `_ensure_logging_handler`
+(valkey_async_worker.py:207) constructs the `AsyncValkeyHandler` with the
+worker's client injected (via the `scietex.logging>=1.2.0` client-injection
+seam) on the first successful `connect()`, so the handler never owns or closes
+the shared client; `disconnect()` (277) clears the handler's reference before
+closing the client, making the worker the sole teardown owner. The handler is
+reused across restarts, and `connect()` keeps it on the worker's current client
+across reconnects.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 

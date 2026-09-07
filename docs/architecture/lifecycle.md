@@ -133,7 +133,7 @@ RUNNING) / `remove_task_handler`.
 - Lifecycle is owned by `LoggingLifecycle` (logging_lifecycle.py): started in
   `start_handlers` (startup), stopped in `shut_down_handlers` (shutdown), each
   bounded by `logger_handler_timeout`.
-- The external `scietex.logging` handlers (>= 1.1.0) are restartable in place:
+- The external `scietex.logging` handlers (>= 1.2.0) are restartable in place:
   `start_logging()`/`stop_logging()` may be called repeatedly on the same event
   loop. `start_handlers` starts each handler whose recorded status is not
   RUNNING; `shut_down_handlers` calls the idempotent `stop_logging()` and
@@ -151,7 +151,7 @@ RUNNING) / `remove_task_handler`.
 | Task handler instances | processor (created per handler name) | `initialize` | `cleanup` |
 | Handler `is_ready` state | each `TaskHandler` | `start()` | `stop()` |
 | GlideClient (`ValkeyWorker.client`) | worker | `initialize`→`connect` | `cleanup`→`disconnect` |
-| GlideClient inside `AsyncValkeyHandler` | the log handler | `start_logging` (its `_worker`) | `stop_logging` (its `disconnect`) |
+| Logging `AsyncValkeyHandler` worker loop | worker (via `LoggingLifecycle`) | `connect()` → `handler.start_logging()` | shutdown (`stop_logging`) |
 | Signal handlers (SIGINT/SIGTERM) | loop (per started worker) | `start()` (`_setup_signal_handlers`) | `stop()` (`_remove_signal_handlers`) |
 
 `UNKNOWN` — explicit process-exit path when a worker stops without a signal

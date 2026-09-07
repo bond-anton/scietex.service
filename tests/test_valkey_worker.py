@@ -1,16 +1,9 @@
 """Valkey async task processor testing."""
 
-import logging
-
 import pytest
-from scietex.logging import AsyncValkeyHandler
 
 from scietex.service import ValkeyWorker
-from scietex.service.valkey.valkey_config import (
-    ValkeyBaseConfig,
-    ValkeyConfig,
-    ValkeyUserCredentials,
-)
+from scietex.service.valkey.valkey_config import ValkeyConfig
 
 
 class DummyClient:
@@ -96,30 +89,29 @@ def _make_msg(channel: bytes | str, message: bytes | str):
     return Msg(channel, message)
 
 
-def _find_valkey_handler(worker: ValkeyWorker) -> AsyncValkeyHandler:
-    for handler in worker.logger.handlers:
-        if isinstance(handler, AsyncValkeyHandler):
-            return handler
-    raise AssertionError("AsyncValkeyHandler not registered on worker logger")
-
-
 @pytest.mark.asyncio
-async def test_log_handler_receives_credentials():
-    cfg = ValkeyConfig(
-        base_config=ValkeyBaseConfig(user_credentials=ValkeyUserCredentials(username="myuser", password="secret"))
-    )
-    worker = ValkeyWorker(service_name="creds-test", valkey_config=cfg)
-    client_config = _find_valkey_handler(worker).client_config
-    assert client_config["username"] == "myuser"
-    assert client_config["password"] == "secret"
+async def test_logging_handler_created_on_connect(monkeypatch):
+    """The AsyncValkeyHandler is constructed on first connect with the worker's
+    client injected, so worker and logging share one GlideClient (AR-018)."""
 
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=True)
 
-@pytest.mark.asyncio
-async def test_log_handler_receives_no_credentials_by_default():
-    worker = ValkeyWorker(service_name="nocreds-test", valkey_config=ValkeyConfig())
-    client_config = _find_valkey_handler(worker).client_config
-    assert client_config["username"] is None
-    assert client_config["password"] is None
+    import scietex.service.valkey.valkey_async_worker as mod
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    assert worker._valkey_handler is None  # not built until connect
+
+    ok = await worker.connect()
+    assert ok is True
+    handler = worker._valkey_handler
+    assert handler is not None
+    assert handler.client is worker.client  # shared, not a second client
+    assert handler._owns_client is False  # worker owns teardown
 
 
 @pytest.mark.asyncio
@@ -275,32 +267,9 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
 
 
 @pytest.mark.asyncio
-async def test_logging_connected_reflects_handler_client():
-    """logging_connected mirrors the registered AsyncValkeyHandler's client:
-    False when absent/None, True when a client is attached (AR-018)."""
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
-    # Handler registered but never connected: its client is None.
-    assert worker.logging_connected is False
-
-    _find_valkey_handler(worker).client = DummyClient()
-    assert worker.logging_connected is True
-
-    _find_valkey_handler(worker).client = None
-    assert worker.logging_connected is False
-
-
-@pytest.mark.asyncio
-async def test_logging_connected_false_when_handler_absent():
-    """logging_connected is False when no AsyncValkeyHandler is registered (AR-018)."""
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
-    worker.logger.removeHandler(_find_valkey_handler(worker))
-    assert worker.logging_connected is False
-
-
-@pytest.mark.asyncio
-async def test_connect_warns_when_logging_client_down(monkeypatch, caplog):
-    """A successful worker connect must WARN when the logging client is down,
-    so a half-connected worker is observable (AR-018)."""
+async def test_disconnect_closes_shared_client_once(monkeypatch):
+    """disconnect closes the single shared client and clears the handler's
+    reference; the handler never closes it (AR-018)."""
 
     async def create_mock(cfg):
         return DummyClient(ping_ok=True)
@@ -312,55 +281,12 @@ async def test_connect_warns_when_logging_client_down(monkeypatch, caplog):
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
     worker = ValkeyWorker(valkey_config=ValkeyConfig())
-    with caplog.at_level(logging.WARNING):
-        ok = await worker.connect()
+    await worker.connect()
+    client = worker.client
+    handler = worker._valkey_handler
+    assert handler.client is client
 
-    assert ok is True
-    assert any(
-        record.levelno == logging.WARNING and "logging handler has no live client" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-@pytest.mark.asyncio
-async def test_connect_warns_when_worker_client_down(monkeypatch, caplog):
-    """A failed worker connect must WARN when the logging client is up, so the
-    inverse divergence is also observable (AR-018)."""
-
-    async def create_mock(cfg):
-        return DummyClient(ping_ok=False)
-
-    import scietex.service.valkey.valkey_async_worker as mod
-
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
-    # Simulate the logging handler being connected while the worker fails.
-    _find_valkey_handler(worker).client = DummyClient()
-    with caplog.at_level(logging.WARNING):
-        ok = await worker.connect()
-
-    assert ok is False
+    await worker.disconnect()
+    assert client.closed is True
     assert worker.client is None
-    assert any(
-        record.levelno == logging.WARNING
-        and "logging handler is connected, but the worker client is not" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-@pytest.mark.asyncio
-async def test_share_glide_client_seam_warns_and_falls_back(caplog):
-    """share_glide_client=True with a non-injecting handler must WARN and fall
-    back to the config-dict path without crashing (AR-018)."""
-    with caplog.at_level(logging.WARNING):
-        worker = ValkeyWorker(valkey_config=ValkeyConfig(), share_glide_client=True)
-
-    handler = _find_valkey_handler(worker)
-    assert handler.client_config is not None
-    assert any(
-        record.levelno == logging.WARNING and "share_glide_client=True" in record.getMessage()
-        for record in caplog.records
-    )
+    assert handler.client is None

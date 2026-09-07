@@ -241,36 +241,34 @@ read-only `MappingProxyType` views; `queue_size`, `max_concurrent_tasks`,
 via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
-**Main symbols:** `class ValkeyWorker(AsyncTaskProcessor)` (66).
-Constructor 95 (accepts `valkey_config` or falls back to `read_valkey_config`,
-163–174; registers an `AsyncValkeyHandler` with credentials 200–209),
-`connect` 295 (`GlideClient.create` + PING; `_client` assigned only after PING
-succeeds, 326; reports logging-client divergence, 273), `disconnect` 341,
-`heartbeat` 352 (writes msgpack `Heartbeat` to `...:status` with TTL
-2×interval), `initialize` 388 (start handlers, connect, `xgroup_create`),
-`cleanup` 423 (super + disconnect), `purge_tasks` 433,
-`return_task_to_queue` 499 (`xadd` re-queue), `_recover_pending_tasks` 518
-(`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 574
+**Main symbols:** `class ValkeyWorker(AsyncTaskProcessor)` (53).
+Constructor 76 (accepts `valkey_config` or falls back to `read_valkey_config`,
+140–151), `connect` 232 (`GlideClient.create` + PING; `_client` assigned only
+after PING succeeds, 261; then wires the shared client into the logging handler),
+`disconnect` 277, `heartbeat` 291 (writes msgpack `Heartbeat` to `...:status`
+with TTL 2×interval), `initialize` 327 (start handlers, connect,
+`xgroup_create`), `cleanup` 362 (super + disconnect), `purge_tasks` 372,
+`return_task_to_queue` 438 (`xadd` re-queue), `_recover_pending_tasks` 457
+(`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 513
 (`xreadgroup` → decode → `enqueue_task`; does **not** ack on enqueue),
-`on_task_completed` 633 (`xack`+`xdel` the entry after the handler finishes).
+`on_task_completed` 572 (`xack`+`xdel` the entry after the handler finishes).
 
-Health reporting (AR-018): the `logging_connected` property (258) reports
-whether the logging handler's independent client is live; `_log_connection_divergence`
-(273) warns when the worker client and logging client disagree; the
-`share_glide_client` constructor flag (108) and `_handler_supports_client_injection`
-(54) are the reserved seam for a single shared client (see §H9).
+Single client (AR-018): the worker runs one `GlideClient` shared with the
+logging handler. `_ensure_logging_handler` (207) constructs the
+`AsyncValkeyHandler` with the worker's client injected on the first successful
+`connect()`, and `disconnect()` (277) clears the handler's reference before
+closing the shared client — the worker is the sole teardown owner (see §H9).
 
-**Key names** (constructed in `__init__`, lines 212–215): status key
+**Key names** (constructed in `__init__`, lines 162–165): status key
 `scietex:{service}:{worker_id}:status`, task stream
 `scietex:{service}:{worker_id}:tasks`, group
 `scietex:{service}:{worker_id}:task_group`, consumer
-`scietex:{service}:{worker_id}`. `_task_entry_ids` (220) maps task UUID → stream
-entry id for deferred acknowledgement; `_recovered` (224) guards one-time
+`scietex:{service}:{worker_id}`. `_task_entry_ids` (170) maps task UUID → stream
+entry id for deferred acknowledgement; `_recovered` (174) guards one-time
 pending recovery.
 
-**Public interface:** properties `valkey_config`, `client`, `logging_connected`;
-constructor kwargs (`valkey_config`, `log_stream_name`, `share_glide_client`,
-...).
+**Public interface:** properties `valkey_config`, `client`; constructor kwargs
+(`valkey_config`, `log_stream_name`, ...).
 
 **Dependencies:** `..async_tasks_processor`, `..task_handler.TaskData`,
 `.schemas.Heartbeat`, `.valkey_config`, external
@@ -320,18 +318,20 @@ value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 
 ## 13. External async logging backend — `scietex.logging`
 
-Installed dependency (>=1.1.0). The package embeds this framework's log sink.
+Installed dependency (>=1.2.0). The package embeds this framework's log sink.
 Consumed classes:
 - `AsyncBaseHandler(logging.Handler)` — per-backend `asyncio.Queue`s +
   worker coroutines; `start_logging()`/`stop_logging()`/`emit()`. Console
   worker enabled unless `stdout_enable=False`.
 - `AsyncBrokerHandler` — adds a broker queue + `_worker` that connects,
-  formats records into dicts, `send_message()`.
-- `AsyncValkeyHandler(AsyncBrokerHandler)` — own `GlideClient`; `xadd` to a
-  stream. `ValkeyWorker` passes Valkey connection credentials to it
-  (valkey_async_worker.py:176–188).
+  formats records into dicts, `send_message()`; accepts an injected `client`
+  and, when one is provided, never closes it (`_owns_client=False`).
+- `AsyncValkeyHandler(AsyncBrokerHandler)` — `xadd` to a stream. `ValkeyWorker`
+  injects its own `GlideClient` via the `client` kwarg on the first successful
+  `connect()` (valkey_async_worker.py:207–223), so logging shares the worker's
+  single connection rather than opening a second one.
 - `ScietexFormatter`.
 
-**Important:** each async handler holds its **own** transport client and
-internal asyncio tasks, i.e. Valkey logging opens a second GlideClient beside
-`ValkeyWorker.client`.
+**Important:** when a client is injected via the `client` kwarg, the handler
+never closes it — the caller owns its lifetime and recovery. `ValkeyWorker`
+injects its single client, so the worker is the sole teardown owner.

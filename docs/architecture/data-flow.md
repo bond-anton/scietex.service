@@ -120,9 +120,11 @@ heartbeat never surfaces.
   (`logging_lifecycle.py:37`)) — `emit()` puts each record into an internal
   `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`
   and writes to stdout.
-- `AsyncValkeyHandler` (added in `ValkeyWorker.__init__`,
-  `valkey_async_worker.py:200-209`, `stdout_enable=False`) — its own
-  `GlideClient`; formats records to a dict and `xadd`s to log stream
+- `AsyncValkeyHandler` (constructed lazily on the first successful
+  `connect()` via `_ensure_logging_handler`,
+  `valkey_async_worker.py:207`, `stdout_enable=False`) — shares the worker's
+  single `GlideClient` (injected via the `scietex.logging>=1.2.0` seam);
+  formats records to a dict and `xadd`s to log stream
   `scietex:log` (default).
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
@@ -139,12 +141,12 @@ timeout (`logger_handler_timeout`, default 2 s).
 `utils/conf.py:33`), i.e. `valkey.yml` in the chosen dir, or programmatic
 `ValkeyConfig`.
 
-**Path:** `ValkeyWorker.__init__` (162-174): if no `valkey_config` argument,
+**Path:** `ValkeyWorker.__init__` (142-153): if no `valkey_config` argument,
 `read_valkey_config(self.conf_dir)` loads or creates `valkey.yml`
 (msgspec YAML, strict decode; a present-but-invalid file raises `RuntimeError`,
 only a missing file is created with defaults) →
 `ValkeyConfig` → `generate_glide_config(...)` → `GlideClientConfiguration`
-→ `GlideClient.create` in `connect()` (319).
+→ `GlideClient.create` in `connect()` (255).
 
 ## F8. Control / PubSub (defined but unused in package)
 

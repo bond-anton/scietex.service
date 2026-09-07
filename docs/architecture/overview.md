@@ -19,7 +19,7 @@ is a library whose entry point is the consumer's own `main()`.
 | Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (stream transport over glide), typed Valkey config schema + YAML loader + schema→glide converter (`valkey_config.py`), `Heartbeat` schema |
 | Utilities | `src/scietex/service/utils/` | `prepare_conf_dir()` config-dir resolution (`conf.py`); ASCII logo printer (`logo.py`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional import of Valkey exports |
-| Async logging backend (external) | `scietex.logging` package (>=1.1.0) | `AsyncBaseHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `ScietexFormatter` |
+| Async logging backend (external) | `scietex.logging` package (>=1.2.0) | `AsyncBaseHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `ScietexFormatter` |
 
 ## How subsystems interact
 
@@ -121,7 +121,9 @@ process/loop:
 Ownership summary: the **worker owns** manager tasks and the internal task
 queue / `running_tasks`, delegating manager bookkeeping to `ManagerRuntime` and
 logging-handler bookkeeping to `LoggingLifecycle`; the **logging handlers own**
-their internal queues/worker tasks and each has its own GlideClient (Valkey);
+their internal queues/worker tasks, and since AR-018 (v3) the Valkey log
+handler shares the worker's single `GlideClient` (injected via the
+`scietex.logging>=1.2.0` seam) rather than owning its own;
 **task handlers own** their initialization state (`is_ready`) but not their own
 tasks — they run inline inside processor-created tasks.
 

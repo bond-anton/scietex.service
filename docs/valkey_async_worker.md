@@ -125,7 +125,6 @@ to Valkey, and creates the consumer group for the task stream (with
 |---|---|---|---|
 | `valkey_config` | `ValkeyConfig \| GlideClientConfiguration` | — | The Valkey configuration used by this worker |
 | `client` | `GlideClient \| None` | `None` | The active Valkey client (``None`` until connected) |
-| `logging_connected` | `bool` | `False` | Whether the logging handler has a live Valkey client (``True`` only when a registered `AsyncValkeyHandler` exists and its `client` is not ``None``) |
 
 ### Inherited from AsyncTaskProcessor
 
@@ -151,7 +150,6 @@ ValkeyWorker(
     max_concurrent_tasks: int | None = None,
     valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
     log_stream_name: str = "scietex:log",
-    share_glide_client: bool = False,
     **kwargs,
 )
 ```
@@ -170,7 +168,6 @@ ValkeyWorker(
 | `valkey_config` | `None` | Custom Valkey configuration. If ``None``, reads
 ``valkey.yml`` from the config directory |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
-| `share_glide_client` | `False` | Reserved feature flag for a single shared `GlideClient` across the task client and the logging handler. The external `scietex.logging` handler does not yet accept an injected client, so `True` logs a warning and falls back to the handler owning its own client |
 | `**kwargs` | — | Additional kwargs passed to `AsyncTaskProcessor` |
 
 ## Methods
@@ -441,14 +438,14 @@ config = ValkeyConfig(
 worker = MyValkeyWorker(valkey_config=config)
 ```
 
-### Async Logging Credentials
+### Async Logging
 
-The worker resolves the generated `GlideClientConfiguration.credentials`
-and passes them — along with the node addresses, TLS setting, request
-timeout, database id, client name, and related connection settings — to
-the `AsyncValkeyHandler` used for async log entries. Logging therefore
-uses the same Valkey connectivity (including authentication) as the task
-client.
+The worker runs a single `GlideClient` shared with the `AsyncValkeyHandler`
+used for async log entries (AR-018). The handler is constructed with the
+worker's client injected on the first successful `connect()`, so logging and
+task traffic use the same connection (including authentication); the worker
+remains the sole teardown owner and closes the shared client in
+`disconnect()`. The handler is registered once and reused across restarts.
 
 ## Configuration Reference
 

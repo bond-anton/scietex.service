@@ -68,8 +68,10 @@ glide (valkey-glide, optional)                              [external]
   flow into the worker.
 - **Logging has two dependency arrows** (see `scietex.logging` above): both the
   base worker (console handler) and `ValkeyWorker` (Valkey handler) attach
-  external handlers. `ValkeyWorker` therefore couples to `glide` **twice** —
-  directly (`self._client`) and inside the logging handler.
+  external handlers. Since AR-018 (v3), `ValkeyWorker` couples to `glide`
+  **once** — the logging `AsyncValkeyHandler` receives the worker's single
+  `GlideClient` injected via the `scietex.logging>=1.2.0` client-injection seam
+  and never opens or closes a client of its own.
 - **Public API re-export guard**: the only place core code tolerates a missing
   optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
   `ImportError`, which is caught (`__init__.py:54`) and reported via a warning
@@ -90,7 +92,7 @@ glide (valkey-glide, optional)                              [external]
 | Package | Declared in | Used for | Structurally significant? |
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
-| `scietex.logging>=1.1.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
+| `scietex.logging>=1.2.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
 | `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
 
@@ -106,7 +108,8 @@ glide (valkey-glide, optional)                              [external]
    `GlideClientConfiguration` → `GlideClient.create`.
 3. **Log path**: worker logger → `scietex.logging.AsyncBaseHandler.emit`
    → internal asyncio queues → console worker; or `AsyncValkeyHandler._worker`
-   → its own `GlideClient.xadd` → stream.
+   → `xadd` on the worker's shared `GlideClient` (injected via the
+   `scietex.logging>=1.2.0` seam) → stream.
 4. **Manager runtime chain**: `@Manager`-decorated method →
    `ManagerRuntime.iter_manager_definitions` (MRO scan) →
    `ManagerRuntime.start_manager` (task) → `ManagerRuntime.run_manager`

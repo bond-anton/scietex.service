@@ -29,18 +29,6 @@ or accept redelivery from the old group. Requires a major-version bump.
 - Whether `worker_id` remains a meaningful identity when replicas share a queue,
   or whether a separate replica/instance id is needed for status keys.
 
-## v4 — Single shared GlideClient (connection lifecycle)
-
-**Motivation:** AR-018 (docs/reviews/architecture/2026-09-06.md). `ValkeyWorker`
-currently runs two independent `GlideClient` lifecycles: its own task client and
-the external `scietex.logging` `AsyncValkeyHandler`'s logging client. True
-unification is blocked on the external package gaining a client-injection seam.
-
-**Planned change:** once `scietex.logging` accepts an injected `GlideClient`,
-flip the `share_glide_client` feature-flag seam (added in v3.x) to pass the
-worker's client through to the handler, giving one connection lifecycle and one
-teardown owner.
-
 ## v4 — Task registration reconciled with task types
 
 **Motivation:** AR-022 (docs/reviews/architecture/2026-09-06.md). Registration
