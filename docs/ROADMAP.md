@@ -52,6 +52,8 @@ signature becomes `add_task_handler(handler_class)`; code that registered the
 same class under multiple keys, relied on a custom lifecycle name, or passed a
 `supported_tasks` override must adapt. Requires a major-version bump.
 
+**Status: implemented** in v4.0.0 (commits `3400420`, `9c7689f`).
+
 ## v4 — Error-policy enforcement on task results
 
 **Motivation:** AR-022 (docs/reviews/architecture/2026-09-06.md). The v3 error
@@ -84,3 +86,5 @@ otherwise create under retry-once.
 
 **Breaking:** `TaskResult` schema change (drop `requeue`, `retry_count`) and the
 raise-path retryability flip. Requires a major-version bump.
+
+**Status: implemented** in v4.0.0 (commits `3a49b9c`, `fa6a8cc`, `45923d8`).
