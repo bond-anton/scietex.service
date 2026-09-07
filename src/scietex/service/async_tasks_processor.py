@@ -527,12 +527,13 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         Returns a ``TaskResult`` with ``status="error"`` if no handler
         is found or an exception occurs.
 
-        A handler that raises produces an error result marked
-        ``retryable=True`` (a raise is treated as a transient failure).
-        A handler that returns a ``TaskResult`` controls its own fields
-        and is passed through unchanged. The framework-level failures
-        (empty ``task`` field, no matching handler) are permanent and
-        leave ``retryable=False``.
+        A handler that raises produces an error result marked permanent
+        (``retryable=False``): an unhandled exception is unclassified, so
+        it must not create an infinite requeue loop under retry-once. A
+        handler that returns a ``TaskResult`` controls its own fields
+        (``retryable=True`` opts into a single retry) and is passed
+        through unchanged. Framework-level failures (empty ``task`` field,
+        no matching handler) are permanent and leave ``retryable=False``.
 
         Args:
             task_id: Identifier of the task to process.
@@ -559,11 +560,11 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             try:
                 result = await handler.handle(task_data)
             except Exception as e:
-                # A handler raising is treated as a transient (retryable)
-                # failure by default: the exception is unclassified, so the
-                # framework opts into retry and lets the caller override via
-                # the handler's own returned TaskResult when it knows better.
-                result = TaskResult(status="error", error=str(e), retryable=True)
+                # A handler raising is unclassified: treat it as permanent
+                # (retryable=False) so an unhandled exception cannot create an
+                # infinite requeue loop under retry-once. A handler that wants
+                # a retry must return a retryable=True result explicitly.
+                result = TaskResult(status="error", error=str(e))
         else:
             result = TaskResult(status="error", error=f"No handler found for task type '{task_type}'")
 
@@ -609,6 +610,24 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             finally:
                 self.__running_tasks.pop(t_id, None)
                 self.__task_queue.task_done()
+                # Retry-once (AR-022 v4): requeue a retryable error BEFORE
+                # acking the transport entry (XADD then XACK), so the retry
+                # copy is durable before the original is dropped. Permanent
+                # errors and successes are acked and dropped without requeue.
+                # A requeue failure is logged and the task is still acked (the
+                # retry copy is lost, but the entry must not stay pending
+                # forever).
+                if result is not None and result.status == "error" and result.retryable:
+                    try:
+                        await self.return_task_to_queue(t_id, t_data)
+                    except Exception as exc:
+                        self.logger.log(
+                            logging.ERROR,
+                            "Failed to requeue retryable task %s (%s): %s",
+                            t_data.task,
+                            t_id,
+                            exc,
+                        )
                 try:
                     # Ack the transport entry exactly when the handler's work
                     # on it ends (success, error, or cancellation). On
@@ -668,16 +687,11 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         if no timeout is set). Tasks with ``timeout_action="requeue"`` are
         returned to the external queue for potential retry.
 
-        Requeue boundary: timeout-driven requeue is governed solely by the
-        task's ``timeout_action`` literal, because the handler's final
-        ``TaskResult`` (with its ``requeue``/``retryable`` fields) lives in
-        the ``handle_task`` closure and is not accessible here. A handler
-        can express requeue intent for the *error* path via
-        ``TaskResult.requeue``/``TaskResult.retryable``; honoring that
-        intent in ``process_task``/``handle_task`` (i.e. requeueing a task
-        that *failed* rather than timed out) is future work gated on result
-        availability. Until then, error-path requeue is not performed and
-        timeout requeue remains driven by ``timeout_action``.
+        Requeue boundary: error-path requeue is handled in ``handle_task``
+        (retry-once via ``TaskResult.retryable``); the watchdog handles only
+        timeout-driven requeue via the task's ``timeout_action`` literal.
+        The handler's final ``TaskResult`` lives in the ``handle_task``
+        closure and is not accessible here.
 
         Override this method in subclasses to add additional watchdog
         logic. The default implementation handles task timeout detection

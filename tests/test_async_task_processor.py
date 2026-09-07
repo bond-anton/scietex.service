@@ -131,9 +131,7 @@ class ReturningErrorHandler(TaskHandler):
             error="x",
             retryable=False,
             error_code="PERMANENT",
-            retry_count=2,
             partial=True,
-            requeue=False,
         )
 
     @property
@@ -141,10 +139,29 @@ class ReturningErrorHandler(TaskHandler):
         return ["error_returner"]
 
 
+class RetryableErrorHandler(TaskHandler):
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="error", error="transient", retryable=True)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["retryable_err"]
+
+
+class PermanentErrorHandler(TaskHandler):
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="error", error="permanent", retryable=False)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["permanent_err"]
+
+
 @pytest.mark.asyncio
-async def test_process_task_handler_exception_is_retryable():
-    """A handler that raises must yield an error TaskResult marked retryable
-    by default, with the exception message in ``error`` (AR-022)."""
+async def test_process_task_handler_exception_is_permanent():
+    """A handler that raises must yield an error TaskResult with retryable
+    False (permanent) by default, with the exception message in ``error``
+    (AR-022 v4)."""
     proc = DemoProcessor()
     proc.add_task_handler(RaisingHandler)
     await proc._start_task_handler("RaisingHandler")
@@ -153,11 +170,9 @@ async def test_process_task_handler_exception_is_retryable():
 
     assert result.status == "error"
     assert result.error == "boom"
-    assert result.retryable is True
+    assert result.retryable is False
     assert result.error_code == ""
-    assert result.retry_count == 0
     assert result.partial is False
-    assert result.requeue is None
 
 
 @pytest.mark.asyncio
@@ -174,9 +189,7 @@ async def test_process_task_preserves_handler_returned_result_fields():
     assert result.error == "x"
     assert result.retryable is False
     assert result.error_code == "PERMANENT"
-    assert result.retry_count == 2
     assert result.partial is True
-    assert result.requeue is False
 
 
 @pytest.mark.asyncio
@@ -291,6 +304,79 @@ async def test_handle_task_invokes_completion_hook():
         assert cid == t_id
         assert cdata.task == "dummy"
         assert cresult.status == "success"
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+class RequeueRecordingProcessor(RecordingProcessor):
+    async def return_task_to_queue(self, task_id, task_data):
+        self.requeued.append((task_id, task_data))
+
+
+@pytest.mark.asyncio
+async def test_handle_task_requeues_retryable_error_before_ack():
+    """A retryable error result must be requeued via return_task_to_queue
+    before on_task_completed acks the transport entry (AR-022 v4)."""
+    proc = RequeueRecordingProcessor()
+    proc.add_task_handler(RetryableErrorHandler)
+    await proc._start_task_handler("RetryableErrorHandler")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(t_id, TaskData(task="retryable_err", payload=b"{}"))
+        for _ in range(100):
+            if proc.completed:
+                break
+            await asyncio.sleep(0.01)
+        assert len(proc.completed) == 1
+        assert any(tid == t_id for tid, _ in proc.requeued)
+        _, _, cresult = proc.completed[0]
+        assert cresult.status == "error"
+        assert cresult.retryable is True
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+@pytest.mark.asyncio
+async def test_handle_task_drops_permanent_error_without_requeue():
+    """A permanent error result must be acked+dropped, not requeued (AR-022 v4)."""
+    proc = RequeueRecordingProcessor()
+    proc.add_task_handler(PermanentErrorHandler)
+    await proc._start_task_handler("PermanentErrorHandler")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(t_id, TaskData(task="permanent_err", payload=b"{}"))
+        for _ in range(100):
+            if proc.completed:
+                break
+            await asyncio.sleep(0.01)
+        assert len(proc.completed) == 1
+        assert not any(tid == t_id for tid, _ in proc.requeued)
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+@pytest.mark.asyncio
+async def test_handle_task_does_not_requeue_raised_handler():
+    """A handler that raises is permanent: handle_task must not requeue it
+    (AR-022 v4)."""
+    proc = RequeueRecordingProcessor()
+    proc.add_task_handler(RaisingHandler)
+    await proc._start_task_handler("RaisingHandler")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(t_id, TaskData(task="raiser", payload=b"{}"))
+        for _ in range(100):
+            if proc.completed:
+                break
+            await asyncio.sleep(0.01)
+        assert len(proc.completed) == 1
+        assert not any(tid == t_id for tid, _ in proc.requeued)
     finally:
         await proc.exit()
         await proc.events["exit"].wait()
