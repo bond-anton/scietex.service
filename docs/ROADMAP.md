@@ -16,8 +16,13 @@ replicas can consume one shared queue:
 
 - stream: `scietex:{service}:tasks` (service-scoped, shared across replicas)
 - group: `scietex:{service}:task_group` (service-scoped)
-- consumer: `scietex:{service}:{worker_id}` (worker-scoped)
-- status/heartbeat key: `scietex:{service}:{worker_id}:status` (unchanged)
+- consumer: `scietex:{service}:{instance_id}` (worker-scoped)
+- status/heartbeat key: `scietex:{service}:{instance_id}:status` (worker-scoped)
+- worker registry: `scietex:{service}:workers` (service-scoped set; SADD on
+  startup, SREM on shutdown; liveness is the status-key TTL, not set membership)
+- `XAUTOCLAIM` recovery floor raised to `DEFAULT_CLAIM_MIN_IDLE_MS = 1000` so a
+  replica's startup recovery does not claim entries a slow-but-alive handler on
+  another replica is still processing.
 
 **Breaking:** existing deployed streams/groups under the old per-`worker_id`
 names will be orphaned. Consumers must drain/ack old streams before deploying,
@@ -28,6 +33,8 @@ or accept redelivery from the old group. Requires a major-version bump.
   ordering guarantees are not required across consumers).
 - Whether `worker_id` remains a meaningful identity when replicas share a queue,
   or whether a separate replica/instance id is needed for status keys.
+
+**Status: implemented** in v4.0.0 (commits `2ebc58e`, `b7b58fc`).
 
 ## v4 — Task registration reconciled with task types
 
