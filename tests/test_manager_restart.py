@@ -211,7 +211,9 @@ async def test_cancellation_ignoring_manager_stays_tracked_after_timeout():
         # On Python 3.12+ wait_for awaits the task to finish on timeout, so a
         # manager that ignores cancellation would hang the real call. Simulate
         # the shutdown timeout so stop_manager observes a still-running task.
-        with patch("asyncio.wait_for", side_effect=TimeoutError):
+        # Use asyncio.TimeoutError (not the builtin): on 3.10 it is a distinct
+        # subclass, so the builtin would not be caught by stop_manager.
+        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
             await worker._stop_manager("Stubborn")
 
         # The still-running task must remain tracked.

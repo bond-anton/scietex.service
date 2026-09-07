@@ -42,9 +42,6 @@ class DemoProcessor(AsyncTaskProcessor):
         # record requeued tasks for assertions
         self.requeued.append((task_id, task_data))
 
-    async def _logger_shut_down_handlers(self) -> None:  # disable real logging stop
-        return None
-
 
 @pytest.mark.asyncio
 async def test_process_task_with_dummy_handler():
@@ -122,8 +119,10 @@ async def test_watchdog_requeues_timed_out_task():
     # task should have been requeued by watchdog
     assert any(tid == t_id for tid, _ in proc.requeued)
 
-    # stop processor to cleanup background tasks
-    await proc.stop()
+    # stop processor and wait for full shutdown so no background task leaks
+    # into the event-loop teardown (stop() alone is fire-and-forget).
+    await proc.exit()
+    await proc.events["exit"].wait()
 
 
 @pytest.mark.asyncio
@@ -259,7 +258,8 @@ async def test_task_manager_consumes_handler_exception_without_leaking():
         assert not any("never retrieved" in m for m in leaked), f"leaked: {leaked}"
     finally:
         loop.set_exception_handler(old_handler)
-        await proc.stop()
+        await proc.exit()
+        await proc.events["exit"].wait()
 
 
 class FailingStartHandler(TaskHandler):
@@ -312,7 +312,8 @@ async def test_handle_task_invokes_completion_hook():
         assert cdata.task == "dummy"
         assert cresult.status == "success"
     finally:
-        await proc.stop()
+        await proc.exit()
+        await proc.events["exit"].wait()
 
 
 class StubbornHandler(TaskHandler):
@@ -358,7 +359,8 @@ async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monke
         # Let the stubborn handler finish so no dangling task remains.
         await asyncio.sleep(0.5)
     finally:
-        await proc.stop()
+        await proc.exit()
+        await proc.events["exit"].wait()
 
 
 @pytest.mark.asyncio
@@ -437,4 +439,5 @@ async def test_watchdog_ignores_non_positive_timeout():
         assert t_id in proc.running_tasks
         assert not any(tid == t_id for tid, _ in proc.requeued)
     finally:
-        await proc.stop()
+        await proc.exit()
+        await proc.events["exit"].wait()
