@@ -49,6 +49,16 @@ from .valkey_config import (
     read_valkey_config,
 )
 
+DEFAULT_CLAIM_MIN_IDLE_MS: int = 1000
+"""Idle floor (ms) before XAUTOCLAIM reclaims a pending entry.
+
+With 0, a replica's startup recovery can claim an entry a slow-but-alive
+handler on another replica is still processing, causing double-processing.
+A positive floor means only entries idle >= the floor (genuinely abandoned)
+are claimed. Must be well under the status-key TTL (2 x heartbeat_interval)
+so a dead replica's entries are reclaimed promptly.
+"""
+
 
 class ValkeyWorker(AsyncTaskProcessor):
     """
@@ -77,7 +87,6 @@ class ValkeyWorker(AsyncTaskProcessor):
         self,
         service_name: str = "service",
         version: str = "0.0.1",
-        worker_id: int = 1,
         conf_dir: str | Path | None = None,
         logging_level: int | str = logging.DEBUG,
         heartbeat_interval: float | None = None,
@@ -100,7 +109,6 @@ class ValkeyWorker(AsyncTaskProcessor):
         Args:
             service_name: Name of the service, used for logging and identification.
             version: Version string of the service.
-            worker_id: Unique identifier for this worker instance.
             conf_dir: Directory to use for configuration files.
             logging_level: Logging level as string or integer.
             heartbeat_interval: Heartbeat interval in seconds.
@@ -125,11 +133,11 @@ class ValkeyWorker(AsyncTaskProcessor):
             _task_stream_name (str): Valkey stream name for task entries.
             _task_group_name (str): Consumer group name for task fetching.
             _consumer_name (str): Consumer identifier within the task group.
+            _registry_key (str): Service-scoped worker registry set key.
         """
         super().__init__(
             service_name=service_name,
             version=version,
-            worker_id=worker_id,
             conf_dir=conf_dir,
             logging_level=logging_level,
             heartbeat_interval=heartbeat_interval,
@@ -148,7 +156,7 @@ class ValkeyWorker(AsyncTaskProcessor):
             self._client_config: GlideClientConfiguration = generate_glide_config(
                 valkey_config,
                 service_name=self.service_name,
-                worker_id=self.worker_id,
+                worker_id=self.instance_id,
                 listening=False,
             )
         # The logging handler shares the worker's single GlideClient (AR-018).
@@ -159,10 +167,11 @@ class ValkeyWorker(AsyncTaskProcessor):
         self._valkey_handler: AsyncValkeyHandler | None = None
 
         self._client: GlideClient | None = None
-        self._heartbeat_key = f"scietex:{self.service_name}:{self.worker_id}:status"
-        self._task_stream_name = f"scietex:{self.service_name}:{self.worker_id}:tasks"
-        self._task_group_name = f"scietex:{self.service_name}:{self.worker_id}:task_group"
-        self._consumer_name = f"scietex:{self.service_name}:{self.worker_id}"
+        self._heartbeat_key = f"scietex:{self.service_name}:{self.instance_id}:status"
+        self._task_stream_name = f"scietex:{self.service_name}:tasks"
+        self._task_group_name = f"scietex:{self.service_name}:task_group"
+        self._consumer_name = f"scietex:{self.service_name}:{self.instance_id}"
+        self._registry_key = f"scietex:{self.service_name}:workers"
         self.__encoder = msgspec.msgpack.Encoder()
 
         # Maps a task UUID to the stream entry id it was read from, so the
@@ -218,7 +227,7 @@ class ValkeyWorker(AsyncTaskProcessor):
             self._valkey_handler = AsyncValkeyHandler(
                 stream_name=self._log_stream_name,
                 service_name=self.service_name,
-                worker_id=self.worker_id,
+                worker_id=self.instance_id,  # ty: ignore[invalid-argument-type]
                 client=self._client,
                 stdout_enable=False,
             )
@@ -299,7 +308,7 @@ class ValkeyWorker(AsyncTaskProcessor):
         if self.client and self.start_time:
             heartbeat_data = Heartbeat(
                 service=self.service_name,
-                worker_id=self.worker_id,
+                instance_id=self.instance_id,
                 status="active",
                 heartbeat_interval=self.heartbeat_interval,
                 start_time=self.start_time,
@@ -368,6 +377,48 @@ class ValkeyWorker(AsyncTaskProcessor):
         """
         await super().cleanup()
         await self.disconnect()
+
+    async def _register_instance(self) -> None:
+        """Add this instance id to the service-scoped worker registry set.
+
+        Best-effort: a failed SADD must not fail startup (log WARNING and
+        continue). The registry set is the enumeration index; liveness is the
+        status-key TTL refreshed by heartbeat(), so a stale member left by a
+        crashed replica is tolerated (the operator probes each member's
+        status key).
+        """
+        if self.client is None:
+            return
+        try:
+            await self.client.sadd(self._registry_key, [self.instance_id])
+        except Exception as exc:
+            self.logger.log(
+                logging.WARNING,
+                "Failed to register instance %s in %s: %s",
+                self.instance_id,
+                self._registry_key,
+                exc,
+            )
+
+    async def _unregister_instance(self) -> None:
+        """Remove this instance id from the service-scoped worker registry set.
+
+        Best-effort: a failed SREM must not fail shutdown (log WARNING and
+        continue). Called by _shutdown() before cleanup() disconnects the
+        client, so the client is still open here.
+        """
+        if self.client is None:
+            return
+        try:
+            await self.client.srem(self._registry_key, [self.instance_id])
+        except Exception as exc:
+            self.logger.log(
+                logging.WARNING,
+                "Failed to unregister instance %s from %s: %s",
+                self.instance_id,
+                self._registry_key,
+                exc,
+            )
 
     async def purge_tasks(self):
         """Purge all pending and unacknowledged tasks from the Valkey task stream.
@@ -458,9 +509,9 @@ class ValkeyWorker(AsyncTaskProcessor):
         """Re-enqueue stream entries left pending by a previous run.
 
         Uses ``XAUTOCLAIM`` to claim every entry in the consumer group's
-        pending list that is idle (``min_idle_time_ms=0``) and enqueue it, so
-        tasks that were read but never acknowledged before a crash are
-        redelivered (at-least-once). Called once from the first
+        pending list that is idle for at least ``DEFAULT_CLAIM_MIN_IDLE_MS``
+        and enqueue it, so tasks that were read but never acknowledged before
+        a crash are redelivered (at-least-once). Called once from the first
         ``fetch_tasks``, before any ``'>'`` read, when no tasks are in flight.
 
         Returns:
@@ -475,7 +526,7 @@ class ValkeyWorker(AsyncTaskProcessor):
                     self._task_stream_name,
                     self._task_group_name,
                     self._consumer_name,
-                    0,
+                    DEFAULT_CLAIM_MIN_IDLE_MS,
                     start,
                     count=10,
                 )

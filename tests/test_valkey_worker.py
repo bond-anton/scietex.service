@@ -23,6 +23,7 @@ class DummyClient:
         self.xgroup_create_error = xgroup_create_error
         self.acked: list = []
         self.deleted: list = []
+        self.xautoclaim_calls: list = []
 
     async def xgroup_create(self, *args, **kwargs):
         if self.xgroup_create_error is not None:
@@ -41,6 +42,7 @@ class DummyClient:
         return self.xreadgroup_result
 
     async def xautoclaim(self, *args, **kwargs):
+        self.xautoclaim_calls.append(args)
         return self.xautoclaim_result
 
     async def ping(self):
@@ -260,10 +262,23 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
 
     await worker._recover_pending_tasks()
 
+    assert client.xautoclaim_calls[0][3] == 1000  # min_idle_time_ms
     assert not worker.task_queue_empty()
     t_id, t_data = worker.dequeue_task()
     assert t_data.task == "dummy"
     assert worker._task_entry_ids[t_id] == b"9-0"
+
+
+def test_two_workers_share_stream_group_differ_in_consumer_status():
+    a = ValkeyWorker(service_name="svc", valkey_config=ValkeyConfig())
+    b = ValkeyWorker(service_name="svc", valkey_config=ValkeyConfig())
+
+    assert a._task_stream_name == b._task_stream_name == "scietex:svc:tasks"
+    assert a._task_group_name == b._task_group_name == "scietex:svc:task_group"
+    assert a._consumer_name != b._consumer_name
+    assert a._heartbeat_key != b._heartbeat_key
+    assert a._consumer_name == f"scietex:svc:{a.instance_id}"
+    assert a._heartbeat_key == f"scietex:svc:{a.instance_id}:status"
 
 
 @pytest.mark.asyncio
