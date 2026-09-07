@@ -34,5 +34,20 @@ or accept redelivery from the old group. Requires a major-version bump.
 **Motivation:** AR-022 (docs/reviews/architecture/2026-09-06.md). Registration
 keys passed to `add_task_handler` are unrelated to the task types a handler
 declares via `supported_tasks`; dispatch is first-match over `supports()`. The
-key-based registration API is deprecated in v3.x in favor of type-based
-registration; remove the deprecated key-based path in v4.
+key is a lifecycle handle, not a dispatch key.
+
+**Decision (v4):** handlers are stateless by design — a handler class is
+registered once per worker and holds no per-instance configuration. The
+user-supplied `handler_name` key and the `supported_tasks` override argument
+are removed: `add_task_handler` takes only the handler class. The lifecycle key
+is derived from `handler_class.__name__` (single instance per class); a
+duplicate class name raises. The class-level `supported_tasks` declaration is
+kept — it is the dispatch contract (`_find_task_handler` routes by
+`supports()` membership), not an argument. This drops the multi-key /
+multi-instance-per-class capability, which was never exercised (all handlers
+are stateless) and which the stateless model does not need.
+
+**Breaking:** the `add_task_handler(handler_name, handler_class, supported_tasks=None)`
+signature becomes `add_task_handler(handler_class)`; code that registered the
+same class under multiple keys, relied on a custom lifecycle name, or passed a
+`supported_tasks` override must adapt. Requires a major-version bump.
