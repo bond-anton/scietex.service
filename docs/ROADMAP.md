@@ -51,3 +51,36 @@ are stateless) and which the stateless model does not need.
 signature becomes `add_task_handler(handler_class)`; code that registered the
 same class under multiple keys, relied on a custom lifecycle name, or passed a
 `supported_tasks` override must adapt. Requires a major-version bump.
+
+## v4 — Error-policy enforcement on task results
+
+**Motivation:** AR-022 (docs/reviews/architecture/2026-09-06.md). The v3 error
+taxonomy on `TaskResult` (`retryable`, `requeue`, `retry_count`, `partial`,
+`error_code`) is inert: `process_task` produces it, but `handle_task` and the
+watchdog ignore it, so the framework cannot act on a handler's retry intent.
+The watchdog docstring flags error-path requeue as future work gated on result
+availability.
+
+**Decision (v4):** the framework executes a retry **once** per task. When a
+task fails (`status="error"`) with `retryable=True`, `handle_task` requeues it
+via `return_task_to_queue` before acking the transport entry (XADD then XACK,
+preserving at-least-once without duplication). Permanent failures
+(`retryable=False`) are acked and dropped. The worker owns only the *execution*
+of the requeue; the handler owns the *intent* (only it knows transient vs
+permanent). No retry count, cap, or backoff in v4 — retry policy beyond the
+single retry is left to the transport/handler.
+
+**Taxonomy simplification (breaking):** under retry-once, `retryable` is the
+single retry signal. The `requeue` and `retry_count` fields are redundant
+(second ways to express the same intent, nothing reads/writes them) and are
+dropped from `TaskResult`. `partial` and `error_code` are kept — they are
+orthogonal progress/error-reporting fields, not retry fields.
+
+**Raise-path change (breaking):** the default that marks a handler which
+*raises* as `retryable=True` is removed. A handler that raises is treated as
+permanent (`retryable=False`) unless it explicitly returns a `retryable=True`
+result. This removes the infinite-requeue hazard an unhandled exception would
+otherwise create under retry-once.
+
+**Breaking:** `TaskResult` schema change (drop `requeue`, `retry_count`) and the
+raise-path retryability flip. Requires a major-version bump.
