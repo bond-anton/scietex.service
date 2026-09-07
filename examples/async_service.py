@@ -53,7 +53,6 @@ async def main():
     worker = MyService(
         service_name="my_daemon",
         version="1.0.0",
-        worker_id=1,
         heartbeat_interval=15,
         watchdog_interval=5,
         logging_level="DEBUG",

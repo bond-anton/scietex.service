@@ -20,7 +20,6 @@ async def main(config: ValkeyConfig | None) -> None:
     worker = ValkeyWorker(
         service_name="MyValkeyService",
         version="0.0.1",
-        worker_id=1,
         logging_level=logging.DEBUG,
         heartbeat_interval=4,
         valkey_config=config,
