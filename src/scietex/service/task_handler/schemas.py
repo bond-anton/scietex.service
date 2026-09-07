@@ -56,15 +56,11 @@ class TaskResult(msgspec.Struct, frozen=True):
         error_code: Structured error taxonomy code (e.g. ``"PERMANENT"``
             or ``"TRANSIENT"``, or a domain-specific code). Empty string
             means unset.
-        retryable: Whether the failure is retryable (transient) vs
-            permanent. Handlers that raise are marked retryable by the
-            processor by default.
-        retry_count: Number of processing attempts so far.
+        retryable: The single retry signal: whether a failure is
+            transient and may succeed on retry. ``True`` triggers the
+            framework's one retry. A handler that raises is treated as
+            permanent (``False``).
         partial: Whether partial progress was made before the error.
-        requeue: Explicit requeue intent overriding the coarse
-            ``canceled_action``/``timeout_action`` literals. ``None``
-            means no explicit intent and the processor falls back to the
-            existing literals.
 
     All error-taxonomy fields are optional and default to "no extra
     information", so handlers that only set ``status`` and ``error``
@@ -77,9 +73,7 @@ class TaskResult(msgspec.Struct, frozen=True):
     payload: bytes = b""
     error_code: str = ""
     retryable: bool = False
-    retry_count: int = 0
     partial: bool = False
-    requeue: bool | None = None
 
 
 class TaskTracker(msgspec.Struct, frozen=True):

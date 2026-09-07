@@ -73,17 +73,17 @@ async def test_dummyhandler_lifecycle():
     assert handler.cleaned
 
 
-def test_task_result_new_fields_default_and_roundtrip():
+def test_task_result_fields_default_and_roundtrip():
     """An existing-style TaskResult(status=..., error=...) must still
-    construct with the new error-taxonomy fields defaulting to 'no extra
-    info', and round-trip through msgspec (AR-022)."""
+    construct with the error-taxonomy fields defaulting to 'no extra info',
+    and round-trip through msgspec. retry_count/requeue are dropped (AR-022 v4)."""
     result = TaskResult(status="error", error="boom")
 
     assert result.error_code == ""
     assert result.retryable is False
-    assert result.retry_count == 0
     assert result.partial is False
-    assert result.requeue is None
+    assert not hasattr(result, "retry_count")
+    assert not hasattr(result, "requeue")
 
     encoded = msgspec.msgpack.encode(result)
     decoded = msgspec.msgpack.decode(encoded, type=TaskResult)
@@ -91,6 +91,4 @@ def test_task_result_new_fields_default_and_roundtrip():
     assert decoded.error == "boom"
     assert decoded.error_code == ""
     assert decoded.retryable is False
-    assert decoded.retry_count == 0
     assert decoded.partial is False
-    assert decoded.requeue is None
