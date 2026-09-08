@@ -369,10 +369,18 @@ class ValkeyWorker(AsyncTaskProcessor):
         """Perform cleanup on shutdown.
 
         Drains the internal task queue and cancels running tasks via the
-        parent ``AsyncTaskProcessor.cleanup()``, then closes the Valkey
+        parent ``AsyncTaskProcessor.cleanup()``, then stops the Valkey logging
+        handler while the shared client is still open (so its worker drains
+        remaining records instead of reconnecting to a client that
+        ``disconnect()`` is about to close), and finally closes the Valkey
         connection through :meth:`disconnect`.
         """
         await super().cleanup()
+        # Stop the valkey logging handler while the shared client is still open so
+        # its worker drains remaining records instead of reconnecting to a client
+        # that disconnect() is about to close (shutdown error flood).
+        if self._valkey_handler is not None:
+            await self._valkey_handler.stop_logging()
         await self.disconnect()
 
     async def _register_instance(self) -> None:

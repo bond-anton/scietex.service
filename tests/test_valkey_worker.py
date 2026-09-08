@@ -305,3 +305,54 @@ async def test_disconnect_closes_shared_client_once(monkeypatch):
     assert client.closed is True
     assert worker.client is None
     assert handler.client is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_stops_logging_before_disconnect(monkeypatch):
+    """cleanup must stop the valkey logging handler before disconnect() closes
+    the shared client, so the handler drains remaining records through the
+    still-open client instead of reconnecting to a closed one (AR-022)."""
+
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=True)
+
+    import scietex.service.valkey.valkey_async_worker as mod
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    ok = await worker.connect()
+    assert ok is True
+    handler = worker._valkey_handler
+    client = worker.client
+    assert handler is not None
+    assert client is not None
+
+    events: list[str] = []
+
+    original_stop_logging = handler.stop_logging
+
+    async def spy_stop_logging(*args, **kwargs):
+        events.append("stop_logging")
+        return await original_stop_logging(*args, **kwargs)
+
+    original_close = client.close
+
+    async def spy_close():
+        events.append("close")
+        return await original_close()
+
+    handler.stop_logging = spy_stop_logging
+    client.close = spy_close
+
+    await worker.cleanup()
+
+    assert "stop_logging" in events, "cleanup must stop the valkey logging handler"
+    assert "close" in events, "cleanup must close the client via disconnect()"
+    assert events.index("stop_logging") < events.index("close"), (
+        "stop_logging must run before disconnect() closes the shared client"
+    )
+    assert client.closed is True
+    assert worker.client is None
