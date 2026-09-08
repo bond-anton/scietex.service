@@ -95,6 +95,7 @@ class ValkeyWorker(AsyncTaskProcessor):
         max_concurrent_tasks: int | None = None,
         valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
         log_stream_name: str = "scietex:log",
+        task_fetch_batch_size: int = 10,
         **kwargs,
     ):
         """Initialize the ``ValkeyWorker``.
@@ -120,6 +121,11 @@ class ValkeyWorker(AsyncTaskProcessor):
                 to minimal defaults. Accepts either a :class:`ValkeyConfig`
                 or a raw :class:`~glide.GlideClientConfiguration`.
             log_stream_name: Name of the Valkey stream used for log entries.
+            task_fetch_batch_size: Maximum number of stream entries read per
+                ``XREADGROUP`` call. Batching decouples the intake rate from
+                the per-call round-trip so the internal queue can fill up to
+                ``max_concurrent_tasks`` (AR-042); a single-entry read would
+                cap effective concurrency at roughly one task per round-trip.
             **kwargs: Additional keyword arguments passed to the parent
                 ``AsyncTaskProcessor`` constructor.
 
@@ -181,6 +187,10 @@ class ValkeyWorker(AsyncTaskProcessor):
         # True once pending-entry recovery has run (start of the first
         # fetch_tasks), so a crash's unacked entries are redelivered once.
         self._recovered: bool = False
+
+        # Number of stream entries read per XREADGROUP call (AR-042). Clamped
+        # to >= 1 so a misconfiguration cannot disable intake.
+        self._task_fetch_batch_size: int = max(1, task_fetch_batch_size)
 
     @property
     def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
@@ -300,6 +310,11 @@ class ValkeyWorker(AsyncTaskProcessor):
         Encodes a ``Heartbeat`` struct with service metadata and writes it
         to ``self._heartbeat_key`` with a TTL set to twice the heartbeat
         interval. Logs the duration at DEBUG and any failure at WARNING.
+
+        The write is guarded by ``self.client and self.start_time``:
+        ``start_time`` is set only after the managers start in ``_startup``,
+        so the first heartbeat after connect is skipped and the status key's
+        TTL is not refreshed until the second beat.
         """
 
         if self.client and self.start_time:
@@ -365,6 +380,21 @@ class ValkeyWorker(AsyncTaskProcessor):
                 return False
         return True
 
+    async def _on_queue_drain_task_processing(self, task_id: UUID, task_data: TaskData) -> None:
+        """No-op override: drained tasks must not be re-enqueued.
+
+        The base ``AsyncTaskProcessor`` default requeues a drained task when
+        ``canceled_action == "requeue"``. For a durable transport the stream
+        entry is still pending and is redelivered on restart, so re-enqueueing
+        here would duplicate it (AR-041). Overriding to a no-op lets the
+        pending entry redeliver instead.
+
+        Args:
+            task_id: Identifier of the queued task.
+            task_data: The task data that was still queued at drain time.
+        """
+        pass
+
     async def cleanup(self):
         """Perform cleanup on shutdown.
 
@@ -425,72 +455,6 @@ class ValkeyWorker(AsyncTaskProcessor):
                 exc,
             )
 
-    async def purge_tasks(self):
-        """Purge all pending and unacknowledged tasks from the Valkey task stream.
-
-        Reads and acknowledges every entry in the task stream via
-        ``XREADGROUP`` (both pending and unclaimed), then deletes them
-        with ``XDEL``. Also purges any remaining entries via ``XREAD``.
-
-        Returns:
-            None. Logs a confirmation message on success or an error
-            description on failure.
-        """
-        if self.client is None:
-            self.logger.warning("No Valkey client available to purge tasks")
-            return
-        client = self.client
-        try:
-            # Entries already delivered to the group (pending + delivered).
-            await self._purge_group_entries(client, "0-0")
-            # Entries not yet delivered to the group.
-            await self._purge_group_entries(client, ">")
-            # Entries in the stream the group never saw.
-            await self._purge_stream_entries(client)
-            self.logger.log(logging.INFO, "All pending tasks purged from Valkey")
-        except Exception as exc:
-            self.logger.log(logging.ERROR, "Failed to purge tasks from Valkey: %s", exc)
-
-    async def _purge_group_entries(self, client: GlideClient, start: str) -> None:
-        """Read, acknowledge, and delete group entries from the task stream.
-
-        Reads entries via ``XREADGROUP`` from ``start``, acknowledges them
-        with ``XACK`` so they leave the pending list, then deletes them
-        with ``XDEL``. Loops until ``XREADGROUP`` returns no more entries.
-        """
-        while True:
-            res = await client.xreadgroup(
-                {self._task_stream_name: start},
-                self._task_group_name,
-                self._consumer_name,
-            )
-            entry_ids = self._stream_entry_ids(res)
-            if not entry_ids:
-                return
-            await client.xack(self._task_stream_name, self._task_group_name, entry_ids)
-            await client.xdel(self._task_stream_name, entry_ids)
-
-    async def _purge_stream_entries(self, client: GlideClient) -> None:
-        """Delete every remaining entry in the task stream.
-
-        Reads all stream entries via ``XREAD`` (independent of the consumer
-        group) and deletes them with ``XDEL``. Loops until ``XREAD`` returns
-        no more entries.
-        """
-        while True:
-            res = await client.xread({self._task_stream_name: "0-0"})
-            entry_ids = self._stream_entry_ids(res)
-            if not entry_ids:
-                return
-            await client.xdel(self._task_stream_name, entry_ids)
-
-    def _stream_entry_ids(self, res) -> list[str | bytes | bytearray | memoryview]:
-        """Extract stream entry ids from an XREADGROUP/XREAD result mapping."""
-        if not res:
-            return []
-        entries = res[self._task_stream_name.encode("utf-8")]
-        return list(entries.keys()) if entries else []
-
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Re-queue a task by appending it to the Valkey task stream.
 
@@ -510,7 +474,7 @@ class ValkeyWorker(AsyncTaskProcessor):
             packed = msgspec.msgpack.encode(task_data)  # bytes
             await self.client.xadd(self._task_stream_name, [(t_id, packed)])
 
-    async def _recover_pending_tasks(self) -> None:
+    async def _recover_pending_tasks(self) -> bool:
         """Re-enqueue stream entries left pending by a previous run.
 
         Uses ``XAUTOCLAIM`` to claim every entry in the consumer group's
@@ -520,10 +484,12 @@ class ValkeyWorker(AsyncTaskProcessor):
         ``fetch_tasks``, before any ``'>'`` read, when no tasks are in flight.
 
         Returns:
-            None. No-op if the Valkey client is ``None``.
+            ``True`` if at least one pending entry was enqueued, ``False``
+            otherwise (including when the Valkey client is ``None``).
         """
         if self.client is None:
-            return
+            return False
+        enqueued = False
         try:
             start: str | bytes = "0-0"
             while True:
@@ -558,42 +524,53 @@ class ValkeyWorker(AsyncTaskProcessor):
                                 "Task queue full during recovery; deferring task %s",
                                 task_id,
                             )
-                            return
+                            return enqueued
                         self._task_entry_ids[UUID(task_id)] = entry_id
+                        enqueued = True
                 if next_start == b"0-0" or next_start == "0-0":
                     break
                 start = next_start
         except Exception as exc:
             self.logger.log(logging.ERROR, "Failed to recover pending tasks: %s", exc)
+        return enqueued
 
-    async def fetch_tasks(self):
-        """Fetch a single new task from the Valkey task stream and enqueue it.
+    async def fetch_tasks(self) -> bool:
+        """Fetch new tasks from the Valkey task stream and enqueue them.
 
-        Reads one entry from the task stream using ``XREADGROUP`` with
-        ``block_ms=1000`` and the configured consumer group. Decodes the
-        msgpack payload into a :class:`TaskData` struct and enqueues it via
-        ``enqueue_task()`` as a ``(UUID, TaskData)`` tuple. The stream entry
-        is NOT acknowledged here: it stays in the consumer group's pending
-        list until the handler completes (see :meth:`on_task_completed`), so a
-        crash after enqueue redelivers the task (at-least-once). The entry id
-        is recorded in ``_task_entry_ids`` for the later acknowledgement.
+        Reads up to ``task_fetch_batch_size`` entries from the task stream
+        using ``XREADGROUP`` with ``block_ms=1000`` and the configured
+        consumer group. Decodes each msgpack payload into a
+        :class:`TaskData` struct and enqueues it via ``enqueue_task()`` as a
+        ``(UUID, TaskData)`` tuple. The stream entries are NOT acknowledged
+        here: they stay in the consumer group's pending list until each
+        handler completes (see :meth:`on_task_completed`), so a crash after
+        enqueue redelivers the task (at-least-once). Each entry id is
+        recorded in ``_task_entry_ids`` for the later acknowledgement.
+
+        Batching (AR-042): reading several entries per call lets the internal
+        queue fill up to ``max_concurrent_tasks`` instead of being starved to
+        one task per round-trip.
 
         On read errors, disconnects and attempts to reconnect to Valkey.
 
         Returns:
-            None. No-op if the Valkey client is ``None``.
+            ``True`` if at least one task was enqueued (from pending-entry
+            recovery or this read), ``False`` otherwise. The caller uses this
+            to skip its idle backoff after a productive fetch so a backlog
+            drains back-to-back.
         """
         if self.client is None:
-            return
+            return False
+        enqueued = False
         if not self._recovered:
             self._recovered = True
-            await self._recover_pending_tasks()
+            enqueued = await self._recover_pending_tasks()
         try:
             res = await self.client.xreadgroup(
                 {self._task_stream_name: ">"},
                 self._task_group_name,
                 self._consumer_name,
-                StreamReadGroupOptions(count=1, block_ms=1000),
+                StreamReadGroupOptions(count=self._task_fetch_batch_size, block_ms=1000),
             )
             if res:
                 for stream, entries in res.items():
@@ -620,10 +597,12 @@ class ValkeyWorker(AsyncTaskProcessor):
                                 )
                                 continue
                             self._task_entry_ids[UUID(task_id)] = entry_id
+                            enqueued = True
         except Exception as exc:
             self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
             await self.disconnect()
             await self.connect()
+        return enqueued
 
     async def on_task_completed(
         self,

@@ -24,6 +24,7 @@ class DummyClient:
         self.acked: list = []
         self.deleted: list = []
         self.xautoclaim_calls: list = []
+        self.xreadgroup_calls: list = []
 
     async def xgroup_create(self, *args, **kwargs):
         if self.xgroup_create_error is not None:
@@ -39,6 +40,7 @@ class DummyClient:
         self.deleted.append(args)
 
     async def xreadgroup(self, *args, **kwargs):
+        self.xreadgroup_calls.append(args)
         return self.xreadgroup_result
 
     async def xautoclaim(self, *args, **kwargs):
@@ -219,6 +221,51 @@ async def test_fetch_tasks_does_not_ack_on_enqueue():
     t_id, t_data = worker.dequeue_task()
     assert t_data.task == "dummy"
     assert worker._task_entry_ids[t_id] == b"1-0"
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_reads_batch_and_reports_enqueued():
+    """fetch_tasks must read up to task_fetch_batch_size entries per XREADGROUP
+    and return True when it enqueued at least one task (AR-042)."""
+    import msgspec
+
+    from scietex.service.task_handler.schemas import TaskData
+
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = msgspec.msgpack.encode(task_data)
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
+    worker = ValkeyWorker(valkey_config=ValkeyConfig(), task_fetch_batch_size=25)
+    worker._client = client
+
+    enqueued = await worker.fetch_tasks()
+
+    assert enqueued is True, "fetch_tasks must report that it enqueued a task"
+    assert client.xreadgroup_calls, "fetch_tasks must call XREADGROUP"
+    options = client.xreadgroup_calls[0][3]
+    assert options.count == 25, "XREADGROUP must read task_fetch_batch_size entries per call"
+    assert not worker.task_queue_empty()
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_reports_nothing_when_stream_empty():
+    """fetch_tasks must return False when no entries are read, so the intake
+    manager backs off instead of busy-polling (AR-042)."""
+    client = DummyClient(xreadgroup_result=None)
+    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker._client = client
+
+    enqueued = await worker.fetch_tasks()
+
+    assert enqueued is False, "fetch_tasks must report nothing enqueued on an empty read"
+    assert worker.task_queue_empty()
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_batch_size_clamped_to_at_least_one():
+    """A task_fetch_batch_size below 1 must be clamped to 1 so intake cannot be
+    disabled by misconfiguration (AR-042)."""
+    worker = ValkeyWorker(valkey_config=ValkeyConfig(), task_fetch_batch_size=0)
+    assert worker._task_fetch_batch_size == 1
 
 
 @pytest.mark.asyncio

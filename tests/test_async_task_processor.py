@@ -34,8 +34,8 @@ class DemoProcessor(AsyncTaskProcessor):
         super().__init__(*args, **kwargs)
         self.requeued: list = []
 
-    async def fetch_tasks(self) -> None:  # pragma: no cover - stub
-        return None
+    async def fetch_tasks(self) -> bool:  # pragma: no cover - stub
+        return False
 
     async def return_task_to_queue(self, task_id, task_data):
         # record requeued tasks for assertions
@@ -429,12 +429,47 @@ async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monke
         await proc.events["exit"].wait()
 
 
+class DurableProcessor(AsyncTaskProcessor):
+    """A processor whose transport keeps items pending after enqueue (e.g. a
+    Valkey stream), so drained tasks must NOT be re-enqueued on shutdown —
+    they redeliver on restart (AR-041)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.requeued: list = []
+
+    async def fetch_tasks(self) -> bool:  # pragma: no cover - stub
+        return False
+
+    async def return_task_to_queue(self, task_id, task_data):
+        # record requeued tasks for assertions
+        self.requeued.append((task_id, task_data))
+
+    async def _on_queue_drain_task_processing(self, task_id, task_data):
+        # Durable transport: the entry stays pending in the stream and is
+        # redelivered on restart, so re-enqueueing here would duplicate it.
+        pass
+
+
 @pytest.mark.asyncio
-async def test_cleanup_drain_does_not_requeue_queued_tasks():
-    """cleanup must drop queued-but-undispatched tasks without requeueing
-    them: their transport entries stay pending and are redelivered on
-    restart, so an XADD here would duplicate them (AR-005)."""
+async def test_cleanup_drain_requeues_queued_tasks_for_non_durable_transport():
+    """cleanup must requeue queued-but-undispatched tasks for a non-durable
+    (in-memory) transport: nothing keeps them pending, so dropping them would
+    silently lose work on shutdown (AR-041)."""
     proc = DemoProcessor()
+    t_id = uuid4()
+    proc.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
+    await proc.cleanup()
+    assert any(tid == t_id for tid, _ in proc.requeued)
+    assert proc.task_queue_empty()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_drain_does_not_requeue_queued_tasks_for_durable_transport():
+    """cleanup must NOT requeue queued-but-undispatched tasks for a durable
+    transport: their entries stay pending and are redelivered on restart, so
+    an XADD here would duplicate them (AR-041)."""
+    proc = DurableProcessor()
     t_id = uuid4()
     proc.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
     await proc.cleanup()
@@ -507,3 +542,77 @@ async def test_watchdog_ignores_non_positive_timeout():
     finally:
         await proc.exit()
         await proc.events["exit"].wait()
+
+
+class ReportingProcessor(AsyncTaskProcessor):
+    """Processor whose fetch_tasks reports productivity without enqueuing, so
+    the task_queue_manager sleep-skip decision can be tested in isolation."""
+
+    def __init__(self, *args, fetch_result: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fetch_result = fetch_result
+
+    async def fetch_tasks(self) -> bool:
+        return self._fetch_result
+
+
+@pytest.mark.asyncio
+async def test_task_queue_manager_skips_sleep_after_productive_fetch():
+    """task_queue_manager must not sleep after a fetch_tasks that reports it
+    enqueued work, so a backlog drains back-to-back (AR-042)."""
+    proc = ReportingProcessor(fetch_result=True, task_queue_manager_sleep_time=0.01)
+    backoff_delays: list = []
+    real_sleep = asyncio.sleep
+
+    async def spy_sleep(delay):
+        if delay == proc.task_queue_manager_sleep_time:
+            backoff_delays.append(delay)
+        await real_sleep(delay)
+
+    import scietex.service.async_tasks_processor as mod
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod.asyncio, "sleep", spy_sleep)
+    try:
+        mgr = asyncio.create_task(proc.task_queue_manager())
+        await asyncio.sleep(0.05)
+        mgr.cancel()
+        try:
+            await mgr
+        except asyncio.CancelledError:
+            pass
+    finally:
+        monkeypatch.undo()
+
+    assert backoff_delays == [], "a productive fetch must not trigger the idle backoff sleep"
+
+
+@pytest.mark.asyncio
+async def test_task_queue_manager_sleeps_after_empty_fetch():
+    """task_queue_manager must sleep after a fetch_tasks that reports nothing
+    enqueued, to avoid busy-polling an empty source (AR-042)."""
+    proc = ReportingProcessor(fetch_result=False, task_queue_manager_sleep_time=0.01)
+    backoff_delays: list = []
+    real_sleep = asyncio.sleep
+
+    async def spy_sleep(delay):
+        if delay == proc.task_queue_manager_sleep_time:
+            backoff_delays.append(delay)
+        await real_sleep(delay)
+
+    import scietex.service.async_tasks_processor as mod
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod.asyncio, "sleep", spy_sleep)
+    try:
+        mgr = asyncio.create_task(proc.task_queue_manager())
+        await asyncio.sleep(0.05)
+        mgr.cancel()
+        try:
+            await mgr
+        except asyncio.CancelledError:
+            pass
+    finally:
+        monkeypatch.undo()
+
+    assert backoff_delays, "an empty fetch must trigger the idle backoff sleep"

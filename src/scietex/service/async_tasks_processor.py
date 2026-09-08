@@ -376,11 +376,13 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             return False
         return True
 
-    async def _stop_task_handler(self, handler_name) -> None:
+    async def _stop_task_handler(self, handler_name: str) -> None:
         """Stop a running task handler and remove it from active handlers.
 
-        Calls the handler's ``stop()`` method with a timeout, then
-        removes it from the internal handlers dictionary.
+        Calls the handler's ``stop()`` method with a timeout and removes it
+        from the active handlers dictionary on success. If ``stop()`` times
+        out the handler is left in place (it may still be mid-cleanup) and a
+        timeout is logged.
 
         Args:
             handler_name: The name of the handler to stop.
@@ -396,8 +398,14 @@ class AsyncTaskProcessor(BasicAsyncWorker):
             self.logger.log(logging.ERROR, "Timeout while stopping Task handler %s", handler_name)
 
     def remove_task_handler(self, handler_name: str) -> None:
-        """
-        Remove a task handler.
+        """Remove a registered task handler.
+
+        Stops the handler asynchronously if it is currently active, then
+        removes it from the registration map so it is no longer dispatched
+        to. Safe to call for a handler that is not registered.
+
+        Args:
+            handler_name: The class name of the handler to remove.
         """
         if handler_name in self.__task_handlers:
             asyncio.create_task(self._stop_task_handler(handler_name))
@@ -428,7 +436,8 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
         Subclasses should override this method to implement the specific
         logic for re-queueing tasks when they cannot be processed or
-        need to be retried (e.g., writing back to a message queue).
+        need to be retried (e.g., writing back to a message queue). The
+        default is a no-op.
 
         Args:
             task_id: The unique identifier of the task.
@@ -470,25 +479,46 @@ class AsyncTaskProcessor(BasicAsyncWorker):
                 return False
         return True
 
-    async def cleanup(self):
-        """
-        Cleanup everything before exit.
+    async def _on_queue_drain_task_processing(self, task_id: UUID, task_data: TaskData) -> None:
+        """Handle a task still queued when the in-process queue is drained on shutdown.
 
-        This method is intended to be overridden by subclasses to perform
-        service-specific cleanup such as closing database connections,
-        releasing resources, or sending final status updates.
+        Called by ``cleanup()`` for every queued-but-undispatched task. The base
+        default returns the task to its external source when ``canceled_action``
+        is ``"requeue"``, so a non-durable transport (whose entries are not kept
+        pending anywhere) does not silently lose work on shutdown (AR-041).
+
+        Subclasses backed by a durable transport (e.g. ``ValkeyWorker``) override
+        this to a no-op: their entries stay pending in the transport and are
+        redelivered on restart, so re-enqueueing here would duplicate them.
+
+        Args:
+            task_id: Identifier of the queued task.
+            task_data: The task data that was still queued at drain time.
+        """
+        if task_data.canceled_action == "requeue":
+            self.logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
+            await self.return_task_to_queue(task_id, task_data)
+
+    async def cleanup(self) -> None:
+        """Release resources and stop processing before exit.
+
+        Drains the in-process task queue (each queued task is handed to
+        ``_on_queue_drain_task_processing``), cancels and requeues running
+        tasks whose handlers actually stopped, and stops all task handlers.
+        Subclasses add transport-specific teardown (e.g. closing a database
+        or Valkey connection) by overriding this method and calling
+        ``super().cleanup()``.
         """
         await super().cleanup()
-        # Drain the in-process queue. Items fetched from a durable transport
-        # (e.g. a Valkey stream) are still pending there and will be
-        # redelivered on restart, so they must NOT be re-enqueued here (that
-        # would duplicate them). Subclasses whose transport does not keep
-        # items pending after enqueue (i.e. non-durable in-memory transports)
-        # MUST override cleanup to requeue drained items before calling
-        # super().cleanup(); otherwise queued-but-undispatched tasks are
-        # silently lost on shutdown.
+        # Drain the in-process queue. Each queued task goes through
+        # _on_queue_drain_task_processing: the base default requeues it when
+        # canceled_action == "requeue" (a non-durable transport would otherwise
+        # silently lose it on shutdown). A durable transport (e.g. a Valkey
+        # stream) keeps entries pending and redelivers them on restart, so its
+        # subclass overrides the hook to a no-op to avoid duplicating them.
         while not self.__task_queue.empty():
-            self.__task_queue.get_nowait()
+            task_id, task_data = self.__task_queue.get_nowait()
+            await self._on_queue_drain_task_processing(task_id, task_data)
             self.__task_queue.task_done()
         self.logger.debug("Task queue is empty")
 
@@ -652,29 +682,43 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         else:
             await asyncio.sleep(self.task_manager_sleep_time)
 
-    async def fetch_tasks(self):
+    async def fetch_tasks(self) -> bool:
         """Fetch tasks from external sources and enqueue them.
 
         Override this method in subclasses to implement the specific
         logic for retrieving tasks from external sources such as message
         queues, databases, or APIs, and enqueuing them via
-        ``enqueue_task()`` as ``(UUID, TaskData)`` tuples.
+        ``enqueue_task()`` as ``(UUID, TaskData)`` tuples. The default is
+        a no-op.
+
+        Returns:
+            ``True`` if at least one task was enqueued, ``False`` otherwise.
+            The caller (``task_queue_manager``) skips its idle backoff after a
+            productive fetch so a backlog drains back-to-back. A subclass that
+            does not report this (returns ``None``) is treated as ``False`` and
+            always backs off, preserving the previous behavior.
         """
+        return False
 
     @Manager("TaskQueueManager")
     async def task_queue_manager(self):
         """Periodically fetch tasks from external sources into the task queue.
 
-        Calls ``fetch_tasks()`` only when the queue is not full, then
-        sleeps for ``task_queue_manager_sleep_time`` to prevent busy
-        waiting.
+        Calls ``fetch_tasks()`` only when the queue is not full. After a
+        productive fetch (``fetch_tasks()`` returned ``True``) the loop
+        continues immediately so a backlog drains back-to-back; after an empty
+        fetch it sleeps for ``task_queue_manager_sleep_time`` to prevent busy
+        waiting. A full queue also backs off, providing backpressure.
 
         This method is decorated with ``@Manager`` and runs as an
         infinite loop managed by ``BasicAsyncWorker``.
         """
         if not self.__task_queue.full():
-            await self.fetch_tasks()
-        await asyncio.sleep(self.task_queue_manager_sleep_time)
+            fetched = await self.fetch_tasks()
+            if not fetched:
+                await asyncio.sleep(self.task_queue_manager_sleep_time)
+        else:
+            await asyncio.sleep(self.task_queue_manager_sleep_time)
 
     async def watchdog(self):
         """Monitor running tasks for timeouts and handle stalled tasks.
