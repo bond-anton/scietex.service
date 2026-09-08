@@ -60,7 +60,7 @@ async def test_connect_success(monkeypatch):
     async def create_mock(cfg):
         return DummyClient(ping_ok=True)
 
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
@@ -101,7 +101,7 @@ async def test_logging_handler_created_on_connect(monkeypatch):
     async def create_mock(cfg):
         return DummyClient(ping_ok=True)
 
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
@@ -125,7 +125,7 @@ async def test_connect_ping_failure_clears_client(monkeypatch):
     async def create_mock(cfg):
         return DummyClient(ping_ok=False)
 
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
@@ -143,7 +143,7 @@ async def test_connect_create_failure_leaves_client_none(monkeypatch):
     async def create_mock(cfg):
         raise RuntimeError("create failed")
 
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
@@ -159,7 +159,7 @@ async def test_connect_create_failure_leaves_client_none(monkeypatch):
 async def test_initialize_group_already_exists_succeeds(monkeypatch):
     # A BUSYGROUP error means the consumer group already exists and must be
     # ignored; initialize still reports success (AR-021).
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     async def create_mock(cfg):
         return DummyClient(
@@ -180,7 +180,7 @@ async def test_initialize_group_already_exists_succeeds(monkeypatch):
 async def test_initialize_group_create_failure_fails(monkeypatch):
     # A genuine xgroup_create failure must fail initialize so the worker
     # does not run with no consumer group (AR-021).
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     async def create_mock(cfg):
         return DummyClient(ping_ok=True, xgroup_create_error=mod.RequestError("NOAUTH Authentication required"))
@@ -336,7 +336,7 @@ async def test_disconnect_closes_shared_client_once(monkeypatch):
     async def create_mock(cfg):
         return DummyClient(ping_ok=True)
 
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
@@ -363,7 +363,7 @@ async def test_cleanup_stops_logging_before_disconnect(monkeypatch):
     async def create_mock(cfg):
         return DummyClient(ping_ok=True)
 
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)

@@ -51,7 +51,7 @@ subclass hooks govern registry-set membership: `_register_instance` (873) —
 called by `_startup()` after `initialize()` succeeds and before managers
 start — and `_unregister_instance` (883) — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
-`ValkeyWorker` overrides them (valkey_async_worker.py:386, 408) to `SADD`/
+`ValkeyWorker` overrides them (worker.py:386, 408) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.logging.lifecycle`
@@ -247,7 +247,7 @@ read-only `MappingProxyType` views; `queue_size`, `max_concurrent_tasks`,
 
 ## 9. Valkey worker — `ValkeyWorker`
 
-**File:** `src/scietex/service/valkey/valkey_async_worker.py`
+**File:** `src/scietex/service/valkey/worker.py`
 
 **Purpose:** Makes `AsyncTaskProcessor` consume from / write to a Valkey stream
 via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
@@ -373,7 +373,7 @@ Consumed classes:
   and, when one is provided, never closes it (`_owns_client=False`).
 - `AsyncValkeyHandler(AsyncBrokerHandler)` — `xadd` to a stream. `ValkeyWorker`
   injects its own `GlideClient` via the `client` kwarg on the first successful
-  `connect()` (valkey_async_worker.py:207–223), so logging shares the worker's
+  `connect()` (worker.py:207–223), so logging shares the worker's
   single connection rather than opening a second one.
 - `ScietexFormatter`.
 

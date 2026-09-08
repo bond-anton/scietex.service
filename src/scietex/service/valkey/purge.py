@@ -2,7 +2,7 @@
 
 Provides :func:`purge_task_stream` — a standalone consumer/operator utility
 that reads, acknowledges, and deletes every entry in a task stream. It is
-independent of :class:`~scietex.service.valkey.valkey_async_worker.ValkeyWorker`
+independent of :class:`~scietex.service.valkey.worker.ValkeyWorker`
 so an operator can clear a stream without running a worker.
 
 Requires the optional ``valkey-glide`` dependency.

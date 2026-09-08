@@ -40,7 +40,7 @@ Layout of the repository and the Python package.
 | `utils/logo.py` | ASCII `LOGO` template and `print_scietex_logo()` |
 | `valkey/__init__.py` | Re-exports `ValkeyWorker`, config types, and `purge_task_stream` from the sibling modules |
 | `valkey/valkey_config.py` | Typed config structs + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports `glide` in a guarded `try/except ImportError` that re-raises with an install hint if `glide` is absent |
-| `valkey/valkey_async_worker.py` | `ValkeyWorker(AsyncTaskProcessor)` + stream/connection logic. Imports `glide` via the same guarded re-raise (`ImportError` → install hint); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
+| `valkey/worker.py` | `ValkeyWorker(AsyncTaskProcessor)` + stream/connection logic. Imports `glide` via the same guarded re-raise (`ImportError` → install hint); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
 | `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry); no runtime `glide` import (`TYPE_CHECKING` only) |
 | `valkey/schemas.py` | `Heartbeat` msgpack schema |
 
@@ -57,10 +57,10 @@ Layout of the repository and the Python package.
   `manager/runtime` and `logging/lifecycle`, which hold only a back-reference
   to the worker under `TYPE_CHECKING` (no runtime cycle).
 - **Valkey internal split**: config schema/loader (`valkey_config.py`) is
-  independent of the worker (`valkey_async_worker.py`); `valkey_config` can be
+  independent of the worker (`worker.py`); `valkey_config` can be
   used/tested without a worker, but not without `glide`.
 - **Package ⇄ external `scietex.logging`**: `basic_async_worker.py` and
-  `valkey/valkey_async_worker.py` attach external logging handlers. The worker
+  `valkey/worker.py` attach external logging handlers. The worker
   treats them uniformly through `start_logging()`/`stop_logging()` +
   `handler.name` (via `LoggingLifecycle`).
 - **Stale artifacts present in the tree** (not source): `build/`

@@ -10,7 +10,7 @@ they are structurally significant.
 scietex.service (public API)                 __init__.py
    │  guarded re-export (swallow ImportError)
    ▼
-valkey  (valkey/valkey_async_worker.py)
+valkey  (valkey/worker.py)
    │ extends │ imports
    ▼         ▼
 async_tasks_processor ──► task_handler (basic ─► schemas)
@@ -44,11 +44,11 @@ glide (valkey-glide, optional)                              [external]
 | `async_tasks_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskResult`, `TaskTracker` |
 | `task_handler.basic` | `.schemas` | import | runtime |
 | `task_handler.basic` | `.context` | import | `TaskHandlerContext` (narrow context; no worker reference) |
-| `valkey.valkey_async_worker` | `async_tasks_processor` | inheritance | `ValkeyWorker(AsyncTaskProcessor)` |
-| `valkey.valkey_async_worker` | `.task_handler` | import | `TaskData` |
-| `valkey.valkey_async_worker` | `.valkey_config`, `.schemas` | import | |
-| `valkey.valkey_async_worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
-| `valkey.valkey_async_worker` | `glide` | import (external, optional extra) | guarded `try/except ImportError` re-raise with install hint; errors surface to top-level guard |
+| `valkey.worker` | `async_tasks_processor` | inheritance | `ValkeyWorker(AsyncTaskProcessor)` |
+| `valkey.worker` | `.task_handler` | import | `TaskData` |
+| `valkey.worker` | `.valkey_config`, `.schemas` | import | |
+| `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
+| `valkey.worker` | `glide` | import (external, optional extra) | guarded `try/except ImportError` re-raise with install hint; errors surface to top-level guard |
 | `valkey.valkey_config` | `glide`, `msgspec` | import | guarded `try/except ImportError` re-raise with install hint; config cannot load without the extra |
 | `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; no runtime import — caller supplies an open client |
 | `task_handler.schemas` | `msgspec` | import | struct + serialization |
@@ -65,7 +65,7 @@ glide (valkey-glide, optional)                              [external]
   `TaskHandlerContext` (`service_name`, `instance_id`, `logger`) instead of the
   worker instance, so the boundary is clean in both directions.
 - **Configuration split**: `valkey_config` is independent of
-  `valkey_async_worker`; only `read_valkey_config`/`generate_glide_config`
+  `worker`; only `read_valkey_config`/`generate_glide_config`
   flow into the worker.
 - **Logging has two dependency arrows** (see `scietex.logging` above): both the
   base worker (console handler) and `ValkeyWorker` (Valkey handler) attach

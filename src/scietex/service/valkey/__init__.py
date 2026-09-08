@@ -22,7 +22,6 @@ Public exports:
 """
 
 from .purge import purge_task_stream
-from .valkey_async_worker import ValkeyWorker
 from .valkey_config import (
     ValkeyAdvancedConfig,
     ValkeyBackoffStrategy,
@@ -32,6 +31,7 @@ from .valkey_config import (
     ValkeyTlsAdvancedConfiguration,
     ValkeyUserCredentials,
 )
+from .worker import ValkeyWorker
 
 __all__ = [
     "ValkeyNode",

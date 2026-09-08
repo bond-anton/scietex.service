@@ -142,7 +142,7 @@ in a terminal state and the worker can be restarted.
 - **Why significant:** the distributed contract was effectively at-most-once.
 
 **Resolved (AR-005):** delivery is now at-least-once. `fetch_tasks`
-(valkey_async_worker.py:574) records the entry id in `_task_entry_ids` without
+(worker.py:574) records the entry id in `_task_entry_ids` without
 acking; `on_task_completed` (633) `XACK`+`XDEL`s the entry only after the
 handler's work terminates. `_recover_pending_tasks` (518) uses `XAUTOCLAIM` on
 the first fetch to redeliver entries left pending by a crash. Enqueue is
@@ -151,7 +151,7 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 
 ## H9. `ValkeyWorker` opens two independent GlideClients
 
-- **Location:** `valkey_async_worker.py` (constructs `AsyncValkeyHandler`, which
+- **Location:** `worker.py` (constructs `AsyncValkeyHandler`, which
   owns a client) and `connect` (`GlideClient.create`).
 - **What:** task/heartbeat traffic uses one `GlideClient`; log traffic uses a
   second client inside the external logging handler, each configured from the
@@ -163,7 +163,7 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 
 **Resolved (AR-018):** `ValkeyWorker` now runs a single `GlideClient` shared
 with the logging handler. `_ensure_logging_handler`
-(valkey_async_worker.py:207) constructs the `AsyncValkeyHandler` with the
+(worker.py:207) constructs the `AsyncValkeyHandler` with the
 worker's client injected (via the `scietex.logging>=2.0.0` client-injection
 seam) on the first successful `connect()`, so the handler never owns or closes
 the shared client; `disconnect()` (277) clears the handler's reference before
@@ -173,7 +173,7 @@ across reconnects.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
-- **Location:** `valkey_async_worker.py:295-339` (`connect`), 388-421
+- **Location:** `worker.py:295-339` (`connect`), 388-421
   (`initialize`).
 - **What:** on `GlideClient.create` exception, `connect` returned False and left
   `_client=None`; on a **failed PING**, it previously left `_client` set, so
@@ -188,7 +188,7 @@ worker is never observable.
 
 ## H11. Task stream and group are namespaced per `worker_id`
 
-- **Location:** `valkey_async_worker.py` key construction (now ~162-166).
+- **Location:** `worker.py` key construction (now ~162-166).
 - **What:** in v3, stream, group, and consumer names embed `service_name` **and**
   `worker_id`. Two `ValkeyWorker`s with different `worker_id`s read **different
   streams**; horizontal scale-out required replicas that share the same

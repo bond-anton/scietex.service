@@ -54,7 +54,7 @@ intake and dispatch; per-task `asyncio.Task`; concurrency cap
 **Source:** external producer writes task entries into Valkey stream
 `scietex:{service}:tasks`. Entry shape: one field-value pair per
 message — **field = task UUID string, value = msgpack-encoded `TaskData`**
-(written by `return_task_to_queue`, `valkey_async_worker.py:499`).
+(written by `return_task_to_queue`, `worker.py:499`).
 
 **Processing chain (`fetch_tasks`, 574):**
 1. On the first call only, `_recover_pending_tasks` runs `XAUTOCLAIM` to
@@ -137,7 +137,7 @@ heartbeat never surfaces.
   registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
-  `valkey_async_worker.py:207`) — shares the worker's
+  `worker.py:207`) — shares the worker's
   single `GlideClient` (injected via the `scietex.logging>=2.0.0` seam);
   formats records to a dict and `xadd`s to log stream
   `scietex:log` (default).

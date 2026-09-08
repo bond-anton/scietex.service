@@ -42,7 +42,7 @@ class DummyClient:
 
 @pytest.mark.asyncio
 async def test_valkey_register_unregister_issue_sadd_srem(monkeypatch):
-    import scietex.service.valkey.valkey_async_worker as mod
+    import scietex.service.valkey.worker as mod
 
     async def create_mock(cfg):
         return DummyClient()
