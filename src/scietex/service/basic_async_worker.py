@@ -19,9 +19,9 @@ from types import MappingProxyType
 from scietex.logging import AsyncLoggingHandler, ConsoleHandler
 
 from .logging import parse_logging_level
-from .logging_lifecycle import LoggingLifecycle
+from .logging.lifecycle import LoggingLifecycle
 from .manager import Manager
-from .manager_runtime import ManagerRuntime
+from .manager.runtime import ManagerRuntime
 from .utils import prepare_conf_dir, print_scietex_logo
 
 DEFAULT_HEARTBEAT_INTERVAL: float = 10

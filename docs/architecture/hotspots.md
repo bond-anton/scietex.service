@@ -38,15 +38,15 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
   de-facto "service container".
 
 **Resolved (AR-003):** manager discovery/runtime and logging-handler lifecycle
-were extracted to `ManagerRuntime` (manager_runtime.py) and `LoggingLifecycle`
-(logging_lifecycle.py). `BasicAsyncWorker` now keeps identity/config, the state
+were extracted to `ManagerRuntime` (manager/runtime.py) and `LoggingLifecycle`
+(logging/lifecycle.py). `BasicAsyncWorker` now keeps identity/config, the state
 machine, and forwarding wrappers (`_run_manager`, `_start_managers`,
 `_logger_start_handlers`, etc.) that delegate to the extracted components.
 
 ## H2. Manager error-handling relies on private per-worker bookkeeping
 
 - **Location:** was `basic_async_worker.py` (`_run_manager`/`_restart_manager`);
-  now `manager_runtime.py:62-125`.
+  now `manager/runtime.py:62-125`.
 - **What:** managers were restarted "automatically on error" with unbounded
   restart and no backoff.
 - **Why significant:** a persistently failing manager yielded an unbounded
@@ -60,7 +60,7 @@ delay (default 1 s) between attempts; the error record lives in
 ## H3. Manager "restart" path appears to cancel the running task itself
 
 - **Location:** was `_restart_manager`; now inlined in
-  `manager_runtime.py:62-125`.
+  `manager/runtime.py:62-125`.
 - **What:** the old restart path cancelled and awaited the **same
   currently-executing task**.
 - **Why significant:** a raising manager ended as `CancelledError` rather than
@@ -73,7 +73,7 @@ tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
 
-- **Location:** `logging_lifecycle.py:104-133` (`shut_down_handlers`), plus
+- **Location:** `logging/lifecycle.py:104-133` (`shut_down_handlers`), plus
   external `scietex.logging` (`stop_logging()` calls `self.close()`).
 - **What:** after shutdown, each `AsyncLoggingHandler` was closed yet recorded as
   RUNNING, so a later start skipped it.
@@ -233,13 +233,13 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 46-48).
 
 ## H14. `pyaml` dependency is unused; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` is dead
 
-- **Location:** was `pyproject.toml:18` (`pyaml>=26.2.1`) and `manager.py:12`.
+- **Location:** was `pyproject.toml:18` (`pyaml>=26.2.1`) and `manager/__init__.py:12`.
 - **What:** no import of `pyaml` existed anywhere; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE`
   was never referenced.
 - **Why significant:** legacy cruft in the declared dependency surface.
 
 **Resolved (AR-013):** `pyaml` was dropped and `pyyaml>=6.0` added (required by
-`msgspec.yaml`); `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` was removed from `manager.py`.
+`msgspec.yaml`); `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` was removed from `manager/__init__.py`.
 
 ## H15. Typed schemas contain time/identity defaults evaluated once at import
 

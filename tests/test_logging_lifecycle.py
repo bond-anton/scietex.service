@@ -8,7 +8,7 @@ from scietex.logging import AsyncLoggingHandler
 
 from scietex.service.basic_async_worker import BasicAsyncWorker
 from scietex.service.logging import LoggerStatus
-from scietex.service.logging_lifecycle import LoggingLifecycle
+from scietex.service.logging.lifecycle import LoggingLifecycle
 
 
 class _StubWorker:

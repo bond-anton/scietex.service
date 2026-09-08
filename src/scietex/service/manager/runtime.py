@@ -9,10 +9,10 @@ import logging
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
-from .manager import Manager, ManagerStatus
+from . import Manager, ManagerStatus
 
 if TYPE_CHECKING:
-    from .basic_async_worker import BasicAsyncWorker
+    from ..basic_async_worker import BasicAsyncWorker
 
 
 class ManagerRuntime:

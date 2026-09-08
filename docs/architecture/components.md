@@ -47,7 +47,7 @@ of two `asyncio.Event`s: `"exit_requested"`, `"exit"`), `service_name`,
 `manager_restart_backoff`. Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods.
 
-**Dependencies:** `.manager_runtime` (`ManagerRuntime`), `.logging_lifecycle`
+**Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.logging.lifecycle`
 (`LoggingLifecycle`), `.manager` (`Manager`), `.logging`
 (`parse_logging_level`), `.utils` (`prepare_conf_dir`, `print_scietex_logo`);
 external `scietex.logging.ConsoleHandler`.
@@ -58,7 +58,7 @@ external `scietex.logging.ConsoleHandler`.
 
 ## 2. Manager runtime — `ManagerRuntime`
 
-**File:** `src/scietex/service/manager_runtime.py`
+**File:** `src/scietex/service/manager/runtime.py`
 
 **Purpose:** Extracted from `BasicAsyncWorker` (AR-003). Owns manager
 discovery, lifecycle bookkeeping, and the restart-on-error loop. Reads config
@@ -87,7 +87,7 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 
 ## 3. Logging lifecycle — `LoggingLifecycle`
 
-**File:** `src/scietex/service/logging_lifecycle.py`
+**File:** `src/scietex/service/logging/lifecycle.py`
 
 **Purpose:** Extracted from `BasicAsyncWorker` (AR-003). Owns async
 logging-handler registration and start/stop with status bookkeeping.
@@ -110,7 +110,7 @@ owning worker and owns the `statuses` dict (35).
 
 ## 4. Manager decorator — `Manager` / `ManagerStatus`
 
-**File:** `src/scietex/service/manager.py`
+**File:** `src/scietex/service/manager/__init__.py`
 
 **Purpose:** A class-based decorator turning an async method into a "managed
 loop". The worker (via `ManagerRuntime`) detects `Manager` instances in the
@@ -127,9 +127,9 @@ identity); `Manager.__get__` (73) binds the wrapped method to the instance
 **Dependencies:** stdlib only. **Depended on by:** `BasicAsyncWorker`,
 `AsyncTaskProcessor` (decorated managers), examples (`@Manager("cruncher")`).
 
-## 5. Logging helpers — module `logging.py` (in-package)
+## 5. Logging helpers — module `logging/__init__.py` (in-package)
 
-**File:** `src/scietex/service/logging.py`
+**File:** `src/scietex/service/logging/__init__.py`
 
 **Purpose:** `LoggerStatus` (track async logging handler state: STOPPED /
 RUNNING / FAILED) and `parse_logging_level()` (accepts short/long strings or

@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING
 
 from scietex.logging import AsyncLoggingHandler
 
-from .logging import LoggerStatus
+from . import LoggerStatus
 
 if TYPE_CHECKING:
-    from .basic_async_worker import BasicAsyncWorker
+    from ..basic_async_worker import BasicAsyncWorker
 
 
 class LoggingLifecycle:

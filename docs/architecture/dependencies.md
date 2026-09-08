@@ -33,9 +33,9 @@ glide (valkey-glide, optional)                              [external]
 | `scietex.service/__init__` | `async_tasks_processor`, `basic_async_worker`, `manager`, `version` | import | unconditional |
 | `scietex.service/__init__` | `valkey` | import | inside `try/except ImportError` — optional feature |
 | `basic_async_worker` | `.manager` | import | `Manager` |
-| `basic_async_worker` | `.manager_runtime` | import | `ManagerRuntime` (owns `ManagerStatus` bookkeeping) |
+| `basic_async_worker` | `.manager.runtime` | import | `ManagerRuntime` (owns `ManagerStatus` bookkeeping) |
 | `basic_async_worker` | `.logging` | import | `parse_logging_level` |
-| `basic_async_worker` | `.logging_lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
+| `basic_async_worker` | `.logging.lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
 | `basic_async_worker` | `.utils` | import | `prepare_conf_dir`, `print_scietex_logo` |
 | `basic_async_worker` | `scietex.logging` | import (external) | `ConsoleHandler` |
 | `utils.logo` | `..version` | import | `__version__` |

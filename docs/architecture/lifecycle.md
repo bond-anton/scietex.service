@@ -32,7 +32,7 @@ Public: `worker.start()` (671). It:
      "already exists" errors).
 5. `_start_managers()` (609) → `ManagerRuntime.start_managers()` — discover
    `@Manager`s via `ManagerRuntime.iter_manager_definitions()`
-   (manager_runtime.py:39) and start each as a named task.
+   (manager/runtime.py:39) and start each as a named task.
 6. Sets `start_time` (UTC) and state = RUNNING.
 
 Failure: if `initialize()` returns `False` → `RuntimeError("Initialization
@@ -48,7 +48,7 @@ re-raises — no stranded STARTING state (AR-017).
 ### Normal operation
 
 - Manager tasks run their decorated method in `while True`
-  (`ManagerRuntime.run_manager`, manager_runtime.py:62). Each iteration is the
+  (`ManagerRuntime.run_manager`, manager/runtime.py:62). Each iteration is the
   method body; built-ins sleep then act:
   - Heartbeat → `heartbeat()` every `heartbeat_interval`.
   - Watchdog → `watchdog()` every `watchdog_interval`.
@@ -101,7 +101,7 @@ pattern `await worker.events["exit"].wait()` blocks until `_shutdown` sets the
 ## Manager lifecycle (per manager)
 
 States: `ManagerStatus` STARTING → RUNNING → STOPPING → STOPPED, tracked by
-`ManagerRuntime` (manager_runtime.py).
+`ManagerRuntime` (manager/runtime.py).
 
 1. `ManagerRuntime.start_manager` (130): if task exists → debug-return; set
    STARTING, clear error, `create_task(run_manager(name, manager))`.
@@ -130,7 +130,7 @@ RUNNING) / `remove_task_handler`.
 
 - `BasicAsyncWorker.__init__` attaches `ConsoleHandler` (console);
   `ValkeyWorker.__init__` additionally attaches `AsyncValkeyHandler`.
-- Lifecycle is owned by `LoggingLifecycle` (logging_lifecycle.py): started in
+- Lifecycle is owned by `LoggingLifecycle` (logging/lifecycle.py): started in
   `start_handlers` (startup), stopped in `shut_down_handlers` (shutdown), each
   bounded by `logger_handler_timeout`.
 - The external `scietex.logging` handlers (>= 2.0.0) are restartable in place:

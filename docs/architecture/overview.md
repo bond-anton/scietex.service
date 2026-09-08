@@ -10,10 +10,10 @@ is a library whose entry point is the consumer's own `main()`.
 | Subsystem | Location | Responsibility |
 |---|---|---|
 | Worker core | `src/scietex/service/basic_async_worker.py` | `BasicAsyncWorker`: identity, lifecycle state machine, signal handling (registered in `start()`), startup/shutdown/restart orchestration, default heartbeat/watchdog/cleanup hooks. Delegates manager runtime and logging lifecycle to `ManagerRuntime` / `LoggingLifecycle` |
-| Manager runtime | `src/scietex/service/manager_runtime.py` | `ManagerRuntime`: discovers `@Manager` methods across the class MRO, runs each as a task with bounded restart-on-error, owns manager status/task/error bookkeeping |
-| Logging lifecycle | `src/scietex/service/logging_lifecycle.py` | `LoggingLifecycle`: async logging-handler registration and start/stop with per-handler status bookkeeping |
-| Manager decorator | `src/scietex/service/manager.py` | `@Manager` class-decorator and `ManagerStatus`; wraps an async method into a managed loop |
-| Logging helpers | `src/scietex/service/logging.py` | `LoggerStatus` enum and `parse_logging_level()` string/int normalization |
+| Manager runtime | `src/scietex/service/manager/runtime.py` | `ManagerRuntime`: discovers `@Manager` methods across the class MRO, runs each as a task with bounded restart-on-error, owns manager status/task/error bookkeeping |
+| Logging lifecycle | `src/scietex/service/logging/lifecycle.py` | `LoggingLifecycle`: async logging-handler registration and start/stop with per-handler status bookkeeping |
+| Manager decorator | `src/scietex/service/manager/__init__.py` | `@Manager` class-decorator and `ManagerStatus`; wraps an async method into a managed loop |
+| Logging helpers | `src/scietex/service/logging/__init__.py` | `LoggerStatus` enum and `parse_logging_level()` string/int normalization |
 | Task processing | `src/scietex/service/async_tasks_processor.py` | `AsyncTaskProcessor`: in-process bounded task queue, concurrency limit, handler registry/dispatch, timeout watchdog, drain/requeue on shutdown |
 | Task handler contract | `src/scietex/service/task_handler/` | `TaskHandler` ABC + `TaskHandlerContext` + typed schemas `TaskData`, `TaskResult`, `TaskTimeout`, `TaskTracker` (frozen `msgspec.Struct`) |
 | Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (stream transport over glide), typed Valkey config schema + YAML loader + schema→glide converter (`valkey_config.py`), `Heartbeat` schema |
