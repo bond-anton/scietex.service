@@ -18,8 +18,10 @@ Public exports:
     - :class:`ValkeyTlsAdvancedConfiguration` — TLS settings.
     - :func:`read_valkey_config` — YAML config loader.
     - :func:`generate_glide_config` — Schema-to-glide converter.
+    - :func:`purge_task_stream` — Standalone task-stream purge utility.
 """
 
+from .purge import purge_task_stream
 from .valkey_async_worker import ValkeyWorker
 from .valkey_config import (
     ValkeyAdvancedConfig,
@@ -40,4 +42,5 @@ __all__ = [
     "ValkeyBaseConfig",
     "ValkeyConfig",
     "ValkeyWorker",
+    "purge_task_stream",
 ]
