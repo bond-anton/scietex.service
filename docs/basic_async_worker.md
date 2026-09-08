@@ -14,7 +14,7 @@ from scietex.service import BasicAsyncWorker
 The worker manages three core subsystems:
 
 - **Signal Handling** — Captures `SIGINT` and `SIGTERM` for graceful shutdown
-- **Async Logging** — Uses `AsyncBaseHandler` for non-blocking log output
+- **Async Logging** — Uses `ConsoleHandler` for non-blocking log output
 - **Manager Loops** — `@Manager`-decorated methods run as infinite loops
   with automatic restart on error
 

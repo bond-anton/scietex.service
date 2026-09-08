@@ -75,7 +75,7 @@ tracking.
 
 - **Location:** `logging_lifecycle.py:104-133` (`shut_down_handlers`), plus
   external `scietex.logging` (`stop_logging()` calls `self.close()`).
-- **What:** after shutdown, each `AsyncBaseHandler` was closed yet recorded as
+- **What:** after shutdown, each `AsyncLoggingHandler` was closed yet recorded as
   RUNNING, so a later start skipped it.
 - **Why significant:** the state model for logging handlers and the actual
   handler lifecycle were inconsistent.
@@ -162,7 +162,7 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 **Resolved (AR-018):** `ValkeyWorker` now runs a single `GlideClient` shared
 with the logging handler. `_ensure_logging_handler`
 (valkey_async_worker.py:207) constructs the `AsyncValkeyHandler` with the
-worker's client injected (via the `scietex.logging>=1.2.0` client-injection
+worker's client injected (via the `scietex.logging>=2.0.0` client-injection
 seam) on the first successful `connect()`, so the handler never owns or closes
 the shared client; `disconnect()` (277) clears the handler's reference before
 closing the client, making the worker the sole teardown owner. The handler is

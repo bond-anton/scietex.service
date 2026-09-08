@@ -114,15 +114,16 @@ heartbeat never surfaces.
 **Source:** any `self.logger.*` call inside workers/handlers.
 
 **Processing:** standard `logging` → attached handlers:
-- `AsyncBaseHandler` (console; registered in `BasicAsyncWorker.__init__`
+- `ConsoleHandler` (console; registered in `BasicAsyncWorker.__init__`
   (`basic_async_worker.py:153`) via `LoggingLifecycle.register_logger_handler`
   (`logging_lifecycle.py:37`)) — `emit()` puts each record into an internal
   `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`
-  and writes to stdout.
+  and writes to stdout. Identity comes from the stdlib logger name it is
+  registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
-  `valkey_async_worker.py:207`, `stdout_enable=False`) — shares the worker's
-  single `GlideClient` (injected via the `scietex.logging>=1.2.0` seam);
+  `valkey_async_worker.py:207`) — shares the worker's
+  single `GlideClient` (injected via the `scietex.logging>=2.0.0` seam);
   formats records to a dict and `xadd`s to log stream
   `scietex:log` (default).
 

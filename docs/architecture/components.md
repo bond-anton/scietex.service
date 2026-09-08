@@ -50,7 +50,7 @@ of two `asyncio.Event`s: `"exit_requested"`, `"exit"`), `service_name`,
 **Dependencies:** `.manager_runtime` (`ManagerRuntime`), `.logging_lifecycle`
 (`LoggingLifecycle`), `.manager` (`Manager`), `.logging`
 (`parse_logging_level`), `.utils` (`prepare_conf_dir`, `print_scietex_logo`);
-external `scietex.logging.AsyncBaseHandler`.
+external `scietex.logging.ConsoleHandler`.
 
 **Depended on by:** `AsyncTaskProcessor` (extends); `ManagerRuntime` and
 `LoggingLifecycle` (back-reference to the owning worker); `task_handler`
@@ -97,7 +97,7 @@ owning worker and owns the `statuses` dict (35).
 - `register_logger_handler(handler, name)` (37) — sets the handler level and
   attaches it to the worker logger; the handler is registered once and reused
   across start/stop cycles.
-- `start_handlers()` (62) — starts each `AsyncBaseHandler` whose recorded
+- `start_handlers()` (62) — starts each `AsyncLoggingHandler` whose recorded
   status is not RUNNING, with `logger_handler_timeout`; sets status RUNNING on
   success, FAILED on timeout/exception so it is retried on the next start
   (AR-020).
@@ -105,7 +105,7 @@ owning worker and owns the `statuses` dict (35).
   `stop_logging()`), sets status STOPPED.
 
 **Dependencies:** `.logging` (`LoggerStatus`), external
-`scietex.logging.AsyncBaseHandler`.
+`scietex.logging.AsyncLoggingHandler`.
 **Depended on by:** `BasicAsyncWorker` (constructs and forwards to it).
 
 ## 4. Manager decorator — `Manager` / `ManagerStatus`
@@ -320,11 +320,15 @@ value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 
 ## 13. External async logging backend — `scietex.logging`
 
-Installed dependency (>=1.2.0). The package embeds this framework's log sink.
+Installed dependency (>=2.0.0). The package embeds this framework's log sink.
 Consumed classes:
-- `AsyncBaseHandler(logging.Handler)` — per-backend `asyncio.Queue`s +
-  worker coroutines; `start_logging()`/`stop_logging()`/`emit()`. Console
-  worker enabled unless `stdout_enable=False`.
+- `AsyncLoggingHandler(logging.Handler)` — pure machinery base class with
+  per-backend `asyncio.Queue`s + worker coroutines;
+  `start_logging()`/`stop_logging()`/`emit()`. Both concrete handlers subclass
+  it.
+- `ConsoleHandler(AsyncLoggingHandler)` — console sink. Constructed with no
+  arguments; identity comes from the stdlib logger name it is registered on
+  (e.g. `f"{service_name}.{instance_id}"`).
 - `AsyncBrokerHandler` — adds a broker queue + `_worker` that connects,
   formats records into dicts, `send_message()`; accepts an injected `client`
   and, when one is provided, never closes it (`_owns_client=False`).

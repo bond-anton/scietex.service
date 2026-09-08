@@ -73,7 +73,7 @@ class ValkeyWorker(AsyncTaskProcessor):
     Connection lifecycle (AR-018): this worker runs a single ``GlideClient``
     shared with the external :class:`~scietex.logging.AsyncValkeyHandler`
     registered for async logging. The client is injected into the handler at
-    construction (``scietex.logging>=1.2.0``), so the handler never owns or
+    construction (``scietex.logging>=2.0.0``), so the handler never owns or
     closes it; the worker is the sole teardown owner via ``disconnect()``. The
     handler is constructed lazily on the first successful ``connect()`` (the
     client is created asynchronously there) and reused across restarts.
@@ -226,10 +226,7 @@ class ValkeyWorker(AsyncTaskProcessor):
         if self._valkey_handler is None:
             self._valkey_handler = AsyncValkeyHandler(
                 stream_name=self._log_stream_name,
-                service_name=self.service_name,
-                worker_id=self.instance_id,  # ty: ignore[invalid-argument-type]
                 client=self._client,
-                stdout_enable=False,
             )
             self._register_logger_handler(self._valkey_handler, name="AsyncValkeyHandler")
         else:

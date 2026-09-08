@@ -53,8 +53,8 @@ async def test_logging_handlers_restartable_after_shutdown():
     assert worker.state == ServiceStatus.RUNNING
 
     statuses = worker._logging_lifecycle.statuses
-    assert statuses.get("AsyncBaseHandler") == LoggerStatus.RUNNING
-    first_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "AsyncBaseHandler")
+    assert statuses.get("ConsoleHandler") == LoggerStatus.RUNNING
+    first_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "ConsoleHandler")
 
     await worker.stop()
     for _ in range(50):
@@ -63,7 +63,7 @@ async def test_logging_handlers_restartable_after_shutdown():
         await asyncio.sleep(0.05)
     assert worker.state == ServiceStatus.STOPPED
     # Handlers must be recorded as STOPPED after shutdown.
-    assert statuses.get("AsyncBaseHandler") == LoggerStatus.STOPPED
+    assert statuses.get("ConsoleHandler") == LoggerStatus.STOPPED
 
     # Restart: the same handler instance is reused and restarted in place.
     await worker.start()
@@ -72,8 +72,8 @@ async def test_logging_handlers_restartable_after_shutdown():
             break
         await asyncio.sleep(0.05)
     assert worker.state == ServiceStatus.RUNNING
-    assert statuses.get("AsyncBaseHandler") == LoggerStatus.RUNNING
-    second_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "AsyncBaseHandler")
+    assert statuses.get("ConsoleHandler") == LoggerStatus.RUNNING
+    second_handler = next(h for h in worker.logger.handlers if h.__class__.__name__ == "ConsoleHandler")
     assert second_handler is first_handler, "handler should be restarted in place, not replaced"
 
     await worker.stop()

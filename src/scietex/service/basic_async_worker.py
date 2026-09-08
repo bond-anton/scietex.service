@@ -16,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
 
-from scietex.logging import AsyncBaseHandler
+from scietex.logging import AsyncLoggingHandler, ConsoleHandler
 
 from .logging import parse_logging_level
 from .logging_lifecycle import LoggingLifecycle
@@ -146,19 +146,12 @@ class BasicAsyncWorker:
         self._logging_lifecycle = LoggingLifecycle(self)
 
         # Set up logger with async handler
-        self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}.{self.__instance_id}")
+        self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}:{self.__instance_id}")
         self._logger.setLevel(self.logging_level)
         # Async handlers are restartable in place (scietex.logging >= 1.0), so a
         # single instance is registered once and restarted on each start cycle.
-        # The external handler types worker_id:int but only stringifies it, so
-        # passing the instance id string is safe at runtime. The ignore can be
-        # removed once scietex.logging widens its annotation to str | int.
-        self._register_logger_handler(
-            AsyncBaseHandler(
-                service_name=self.__service_name,
-                worker_id=self.__instance_id,  # ty: ignore[invalid-argument-type]
-            )
-        )
+        # The console handler derives its identity from the logger name above.
+        self._register_logger_handler(ConsoleHandler())
 
         self.__logger_handler_timeout = max(
             MIN_LOGGER_HANDLER_TIMEOUT,
@@ -455,7 +448,7 @@ class BasicAsyncWorker:
         """Logger instance for the worker.
 
         The logger is named using the pattern ``{service_name}.{instance_id}``
-        and is configured with an ``AsyncBaseHandler`` for async logging.
+        and is configured with a ``ConsoleHandler`` for async logging.
 
         Returns:
             The ``logging.Logger`` instance associated with this worker.
@@ -552,7 +545,7 @@ class BasicAsyncWorker:
 
     def _register_logger_handler(
         self,
-        handler: AsyncBaseHandler,
+        handler: AsyncLoggingHandler,
         name: str | None = None,
     ) -> None:
         """Attach an async logging handler to the logger.

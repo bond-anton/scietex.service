@@ -25,7 +25,7 @@ pip install scietex.service
 pip install "scietex.service[valkey]"
 ```
 
-**Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=1.1.0`
+**Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=2.0.0`
 
 ## Quick Start
 

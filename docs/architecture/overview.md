@@ -19,7 +19,7 @@ is a library whose entry point is the consumer's own `main()`.
 | Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (stream transport over glide), typed Valkey config schema + YAML loader + schema→glide converter (`valkey_config.py`), `Heartbeat` schema |
 | Utilities | `src/scietex/service/utils/` | `prepare_conf_dir()` config-dir resolution (`conf.py`); ASCII logo printer (`logo.py`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional import of Valkey exports |
-| Async logging backend (external) | `scietex.logging` package (>=1.2.0) | `AsyncBaseHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `ScietexFormatter` |
+| Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
 
 ## How subsystems interact
 
@@ -114,7 +114,7 @@ process/loop:
 | Manager task `Watchdog` → `_watchdog_manager` | `_start_managers()` | cancelled on shutdown |
 | Manager task `TaskManager` → `task_manager` (processor only) | `_start_managers()` | cancelled on shutdown |
 | Manager task `TaskQueueManager` → `task_queue_manager` (processor only) | `_start_managers()` | cancelled on shutdown |
-| Per-logger console worker (`scietex.logging` `AsyncBaseHandler._console_logging_worker`) | `_logger_start_handlers()` → handler `start_logging()` | handler `stop_logging()` during shutdown |
+| Per-logger console worker (`scietex.logging` `ConsoleHandler._console_logging_worker`) | `_logger_start_handlers()` → handler `start_logging()` | handler `stop_logging()` during shutdown |
 | Per-logger Valkey log worker (`AsyncBrokerHandler._worker` → connects, `xadd`) | same | handler `stop_logging()` during shutdown |
 | Per-task worker task (`handle_task` wrapper) | `AsyncTaskProcessor.task_manager` | task `handle()` returns/raises, or watchdog cancellation |
 
@@ -123,7 +123,7 @@ queue / `running_tasks`, delegating manager bookkeeping to `ManagerRuntime` and
 logging-handler bookkeeping to `LoggingLifecycle`; the **logging handlers own**
 their internal queues/worker tasks, and since AR-018 (v3) the Valkey log
 handler shares the worker's single `GlideClient` (injected via the
-`scietex.logging>=1.2.0` seam) rather than owning its own;
+`scietex.logging>=2.0.0` seam) rather than owning its own;
 **task handlers own** their initialization state (`is_ready`) but not their own
 tasks — they run inline inside processor-created tasks.
 

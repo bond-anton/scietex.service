@@ -128,12 +128,12 @@ RUNNING) / `remove_task_handler`.
 
 ## Async logging handler lifecycle
 
-- `BasicAsyncWorker.__init__` attaches `AsyncBaseHandler` (console);
+- `BasicAsyncWorker.__init__` attaches `ConsoleHandler` (console);
   `ValkeyWorker.__init__` additionally attaches `AsyncValkeyHandler`.
 - Lifecycle is owned by `LoggingLifecycle` (logging_lifecycle.py): started in
   `start_handlers` (startup), stopped in `shut_down_handlers` (shutdown), each
   bounded by `logger_handler_timeout`.
-- The external `scietex.logging` handlers (>= 1.2.0) are restartable in place:
+- The external `scietex.logging` handlers (>= 2.0.0) are restartable in place:
   `start_logging()`/`stop_logging()` may be called repeatedly on the same event
   loop. `start_handlers` starts each handler whose recorded status is not
   RUNNING; `shut_down_handlers` calls the idempotent `stop_logging()` and

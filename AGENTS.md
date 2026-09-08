@@ -87,7 +87,7 @@ python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide
 ## Quirks & Gotchas
 
 - **Import-time errors in `scietex.service.valkey` are swallowed** — package remains importable without `valkey-glide`
-- **Logging is async** — uses `AsyncBaseHandler` and `AsyncValkeyHandler`; shutdown has timeout
+- **Logging is async** — uses `ConsoleHandler` and `AsyncValkeyHandler` (both subclass `AsyncLoggingHandler`); shutdown has timeout
 - **Manager restart** — fails restarts automatically on error (except `CancelledError`)
 - **Valkey stream names:** `scietex:{service_name}:tasks` with group `scietex:{service_name}:task_group`
 - **Timeout defaults:** `DEFAULT_TASK_TIMEOUT = 3s`, `DEFAULT_HEARTBEAT_INTERVAL = 10s`, `DEFAULT_WATCHDOG_INTERVAL = 1s`

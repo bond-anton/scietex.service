@@ -4,7 +4,7 @@ import logging
 from typing import cast
 
 import pytest
-from scietex.logging import AsyncBaseHandler
+from scietex.logging import AsyncLoggingHandler
 
 from scietex.service.basic_async_worker import BasicAsyncWorker
 from scietex.service.logging import LoggerStatus
@@ -25,11 +25,11 @@ class _StubWorker:
         self.logger_handler_timeout = 2.0
 
 
-class _FlakyHandler(AsyncBaseHandler):
+class _FlakyHandler(AsyncLoggingHandler):
     """Handler whose ``start_logging`` raises until told to succeed."""
 
     def __init__(self) -> None:
-        super().__init__(service_name="test", worker_id=1, stdout_enable=False)
+        super().__init__()
         self.fail_next_start = True
 
     async def start_logging(self) -> None:

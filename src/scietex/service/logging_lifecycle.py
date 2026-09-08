@@ -7,7 +7,7 @@ start/stop and status bookkeeping used by ``BasicAsyncWorker``.
 import asyncio
 from typing import TYPE_CHECKING
 
-from scietex.logging import AsyncBaseHandler
+from scietex.logging import AsyncLoggingHandler
 
 from .logging import LoggerStatus
 
@@ -36,7 +36,7 @@ class LoggingLifecycle:
 
     def register_logger_handler(
         self,
-        handler: AsyncBaseHandler,
+        handler: AsyncLoggingHandler,
         # Unused: kept only for the `_register_logger_handler` forwarding wrapper
         # in `BasicAsyncWorker` (AR-031); remove once that caller drops it.
         name: str | None = None,
@@ -49,7 +49,7 @@ class LoggingLifecycle:
         is registered once and reused across start/stop cycles.
 
         Args:
-            handler: The ``AsyncBaseHandler`` (or subclass) to attach.
+            handler: The ``AsyncLoggingHandler`` (or subclass) to attach.
             name: Unused. Accepted only because ``BasicAsyncWorker``'s
                 ``_register_logger_handler`` forwarding wrapper passes it
                 positionally; statuses are keyed by ``handler.name`` or
@@ -64,7 +64,7 @@ class LoggingLifecycle:
         Start all async logging handlers that are not already running.
 
         Iterates over the logger's handlers and calls start_logging() on each
-        AsyncBaseHandler whose recorded status is not RUNNING. Handlers are
+        AsyncLoggingHandler whose recorded status is not RUNNING. Handlers are
         restartable in place, so no replacement is needed. A handler that fails
         to start (timeout or exception) is recorded as FAILED so it is retried
         on the next start_handlers call. Handles timeouts and errors gracefully,
@@ -75,7 +75,7 @@ class LoggingLifecycle:
             handler_name = handler.name or handler.__class__.__name__
             if handler_name in self.statuses and self.statuses[handler_name] == LoggerStatus.RUNNING:
                 continue
-            if not isinstance(handler, AsyncBaseHandler):
+            if not isinstance(handler, AsyncLoggingHandler):
                 self.statuses[handler_name] = LoggerStatus.RUNNING
                 continue
             try:
@@ -104,14 +104,14 @@ class LoggingLifecycle:
     async def shut_down_handlers(self) -> None:
         """Cleanly shut down all async logging handlers.
 
-        This will attempt to stop each `AsyncBaseHandler` with a per-handler
+        This will attempt to stop each `AsyncLoggingHandler` with a per-handler
         timeout to avoid hanging shutdowns if a handler blocks. `stop_logging`
         is idempotent in scietex.logging >= 1.0, so it is safe to call on every
         handler regardless of its current state.
         """
         for handler in self.worker.logger.handlers:
             handler_name = handler.name or handler.__class__.__name__
-            if isinstance(handler, AsyncBaseHandler):
+            if isinstance(handler, AsyncLoggingHandler):
                 try:
                     await asyncio.wait_for(handler.stop_logging(), timeout=self.worker.logger_handler_timeout)
                 except asyncio.TimeoutError:

@@ -20,7 +20,7 @@ basic_async_worker ──► manager
    │        │
    │        └──► utils (conf, logo)
    ▼
-scietex.logging (AsyncBaseHandler / AsyncValkeyHandler)     [external]
+scietex.logging (ConsoleHandler / AsyncValkeyHandler)     [external]
    │
    ▼
 glide (valkey-glide, optional)                              [external]
@@ -37,7 +37,7 @@ glide (valkey-glide, optional)                              [external]
 | `basic_async_worker` | `.logging` | import | `parse_logging_level` |
 | `basic_async_worker` | `.logging_lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
 | `basic_async_worker` | `.utils` | import | `prepare_conf_dir`, `print_scietex_logo` |
-| `basic_async_worker` | `scietex.logging` | import (external) | `AsyncBaseHandler` |
+| `basic_async_worker` | `scietex.logging` | import (external) | `ConsoleHandler` |
 | `utils.logo` | `..version` | import | `__version__` |
 | `async_tasks_processor` | `basic_async_worker` | inheritance | extends |
 | `async_tasks_processor` | `.manager` | import | for `@Manager` decorators |
@@ -70,7 +70,7 @@ glide (valkey-glide, optional)                              [external]
   base worker (console handler) and `ValkeyWorker` (Valkey handler) attach
   external handlers. Since AR-018 (v3), `ValkeyWorker` couples to `glide`
   **once** — the logging `AsyncValkeyHandler` receives the worker's single
-  `GlideClient` injected via the `scietex.logging>=1.2.0` client-injection seam
+  `GlideClient` injected via the `scietex.logging>=2.0.0` client-injection seam
   and never opens or closes a client of its own.
 - **Public API re-export guard**: the only place core code tolerates a missing
   optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
@@ -92,7 +92,7 @@ glide (valkey-glide, optional)                              [external]
 | Package | Declared in | Used for | Structurally significant? |
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
-| `scietex.logging>=1.2.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
+| `scietex.logging>=2.0.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
 | `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
 
@@ -106,10 +106,10 @@ glide (valkey-glide, optional)                              [external]
 2. **Config path**: `BasicAsyncWorker.conf_dir` → `read_valkey_config`
    (`valkey.yml`, msgspec yaml) → `ValkeyConfig` → `generate_glide_config` →
    `GlideClientConfiguration` → `GlideClient.create`.
-3. **Log path**: worker logger → `scietex.logging.AsyncBaseHandler.emit`
+3. **Log path**: worker logger → `scietex.logging.ConsoleHandler.emit`
    → internal asyncio queues → console worker; or `AsyncValkeyHandler._worker`
    → `xadd` on the worker's shared `GlideClient` (injected via the
-   `scietex.logging>=1.2.0` seam) → stream.
+   `scietex.logging>=2.0.0` seam) → stream.
 4. **Manager runtime chain**: `@Manager`-decorated method →
    `ManagerRuntime.iter_manager_definitions` (MRO scan) →
    `ManagerRuntime.start_manager` (task) → `ManagerRuntime.run_manager`
