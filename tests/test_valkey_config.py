@@ -71,6 +71,40 @@ def test_credentials_property():
     assert server_credentials is not None
 
 
+def test_generate_glide_config_pubsub_listening_true():
+    """listening=True wires the PubSub subscriptions into the client config."""
+    received = []
+
+    def parse_control_message(msg, context):
+        received.append((msg, context))
+
+    cfg = ValkeyConfig()
+    client_cfg = generate_glide_config(
+        cfg,
+        service_name="svc",
+        worker_id="abc",
+        listening=True,
+        parse_control_message=parse_control_message,
+    )
+
+    ps = client_cfg.pubsub_subscriptions
+    assert ps is not None
+    # The exact-mode channel set holds the service/worker channel and the broadcast channel.
+    channels = ps.channels_and_patterns
+    assert len(channels) == 1
+    exact = channels[list(channels)[0]]
+    assert exact == {"scietex:svc:abc", "scietex:broadcast"}
+    assert ps.callback is parse_control_message
+    assert ps.context is None
+
+
+def test_generate_glide_config_pubsub_listening_false_default():
+    """The default (listening=False) leaves pubsub_subscriptions unset."""
+    cfg = ValkeyConfig()
+    client_cfg = generate_glide_config(cfg, service_name="svc", worker_id="abc")
+    assert client_cfg.pubsub_subscriptions is None
+
+
 def test_invalid_read_from_raises():
     cfg = ValkeyBaseConfig()
     # inject invalid value
