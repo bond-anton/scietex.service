@@ -25,7 +25,7 @@ Each handler goes through a well-defined lifecycle managed by
 `AsyncTaskProcessor`:
 
 ```
-  [created] ──► [start()] ──► [is_ready=True] ──► [stop()] ──► [is_ready=False]
+  [created] ──► [start()] ──► [is_ready=initialize()] ──► [stop()] ──► [is_ready=False]
                     │                    │                    │
                     │              initialize()            cleanup()
                     │                    │                    │
@@ -36,7 +36,9 @@ Each handler goes through a well-defined lifecycle managed by
 
 1. **Registration** — `processor.add_task_handler(HandlerClass)`
 2. **Start** — `handler.start()` calls `handler.initialize()` and sets
-   `is_ready = True`
+   `is_ready` to the value `initialize()` returns. An `initialize()`
+   returning `False` leaves `is_ready == False`, and the processor then
+   fails the handler (removes it from active handlers)
 3. **Processing** — Tasks are dispatched to `handler.handle(task_data)`
    only when `handler.is_ready` is `True`
 4. **Stop** — `handler.stop()` calls `handler.cleanup()` and sets

@@ -110,6 +110,7 @@ process/loop:
 |---|---|---|
 | `Start` task → `_startup()` | `BasicAsyncWorker.start()` | state → `RUNNING` (or init failure → `stop()`) |
 | `Stop` task → `_shutdown()` | `BasicAsyncWorker.stop()` / signal | state → `STOPPED`, `exit` event set |
+| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_async_worker.py:519, AR-033) | one shutdown; repeat signals short-circuit |
 | Manager task `Heartbeat` → `_heartbeat_manager` | `_start_managers()` | cancelled on shutdown |
 | Manager task `Watchdog` → `_watchdog_manager` | `_start_managers()` | cancelled on shutdown |
 | Manager task `TaskManager` → `task_manager` (processor only) | `_start_managers()` | cancelled on shutdown |
@@ -121,7 +122,7 @@ process/loop:
 Ownership summary: the **worker owns** manager tasks and the internal task
 queue / `running_tasks`, delegating manager bookkeeping to `ManagerRuntime` and
 logging-handler bookkeeping to `LoggingLifecycle`; the **logging handlers own**
-their internal queues/worker tasks, and since AR-018 (v3) the Valkey log
+their internal queues/worker tasks, and since AR-018 (v4) the Valkey log
 handler shares the worker's single `GlideClient` (injected via the
 `scietex.logging>=2.0.0` seam) rather than owning its own;
 **task handlers own** their initialization state (`is_ready`) but not their own

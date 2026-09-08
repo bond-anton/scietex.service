@@ -20,17 +20,30 @@ transformations, and any async boundaries (queues/events/tasks).
    wraps `handle_task` in an `asyncio.Task`, records
    `running_tasks[task_id] = TaskTracker(...)`.
 3. `handle_task` (inner, 608) calls `process_task(task_id, task_data)`.
-4. `process_task` (544): validates `task_data.task`, selects a handler with
+4. `process_task` (544): guards the empty-`task` case first — an empty
+   `task_data.task` returns `TaskResult(status="error", error="Task data must
+   contain 'task' field")` (545–553) — then selects a handler with
    `_find_task_handler` (`handler.supports(task_type)`, first match among
-   **active/started** handlers), calls `await handler.handle(task_data)`.
-5. Exceptions from `handle()` are converted into
-   `TaskResult(status="error", error=str(e))`; no handler → error result.
+   **active/started** handlers).
+5. Dispatch is gated by `handler.is_ready` (556): only a found **and
+   initialized** handler runs `await handler.handle(task_data)`. A `handle()`
+   exception is converted into `TaskResult(status="error", error=str(e))` with
+   the default `retryable=False` — a **raised exception is permanent** (a
+   handler that wants a retry must return a `retryable=True` result
+   explicitly), so an unhandled exception cannot create an infinite requeue
+   loop under retry-once. No handler / not ready → error result
+   ("No handler found for task type ...").
 
-**Destination:** the `TaskResult` is returned to `handle_task`, which logs it
-at DEBUG and invokes `on_task_completed(task_id, task_data, task_result)` in
-its `finally` — the transport-agnostic ack/result-sink seam. `ValkeyWorker`
-overrides it to `XACK`+`XDEL` the stream entry. `running_tasks` entry is
-popped and `task_queue.task_done()` called.
+**Destination:** the `TaskResult` is returned to `handle_task`, whose `finally`
+pops the `running_tasks` entry and calls `task_queue.task_done()`, then: a
+`retryable=True` error result is requeued via
+`return_task_to_queue(task_id, task_data)` **before** acking (617–627) — the
+retry copy is made durable (XADD) before the original is dropped (XACK) — and
+then `on_task_completed(task_id, task_data, task_result)` is invoked — the
+transport-agnostic ack/result-sink seam. `ValkeyWorker` overrides it to
+`XACK`+`XDEL` the stream entry. A requeue failure is logged and the entry is
+still acked (the retry copy is lost, but the entry must not stay pending
+forever).
 
 **Async boundaries:** `asyncio.Queue` (bounded, `queue_size` default 2) between
 intake and dispatch; per-task `asyncio.Task`; concurrency cap
@@ -66,7 +79,9 @@ handler's work terminates (see F1 destination note).
 ## F3. Requeue / retry flow
 
 **Source/trigger:** (a) watchdog timeout, (b) worker shutdown drain, (c) task
-cancellation during cleanup.
+cancellation during cleanup, (d) retry-once via `TaskResult.retryable` (an
+error result with `retryable=True` is requeued in `handle_task`'s `finally`
+before acking — see F1).
 
 **Path:** `AsyncTaskProcessor.watchdog` (685) cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or `DEFAULT_TASK_TIMEOUT=3`), waits up

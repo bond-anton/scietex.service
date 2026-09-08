@@ -66,12 +66,12 @@ pip install scietex.service[valkey]
                  │   Valkey Server  │
                  │                  │
                  │  Stream:         │
-                 │  scietex:{svc}   │
-                 │  :{id}:tasks     │
+                 │  scietex:{svc}:  │
+                 │  tasks           │
                  │                  │
                  │  Group:          │
-                 │  scietex:{svc}   │
-                 │  :{id}:task_group│
+                 │  scietex:{svc}:  │
+                 │  task_group      │
                  └─────────────────┘
 ```
 
@@ -99,6 +99,7 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | `DEFAULT_TASK_TIMEOUT` | `3` | Default task timeout in seconds (inherited) |
 | `DEFAULT_HEARTBEAT_INTERVAL` | `10` | Default heartbeat interval in seconds |
 | `DEFAULT_WATCHDOG_INTERVAL` | `1` | Default watchdog check interval in seconds |
+| `DEFAULT_CLAIM_MIN_IDLE_MS` | `1000` | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry |
 
 ## Lifecycle
 
@@ -231,19 +232,6 @@ async def cleanup(self):
 Drains the internal task queue and cancels running tasks via the parent
 `AsyncTaskProcessor.cleanup()`, then closes the Valkey connection.
 
-### purge_tasks()
-
-Purge all pending and unacknowledged tasks from the Valkey task stream.
-
-```python
-async def purge_tasks(self):
-    """Read+ack+delete all entries, then purge the stream itself."""
-```
-
-Reads and acknowledges every entry in the task stream via `XREADGROUP`
-(both pending and unclaimed), then deletes them with `XDEL`. Also purges
-any remaining entries via `XREAD`.
-
 ### return_task_to_queue()
 
 Re-queue a task by appending it to the Valkey task stream.
@@ -291,6 +279,22 @@ id recorded at fetch time and `XACK`s + `XDEL`s it, so the entry leaves
 the consumer group's pending list only after the handler's work on it is
 done. `task_result` is `None` when the task was cancelled before
 producing a result.
+
+### purge_task_stream()
+
+The stream-purge capability is a standalone operational utility, not a
+`ValkeyWorker` method. It reads, acknowledges, and deletes every entry in
+a task stream so an operator can clear it without running a worker.
+
+```python
+from scietex.service.valkey import purge_task_stream
+
+await purge_task_stream(client, stream_name, group_name, consumer_name)
+```
+
+Reads and acknowledges every entry in the stream via `XREADGROUP` (both
+pending and unclaimed), then deletes them with `XDEL`. Also purges any
+remaining entries via `XREAD`. See `src/scietex/service/valkey/purge.py`.
 
 ## At-Least-Once Delivery
 
@@ -415,7 +419,13 @@ You can also pass a `ValkeyConfig` or raw `GlideClientConfiguration`
 directly:
 
 ```python
-from scietex.service.valkey import ValkeyConfig, ValkeyNode, ValkeyBackoffStrategy
+from scietex.service.valkey import (
+    ValkeyConfig,
+    ValkeyNode,
+    ValkeyBackoffStrategy,
+    ValkeyBaseConfig,
+    ValkeyUserCredentials,
+)
 
 config = ValkeyConfig(
     base_config=ValkeyBaseConfig(

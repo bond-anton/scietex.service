@@ -24,7 +24,7 @@ Layout of the repository and the Python package.
 | Module | Responsibility |
 |---|---|
 | `__init__.py` | Public API. Always exports `__version__`, `BasicAsyncWorker`, `AsyncTaskProcessor`, `Manager`. In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
-| `version.py` | Single source `__version__ = "3.1.0"` (also read by setuptools dynamic version) |
+| `version.py` | Single source `__version__ = "4.0.0"` (also read by setuptools dynamic version) |
 | `manager/__init__.py` | `Manager` class-decorator (name + optional cleanup callable, stores `method`) and `ManagerStatus` enum |
 | `manager/runtime.py` | `ManagerRuntime(worker)`: manager discovery across the class MRO (`iter_manager_definitions`), start/stop bookkeeping (`statuses`/`tasks`/`errors`), and the bounded restart-on-error loop (`run_manager`). Extracted from `BasicAsyncWorker` (AR-003) |
 | `logging/lifecycle.py` | `LoggingLifecycle(worker)`: async logging-handler registration and start/stop with `statuses` bookkeeping. Extracted from `BasicAsyncWorker` (AR-003) |
@@ -38,9 +38,10 @@ Layout of the repository and the Python package.
 | `utils/__init__.py` | Re-exports `prepare_conf_dir`, `print_scietex_logo` |
 | `utils/conf.py` | `prepare_conf_dir()` + `_resolve_xdg_path()` config-dir search |
 | `utils/logo.py` | ASCII `LOGO` template and `print_scietex_logo()` |
-| `valkey/__init__.py` | Re-exports `ValkeyWorker` and config types from the two sibling modules |
-| `valkey/valkey_config.py` | Typed config structs + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports `glide` unguarded → hard `ImportError` with install hint if `glide` is absent |
-| `valkey/valkey_async_worker.py` | `ValkeyWorker(AsyncTaskProcessor)` + stream/connection logic. Imports `glide` and `scietex.logging.AsyncValkeyHandler` unguarded at module top |
+| `valkey/__init__.py` | Re-exports `ValkeyWorker`, config types, and `purge_task_stream` from the sibling modules |
+| `valkey/valkey_config.py` | Typed config structs + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports `glide` in a guarded `try/except ImportError` that re-raises with an install hint if `glide` is absent |
+| `valkey/valkey_async_worker.py` | `ValkeyWorker(AsyncTaskProcessor)` + stream/connection logic. Imports `glide` via the same guarded re-raise (`ImportError` → install hint); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
+| `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry); no runtime `glide` import (`TYPE_CHECKING` only) |
 | `valkey/schemas.py` | `Heartbeat` msgpack schema |
 
 ## Notable module boundaries
@@ -62,7 +63,8 @@ Layout of the repository and the Python package.
   `valkey/valkey_async_worker.py` attach external logging handlers. The worker
   treats them uniformly through `start_logging()`/`stop_logging()` +
   `handler.name` (via `LoggingLifecycle`).
-- **Stale artifacts present in the tree** (not source): `build/`,
-  `src/scietex.service.egg-info/`, `*.pyc` under `src` (including
-  `redis_async_worker`, `utils/managers`, `utils/helpers` — modules removed by
-  the `@Manager` refactor), `.tox/`, `.coverage`. Ignore when reading the map.
+- **Stale artifacts present in the tree** (not source): `build/`
+  (`build/lib/scietex/service/` still contains `logo.py` — the flat logo that
+  predates the `utils/` split — `valkey/valkey_async_worker_messaging.py`, and
+  a `task_handlers/` directory), `src/scietex.service.egg-info/`, `*.pyc` under
+  `src`, `.tox/`, `.coverage`. Ignore when reading the map.

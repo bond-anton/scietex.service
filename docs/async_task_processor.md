@@ -179,7 +179,7 @@ already running, the handler is started asynchronously.
 ### Removing Handlers
 
 ```python
-processor.remove_task_handler("email")
+processor.remove_task_handler("EmailHandler")
 ```
 
 If the handler is currently active, it is stopped asynchronously. The
@@ -259,6 +259,7 @@ Timeout behavior is controlled by `TaskTimeout`:
 | `None` | — | Uses `DEFAULT_TASK_TIMEOUT` (3s) |
 | `> 0` | `"requeue"` | Cancel task and return to external queue |
 | `> 0` | `"discard"` | Cancel task, do not requeue |
+| `<= 0` | — | No timeout (unbounded) — the watchdog never cancels the task |
 
 ## Overriding Methods
 
@@ -367,7 +368,7 @@ import uuid
 from uuid import uuid4
 
 from scietex.service import AsyncTaskProcessor
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
+from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, TaskTimeout
 
 
 class EmailHandler(TaskHandler):

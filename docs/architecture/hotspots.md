@@ -26,6 +26,8 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
 | H16 | Resolved | AR-022 — structured error taxonomy fields on `TaskResult` |
+| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_async_worker.py:199,519) |
+| H18 | Open | AR-031 — unused `name` param in `LoggingLifecycle.register_logger_handler` (logging/lifecycle.py:40-57) |
 
 ## H1. `BasicAsyncWorker` is a large, multi-responsibility class
 
@@ -81,7 +83,7 @@ tracking.
   handler lifecycle were inconsistent.
 
 **Resolved (2026-09-06):** `shut_down_handlers` records STOPPED, and
-scietex.logging >= 1.0 handlers are restartable in place, so a second `start()`
+scietex.logging >= 2.0.0 handlers are restartable in place, so a second `start()`
 restarts the same handler instances. See
 `docs/reviews/architecture/2026-09-05.md`.
 

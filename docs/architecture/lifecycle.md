@@ -30,20 +30,27 @@ Public: `worker.start()` (671). It:
    - `ValkeyWorker.initialize` (388) calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows
      "already exists" errors).
-5. `_start_managers()` (609) → `ManagerRuntime.start_managers()` — discover
+5. `_register_instance()` (660) — subclass hook, runs only after
+   `initialize()` succeeded (transport/client exists) and before managers
+   start. Base is a no-op; `ValkeyWorker` overrides it to `SADD` its
+   `instance_id` into the worker registry set (best-effort: a failure logs a
+   WARNING and does not fail startup).
+6. `_start_managers()` (609) → `ManagerRuntime.start_managers()` — discover
    `@Manager`s via `ManagerRuntime.iter_manager_definitions()`
    (manager/runtime.py:39) and start each as a named task.
-6. Sets `start_time` (UTC) and state = RUNNING.
+7. Sets `start_time` (UTC) and state = RUNNING.
 
 Failure: if `initialize()` returns `False` → `RuntimeError("Initialization
 failed")` → `_startup` calls `stop()` → shutdown begins. If `_startup` is
 cancelled, it logs, forces `_force_stopped()` (STOPPED + `exit` event), and
 re-raises — no stranded STARTING state (AR-017).
 
-> Ordering note: `initialize()` runs **before** `_start_managers()` (steps 4
-> and 5). Managers and handlers may depend on resources created by
-> `initialize()` (e.g. a Valkey client), so this ordering removes the previous
-> startup race (see §H5, resolved).
+> Ordering note: `initialize()` runs **before** `_register_instance()`, which
+> runs **before** `_start_managers()` (steps 4–6). Managers and handlers may
+> depend on resources created by `initialize()` (e.g. a Valkey client), so
+> this ordering removes the previous startup race (see §H5, resolved);
+> instance registration is deferred until after `initialize()` so the
+> transport/client exists.
 
 ### Normal operation
 
@@ -58,8 +65,11 @@ re-raises — no stranded STARTING state (AR-017).
 
 ### Shutdown
 
-Signal (`SIGINT`/`SIGTERM`) → `exit()` (800) sets `exit_requested`, calls
-`stop()`.
+Signal (`SIGINT`/`SIGTERM`) → `_request_exit` (519), which spawns a single
+`"StopTask"` running `exit()` (800); `exit()` sets `exit_requested` and calls
+`stop()`. Repeat signals are deduplicated: a pending stop task or an
+already-set `exit_requested` short-circuits so only one shutdown runs
+(AR-033).
 
 `stop()` (757):
 - STOPPED → clear/set exit events, remove signal handlers
@@ -71,7 +81,12 @@ Signal (`SIGINT`/`SIGTERM`) → `exit()` (800) sets `exit_requested`, calls
 1. State = STOPPING.
 2. `_stop_managers()` (617) → `ManagerRuntime.stop_managers()` — cancel each
    manager task; wait per-manager up to `manager_shutdown_timeout` (default 2 s).
-3. `cleanup()` — subclass hook. Chain:
+3. `_unregister_instance()` (737) — subclass hook, runs after managers stop
+   and before `cleanup()` teardown, deliberately while the transport is still
+   open (`cleanup()` may disconnect it). Base is a no-op; `ValkeyWorker`
+   overrides it to `SREM` its `instance_id` from the worker registry set
+   (best-effort: a failure logs a WARNING and does not fail shutdown).
+4. `cleanup()` — subclass hook. Chain:
    - `AsyncTaskProcessor.cleanup` (498): drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
      cancel running per-task workers (wait up to
@@ -80,12 +95,12 @@ Signal (`SIGINT`/`SIGTERM`) → `exit()` (800) sets `exit_requested`, calls
      (`_stop_task_handler`, per-handler 5 s timeout).
    - `ValkeyWorker.cleanup` (423): super then `disconnect()` (close glide
      client).
-4. `_logger_shut_down_handlers()` (566) →
+5. `_logger_shut_down_handlers()` (566) →
    `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
    with per-handler timeout; overall `loggers_timeout =
    handlers × logger_handler_timeout + 1`.
-5. `start_time = None`; state = STOPPED.
-6. If `exit_requested` was set → clear it, set `exit` event.
+6. `start_time = None`; state = STOPPED.
+7. If `exit_requested` was set → clear it, set `exit` event.
 
 If `_shutdown` is cancelled, it logs "Shutdown task cancelled", forces
 `_force_stopped()` (STOPPED + `exit` event if `exit_requested` was set), then
@@ -109,9 +124,11 @@ States: `ManagerStatus` STARTING → RUNNING → STOPPING → STOPPED, tracked b
    manager.method(self.worker)`.
 3. On method exception (non-`CancelledError`): record error (92), increment
    `consecutive_failures`, and retry after `manager_restart_backoff` (110) —
-   bounded by `manager_max_retries` (default 5), after which the manager gives
-   up (94–101). The retry runs **inside the same task**; the manager never
-   cancels itself.
+   the manager gives up when `consecutive_failures > manager_max_retries`
+   (default 5), i.e. on the (max_retries+1)-th consecutive failure (94–101).
+   A successful iteration resets `consecutive_failures` to 0 (112–113), so the
+   retry budget counts **consecutive** failures only. The retry runs **inside
+   the same task**; the manager never cancels itself.
 4. `CancelledError` → clean stop. `finally` (116–125): set STOPPING, run
    optional `manager.cleanup(self.worker)`, set STOPPED, remove the task from
    tracking.
@@ -145,12 +162,13 @@ RUNNING) / `remove_task_handler`.
 
 | Resource | Owner | Acquired | Released |
 |---|---|---|---|
-| Logger + async handlers | worker (via `LoggingLifecycle`) | `__init__` / startup | shutdown step 4 |
+| Logger + async handlers | worker (via `LoggingLifecycle`) | `__init__` / startup | shutdown step 5 |
 | Manager asyncio tasks | worker (via `ManagerRuntime`) | `_start_managers` | `_stop_managers` |
 | Internal task queue, `running_tasks` | `AsyncTaskProcessor` | `__init__` | drained in `cleanup` |
 | Task handler instances | processor (created per handler name) | `initialize` | `cleanup` |
 | Handler `is_ready` state | each `TaskHandler` | `start()` | `stop()` |
 | GlideClient (`ValkeyWorker.client`) | worker | `initialize`→`connect` | `cleanup`→`disconnect` |
+| Worker registry-set membership (`SADD`/`SREM`) | worker (via `_register_instance`/`_unregister_instance`) | startup step 5 (`_register_instance`) | shutdown step 3 (`_unregister_instance`) |
 | Logging `AsyncValkeyHandler` worker loop | worker (via `LoggingLifecycle`) | `connect()` → `handler.start_logging()` | shutdown (`stop_logging`) |
 | Signal handlers (SIGINT/SIGTERM) | loop (per started worker) | `start()` (`_setup_signal_handlers`) | `stop()` (`_remove_signal_handlers`) |
 

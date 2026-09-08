@@ -32,7 +32,8 @@ config, and the state machine.
 - Lifecycle: `_startup` 625, `start` 671, `_shutdown` 713, `stop` 757, `exit` 800
 - Cancellation terminal-state helper: `_force_stopped` 699 (AR-017 — forces
   STOPPED + `exit` event on startup/shutdown cancellation)
-- Hooks: `initialize` 575, `heartbeat` 832, `watchdog` 844, `cleanup` 856
+- Hooks: `initialize` 575, `heartbeat` 832, `watchdog` 844, `cleanup` 856,
+  `_register_instance` 873, `_unregister_instance` 883
 - Built-in managers: `@Manager(name="Heartbeat") _heartbeat_manager` 810,
   `@Manager(name="Watchdog") _watchdog_manager` 821
 - `_setup_signal_handlers` called from `start()` (696), not `__init__`;
@@ -45,7 +46,13 @@ of two `asyncio.Event`s: `"exit_requested"`, `"exit"`), `service_name`,
 `heartbeat_interval`, `watchdog_interval`, `start_time`,
 `logger_handler_timeout`, `manager_shutdown_timeout`, `manager_max_retries`,
 `manager_restart_backoff`. Extension contract: override
-`initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods.
+`initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
+subclass hooks govern registry-set membership: `_register_instance` (873) —
+called by `_startup()` after `initialize()` succeeds and before managers
+start — and `_unregister_instance` (883) — called by `_shutdown()` after
+managers stop and before `cleanup()` teardown. Both are no-ops in the base;
+`ValkeyWorker` overrides them (valkey_async_worker.py:386, 408) to `SADD`/
+`SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.logging.lifecycle`
 (`LoggingLifecycle`), `.manager` (`Manager`), `.logging`
@@ -72,11 +79,14 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
   subclass override shadows the base definition.
 - `run_manager(name, manager)` (62) — runs `manager.method(self.worker)` in a
   `while True` loop (83); on a non-`CancelledError` exception records the error
-  (92) and retries after `manager_restart_backoff` (110), giving up after
-  `manager_max_retries` consecutive failures (94–101). `CancelledError` stops
-  cleanly (89–90). The retry happens **inside the same task** — the manager
-  never cancels itself. `finally` (116–125) runs `manager.cleanup`, marks
-  STOPPED, and removes the task from tracking.
+  (92) and retries after `manager_restart_backoff` (110), giving up when
+  `consecutive_failures > manager_max_retries` — i.e. on the
+  (max_retries+1)-th consecutive failure (94–101). A successful iteration
+  resets the `consecutive_failures` counter to 0 (112–113), so the budget
+  counts consecutive failures only. `CancelledError` stops cleanly (89–90).
+  The retry happens **inside the same task** — the manager never cancels
+  itself. `finally` (116–125) runs `manager.cleanup`, marks STOPPED, and
+  removes the task from tracking.
 - `start_manager` (130), `stop_manager` (151), `start_managers` (178),
   `stop_managers` (188).
 
@@ -96,7 +106,10 @@ logging-handler registration and start/stop with status bookkeeping.
 owning worker and owns the `statuses` dict (35).
 - `register_logger_handler(handler, name)` (37) — sets the handler level and
   attaches it to the worker logger; the handler is registered once and reused
-  across start/stop cycles.
+  across start/stop cycles. The `name` parameter is **unused** (AR-031): it is
+  accepted only because `BasicAsyncWorker._register_logger_handler` passes it
+  through; statuses are keyed by `handler.name` or
+  `handler.__class__.__name__` instead (lifecycle.py:40–57).
 - `start_handlers()` (62) — starts each `AsyncLoggingHandler` whose recorded
   status is not RUNNING, with `logger_handler_timeout`; sets status RUNNING on
   success, FAILED on timeout/exception so it is retried on the next start
@@ -246,11 +259,13 @@ Constructor 76 (accepts `valkey_config` or falls back to `read_valkey_config`,
 after PING succeeds, 261; then wires the shared client into the logging handler),
 `disconnect` 277, `heartbeat` 291 (writes msgpack `Heartbeat` to `...:status`
 with TTL 2×interval), `initialize` 327 (start handlers, connect,
-`xgroup_create`), `cleanup` 362 (super + disconnect), `purge_tasks` 372,
+`xgroup_create`), `cleanup` 362 (super + disconnect),
 `return_task_to_queue` 438 (`xadd` re-queue), `_recover_pending_tasks` 457
 (`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 513
 (`xreadgroup` → decode → `enqueue_task`; does **not** ack on enqueue),
-`on_task_completed` 572 (`xack`+`xdel` the entry after the handler finishes).
+`on_task_completed` 572 (`xack`+`xdel` the entry after the handler finishes),
+`_register_instance` 386 (`SADD` `instance_id` into the registry set),
+`_unregister_instance` 408 (`SREM` it back out).
 
 Single client (AR-018): the worker runs one `GlideClient` shared with the
 logging handler. `_ensure_logging_handler` (207) constructs the
@@ -268,6 +283,12 @@ replicas share one queue; the consumer/status keys are worker-scoped per
 auto-generated `instance_id`. `_task_entry_ids` (170) maps task UUID → stream
 entry id for deferred acknowledgement; `_recovered` (174) guards one-time
 pending recovery.
+
+The registry set is the enumeration index: `_register_instance` (386) `SADD`s
+the `instance_id` on startup and `_unregister_instance` (408) `SREM`s it on
+shutdown — both best-effort (a failure logs a WARNING and continues). Liveness
+is the status-key TTL refreshed by `heartbeat()`, so a stale member left by a
+crashed replica is tolerated (the operator probes each member's status key).
 
 **Public interface:** properties `valkey_config`, `client`; constructor kwargs
 (`valkey_config`, `log_stream_name`, ...).
@@ -309,7 +330,25 @@ subscriptions when `listening=True`).
 `timestamp` uses `msgspec.field(default_factory=...)` (38) for a per-instance
 value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 
-## 12. Utilities
+## 12. Valkey stream purge utility — `purge.py`
+
+**File:** `src/scietex/service/valkey/purge.py`
+
+**Purpose:** Standalone operational utility to purge a Valkey task stream —
+reads, acknowledges, and deletes every entry so an operator can clear a stream
+without running a worker. Independent of `ValkeyWorker` (AR-043: moved off the
+worker class, which previously carried it as dead code).
+
+**Main symbols:** `purge_task_stream(client, stream_name, group_name,
+consumer_name, logger=None)` (22) — orchestrates the purge; private helpers
+`_purge_group_entries` (60, `XREADGROUP` + `XACK` + `XDEL` loop), `_purge_stream_entries`
+(82, `XREAD` + `XDEL` loop), `_stream_entry_ids` (96).
+
+**Dependencies:** none at runtime (`GlideClient` imported only under
+`TYPE_CHECKING`); the caller supplies an open client. **Depended on by:**
+`valkey/__init__.py`.
+
+## 13. Utilities
 
 - **`utils/conf.py`** — `prepare_conf_dir()` (33): returns first existing dir
   in order `conf_dir` arg → `SCIETEX_CONFIG_DIR` env → `$XDG_CONFIG_HOME/scietex`
@@ -318,7 +357,7 @@ value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 - **`utils/logo.py`** — `print_scietex_logo(service_name, version)` (34) prints
   ASCII banner using `..version.__version__`.
 
-## 13. External async logging backend — `scietex.logging`
+## 14. External async logging backend — `scietex.logging`
 
 Installed dependency (>=2.0.0). The package embeds this framework's log sink.
 Consumed classes:

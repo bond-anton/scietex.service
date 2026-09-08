@@ -35,6 +35,8 @@ Subclasses should override:
 | `DEFAULT_WATCHDOG_INTERVAL` | `1` | `0.01` | `600` | Default watchdog check interval in seconds |
 | `DEFAULT_LOGGER_HANDLER_TIMEOUT` | `2` | `1` | `10` | Default timeout for logger handler operations |
 | `DEFAULT_MANAGER_SHUTDOWN_TIMEOUT` | `2` | `1` | `10` | Default timeout for manager shutdown |
+| `DEFAULT_MANAGER_MAX_RETRIES` | `5` | `0` | `100` | Default max consecutive failures before a manager gives up |
+| `DEFAULT_MANAGER_RESTART_BACKOFF` | `1` | `0` | `60` | Default delay in seconds between manager restart attempts |
 
 ## Lifecycle
 
@@ -62,8 +64,9 @@ The `start()` method creates a task that runs `_startup()`, which:
 2. Prints the service logo
 3. Starts async logging handlers
 4. Calls `initialize()` (subclass override point)
-5. Starts all `@Manager`-decorated methods as asyncio tasks
-6. Sets `start_time` and transitions to `RUNNING`
+5. Registers the instance via `_register_instance()`
+6. Starts all `@Manager`-decorated methods as asyncio tasks
+7. Sets `start_time` and transitions to `RUNNING`
 
 If `initialize()` returns `False`, a `RuntimeError` is raised and the
 worker shuts down.
@@ -71,18 +74,24 @@ worker shuts down.
 ### Stopping
 
 ```python
-await worker.exit()  # or await worker.stop()
+await worker.exit()
 ```
 
-Signals (`SIGINT`/`SIGTERM`) automatically trigger `exit()`. The
-`_shutdown()` method:
+`exit()` sets the `exit_requested` event, then calls `stop()`. `stop()`
+alone runs the shutdown sequence but does not set `exit_requested`, and
+the `exit` event is set only when `exit_requested` was set, so
+`await worker.stop(); await worker.events["exit"].wait()` would hang. Use
+`exit()` (or a signal) to trigger the `exit` event. Signals
+(`SIGINT`/`SIGTERM`) automatically trigger `exit()`. The `_shutdown()`
+method:
 
 1. Sets state to `STOPPING`
 2. Stops all manager tasks
-3. Calls `cleanup()` (subclass override point)
-4. Shuts down logging handlers with a timeout
-5. Clears `start_time` and transitions to `STOPPED`
-6. Sets the `exit` event to signal completion
+3. Unregisters the instance via `_unregister_instance()`
+4. Calls `cleanup()` (subclass override point)
+5. Shuts down logging handlers with a timeout
+6. Clears `start_time` and transitions to `STOPPED`
+7. Sets the `exit` event to signal completion
 
 ## ServiceStatus
 
@@ -106,7 +115,9 @@ class ServiceStatus(Enum):
 The `@Manager` decorator marks an async method as a managed loop. The
 method is called repeatedly by `_run_manager()` in a `while True` loop.
 On `CancelledError` the loop stops cleanly. On any other exception, the
-error is recorded and the manager is automatically restarted.
+error is recorded and the manager is automatically restarted after a
+`manager_restart_backoff` delay. Restarts are bounded: after
+`manager_max_retries` consecutive failures the manager gives up and stops.
 
 Managers are discovered via the class MRO (most-derived to base classes)
 and executed as named `asyncio.Task` objects.
@@ -185,6 +196,8 @@ behavior.
 | `watchdog_interval` | `float` | `1` | Seconds between watchdog checks |
 | `logger_handler_timeout` | `float` | `2` | Timeout for logger handler operations |
 | `manager_shutdown_timeout` | `float` | `2` | Timeout for manager shutdown |
+| `manager_max_retries` | `int` | `5` | Max consecutive failures before a manager gives up |
+| `manager_restart_backoff` | `float` | `1` | Seconds between manager restart attempts |
 | `conf_dir` | `Path` | *(resolved)* | Configuration directory path |
 | `logging_level` | `int` | `logging.DEBUG` | Current logging level |
 
@@ -192,7 +205,7 @@ behavior.
 
 | Property | Type | Description |
 |---|---|---|
-| `logger` | `logging.Logger` | Logger instance (named `{service_name}.{instance_id}`) |
+| `logger` | `logging.Logger` | Logger instance (named `{service_name}:{instance_id}`) |
 
 ## Configuration
 
@@ -225,6 +238,8 @@ BasicAsyncWorker(
 |---|---|---|
 | `logger_handler_timeout` | `2` | Timeout for logger handler operations |
 | `manager_shutdown_timeout` | `2` | Timeout for manager shutdown |
+| `manager_max_retries` | `5` | Max consecutive failures before a manager gives up |
+| `manager_restart_backoff` | `1` | Seconds between manager restart attempts |
 
 ### Config Directory Precedence
 

@@ -95,3 +95,29 @@ otherwise create under retry-once.
 raise-path retryability flip. Requires a major-version bump.
 
 **Status: implemented** in v4.0.0 (commits `3a49b9c`, `fa6a8cc`, `45923d8`).
+
+## v4 — logging and manager modules grouped into subpackages
+
+**Motivation:** the logging and manager subsystems each lived as two loose
+top-level modules (`logging.py` + `logging_lifecycle.py`, `manager.py` +
+`manager_runtime.py`), splitting one component's code across unrelated files
+and obscuring ownership.
+
+**Decision (v4):** group each component into its own subpackage —
+`LoggingLifecycle` moves to `logging/lifecycle.py` and `ManagerRuntime` to
+`manager/runtime.py` — with each `__init__.py` re-exporting its sibling
+module's public API. Pure move, no logic changes.
+
+**Status: implemented** in v4.0.0 (commit `91b0afe`).
+
+## v4 — migrate to scietex.logging 2.0.0 API
+
+**Motivation:** upstream `scietex.logging` released a 2.0.0 API that removed
+the `AsyncBaseHandler` class the worker's async logging was built on.
+
+**Decision (v4):** replace the removed `AsyncBaseHandler` with
+`ConsoleHandler`/`AsyncLoggingHandler`, drop `service_name`/`worker_id`/
+`stdout_enable` from `AsyncValkeyHandler`, and bump the `scietex.logging`
+floor to `>=2.0.0` across pyproject, source, tests, and docs.
+
+**Status: implemented** in v4.0.0 (commit `03f1f9a`).

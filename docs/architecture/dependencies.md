@@ -48,8 +48,9 @@ glide (valkey-glide, optional)                              [external]
 | `valkey.valkey_async_worker` | `.task_handler` | import | `TaskData` |
 | `valkey.valkey_async_worker` | `.valkey_config`, `.schemas` | import | |
 | `valkey.valkey_async_worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
-| `valkey.valkey_async_worker` | `glide` | import (external, optional extra) | unguarded within module; errors surface to top-level guard |
-| `valkey.valkey_config` | `glide`, `msgspec` | import | unguarded glide import; config cannot load without the extra |
+| `valkey.valkey_async_worker` | `glide` | import (external, optional extra) | guarded `try/except ImportError` re-raise with install hint; errors surface to top-level guard |
+| `valkey.valkey_config` | `glide`, `msgspec` | import | guarded `try/except ImportError` re-raise with install hint; config cannot load without the extra |
+| `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; no runtime import — caller supplies an open client |
 | `task_handler.schemas` | `msgspec` | import | struct + serialization |
 
 ## Dependency direction analysis
@@ -68,7 +69,7 @@ glide (valkey-glide, optional)                              [external]
   flow into the worker.
 - **Logging has two dependency arrows** (see `scietex.logging` above): both the
   base worker (console handler) and `ValkeyWorker` (Valkey handler) attach
-  external handlers. Since AR-018 (v3), `ValkeyWorker` couples to `glide`
+  external handlers. Since AR-018 (v4), `ValkeyWorker` couples to `glide`
   **once** — the logging `AsyncValkeyHandler` receives the worker's single
   `GlideClient` injected via the `scietex.logging>=2.0.0` client-injection seam
   and never opens or closes a client of its own.
@@ -95,6 +96,7 @@ glide (valkey-glide, optional)                              [external]
 | `scietex.logging>=2.0.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
 | `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
+| `scietex.logging[valkey]>=2.0.0` | `[valkey]` extra (`pyproject.toml:32`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
 
 ## Important dependency chains
 

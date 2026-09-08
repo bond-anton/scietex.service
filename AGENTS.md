@@ -1,5 +1,12 @@
 # AGENTS.md
 
+## Language
+
+**Always use English.** All replies, comments, documentation, commit messages,
+and subagent handoffs in this repository must be written in English, regardless
+of the OS locale or the user's language. Never switch to another language unless
+explicitly asked.
+
 ## Quick Start
 
 **Install dependencies:**
@@ -50,10 +57,16 @@ python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide
 
 **Config directory precedence:**
 1. `conf_dir` argument (if provided and is a directory)
-2. `~/.config/scietex/`
-3. `/etc/scietex/`
-4. `/usr/local/etc/scietex/`
-5. `./config/` (CWD)
+2. `SCIETEX_CONFIG_DIR` environment variable
+3. `$XDG_CONFIG_HOME/scietex/`
+4. `~/.config/scietex/`
+5. `/etc/scietex/`
+6. `/usr/local/etc/scietex/`
+7. `./config/` (current working directory)
+8. `~/.config/scietex/` — created if none of the above exist
+
+The first existing directory is used; if none exist, `~/.config/scietex/`
+is created.
 
 **Valkey config:**
 - Reads `valkey.yml` from config dir (YAML, uses `msgspec.yaml.decode`)
@@ -70,7 +83,7 @@ python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide
 
 **Task schemas (msgspec.Struct):**
 - `TaskData`: `task: str`, `payload: bytes`, `timeout: TaskTimeout`, `canceled_action: "requeue"|"discard"`
-- `TaskResult`: `status: "success"|"error"`, `error: str`, `payload: bytes`, `processed_at: datetime`
+- `TaskResult`: `status: "success"|"error"`, `error: str`, `payload: bytes`, `processed_at: datetime`, `error_code: str`, `retryable: bool`, `partial: bool`
 - `TaskTimeout`: `timeout: float | None`, `timeout_action: "requeue"|"discard"`
 
 ## Testing
@@ -86,9 +99,9 @@ python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide
 
 ## Quirks & Gotchas
 
-- **Import-time errors in `scietex.service.valkey` are swallowed** — package remains importable without `valkey-glide`
+- **Import-time `ImportError` in `scietex.service.valkey` is swallowed** — package remains importable without `valkey-glide`; a non-`ImportError` bug (e.g. a broken glide install) propagates
 - **Logging is async** — uses `ConsoleHandler` and `AsyncValkeyHandler` (both subclass `AsyncLoggingHandler`); shutdown has timeout
-- **Manager restart** — fails restarts automatically on error (except `CancelledError`)
+- **Manager restart** — fails restarts automatically on error (except `CancelledError`), up to `manager_max_retries` consecutive failures (default 5), after which it gives up
 - **Valkey stream names:** `scietex:{service_name}:tasks` with group `scietex:{service_name}:task_group`
 - **Timeout defaults:** `DEFAULT_TASK_TIMEOUT = 3s`, `DEFAULT_HEARTBEAT_INTERVAL = 10s`, `DEFAULT_WATCHDOG_INTERVAL = 1s`
 - **Python 3.10+ required** (per `requires-python = ">=3.10"`)

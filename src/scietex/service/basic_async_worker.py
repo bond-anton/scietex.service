@@ -447,7 +447,7 @@ class BasicAsyncWorker:
     def logger(self) -> logging.Logger:
         """Logger instance for the worker.
 
-        The logger is named using the pattern ``{service_name}.{instance_id}``
+        The logger is named using the pattern ``{service_name}:{instance_id}``
         and is configured with a ``ConsoleHandler`` for async logging.
 
         Returns:

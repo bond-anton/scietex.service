@@ -195,7 +195,9 @@ discovers them via the class MRO and runs each as an `asyncio.Task`:
 1. **Start** — Manager loop runs the decorated method in a `while True`
    loop until cancelled.
 2. **Error** — On any exception (except `CancelledError`), the error is
-   recorded and the manager is automatically restarted.
+   recorded and the manager is automatically restarted, up to
+   `manager_max_retries` consecutive failures (default 5), after which
+   the manager gives up and stops restarting.
 3. **Stop** — On shutdown, managers are cancelled and their optional
    `cleanup` callbacks are invoked.
 
@@ -214,7 +216,8 @@ See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle
    `handler.supports(task_type)` on each registered handler. The first
    handler returning `True` receives the task.
 4. **Initialize**: `handler.start()` calls `handler.initialize()` and
-   sets `handler.is_ready = True`.
+   sets `handler.is_ready` to the returned value, so it is `True` only
+   if `initialize()` returned `True`.
 5. **Handle**: `await handler.handle(task_data)` returns a `TaskResult`
    with `status` ("success"/"error"), optional `error` message, and
    optional `payload`.
@@ -296,11 +299,18 @@ untouched.
 | `ValkeyWorker` | Valkey-backed distributed worker |
 | `__version__` | Package version string |
 
+The Valkey configuration classes (`ValkeyConfig`, `ValkeyNode`,
+`ValkeyUserCredentials`, `ValkeyBackoffStrategy`, `ValkeyBaseConfig`,
+`ValkeyAdvancedConfig`, `ValkeyTlsAdvancedConfiguration`) are top-level
+re-exports: they are importable directly from `scietex.service` (as in the
+Valkey quick-start above), not only from `scietex.service.valkey`.
+
 ### Exported from `scietex.service.task_handler`
 
 | Symbol | Description |
 |---|---|
 | `TaskHandler` | Abstract base class for task handlers |
+| `TaskHandlerContext` | Narrow read-only context passed to handlers (service name, instance id, logger) |
 | `TaskData` | Task payload schema |
 | `TaskResult` | Task result schema |
 | `TaskTimeout` | Timeout configuration schema |
