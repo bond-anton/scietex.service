@@ -604,7 +604,7 @@ class TaskProcessor(BasicWorker):
             try:
                 task_id, task_data = await asyncio.wait_for(self.__task_queue.get(), timeout=TASK_QUEUE_FETCH_TIMEOUT)
                 task = asyncio.create_task(handle_task(task_id, task_data))
-                self.__running_tasks[task_id] = TaskTracker(worker_task=task, data=task_data, started=time.time())
+                self.__running_tasks[task_id] = TaskTracker(worker_task=task, data=task_data, started=time.monotonic())
             except asyncio.TimeoutError:
                 pass
         else:
@@ -666,7 +666,7 @@ class TaskProcessor(BasicWorker):
         logic. The default implementation handles task timeout detection
         and cancellation.
         """
-        now = time.time()
+        now = time.monotonic()
         for task_id, task_tracker in list(self.running_tasks.items()):
             timeout = task_tracker.data.timeout.timeout
             if timeout is None:
