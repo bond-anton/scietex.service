@@ -14,6 +14,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | Example | Requires Valkey | Demonstrates |
 |---|---|---|
 | [`basic_worker.py`](#basic_workerpy) | no | `BasicWorker` with a custom `@Manager` loop and `heartbeat`/`watchdog`/`cleanup` overrides |
+| [`manager_cleanup.py`](#manager_cleanuppy) | no | `@Manager(name=..., cleanup=...)` with a visible teardown action on shutdown |
 | [`task_processor.py`](#task_processorpy) | no | `TaskProcessor` with multiple task handlers, `TaskData`/`TaskResult`/`TaskTimeout`, concurrent processing |
 | [`named_task_handlers.py`](#named_task_handlerspy) | no | Registering one handler class as multiple named instances (AR-053) |
 | [`stateful_handler.py`](#stateful_handlerpy) | no | A stateful handler that mutates shared state injected via `**handler_kwargs` |
@@ -30,6 +31,19 @@ The minimal daemon. Subclasses `BasicWorker`, overrides
 `initialize`/`heartbeat`/`watchdog`/`cleanup`, and adds a custom
 `@Manager(name="cruncher")` loop that pulls simulated numbers and pushes a
 result once per second. Constructs the worker with a `WorkerConfig`.
+
+## manager_cleanup.py
+
+```bash
+python -m examples.manager_cleanup
+```
+
+Demonstrates a `@Manager` with a `cleanup=` callable (AR-067). The
+`DataService` subclass opens a simulated session in `initialize()`, and its
+`@Manager(name="data_pump", cleanup=close_session)` loop pushes simulated
+batches while that session is open. On graceful shutdown the manager is
+cancelled and its `cleanup` callable runs, logging `Manager cleanup: session
+closed` — visible proof the seam executes outside the worker's own `cleanup`.
 
 ## task_processor.py
 

@@ -69,6 +69,22 @@ class CleanupRaisingWorker(BasicWorker):
         await asyncio.sleep(0.05)
 
 
+class CleanupWorker(BasicWorker):
+    """Worker whose manager cleanup callable runs on a clean shutdown."""
+
+    def __init__(self, config: WorkerConfig | None = None):
+        super().__init__(config)
+        self.cleaned_up = False
+
+    async def _record_cleanup(worker) -> None:
+        worker.cleaned_up = True
+
+    @Manager(name="Neat", cleanup=_record_cleanup)
+    async def _neat_manager(self) -> None:
+        while True:
+            await asyncio.sleep(0.05)
+
+
 class CancellationIgnoringWorker(BasicWorker):
     """Worker whose manager ignores cancellation until told to stop."""
 
@@ -269,6 +285,28 @@ async def test_cleanup_raising_manager_still_removed_from_tracking():
         assert "Messy" not in worker._manager_runtime.tasks
     finally:
         await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_callable_runs_on_clean_shutdown():
+    """A @Manager(cleanup=...) callable must run on a clean (non-raising) shutdown."""
+    worker = CleanupWorker()
+    await worker.start()
+    try:
+        for _ in range(50):
+            if "Neat" in worker._manager_runtime.tasks:
+                break
+            await asyncio.sleep(0.05)
+        assert "Neat" in worker._manager_runtime.tasks
+    finally:
+        await worker.stop()
+    # stop() spawns _shutdown asynchronously; the cleanup callable runs inside
+    # the cancelled manager task's finally block, so poll until it records.
+    for _ in range(50):
+        if worker.cleaned_up:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.cleaned_up
 
 
 @pytest.mark.asyncio
