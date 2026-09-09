@@ -15,6 +15,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 |---|---|---|
 | [`basic_worker.py`](#basic_workerpy) | no | `BasicWorker` with a custom `@Manager` loop and `heartbeat`/`watchdog`/`cleanup` overrides |
 | [`manager_cleanup.py`](#manager_cleanuppy) | no | `@Manager(name=..., cleanup=...)` with a visible teardown action on shutdown |
+| [`manager_collision.py`](#manager_collisionpy) | no | `@Manager` name-collision WARNING: two managers sharing one `name=`, first definition wins (AR-068) |
 | [`task_processor.py`](#task_processorpy) | no | `TaskProcessor` with multiple task handlers, `TaskData`/`TaskResult`/`TaskTimeout`, concurrent processing |
 | [`named_task_handlers.py`](#named_task_handlerspy) | no | Registering one handler class as multiple named instances (AR-053) |
 | [`stateful_handler.py`](#stateful_handlerpy) | no | A stateful handler that mutates shared state injected via `**handler_kwargs` |
@@ -44,6 +45,19 @@ Demonstrates a `@Manager` with a `cleanup=` callable (AR-067). The
 batches while that session is open. On graceful shutdown the manager is
 cancelled and its `cleanup` callable runs, logging `Manager cleanup: session
 closed` — visible proof the seam executes outside the worker's own `cleanup`.
+
+## manager_collision.py
+
+```bash
+python -m examples.manager_collision
+```
+
+Demonstrates the AR-068 manager name-collision warning. The `CollidingService`
+subclass declares two `@Manager(name="worker")` methods — `_primary_loop` and
+`_duplicate_loop` — that independently pick the same `name=`. On startup,
+`ManagerRuntime` discovery logs a WARNING naming the colliding manager and the
+class/method it was found on, and only the first (most-derived, first-declared)
+manager runs: you see `[primary] tick` every second and never `[duplicate] tick`.
 
 ## task_processor.py
 

@@ -1,6 +1,7 @@
 """Tests for manager restart (AR-001) and manager discovery/binding (AR-002)."""
 
 import asyncio
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -110,6 +111,20 @@ class RunLoopWorker(BasicWorker):
     async def _loop_manager(self) -> None:
         while True:
             await asyncio.sleep(0.05)
+
+
+class DuplicateNameWorker(BasicWorker):
+    """Worker whose two unrelated managers pick the same ``name=`` (AR-068)."""
+
+    @Manager(name="Dup")
+    async def _dup_first(self) -> None:
+        self.first_ran = True
+        await asyncio.sleep(0.05)
+
+    @Manager(name="Dup")
+    async def _dup_second(self) -> None:
+        self.second_ran = True
+        await asyncio.sleep(0.05)
 
 
 @pytest.mark.asyncio
@@ -346,3 +361,15 @@ async def test_cancellation_ignoring_manager_stays_tracked_after_timeout():
         if "Stubborn" in worker._manager_runtime.tasks:
             await worker._manager_runtime.stop_manager("Stubborn")
         await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_manager_name_collision_logs_warning(caplog):
+    """A manager name collision must log a WARNING and keep the first definition (AR-068)."""
+    worker = DuplicateNameWorker()
+    with caplog.at_level(logging.WARNING):
+        names = [name for name, _ in worker._manager_runtime.iter_manager_definitions()]
+    # Dedup semantics unchanged: only the first "Dup" definition is yielded.
+    assert names.count("Dup") == 1
+    # The collision is surfaced, not silently dropped.
+    assert any("collides" in record.getMessage() and "Dup" in record.getMessage() for record in caplog.records)

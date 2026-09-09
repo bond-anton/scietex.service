@@ -52,7 +52,9 @@ class ManagerRuntime:
 
         Managers are yielded most-derived-first so that a subclass override
         of a same-named manager shadows the base definition. Each manager
-        name is yielded at most once.
+        name is yielded at most once. When two managers independently pick
+        the same ``name=``, a WARNING is logged and the first (most-derived)
+        definition wins; the later one is skipped, never silently dropped.
 
         Yields:
             Tuple of (manager_name, manager) for each Manager decorator found
@@ -65,6 +67,14 @@ class ManagerRuntime:
                     continue
                 manager_name = attribute.name or attribute_name
                 if manager_name in seen:
+                    self.worker.logger.warning(
+                        "Manager name %r collides with an already-registered manager "
+                        "(found on %s.%s); the first definition in the MRO wins "
+                        "and this one is skipped.",
+                        manager_name,
+                        cls.__name__,
+                        attribute_name,
+                    )
                     continue
                 seen.add(manager_name)
                 yield manager_name, attribute

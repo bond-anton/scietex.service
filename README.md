@@ -376,6 +376,7 @@ The `examples/` directory contains runnable blueprints; see
 ```bash
 python -m examples.basic_worker
 python -m examples.manager_cleanup
+python -m examples.manager_collision
 python -m examples.task_processor
 python -m examples.named_task_handlers
 python -m examples.stateful_handler

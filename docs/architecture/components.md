@@ -74,7 +74,11 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 (37).
 - `iter_manager_definitions()` (39) — iterates `type(self.worker).__mro__`
   **most-derived-first** (52), de-duplicating names via a `seen` set so a
-  subclass override shadows the base definition.
+  subclass override shadows the base definition. When two managers
+  independently pick the same `name=`, a WARNING is logged naming the
+  colliding manager and the class it was found on (AR-068); the first
+  (most-derived) definition still wins, so the collision is surfaced rather
+  than silently dropped.
 - `run_manager(name, manager)` (62) — runs `manager.method(self.worker)` in a
   `while True` loop (83); on a non-`CancelledError` exception records the error
   (92) and retries after `manager_restart_backoff` (110), giving up when

@@ -44,6 +44,7 @@ Run examples with:
 ```bash
 python -m examples.basic_worker           # BasicWorker
 python -m examples.manager_cleanup        # @Manager with a cleanup= callable (AR-067)
+python -m examples.manager_collision      # @Manager name-collision warning (AR-068)
 python -m examples.task_processor         # TaskProcessor
 python -m examples.named_task_handlers    # TaskProcessor with named handler instances (AR-053)
 python -m examples.stateful_handler       # TaskProcessor with a stateful handler (shared state via **handler_kwargs)

@@ -122,6 +122,13 @@ error is recorded and the manager is automatically restarted after a
 Managers are discovered via the class MRO (most-derived to base classes)
 and executed as named `asyncio.Task` objects.
 
+Each manager is identified by its `name=` (or the decorated method name when
+`name` is omitted). Discovery de-duplicates by that identity: if two managers
+independently pick the same `name=`, a WARNING is logged naming the colliding
+manager and the class it was found on, and only the first (most-derived)
+definition runs — the later one is skipped rather than silently dropped
+(AR-068).
+
 ### Creating a Manager
 
 The decorated method performs a single iteration of work.
