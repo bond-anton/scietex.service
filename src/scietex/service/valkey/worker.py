@@ -285,7 +285,7 @@ class ValkeyWorker(AsyncTaskProcessor):
                 )
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(logging.DEBUG, "Heartbeat set in Valkey, duration: %.2f ms", duration)
-            except Exception as exc:
+            except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(
                     logging.WARNING,
@@ -369,13 +369,14 @@ class ValkeyWorker(AsyncTaskProcessor):
         continue). The registry set is the enumeration index; liveness is the
         status-key TTL refreshed by heartbeat(), so a stale member left by a
         crashed replica is tolerated (the operator probes each member's
-        status key).
+        status key). Only glide connection errors are swallowed; other
+        exceptions propagate.
         """
         if self.client is None:
             return
         try:
             await self.client.sadd(self._registry_key, [self.instance_id])
-        except Exception as exc:
+        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.log(
                 logging.WARNING,
                 "Failed to register instance %s in %s: %s",
@@ -389,13 +390,14 @@ class ValkeyWorker(AsyncTaskProcessor):
 
         Best-effort: a failed SREM must not fail shutdown (log WARNING and
         continue). Called by _shutdown() before cleanup() disconnects the
-        client, so the client is still open here.
+        client, so the client is still open here. Only glide connection
+        errors are swallowed; other exceptions propagate.
         """
         if self.client is None:
             return
         try:
             await self.client.srem(self._registry_key, [self.instance_id])
-        except Exception as exc:
+        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.log(
                 logging.WARNING,
                 "Failed to unregister instance %s from %s: %s",
