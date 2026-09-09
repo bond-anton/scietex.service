@@ -14,7 +14,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from glide import GlideClient
+    from ._glide import GlideClient
 
 __all__ = ["purge_task_stream"]
 

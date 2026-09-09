@@ -40,9 +40,10 @@ Layout of the repository and the Python package.
 | `utils/conf.py` | `prepare_conf_dir()` + `_resolve_xdg_path()` config-dir search |
 | `utils/logo.py` | ASCII `LOGO` template and `print_scietex_logo()` |
 | `valkey/__init__.py` | Re-exports `ValkeyWorker`, config types, and `purge_task_stream` from the sibling modules |
-| `valkey/config.py` | Typed config structs (`ValkeyConfig`, `ValkeyBaseConfig`, ...) + `ValkeyWorkerConfig` (worker-level config struct extending `TaskProcessorConfig`) + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports `glide` in a guarded `try/except ImportError` that re-raises with an install hint if `glide` is absent |
-| `valkey/worker.py` | `ValkeyWorker(AsyncTaskProcessor)` + stream/connection logic. Imports `glide` via the same guarded re-raise (`ImportError` → install hint); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
-| `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry); no runtime `glide` import (`TYPE_CHECKING` only) |
+| `valkey/_glide.py` | Private module — the single guarded `from glide import (...)` re-exporting the full union of glide names used by the valkey package (incl. aliases `GlideConnectionError`, `GlideTimeoutError`). Importing it raises `ImportError` with an install hint when `valkey-glide` is absent (AR-048) |
+| `valkey/config.py` | Typed config structs (`ValkeyConfig`, `ValkeyBaseConfig`, ...) + `ValkeyWorkerConfig` (worker-level config struct extending `TaskProcessorConfig`) + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports its `glide` names from `valkey/_glide.py` (the single guarded import, AR-048) |
+| `valkey/worker.py` | `ValkeyWorker(AsyncTaskProcessor)` + stream/connection logic. Imports its `glide` names from `valkey/_glide.py` (AR-048); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
+| `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry); no runtime `glide` import (`TYPE_CHECKING` only), importing `GlideClient` from `valkey/_glide.py` (AR-048) |
 | `valkey/schemas.py` | `Heartbeat` msgpack schema |
 
 ## Notable module boundaries
@@ -58,8 +59,9 @@ Layout of the repository and the Python package.
   `manager/runtime` and `logging/lifecycle`, which hold only a back-reference
   to the worker under `TYPE_CHECKING` (no runtime cycle).
 - **Valkey internal split**: config schema/loader (`valkey/config.py`) is
-  independent of the worker (`worker.py`); `valkey/config` can be
-  used/tested without a worker, but not without `glide`.
+  independent of the worker (`worker.py`); both import their `glide` names
+  through the shared guarded module `valkey/_glide.py` (AR-048). `valkey/config`
+  can be used/tested without a worker, but not without `glide`.
 - **Package ⇄ external `scietex.logging`**: `basic_async_worker.py` and
   `valkey/worker.py` attach external logging handlers. The worker
   treats them uniformly through `start_logging()`/`stop_logging()` +

@@ -15,33 +15,21 @@ from typing import cast
 from uuid import UUID
 
 import msgspec
-
-try:
-    from glide import (
-        ConnectionError as GlideConnectionError,
-    )
-    from glide import (
-        ExpirySet,
-        ExpiryType,
-        GlideClient,
-        GlideClientConfiguration,
-        RequestError,
-        StreamGroupOptions,
-        StreamReadGroupOptions,
-    )
-    from glide import (
-        TimeoutError as GlideTimeoutError,
-    )
-except ImportError as e:
-    raise ImportError(
-        "The 'valkey-glide' module is required to use this feature. "
-        "Please install it by running:\n\n    pip install scietex.service[valkey]\n"
-    ) from e
-
 from scietex.logging import AsyncValkeyHandler
 
 from ..task_handler import TaskData, TaskResult
 from ..task_processor import AsyncTaskProcessor
+from ._glide import (
+    ExpirySet,
+    ExpiryType,
+    GlideClient,
+    GlideClientConfiguration,
+    GlideConnectionError,
+    GlideTimeoutError,
+    RequestError,
+    StreamGroupOptions,
+    StreamReadGroupOptions,
+)
 from .config import (
     ValkeyConfig,
     ValkeyWorkerConfig,

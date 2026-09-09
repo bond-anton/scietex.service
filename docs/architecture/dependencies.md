@@ -50,10 +50,11 @@ glide (valkey-glide, optional)                              [external]
 | `valkey.worker` | `.task_handler` | import | `TaskData` |
 | `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
-| `valkey.worker` | `glide` | import (external, optional extra) | guarded `try/except ImportError` re-raise with install hint; errors surface to top-level guard |
-| `valkey.config` | `glide`, `msgspec` | import | guarded `try/except ImportError` re-raise with install hint; config cannot load without the extra |
+| `valkey.worker` | `glide` | import (external, optional extra) | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); errors surface to top-level guard |
+| `valkey._glide` | `glide` | import (external, optional extra) | single guarded `try/except ImportError` re-raise with install hint (AR-048); errors surface to top-level guard |
+| `valkey.config` | `glide`, `msgspec` | import | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); config cannot load without the extra |
 | `valkey.config` | `..config` | import | `TaskProcessorConfig`, `_validate_range` |
-| `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; no runtime import — caller supplies an open client |
+| `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; imports `GlideClient` from `._glide` (no runtime import — caller supplies an open client) |
 | `task_handler.schemas` | `msgspec` | import | struct + serialization |
 
 ## Dependency direction analysis

@@ -309,7 +309,8 @@ crashed replica is tolerated (the operator probes each member's status key).
 
 **Dependencies:** `..async_tasks_processor`, `..task_handler.TaskData`,
 `.schemas.Heartbeat`, `.config` (`ValkeyWorkerConfig`), external
-`scietex.logging.AsyncValkeyHandler`, `glide`, `msgspec`.
+`scietex.logging.AsyncValkeyHandler`, `._glide` (guarded glide names, AR-048),
+`msgspec`.
 **Depended on by:** `valkey/__init__.py`, package `__init__.py` (guarded),
 example `examples/valkey_async_service.py`.
 
@@ -336,8 +337,8 @@ validates `read_from`/`protocol`, optional PubSub subscriptions when
 **Public interface:** struct constructors; config conversion properties
 (`addresses`, `credentials`, `reconnect_strategy`, `to_advanced_config`, ...).
 
-**Dependencies:** `msgspec`; `glide` types (unguarded import with an explicit
-`ImportError` + install hint); `..config` (`TaskProcessorConfig`,
+**Dependencies:** `msgspec`; `._glide` (glide names via the single guarded
+import, AR-048); `..config` (`TaskProcessorConfig`,
 `_validate_range`). **Depended on by:** `ValkeyWorker`, `valkey/__init__.py`,
 tests.
 

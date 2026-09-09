@@ -13,26 +13,19 @@ from typing import Any
 import msgspec
 from msgspec import field
 
-try:
-    from glide import (
-        AdvancedGlideClientConfiguration,
-        BackoffStrategy,
-        ConfigurationError,
-        GlideClientConfiguration,
-        NodeAddress,
-        ProtocolVersion,
-        PubSubMsg,
-        ReadFrom,
-        ServerCredentials,
-        TlsAdvancedConfiguration,
-    )
-except ImportError as e:
-    raise ImportError(
-        "The 'valkey-glide' module is required to use this feature. "
-        "Please install it by running:\n\n    pip install scietex.service[valkey]\n"
-    ) from e
-
 from ..config import TaskProcessorConfig, _validate_range
+from ._glide import (
+    AdvancedGlideClientConfiguration,
+    BackoffStrategy,
+    ConfigurationError,
+    GlideClientConfiguration,
+    NodeAddress,
+    ProtocolVersion,
+    PubSubMsg,
+    ReadFrom,
+    ServerCredentials,
+    TlsAdvancedConfiguration,
+)
 
 
 class ValkeyNode(msgspec.Struct, frozen=True):
