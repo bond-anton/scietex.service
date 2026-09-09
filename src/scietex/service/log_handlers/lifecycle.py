@@ -34,13 +34,7 @@ class LoggingLifecycle:
         self.worker: BasicWorker = worker
         self.statuses: dict[str, LoggerStatus] = {}
 
-    def register_logger_handler(
-        self,
-        handler: AsyncLoggingHandler,
-        # Unused: kept only for the `_register_logger_handler` forwarding wrapper
-        # in `BasicWorker` (AR-031); remove once that caller drops it.
-        name: str | None = None,
-    ) -> None:
+    def register_logger_handler(self, handler: AsyncLoggingHandler) -> None:
         """
         Attach an async logging handler to the logger.
 
@@ -50,11 +44,6 @@ class LoggingLifecycle:
 
         Args:
             handler: The ``AsyncLoggingHandler`` (or subclass) to attach.
-            name: Unused. Accepted only because ``BasicWorker``'s
-                ``_register_logger_handler`` forwarding wrapper passes it
-                positionally; statuses are keyed by ``handler.name`` or
-                ``handler.__class__.__name__`` instead. Scheduled for removal
-                once that wrapper is updated (AR-031).
         """
         handler.setLevel(self.worker.logging_level)
         self.worker.logger.addHandler(handler)

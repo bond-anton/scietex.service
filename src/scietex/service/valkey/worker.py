@@ -236,7 +236,7 @@ class ValkeyWorker(TaskProcessor):
                 stream_name=self._log_stream_name,
                 valkey_config=_logging_handler_config(self._valkey_config),
             )
-        self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler, name="AsyncValkeyHandler")
+        self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler)
         return self._valkey_logger_handler
 
     async def connect(self) -> bool:
