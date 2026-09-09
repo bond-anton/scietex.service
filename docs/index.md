@@ -1,11 +1,41 @@
-# scietex.service Documentation
+# scietex.service
 
-## Core Components
+Reference documentation for the `scietex.service` async worker framework:
+component guides, architecture notes, and the full public API.
 
-- [BasicWorker](./basic_worker.md) — Foundation async daemon worker with signal handling, logging, heartbeat and watchdog managers
-- [TaskProcessor](./task_processor.md) — Concurrent task processing framework built on BasicWorker with task queue and handler dispatch
-- [ValkeyWorker](./valkey_worker.md) — Valkey-backed task processor with stream-based task distribution and heartbeat publishing
+```{toctree}
+:maxdepth: 2
+:caption: Component Guides
 
-## Task System
+basic_worker
+task_processor
+valkey_worker
+task_handler
+```
 
-- [Task Handler](./task_handler.md) — Pluggable task handler architecture with typed schemas for task data, results, and timeouts
+```{toctree}
+:maxdepth: 2
+:caption: Architecture
+
+architecture/overview
+architecture/structure
+architecture/components
+architecture/dependencies
+architecture/data-flow
+architecture/lifecycle
+architecture/hotspots
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: API Reference
+
+api/index
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Project
+
+ROADMAP
+```

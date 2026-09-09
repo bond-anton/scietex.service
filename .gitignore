@@ -10,3 +10,4 @@ __pycache__
 .coverage
 htmlcov
 /.ruff_cache
+docs/_build/
