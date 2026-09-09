@@ -61,11 +61,8 @@ def parse_logging_level(level: int | str | None) -> int:
     return logging_level
 
 
-from .lifecycle import LoggingLifecycle  # noqa: E402
-
 __all__ = [
     "DEFAULT_LOGGING_LEVEL",
     "LoggerStatus",
     "parse_logging_level",
-    "LoggingLifecycle",
 ]
