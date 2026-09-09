@@ -12,7 +12,7 @@ import os
 import time
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import cast
+from typing import ClassVar, cast
 from uuid import UUID
 
 from .basic_worker import BasicWorker, ServiceStatus
@@ -55,6 +55,11 @@ class TaskProcessor(BasicWorker):
         max_concurrent_tasks (int): Maximum concurrent task count.
     """
 
+    # Concrete config struct for this processor. The base stores it into
+    # ``self._config``, so ``config=None`` instantiates the concrete type here
+    # (AR-069) and no re-store / double-instantiation is needed.
+    _config_type: ClassVar[type[TaskProcessorConfig]] = TaskProcessorConfig
+
     def __init__(self, config: TaskProcessorConfig | None = None):
         """
         Initialize the TaskProcessor.
@@ -68,10 +73,10 @@ class TaskProcessor(BasicWorker):
                 construction.
         """
         super().__init__(config)
-        cfg = config if config is not None else TaskProcessorConfig()
-        # The base stores WorkerConfig() when config is None; re-store the full
-        # TaskProcessorConfig so the read-time getters below have its fields.
-        self._config = cfg
+        # The base already stored the concrete config into ``self._config``
+        # (AR-069); keep a typed local reference for the synchronous setup reads
+        # below.
+        cfg = cast(TaskProcessorConfig, self._config)
 
         self.__task_handlers_map: dict[str, tuple[type[TaskHandler], dict[str, object]]] = {}
         self.__task_handlers: dict[str, TaskHandler] = {}

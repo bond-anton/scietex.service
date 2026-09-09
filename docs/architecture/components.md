@@ -24,6 +24,12 @@ config, and the state machine.
   Timing/retry fields are validated at construction — an out-of-range value
   raises `msgspec.ValidationError`, and `None` resolves to the matching
   `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
+- Config type mechanism (AR-069): class attribute `_config_type: ClassVar
+  [type[WorkerConfig]]` (84) tells the base which concrete config struct to
+  instantiate when `config=None`. Subclasses override it to their own config
+  type (e.g. `TaskProcessor`→`TaskProcessorConfig`, `ValkeyWorker`→
+  `ValkeyWorkerConfig`) so the base stores the concrete type and subclass
+  constructors no longer re-store / double-instantiate
 - Signals: `_setup_signal_handlers` 319 (Windows-safe no-op),
   `_remove_signal_handlers` 349
 - Lifecycle: `_startup` 373, `start` 428, `_shutdown` 470, `stop` 517, `exit` 560
@@ -217,6 +223,9 @@ and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
 drains/cancels in-flight work.
 
 **Main symbols:** `class TaskProcessor(BasicWorker)` (38).
+Overrides `_config_type` (61) to `TaskProcessorConfig`, so the base
+instantiates the concrete config when `config=None` and `__init__` reads its
+fields from `self._config` rather than re-storing (AR-069).
 Properties: `task_handlers` 103, `running_tasks` 115 (read-only
 `MappingProxyType` views), `queue_size` 120, `max_concurrent_tasks` 125.
 Registry/dispatch: `add_task_handler` 216 (takes the handler class plus an
@@ -279,6 +288,9 @@ via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
 **Main symbols:** `class ValkeyWorker(TaskProcessor)` (52).
+Overrides `_config_type` (99) to `ValkeyWorkerConfig`, so the base instantiates
+the concrete config when `config=None` and `__init__` reads its fields from
+`self._config` rather than re-storing (AR-069).
 Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
 `config.valkey_config` or falls back to `read_valkey_config`),
 `connect` 236 (`GlideClient.create` + PING under `_client_lock`; `_client`

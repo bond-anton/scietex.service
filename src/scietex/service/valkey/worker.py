@@ -12,7 +12,7 @@ import logging
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import cast
+from typing import ClassVar, cast
 from uuid import UUID
 
 import msgspec
@@ -93,6 +93,11 @@ class ValkeyWorker(TaskProcessor):
             during ``initialize()``.
     """
 
+    # Concrete config struct for this worker. The base stores it into
+    # ``self._config``, so ``config=None`` instantiates the concrete type here
+    # (AR-069) and no re-store / double-instantiation is needed.
+    _config_type: ClassVar[type[ValkeyWorkerConfig]] = ValkeyWorkerConfig
+
     def __init__(self, config: ValkeyWorkerConfig | None = None):
         """Initialize the ``ValkeyWorker``.
 
@@ -124,11 +129,10 @@ class ValkeyWorker(TaskProcessor):
             _registry_key (str): Service-scoped worker registry set key.
         """
         super().__init__(config)
-        cfg = config if config is not None else ValkeyWorkerConfig()
-        # The base stores WorkerConfig()/TaskProcessorConfig() when config is
-        # None; re-store the full ValkeyWorkerConfig so fetch_tasks can read
-        # task_fetch_batch_size off self._config.
-        self._config = cfg
+        # The base already stored the concrete config into ``self._config``
+        # (AR-069); keep a typed local reference for the synchronous setup
+        # reads below.
+        cfg = cast(ValkeyWorkerConfig, self._config)
 
         self._log_stream_name = cfg.log_stream_name
         # Deliberate write-capable bootstrap path: default create_default=True creates config + defaults.

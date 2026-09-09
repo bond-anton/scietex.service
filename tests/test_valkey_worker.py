@@ -123,6 +123,17 @@ def _patch_glide_and_handler(monkeypatch, create_mock):
     return mod
 
 
+def test_default_config_stored_as_concrete_type(tmp_path, monkeypatch):
+    """When constructed with ``config=None`` the base must instantiate the
+    concrete ``ValkeyWorkerConfig`` (not a bare ``WorkerConfig``/
+    ``TaskProcessorConfig``), because the worker declares ``_config_type``
+    (AR-069). Point ``SCIETEX_CONFIG_DIR`` at a tmp dir so the default
+    ``valkey.yml`` bootstrap writes there, not into the user's home."""
+    monkeypatch.setenv("SCIETEX_CONFIG_DIR", str(tmp_path))
+    worker = ValkeyWorker()
+    assert isinstance(worker._config, ValkeyWorkerConfig)
+
+
 @pytest.mark.asyncio
 async def test_connect_success(monkeypatch):
     # Mock GlideClient.create to return a DummyClient

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
+from typing import ClassVar
 
 from scietex.logging import ConsoleHandler
 
@@ -76,6 +77,12 @@ class BasicWorker:
         start_time (datetime | None): Service start timestamp.
     """
 
+    # Concrete config struct type for this worker. The base stores the config
+    # instance into ``self._config``; subclasses override this to their own
+    # config struct so the base instantiates the concrete type when ``config``
+    # is ``None`` (AR-069). Subclasses no longer re-store / double-instantiate.
+    _config_type: ClassVar[type[WorkerConfig]] = WorkerConfig
+
     def __init__(self, config: WorkerConfig | None = None):
         """
         Initialize the BasicWorker.
@@ -93,7 +100,7 @@ class BasicWorker:
             logger names and (in ``ValkeyWorker``) consumer/status keys, so
             multiple instances of the same service can coexist in one process.
         """
-        cfg = config if config is not None else WorkerConfig()
+        cfg = config if config is not None else self._config_type()
         self._config: WorkerConfig = cfg
         self.__service_name: str = cfg.service_name
         self.__instance_id: str = uuid.uuid4().hex

@@ -47,6 +47,14 @@ class StuckStopHandler(TaskHandler):
         return ["stuck_stop"]
 
 
+def test_default_config_stored_as_concrete_type():
+    """When constructed with ``config=None`` the base must instantiate the
+    concrete ``TaskProcessorConfig`` (not a bare ``WorkerConfig``), because the
+    processor declares ``_config_type`` (AR-069)."""
+    proc = TaskProcessor()
+    assert isinstance(proc._config, TaskProcessorConfig)
+
+
 @pytest.mark.asyncio
 async def test_stop_task_handler_removes_handler_on_stop_timeout():
     """A handler whose stop() times out must still be removed from the active
