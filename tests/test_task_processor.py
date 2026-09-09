@@ -1,11 +1,13 @@
 import asyncio
 import os
+from typing import cast
 from uuid import uuid4
 
 import pytest
 
 from scietex.service.config import DEFAULT_MAX_CONCURRENT_TASKS, TaskProcessorConfig
 from scietex.service.task_handler.basic import TaskHandler
+from scietex.service.task_handler.context import TaskHandlerContext
 from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeout
 from scietex.service.task_processor import TaskProcessor
 
@@ -180,6 +182,80 @@ async def test_add_task_handler_named_duplicate_resolved_key_raises():
     proc.add_task_handler(NameDerivedHandler)
     with pytest.raises(ValueError):
         proc.add_task_handler(NameDerivedHandler)
+
+
+class ThresholdHandler(TaskHandler):
+    """Handler that accepts a keyword-only constructor kwarg, verifying the
+    handler_kwargs passthrough reaches the constructor."""
+
+    def __init__(self, name: str, context: TaskHandlerContext, *, threshold: int) -> None:
+        super().__init__(name, context)
+        self.threshold = threshold
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="success", error="No error", payload=task_data.payload)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["threshold"]
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_passes_handler_kwargs_to_constructor():
+    """handler_kwargs are forwarded to the handler constructor on every
+    instantiation (Option A stateful handlers)."""
+    proc = DemoProcessor()
+    proc.add_task_handler(ThresholdHandler, threshold=42)
+    await proc._start_task_handler("ThresholdHandler")
+
+    handler = cast(ThresholdHandler, proc.task_handlers["ThresholdHandler"])
+    assert handler.threshold == 42
+
+
+class SharedStateHandler(TaskHandler):
+    """Handler that receives a shared mutable object via handler_kwargs, so the
+    injected state outlives a single start/stop cycle."""
+
+    def __init__(self, name: str, context: TaskHandlerContext, *, shared: dict) -> None:
+        super().__init__(name, context)
+        self.shared = shared
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        self.shared["count"] = self.shared.get("count", 0) + 1
+        return TaskResult(status="success", error="No error", payload=task_data.payload)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["shared"]
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_stateful_handler_shared_object():
+    """A shared mutable object injected via handler_kwargs is held by reference:
+    the handler instance holds the SAME object passed in, so mutations through
+    the handler are visible to the caller (state shared across its lifetime)."""
+    shared: dict = {}
+    proc = DemoProcessor()
+    proc.add_task_handler(SharedStateHandler, shared=shared)
+    await proc._start_task_handler("SharedStateHandler")
+
+    handler = cast(SharedStateHandler, proc.task_handlers["SharedStateHandler"])
+    assert handler.shared is shared
+
+    await proc.process_task(uuid4(), TaskData(task="shared", payload=b"{}"))
+    assert shared["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_unknown_kwarg_raises_type_error():
+    """A misspelled handler kwarg raises a loud TypeError at construction, so a
+    typo fails fast instead of being silently dropped. The constructor call in
+    _start_task_handler is not wrapped by its try/except, so the TypeError
+    propagates."""
+    proc = DemoProcessor()
+    proc.add_task_handler(DummyHandler, threshold=42)
+    with pytest.raises(TypeError):
+        await proc._start_task_handler("DummyHandler")
 
 
 @pytest.mark.asyncio

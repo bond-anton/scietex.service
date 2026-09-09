@@ -221,6 +221,9 @@ See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle
    key. An optional keyword-only `name`
    (`processor.add_task_handler(HandlerClass, name="...")`) lets
    multiple instances of one class coexist under distinct keys.
+   Arbitrary `**handler_kwargs` are also forwarded to the handler
+   constructor on every instantiation, enabling stateful handlers —
+   see `examples/stateful_handler.py`.
 2. **Declare support**: `Handler.supported_tasks` property must return
    a list of task type strings this handler can process.
 3. **Dispatch**: When a task arrives, the processor calls
@@ -374,6 +377,7 @@ The `examples/` directory contains runnable blueprints; see
 python -m examples.basic_worker
 python -m examples.task_processor
 python -m examples.named_task_handlers
+python -m examples.stateful_handler
 python -m examples.valkey_async_service      # requires valkey-glide
 python -m examples.valkey_pubsub_worker      # requires valkey-glide
 ```

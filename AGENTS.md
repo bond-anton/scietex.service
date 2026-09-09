@@ -45,6 +45,7 @@ Run examples with:
 python -m examples.basic_worker           # BasicWorker
 python -m examples.task_processor         # TaskProcessor
 python -m examples.named_task_handlers    # TaskProcessor with named handler instances (AR-053)
+python -m examples.stateful_handler       # TaskProcessor with a stateful handler (shared state via **handler_kwargs)
 python -m examples.valkey_async_service   # ValkeyWorker (requires valkey-glide)
 python -m examples.valkey_pubsub_worker   # ValkeyWorker + PubSub control channels (requires valkey-glide)
 ```

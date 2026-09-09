@@ -210,17 +210,22 @@ drains/cancels in-flight work.
 Properties: `task_handlers` 103, `running_tasks` 115 (read-only
 `MappingProxyType` views), `queue_size` 120, `max_concurrent_tasks` 125.
 Registry/dispatch: `add_task_handler` 216 (takes the handler class plus an
-optional keyword-only `name`; the lifecycle key is the resolved name — `name`
-if given, otherwise `handler_class.__name__` — so multiple instances of one
-class can coexist under distinct keys, a duplicate resolved key raises),
-`_start_task_handler` 251
-(builds a `TaskHandlerContext` at 272–276), `_stop_task_handler` 295,
-`remove_task_handler` 321, `_find_task_handler` 337, `process_task` 470.
+optional keyword-only `name` and arbitrary `**handler_kwargs`; the lifecycle
+key is the resolved name — `name` if given, otherwise `handler_class.__name__`
+— so multiple instances of one class can coexist under distinct keys, a
+duplicate resolved key raises; the map stores a `(class, handler_kwargs)`
+tuple and the kwargs are forwarded to the handler constructor on every
+instantiation), `_start_task_handler` 258
+(unpacks the tuple, builds a `TaskHandlerContext` at 279–283, and calls
+`handler_class(handler_name, context, **handler_kwargs)` at 284),
+`_stop_task_handler` 302, `remove_task_handler` 328, `_find_task_handler` 344,
+`process_task` 477.
 Queue access: `enqueue_task` 129, `dequeue_task` 150, `task_queue_empty` 142,
 `task_queue_full` 146 (the raw `task_queue` attribute is no longer exposed;
 non-blocking `put_nowait`/`get_nowait` underneath). State:
-`__task_handlers_map`/`__task_handlers` (80–81), `__running_tasks` (84),
-`__task_queue` (100, bounded `asyncio.Queue[(UUID, TaskData)]`).
+`__task_handlers_map`/`__task_handlers` (80–81; the map holds
+`(class, handler_kwargs)` tuples keyed by resolved name), `__running_tasks`
+(84), `__task_queue` (100, bounded `asyncio.Queue[(UUID, TaskData)]`).
 Managers: `@Manager("TaskManager") task_manager` 523 (inner `handle_task`
 wrapper at 535), `@Manager("TaskQueueManager") task_queue_manager` 625.
 Hooks: `fetch_tasks` 606, `return_task_to_queue` 355, `on_task_completed` 368

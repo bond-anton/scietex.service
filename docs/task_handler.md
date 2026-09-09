@@ -235,6 +235,16 @@ membership, so registering the same resolved key twice raises a
 coexist under distinct keys (e.g. to split one class's task types across
 instances via name-derived `supported_tasks`).
 
+Any additional keyword arguments are forwarded to the handler constructor on
+each instantiation (`**handler_kwargs`), which is how a handler becomes
+stateful — inject a shared mutable object at registration and every start
+cycle receives the same object. A misspelled kwarg raises a loud `TypeError`
+at construction, since `TaskHandler` subclasses do not accept arbitrary
+kwargs.
+
+A runnable stateful-handler example is in
+[`examples/stateful_handler.py`](../examples/stateful_handler.py).
+
 A handler can support multiple task types by returning them all from
 `supported_tasks`. The processor matches incoming tasks by calling
 `handler.supports(task_type)`.

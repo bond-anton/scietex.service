@@ -16,6 +16,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | [`basic_worker.py`](#basic_workerpy) | no | `BasicWorker` with a custom `@Manager` loop and `heartbeat`/`watchdog`/`cleanup` overrides |
 | [`task_processor.py`](#task_processorpy) | no | `TaskProcessor` with multiple task handlers, `TaskData`/`TaskResult`/`TaskTimeout`, concurrent processing |
 | [`named_task_handlers.py`](#named_task_handlerspy) | no | Registering one handler class as multiple named instances (AR-053) |
+| [`stateful_handler.py`](#stateful_handlerpy) | no | A stateful handler that mutates shared state injected via `**handler_kwargs` |
 | [`valkey_async_service.py`](#valkey_async_servicepy) | yes | `ValkeyWorker` consuming a task stream via a programmatic `ValkeyConfig` |
 | [`valkey_pubsub_worker.py`](#valkey_pubsub_workerpy) | yes | A `ValkeyWorker` subclass that also subscribes to PubSub control channels |
 
@@ -55,6 +56,18 @@ Demonstrates the AR-053 `add_task_handler(HandlerClass, name="...")` form.
 A single `NamedTaskHandler` class is registered twice — as `"alpha"` and
 `"beta"` — with its `supported_tasks` derived from `self.name`, so one class
 serves two disjoint task-type slices.
+
+## stateful_handler.py
+
+```bash
+python -m examples.stateful_handler
+```
+
+Demonstrates stateful handlers. `add_task_handler(CountingHandler,
+counter=shared_counter)` injects a shared mutable `SharedCounter` via
+`**handler_kwargs`. The handler increments the counter on every handled task,
+and the same object is re-injected on every (re)instantiation, so its state
+survives a stop/start cycle (runtime-mutated instance state would not).
 
 ## valkey_async_service.py
 

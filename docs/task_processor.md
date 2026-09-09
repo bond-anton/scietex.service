@@ -212,6 +212,37 @@ instances of the same class both claim the same task type, dispatch is
 ambiguous (the first-registered wins). Choosing non-overlapping names is the
 caller's responsibility.
 
+`add_task_handler()` also accepts arbitrary keyword-only `**handler_kwargs`
+that are forwarded to the handler constructor on **every** instantiation. This
+is what makes a handler stateful: inject a shared mutable object (a counter, a
+cache, a connection pool) once at registration, and each start cycle hands the
+same object back to the handler, so its state survives stop/start. Because
+`TaskHandler` subclasses do not accept arbitrary kwargs, a misspelled kwarg
+raises a loud `TypeError` at construction rather than being silently ignored:
+
+```python
+class CountingHandler(TaskHandler):
+    def __init__(self, name, context, *, counter: dict):
+        super().__init__(name, context)
+        self.counter = counter
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["count"]
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        self.counter["n"] = self.counter.get("n", 0) + 1
+        return TaskResult(status="success")
+
+
+shared_counter: dict = {}
+processor.add_task_handler(CountingHandler, counter=shared_counter)
+# each (re)start constructs CountingHandler(name, context, counter=shared_counter)
+```
+
+A runnable version of this pattern lives in
+[`examples/stateful_handler.py`](../examples/stateful_handler.py).
+
 Handlers can be registered before or after `start()`. If the worker is
 already running, the handler is started asynchronously.
 

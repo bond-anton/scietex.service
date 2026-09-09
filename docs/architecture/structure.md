@@ -7,7 +7,7 @@ Layout of the repository and the Python package.
 | Path | Contents |
 |---|---|
 | `src/scietex/service/` | The package (see below). Marked PEP 561 via `py.typed` |
-| `examples/` | Runnable blueprints: `basic_worker.py`, `task_processor.py`, `named_task_handlers.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py` |
+| `examples/` | Runnable blueprints: `basic_worker.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py` |
 | `tests/` | Pytest suite, one file per component plus `test_version.py`; Valkey tests mock `GlideClient` (no server needed) |
 | `docs/` | Usage docs (`index.md`, per-component guides); `docs/architecture/` is this map |
 | `pyproject.toml` | Package metadata, deps, extras (`valkey`, `dev`, `test`, `lint`), setuptools build config, and pytest config (`[tool.pytest.ini_options]`) |
@@ -31,7 +31,7 @@ Layout of the repository and the Python package.
 | `logging/lifecycle.py` | `LoggingLifecycle(worker)`: async logging-handler registration and start/stop with `statuses` bookkeeping. Extracted from `BasicWorker` (AR-003) |
 | `basic_worker.py` | `BasicWorker` + `ServiceStatus`. Owns identity/config, the lifecycle state machine, signal handlers (registered in `start()`), startup/shutdown orchestration, and the built-in `Heartbeat`/`Watchdog` managers. Delegates manager runtime and logging lifecycle to `ManagerRuntime`/`LoggingLifecycle` directly (the AR-045 forwarding wrappers were removed; the worker calls the components' methods itself) |
 | `logging/__init__.py` | `LoggerStatus` (STOPPED/RUNNING/FAILED), `parse_logging_level()`, `DEFAULT_LOGGING_LEVEL` |
-| `task_processor.py` | `TaskProcessor(BasicWorker)`. Task registry maps (`__task_handlers_map` name→class, `__task_handlers` active instances), bounded task queue (accessed via `enqueue_task`/`dequeue_task`/`task_queue_empty`/`task_queue_full` — the raw `task_queue` is no longer public), `running_tasks` (`UUID → TaskTracker`), `@Manager("TaskManager") task_manager`, `@Manager("TaskQueueManager") task_queue_manager`, `process_task()`, watchdog timeout logic, handler start/stop, drain-and-cancel cleanup, `on_task_completed()` ack seam |
+| `task_processor.py` | `TaskProcessor(BasicWorker)`. Task registry maps (`__task_handlers_map` name→`(class, handler_kwargs)`, `__task_handlers` active instances), bounded task queue (accessed via `enqueue_task`/`dequeue_task`/`task_queue_empty`/`task_queue_full` — the raw `task_queue` is no longer public), `running_tasks` (`UUID → TaskTracker`), `@Manager("TaskManager") task_manager`, `@Manager("TaskQueueManager") task_queue_manager`, `process_task()`, watchdog timeout logic, handler start/stop, drain-and-cancel cleanup, `on_task_completed()` ack seam |
 | `task_handler/__init__.py` | Re-exports `TaskHandler`, `TaskHandlerContext`, `TaskData`, `TaskResult`, `TaskTimeout`, `TaskTracker` |
 | `task_handler/context.py` | `TaskHandlerContext` — frozen dataclass (`service_name`, `instance_id`, `logger`) passed to handlers instead of the full worker |
 | `task_handler/schemas.py` | Frozen `msgspec.Struct` schemas (see [`components.md`](./components.md)) |

@@ -77,7 +77,7 @@ class TaskProcessor(BasicWorker):
         # TaskProcessorConfig so the read-time getters below have its fields.
         self._config = cfg
 
-        self.__task_handlers_map: dict[str, type[TaskHandler]] = {}
+        self.__task_handlers_map: dict[str, tuple[type[TaskHandler], dict[str, object]]] = {}
         self.__task_handlers: dict[str, TaskHandler] = {}
 
         # Initialize queues and tracking structures
@@ -218,6 +218,7 @@ class TaskProcessor(BasicWorker):
         handler_class: type[TaskHandler],
         *,
         name: str | None = None,
+        **handler_kwargs: object,
     ) -> None:
         """Register a task handler class.
 
@@ -236,6 +237,12 @@ class TaskProcessor(BasicWorker):
             handler_class: The ``TaskHandler`` subclass to register.
             name: Optional lifecycle key, defaulting to the handler class name.
                 Enables multiple instances of one class under distinct keys.
+            **handler_kwargs: Extra keyword arguments forwarded to the handler
+                constructor on every instantiation. Enables stateful handlers
+                by injecting shared mutable objects (e.g. a shared counter or
+                cache) that outlive a single start/stop cycle. A misspelled
+                kwarg raises a loud ``TypeError`` at construction, because
+                ``TaskHandler`` subclasses do not accept arbitrary kwargs.
 
         Raises:
             ValueError: If the resolved handler name is already registered.
@@ -243,7 +250,7 @@ class TaskProcessor(BasicWorker):
         handler_name = name or handler_class.__name__
         if handler_name in self.__task_handlers_map:
             raise ValueError(f"Task handler {handler_name!r} is already registered")
-        self.__task_handlers_map[handler_name] = handler_class
+        self.__task_handlers_map[handler_name] = (handler_class, handler_kwargs)
         self.logger.log(logging.INFO, "Added Task handler: %s", handler_name)
         if self.state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):
             asyncio.create_task(self._start_task_handler(handler_name))
@@ -268,13 +275,13 @@ class TaskProcessor(BasicWorker):
         if handler_name not in self.__task_handlers_map:
             self.logger.log(logging.DEBUG, "Task handler %s not found", handler_name)
             return False
-        handler_class = self.__task_handlers_map[handler_name]
+        handler_class, handler_kwargs = self.__task_handlers_map[handler_name]
         context = TaskHandlerContext(
             service_name=self.service_name,
             instance_id=self.instance_id,
             logger=self.logger,
         )
-        handler_instance = handler_class(handler_name, context)
+        handler_instance = handler_class(handler_name, context, **handler_kwargs)
         self.__task_handlers[handler_name] = handler_instance
         try:
             await asyncio.wait_for(self.__task_handlers[handler_name].start(), timeout=self.task_handler_start_timeout)

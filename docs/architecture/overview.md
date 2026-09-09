@@ -74,6 +74,7 @@ The package is a library. Each runnable artifact is a consumer:
 | `examples/basic_worker.py` | `BasicWorker` + custom `@Manager("cruncher")` | Minimal daemon; prints logo; runs managers until SIGINT/SIGTERM |
 | `examples/task_processor.py` | `TaskProcessor` + three `TaskHandler`s + in-memory source | Feeds tasks from an in-memory list, processes concurrently |
 | `examples/named_task_handlers.py` | `TaskProcessor` + one handler class registered under two names (AR-053) | Splits one class's task types across named instances |
+| `examples/stateful_handler.py` | `TaskProcessor` + one handler injected with a shared `SharedCounter` via `**handler_kwargs` | Mutates shared state across tasks; the injected object survives handler re-instantiation |
 | `examples/valkey_async_service.py` | `ValkeyWorker` | Connects to Valkey, consumes a task stream |
 | `examples/valkey_pubsub_worker.py` | `ValkeyWorker` subclass + PubSub control channels | Subscribes to `scietex:{service}:{instance_id}` and `scietex:broadcast` |
 
