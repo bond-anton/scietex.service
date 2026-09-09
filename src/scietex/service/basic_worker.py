@@ -271,6 +271,20 @@ class BasicWorker:
         return self._manager_runtime.failed_managers
 
     @property
+    def manager_runtime(self) -> ManagerRuntime:
+        """The worker's manager runtime (read-only view).
+
+        Exposes the ``ManagerRuntime`` so callers can inspect manager tasks
+        and control individual managers (``start_manager``/``stop_manager``),
+        statuses, and errors. The runtime's own methods are the documented
+        API; this property only provides access to the runtime instance.
+
+        Returns:
+            The ``ManagerRuntime`` managing this worker's managers.
+        """
+        return self._manager_runtime
+
+    @property
     def heartbeat_interval(self) -> float:
         """Interval in seconds between heartbeat calls (read-only).
 

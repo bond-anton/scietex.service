@@ -1,4 +1,11 @@
-"""Valkey async task processor testing."""
+"""Valkey async task processor testing.
+
+This suite deliberately reaches into private ``ValkeyWorker`` internals
+(``_client``, ``_task_entry_ids``, ``_recovered``, ``_client_config``) to
+inject a fake client and seed in-flight state, because ``connect()`` builds
+its own ``GlideClient`` and there is no public injection seam. This is an
+accepted determinism trade-off per the 2026-09-09 review AR-071 carve-out.
+"""
 
 import asyncio
 import logging

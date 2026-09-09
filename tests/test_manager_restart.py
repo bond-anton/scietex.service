@@ -135,20 +135,20 @@ async def test_manager_status_reports_running_and_stopped():
     try:
         # Wait until the manager task is tracked so its loop has begun.
         for _ in range(50):
-            if "Loop" in worker._manager_runtime.tasks:
+            if "Loop" in worker.manager_runtime.tasks:
                 break
             await asyncio.sleep(0.05)
-        assert "Loop" in worker._manager_runtime.tasks
-        assert worker._manager_runtime.statuses["Loop"] == ManagerStatus.RUNNING
+        assert "Loop" in worker.manager_runtime.tasks
+        assert worker.manager_runtime.statuses["Loop"] == ManagerStatus.RUNNING
     finally:
         await worker.stop()
     # The task marks itself STOPPED in its finally block, which may complete
     # asynchronously after stop() returns; poll until it lands.
     for _ in range(50):
-        if worker._manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED:
+        if worker.manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED:
             break
         await asyncio.sleep(0.05)
-    assert worker._manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED
+    assert worker.manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED
 
 
 @pytest.mark.asyncio
@@ -181,7 +181,7 @@ async def test_manager_gives_up_and_removes_stale_task_entry():
             await asyncio.sleep(0.05)
         assert worker.attempts >= 3, f"expected give-up after retries, got {worker.attempts} attempts"
         # The task must have removed itself from tracking (no stale entry).
-        assert "Doomed" not in worker._manager_runtime.tasks
+        assert "Doomed" not in worker.manager_runtime.tasks
     finally:
         await worker.stop()
 
@@ -197,12 +197,12 @@ async def test_manager_can_restart_after_giving_up():
                 break
             await asyncio.sleep(0.05)
         assert worker.attempts >= 2
-        assert "Doomed" not in worker._manager_runtime.tasks
+        assert "Doomed" not in worker.manager_runtime.tasks
 
         # A fresh start of the same manager must succeed (task entry was cleared).
         manager = AlwaysFailingWorker.__dict__["_doomed_manager"]
-        await worker._manager_runtime.start_manager("Doomed", manager)
-        assert "Doomed" in worker._manager_runtime.tasks
+        await worker.manager_runtime.start_manager("Doomed", manager)
+        assert "Doomed" in worker.manager_runtime.tasks
     finally:
         await worker.stop()
 
@@ -216,11 +216,11 @@ async def test_manager_exhausting_retries_ends_failed():
         # Wait for the manager to give up (3 failures: initial + 2 retries) and
         # reach its terminal FAILED state.
         for _ in range(100):
-            if worker._manager_runtime.statuses.get("Doomed") == ManagerStatus.FAILED:
+            if worker.manager_runtime.statuses.get("Doomed") == ManagerStatus.FAILED:
                 break
             await asyncio.sleep(0.05)
-        assert worker._manager_runtime.statuses.get("Doomed") == ManagerStatus.FAILED
-        assert worker._manager_runtime.errors.get("Doomed") is not None
+        assert worker.manager_runtime.statuses.get("Doomed") == ManagerStatus.FAILED
+        assert worker.manager_runtime.errors.get("Doomed") is not None
         # The failure must be surfaced to the worker's public accessor.
         assert "Doomed" in worker.failed_managers
     finally:
@@ -234,19 +234,19 @@ async def test_cleanly_stopped_manager_not_failed():
     await worker.start()
     try:
         for _ in range(50):
-            if "Loop" in worker._manager_runtime.tasks:
+            if "Loop" in worker.manager_runtime.tasks:
                 break
             await asyncio.sleep(0.05)
-        assert "Loop" in worker._manager_runtime.tasks
+        assert "Loop" in worker.manager_runtime.tasks
     finally:
         await worker.stop()
     # Poll until the task lands in its terminal state.
     for _ in range(50):
-        status = worker._manager_runtime.statuses.get("Loop")
+        status = worker.manager_runtime.statuses.get("Loop")
         if status in (ManagerStatus.STOPPED, ManagerStatus.FAILED):
             break
         await asyncio.sleep(0.05)
-    assert worker._manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED
+    assert worker.manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED
     assert "Loop" not in worker.failed_managers
 
 
@@ -255,7 +255,7 @@ async def test_subclass_manager_override_wins():
     """Most-derived manager definition must win over a base-class override."""
     worker = DerivedWorker()
     # Discovery must yield the derived manager only (base is shadowed).
-    names = [name for name, _ in worker._manager_runtime.iter_manager_definitions()]
+    names = [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
     assert names.count("Shared") == 1
     await worker.start()
     try:
@@ -287,17 +287,17 @@ async def test_cleanup_raising_manager_still_removed_from_tracking():
     await worker.start()
     try:
         for _ in range(50):
-            if "Messy" in worker._manager_runtime.tasks:
+            if "Messy" in worker.manager_runtime.tasks:
                 break
             await asyncio.sleep(0.05)
-        assert "Messy" in worker._manager_runtime.tasks
+        assert "Messy" in worker.manager_runtime.tasks
 
         # Cleanup raises, which must propagate out of stop_manager, but the
         # task must still remove itself from tracking.
         with pytest.raises(RuntimeError):
-            await worker._manager_runtime.stop_manager("Messy")
+            await worker.manager_runtime.stop_manager("Messy")
         assert worker.cleaned_up
-        assert "Messy" not in worker._manager_runtime.tasks
+        assert "Messy" not in worker.manager_runtime.tasks
     finally:
         await worker.stop()
 
@@ -309,10 +309,10 @@ async def test_cleanup_callable_runs_on_clean_shutdown():
     await worker.start()
     try:
         for _ in range(50):
-            if "Neat" in worker._manager_runtime.tasks:
+            if "Neat" in worker.manager_runtime.tasks:
                 break
             await asyncio.sleep(0.05)
-        assert "Neat" in worker._manager_runtime.tasks
+        assert "Neat" in worker.manager_runtime.tasks
     finally:
         await worker.stop()
     # stop() spawns _shutdown asynchronously; the cleanup callable runs inside
@@ -331,12 +331,12 @@ async def test_cancellation_ignoring_manager_stays_tracked_after_timeout():
     await worker.start()
     try:
         for _ in range(50):
-            if "Stubborn" in worker._manager_runtime.tasks:
+            if "Stubborn" in worker.manager_runtime.tasks:
                 break
             await asyncio.sleep(0.05)
-        assert "Stubborn" in worker._manager_runtime.tasks
+        assert "Stubborn" in worker.manager_runtime.tasks
 
-        original_task = worker._manager_runtime.tasks["Stubborn"]
+        original_task = worker.manager_runtime.tasks["Stubborn"]
 
         # On Python 3.12+ wait_for awaits the task to finish on timeout, so a
         # manager that ignores cancellation would hang the real call. Simulate
@@ -344,22 +344,22 @@ async def test_cancellation_ignoring_manager_stays_tracked_after_timeout():
         # Use asyncio.TimeoutError (not the builtin): on 3.10 it is a distinct
         # subclass, so the builtin would not be caught by stop_manager.
         with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
-            await worker._manager_runtime.stop_manager("Stubborn")
+            await worker.manager_runtime.stop_manager("Stubborn")
 
         # The still-running task must remain tracked.
-        assert "Stubborn" in worker._manager_runtime.tasks
-        assert worker._manager_runtime.tasks["Stubborn"] is original_task
+        assert "Stubborn" in worker.manager_runtime.tasks
+        assert worker.manager_runtime.tasks["Stubborn"] is original_task
 
         # A restart attempt must not double-spawn the same name.
         manager = CancellationIgnoringWorker.__dict__["_stubborn_manager"]
-        await worker._manager_runtime.start_manager("Stubborn", manager)
-        assert worker._manager_runtime.tasks["Stubborn"] is original_task
+        await worker.manager_runtime.start_manager("Stubborn", manager)
+        assert worker.manager_runtime.tasks["Stubborn"] is original_task
     finally:
         # Flip the flag so the manager honors the next cancellation and the
         # test cleans up without leaving a pending task.
         worker.ignore_cancellation = False
-        if "Stubborn" in worker._manager_runtime.tasks:
-            await worker._manager_runtime.stop_manager("Stubborn")
+        if "Stubborn" in worker.manager_runtime.tasks:
+            await worker.manager_runtime.stop_manager("Stubborn")
         await worker.stop()
 
 
@@ -368,7 +368,7 @@ async def test_manager_name_collision_logs_warning(caplog):
     """A manager name collision must log a WARNING and keep the first definition (AR-068)."""
     worker = DuplicateNameWorker()
     with caplog.at_level(logging.WARNING):
-        names = [name for name, _ in worker._manager_runtime.iter_manager_definitions()]
+        names = [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
     # Dedup semantics unchanged: only the first "Dup" definition is yielded.
     assert names.count("Dup") == 1
     # The collision is surfaced, not silently dropped.
