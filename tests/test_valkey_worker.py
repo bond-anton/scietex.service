@@ -1,6 +1,7 @@
 """Valkey async task processor testing."""
 
 import asyncio
+import logging
 from uuid import UUID
 
 import pytest
@@ -16,12 +17,14 @@ class DummyClient:
         self,
         ping_ok=True,
         xreadgroup_result=None,
+        xreadgroup_error=None,
         xautoclaim_result=None,
         xgroup_create_error=None,
     ):
         self._ping_ok = ping_ok
         self.closed = False
         self.xreadgroup_result = xreadgroup_result
+        self.xreadgroup_error = xreadgroup_error
         self.xautoclaim_result = xautoclaim_result
         self.xgroup_create_error = xgroup_create_error
         self.acked: list = []
@@ -53,6 +56,8 @@ class DummyClient:
         self.deleted.append(args)
 
     async def xreadgroup(self, *args, **kwargs):
+        if self.xreadgroup_error is not None:
+            raise self.xreadgroup_error
         self.xreadgroup_calls.append(args)
         return self.xreadgroup_result
 
@@ -65,6 +70,57 @@ class DummyClient:
 
     async def close(self):
         self.closed = True
+
+
+class FakeHandler(logging.Handler):
+    """Stand-in for ``AsyncValkeyHandler`` in connection tests.
+
+    The real handler's ``start_logging`` spawns a worker that connects to a
+    live Valkey server; this fake records its construction arguments and
+    start/stop calls without opening a connection, so tests stay deterministic.
+    """
+
+    def __init__(self, stream_name, *, valkey_config=None, client=None, **kwargs):
+        super().__init__()
+        self.stream_name = stream_name
+        self.valkey_config = valkey_config
+        self.client = client
+        self._owns_client = client is None
+        self.logging_running_event = asyncio.Event()
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    async def start_logging(self):
+        self.start_calls += 1
+        self.logging_running_event.set()
+
+    async def stop_logging(self):
+        self.stop_calls += 1
+        self.logging_running_event.clear()
+
+    def emit(self, record):
+        # Drop records: the fake is only here to record construction/start/stop,
+        # not to deliver logs.
+        pass
+
+
+def _patch_glide(monkeypatch, create_mock):
+    """Point the worker's ``GlideClient.create`` at ``create_mock`` and make the
+    glide connection errors plain ``Exception``s so connect() tests are serverless."""
+    import scietex.service.valkey.worker as mod
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+    return mod
+
+
+def _patch_glide_and_handler(monkeypatch, create_mock):
+    """Like :func:`_patch_glide`, but also swap the real logging handler for a
+    :class:`FakeHandler` so connect() never opens a second connection."""
+    mod = _patch_glide(monkeypatch, create_mock)
+    monkeypatch.setattr(mod, "AsyncValkeyHandler", FakeHandler)
+    return mod
 
 
 @pytest.mark.asyncio
@@ -97,6 +153,28 @@ async def test_disconnect_closes_client(monkeypatch):
     assert worker.client is None
 
 
+@pytest.mark.asyncio
+async def test_connect_is_serialized_by_lock(monkeypatch):
+    """Concurrent connect() calls must not double-create the client: the
+    asyncio.Lock serializes the create→ping→assign sequence (AR-059)."""
+    creates = []
+
+    async def create_mock(cfg):
+        creates.append(cfg)
+        # Yield so a concurrent connect() would interleave without the lock.
+        await asyncio.sleep(0)
+        return DummyClient(ping_ok=True)
+
+    _patch_glide_and_handler(monkeypatch, create_mock)
+
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    results = await asyncio.gather(worker.connect(), worker.connect(), worker.connect())
+
+    assert results == [True, True, True]
+    assert len(creates) == 1, "concurrent connect() must create exactly one client"
+    assert worker.client is not None
+
+
 def _make_msg(channel: bytes | str, message: bytes | str):
     class Msg:
         def __init__(self, channel, message):
@@ -107,18 +185,15 @@ def _make_msg(channel: bytes | str, message: bytes | str):
 
 
 @pytest.mark.asyncio
-async def test_logging_handler_created_on_connect(monkeypatch):
-    """The AsyncValkeyHandler is constructed on first connect with the worker's
-    client injected, so worker and logging share one GlideClient (AR-018)."""
+async def test_logging_handler_owns_its_own_connection(monkeypatch):
+    """With a typed ValkeyConfig the handler is built once on connect with
+    valkey_config= (owning its own connection); the worker no longer injects or
+    re-points its client (AR-059/061)."""
 
     async def create_mock(cfg):
         return DummyClient(ping_ok=True)
 
-    import scietex.service.valkey.worker as mod
-
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+    _patch_glide_and_handler(monkeypatch, create_mock)
 
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     assert worker._valkey_logger_handler is None  # not built until connect
@@ -127,8 +202,66 @@ async def test_logging_handler_created_on_connect(monkeypatch):
     assert ok is True
     handler = worker._valkey_logger_handler
     assert handler is not None
-    assert handler.client is worker.client  # shared, not a second client
-    assert handler._owns_client is False  # worker owns teardown
+    assert isinstance(handler, FakeHandler)
+    assert handler._owns_client is True, "typed ValkeyConfig -> handler owns its connection"
+    assert handler.client is None, "handler must not be injected the worker's client"
+    assert handler.valkey_config is not None, "handler must be handed a valkey_config dict"
+    assert handler.valkey_config["addresses"] == [("localhost", 6379)]
+
+
+@pytest.mark.asyncio
+async def test_logging_handler_falls_back_to_client_injection_with_raw_config(monkeypatch):
+    """A raw GlideClientConfiguration has no typed ValkeyConfig to hand the
+    handler, so it keeps the shared-client injection seam (AR-059/061)."""
+
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=True)
+
+    import scietex.service.valkey.worker as mod
+    from scietex.service.valkey._glide import GlideClientConfiguration, NodeAddress
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    raw_config = GlideClientConfiguration(addresses=[NodeAddress("localhost", 6379)])
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=raw_config))
+    ok = await worker.connect()
+    assert ok is True
+    handler = worker._valkey_logger_handler
+    assert handler is not None
+    assert handler._owns_client is False, "raw config -> handler shares the worker's client"
+    assert handler.client is worker.client
+
+
+def test_logging_handler_config_translates_typed_config():
+    """_logging_handler_config maps a typed ValkeyConfig onto the external
+    handler's scalar dict schema (addresses + credentials + TLS + timeouts)."""
+    from scietex.service.valkey.config import ValkeyBaseConfig, ValkeyNode, ValkeyUserCredentials
+    from scietex.service.valkey.worker import _logging_handler_config
+
+    cfg = ValkeyConfig(
+        base_config=ValkeyBaseConfig(
+            nodes=[ValkeyNode(host="redis.internal", port=6380)],
+            user_credentials=ValkeyUserCredentials(username="svc", password="secret"),
+            use_tls=True,
+            request_timeout=7500,
+            database_id=2,
+            client_name="logger",
+        )
+    )
+    assert _logging_handler_config(cfg) == {
+        "addresses": [("redis.internal", 6380)],
+        "username": "svc",
+        "password": "secret",
+        "use_tls": True,
+        "request_timeout": 7500,
+        "database_id": 2,
+        "client_name": "logger",
+        "inflight_requests_limit": None,
+        "client_az": None,
+        "lazy_connect": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -274,6 +407,49 @@ async def test_fetch_tasks_reports_nothing_when_stream_empty():
 
 
 @pytest.mark.asyncio
+async def test_fetch_tasks_reconnects_on_glide_error(monkeypatch):
+    """A glide error during XREADGROUP tears down the dead client and
+    reconnects; the reconnect is limited to glide errors only (AR-054/059)."""
+    import scietex.service.valkey.worker as mod
+
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=True)
+
+    # Patch only the client factory and handler; leave the real glide error
+    # classes intact so the narrowed except tuple is what actually runs.
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "AsyncValkeyHandler", FakeHandler)
+
+    client = DummyClient(xreadgroup_error=mod.RequestError("connection dropped"))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._recovered = True  # skip recovery; exercise the XREADGROUP path only
+
+    enqueued = await worker.fetch_tasks()
+
+    assert enqueued is False
+    assert client.closed is True, "glide error must tear down the dead client"
+    assert worker.client is not None, "glide error must reconnect"
+    assert worker.client is not client, "a fresh client must be created on reconnect"
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_propagates_non_glide_error():
+    """A non-glide exception (e.g. a code bug) must propagate without tearing
+    down the connection (AR-054/059)."""
+    client = DummyClient(xreadgroup_error=ValueError("msgpack encode bug"))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._recovered = True
+
+    with pytest.raises(ValueError, match="msgpack encode bug"):
+        await worker.fetch_tasks()
+
+    assert client.closed is False, "non-glide error must not trigger reconnect"
+    assert worker.client is client, "client must survive a non-glide error"
+
+
+@pytest.mark.asyncio
 async def test_on_task_completed_acks_and_deletes_entry():
     """on_task_completed must XACK+XDEL the recorded entry id and clear the map (AR-005)."""
     from uuid import UUID
@@ -413,29 +589,27 @@ def test_auto_tune_derives_concurrency_from_cpu_count():
 
 
 @pytest.mark.asyncio
-async def test_disconnect_closes_shared_client_once(monkeypatch):
-    """disconnect closes the single shared client and clears the handler's
-    reference; the handler never closes it (AR-018)."""
+async def test_disconnect_closes_operational_client_but_not_owned_handler(monkeypatch):
+    """disconnect closes the worker's operational client once; the owned
+    logging handler's connection is independent and left untouched
+    (AR-059/061)."""
 
     async def create_mock(cfg):
         return DummyClient(ping_ok=True)
 
-    import scietex.service.valkey.worker as mod
-
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+    _patch_glide_and_handler(monkeypatch, create_mock)
 
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     await worker.connect()
     client = worker.client
     handler = worker._valkey_logger_handler
-    assert handler.client is client
+    assert handler is not None
+    assert handler.client is None  # owned, never injected
 
     await worker.disconnect()
     assert client.closed is True
     assert worker.client is None
-    assert handler.client is None
+    assert handler.client is None, "disconnect must not null an owned handler's client"
 
 
 @pytest.mark.asyncio

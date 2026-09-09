@@ -459,12 +459,15 @@ worker = MyValkeyWorker(ValkeyWorkerConfig(valkey_config=config))
 
 ### Async Logging
 
-The worker runs a single `GlideClient` shared with the `AsyncValkeyHandler`
-used for async log entries (AR-018). The handler is constructed with the
-worker's client injected on the first successful `connect()`, so logging and
-task traffic use the same connection (including authentication); the worker
-remains the sole teardown owner and closes the shared client in
-`disconnect()`. The handler is registered once and reused across restarts.
+The worker runs one operational `GlideClient` for task/heartbeat/registry
+traffic, and the `AsyncValkeyHandler` used for async log entries owns its own
+independent connection (AR-059/061). The handler is constructed with
+`valkey_config=` (a scalar dict translated from the typed `ValkeyConfig`) on the
+first successful `connect()`, so it builds, closes, and reconnects its own
+client autonomously; the worker no longer injects or re-points `handler.client`.
+Only a raw `GlideClientConfiguration` falls back to sharing the worker's client
+via `client=` injection. The handler is registered once and reused across
+restarts.
 
 ## Configuration Reference
 

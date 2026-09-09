@@ -124,9 +124,9 @@ process/loop:
 Ownership summary: the **worker owns** manager tasks and the internal task
 queue / `running_tasks`, delegating manager bookkeeping to `ManagerRuntime` and
 logging-handler bookkeeping to `LoggingLifecycle`; the **logging handlers own**
-their internal queues/worker tasks, and since AR-018 (v4) the Valkey log
-handler shares the worker's single `GlideClient` (injected via the
-`scietex.logging>=2.0.0` seam) rather than owning its own;
+their internal queues/worker tasks, and the Valkey log handler owns its own
+independent `GlideClient` (built from `valkey_config=`, AR-059/061) — only a
+raw `GlideClientConfiguration` falls back to sharing the worker's client;
 **task handlers own** their initialization state (`is_ready`) but not their own
 tasks — they run inline inside processor-created tasks.
 

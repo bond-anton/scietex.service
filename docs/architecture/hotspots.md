@@ -18,7 +18,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H6 | Resolved | AR-015 + AR-008 — signals in `start()`; read-only views |
 | H7 | Resolved | AR-017 — `_force_stopped()` forces STOPPED on cancellation |
 | H8 | Resolved | AR-005 — at-least-once delivery |
-| H9 | Resolved | AR-018 — single shared GlideClient shipped in v3 |
+| H9 | Resolved | AR-018 shared the client; AR-059/061 re-split with owned handler + `_client_lock` |
 | H10 | Resolved | AR-006 + AR-010 — truthful `connect()` |
 | H11 | Resolved | AR-023 — shared-queue topology (service-scoped stream/group) |
 | H12 | Open | usage docs still drift (out of scope here) |
@@ -161,15 +161,15 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
   `stop_logging`). Connection failure modes and resource accounting are split
   across two owners.
 
-**Resolved (AR-018):** `ValkeyWorker` now runs a single `GlideClient` shared
-with the logging handler. `_ensure_logging_handler`
-(worker.py:168) constructs the `AsyncValkeyHandler` with the
-worker's client injected (via the `scietex.logging>=2.0.0` client-injection
-seam) on the first successful `connect()`, so the handler never owns or closes
-the shared client; `disconnect()` (235) clears the handler's reference before
-closing the client, making the worker the sole teardown owner. The handler is
-reused across restarts, and `connect()` keeps it on the worker's current client
-across reconnects.
+**Resolved (AR-018, superseded by AR-059/061):** `ValkeyWorker` originally ran
+a single `GlideClient` shared with the logging handler. AR-059/061 re-split the
+two domains with proper ownership: the worker's operational client (heartbeat,
+registry, intake, task completion) is serialized behind `_client_lock` (163)
+with a glide-error-only reconnect, and the logging `AsyncValkeyHandler` owns its
+own independent connection via `valkey_config=` (a scalar dict from
+`_logging_handler_config`, 53), so the worker no longer injects or re-points
+`handler.client`. Only a raw `GlideClientConfiguration` keeps the `client=`
+injection seam.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 

@@ -268,23 +268,29 @@ stream through an `AsyncValkeyHandler`.
 **Main symbols:** `class ValkeyWorker(TaskProcessor)` (52).
 Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
 `config.valkey_config` or falls back to `read_valkey_config`),
-`connect` 190 (`GlideClient.create` + PING; `_client` assigned only
-after PING succeeds, 219; then wires the shared client into the logging handler),
-`disconnect` 235, `heartbeat` 249 (writes msgpack `Heartbeat` to `...:status`
-with TTL 2×interval), `initialize` 290 (start handlers, connect,
-`xgroup_create`), `cleanup` 340 (super + disconnect),
-`return_task_to_queue` 407 (`xadd` re-queue), `_recover_pending_tasks` 426
-(`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 489
-(`xreadgroup` → decode → `enqueue_task`; does **not** ack on enqueue),
-`on_task_completed` 565 (`xack`+`xdel` the entry after the handler finishes),
-`_register_instance` 363 (`SADD` `instance_id` into the registry set),
-`_unregister_instance` 386 (`SREM` it back out).
+`connect` 236 (`GlideClient.create` + PING under `_client_lock`; `_client`
+assigned only after PING succeeds, 278; then ensures the logging handler and
+starts it), `disconnect` 294, `heartbeat` 320 (writes msgpack `Heartbeat` to
+`...:status` with TTL 2×interval), `initialize` 361 (start handlers, connect,
+`xgroup_create`), `cleanup` 411 (super + stop logging handler + disconnect),
+`return_task_to_queue` 477 (`xadd` re-queue), `_recover_pending_tasks` 496
+(`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 559
+(`xreadgroup` → decode → `enqueue_task`; does **not** ack on enqueue; a glide
+error triggers disconnect+reconnect, other errors propagate),
+`on_task_completed` 635 (`xack`+`xdel` the entry after the handler finishes),
+`_register_instance` 433 (`SADD` `instance_id` into the registry set),
+`_unregister_instance` 456 (`SREM` it back out).
 
-Single client (AR-018): the worker runs one `GlideClient` shared with the
-logging handler. `_ensure_logging_handler` (168) constructs the
-`AsyncValkeyHandler` with the worker's client injected on the first successful
-`connect()`, and `disconnect()` (235) clears the handler's reference before
-closing the shared client — the worker is the sole teardown owner (see §H9).
+Connection ownership (AR-059/061): the worker runs one operational
+`GlideClient` for heartbeat, registry, intake, and task completion;
+`connect()`/`disconnect()` serialize the create→ping→assign and close→null
+sequences behind `_client_lock` (163), and intake reconnects only on glide
+errors. The logging handler is an independent owner: `_ensure_logging_handler`
+(203) constructs `AsyncValkeyHandler` with `valkey_config=` (a scalar dict
+translated from the typed config by `_logging_handler_config`, 53) when a typed
+`ValkeyConfig` is available, so the handler builds/closes/reconnects its own
+connection and the worker never touches `handler.client`; only a raw
+`GlideClientConfiguration` falls back to `client=` injection (see §14).
 
 **Key names** (constructed in `__init__`): status key
 `scietex:{service}:{instance_id}:status`, task stream
@@ -392,11 +398,16 @@ Consumed classes:
   formats records into dicts, `send_message()`; accepts an injected `client`
   and, when one is provided, never closes it (`_owns_client=False`).
 - `AsyncValkeyHandler(AsyncBrokerHandler)` — `xadd` to a stream. `ValkeyWorker`
-  injects its own `GlideClient` via the `client` kwarg on the first successful
-  `connect()` (worker.py:179–182), so logging shares the worker's
-  single connection rather than opening a second one.
+  constructs it with `valkey_config=` (a dict of scalar
+  `GlideClientConfiguration` options translated from the typed `ValkeyConfig`)
+  on the first successful `connect()` (worker.py:229–232), so the handler owns
+  an independent connection and reconnects autonomously. Only when the worker
+  was given a raw `GlideClientConfiguration` does it fall back to `client=`
+  injection (worker.py:224–227).
 - `ScietexFormatter`.
 
-**Important:** when a client is injected via the `client` kwarg, the handler
-never closes it — the caller owns its lifetime and recovery. `ValkeyWorker`
-injects its single client, so the worker is the sole teardown owner.
+**Important:** a handler built from `valkey_config=` owns and closes its own
+client (autonomous reconnect/backoff); a handler built from the `client=` kwarg
+never closes it — the caller owns its lifetime and recovery. `ValkeyWorker` uses
+the former by default and the latter only for the raw-`GlideClientConfiguration`
+fallback.

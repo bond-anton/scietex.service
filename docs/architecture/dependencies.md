@@ -76,10 +76,12 @@ glide (valkey-glide, optional)                              [external]
   flow into the worker.
 - **Logging has two dependency arrows** (see `scietex.logging` above): both the
   base worker (console handler) and `ValkeyWorker` (Valkey handler) attach
-  external handlers. Since AR-018 (v4), `ValkeyWorker` couples to `glide`
-  **once** — the logging `AsyncValkeyHandler` receives the worker's single
-  `GlideClient` injected via the `scietex.logging>=2.0.0` client-injection seam
-  and never opens or closes a client of its own.
+  external handlers. The logging `AsyncValkeyHandler` builds and owns its own
+  `GlideClient` from `valkey_config=` (a scalar dict translated from the typed
+  `ValkeyConfig`), so the handler opens and closes a client independently of the
+  worker's operational client (AR-059/061); only a raw
+  `GlideClientConfiguration` falls back to the `scietex.logging>=2.0.0`
+  client-injection seam.
 - **Public API re-export guard**: the only place core code tolerates a missing
   optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
   `ImportError`, which is caught (`__init__.py:54`) and reported via a warning
@@ -117,8 +119,8 @@ glide (valkey-glide, optional)                              [external]
    `GlideClientConfiguration` → `GlideClient.create`.
 3. **Log path**: worker logger → `scietex.logging.ConsoleHandler.emit`
    → internal asyncio queues → console worker; or `AsyncValkeyHandler._worker`
-   → `xadd` on the worker's shared `GlideClient` (injected via the
-   `scietex.logging>=2.0.0` seam) → stream.
+   → `xadd` on the handler's own `GlideClient` (built from `valkey_config=`,
+   AR-059/061) → stream.
 4. **Manager runtime chain**: `@Manager`-decorated method →
    `ManagerRuntime.iter_manager_definitions` (MRO scan) →
    `ManagerRuntime.start_manager` (task) → `ManagerRuntime.run_manager`

@@ -141,10 +141,11 @@ heartbeat never surfaces.
   registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
-  `worker.py:168`) — shares the worker's
-  single `GlideClient` (injected via the `scietex.logging>=2.0.0` seam);
-  formats records to a dict and `xadd`s to log stream
-  `scietex:log` (default).
+  `worker.py:203`) — owns its own `GlideClient`, built from a `valkey_config=`
+  dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
+  longer shares the worker's client; formats records to a dict and `xadd`s to
+  the log stream `scietex:log` (default). A raw `GlideClientConfiguration`
+  falls back to the `client=` injection seam.
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
