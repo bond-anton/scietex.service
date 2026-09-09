@@ -31,6 +31,35 @@ class SlowHandler(TaskHandler):
         return ["slow"]
 
 
+class StuckStopHandler(TaskHandler):
+    async def stop(self) -> None:
+        # Block far past the stop timeout so _stop_task_handler hits
+        # asyncio.TimeoutError instead of a clean stop.
+        await asyncio.sleep(10)
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="success", error="No error", payload=task_data.payload)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["stuck_stop"]
+
+
+@pytest.mark.asyncio
+async def test_stop_task_handler_removes_handler_on_stop_timeout():
+    """A handler whose stop() times out must still be removed from the active
+    handlers dict, so it is not left in an ambiguous tracked-but-stuck state
+    (AR-052)."""
+    # task_handler_stop_timeout minimum is 1 (config.py), the smallest valid value.
+    proc = DemoProcessor(TaskProcessorConfig(task_handler_stop_timeout=1))
+    proc.add_task_handler(StuckStopHandler)
+    await proc._start_task_handler("StuckStopHandler")
+    assert "StuckStopHandler" in proc.task_handlers
+
+    await proc._stop_task_handler("StuckStopHandler")
+    assert "StuckStopHandler" not in proc.task_handlers
+
+
 class DemoProcessor(AsyncTaskProcessor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

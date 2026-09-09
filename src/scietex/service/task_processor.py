@@ -286,8 +286,9 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
         Calls the handler's ``stop()`` method with a timeout and removes it
         from the active handlers dictionary on success. If ``stop()`` times
-        out the handler is left in place (it may still be mid-cleanup) and a
-        timeout is logged.
+        out the handler is removed from the active handlers dictionary too
+        (with a WARNING), so it is not left in an ambiguous tracked-but-stuck
+        state; its ``stop()`` may still be finishing cleanup in the background.
 
         Args:
             handler_name: The name of the handler to stop.
@@ -298,9 +299,13 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         # Perform cleanup before removal
         try:
             await asyncio.wait_for(self.__task_handlers[handler_name].stop(), timeout=self.task_handler_stop_timeout)
-            del self.__task_handlers[handler_name]
+            self.__task_handlers.pop(handler_name, None)
         except asyncio.TimeoutError:
-            self.logger.log(logging.ERROR, "Timeout while stopping Task handler %s", handler_name)
+            # Do not leave the handler tracked-but-stuck: its stop() timed out,
+            # so it is no longer reliably active. pop() guards against it having
+            # already been removed concurrently.
+            self.__task_handlers.pop(handler_name, None)
+            self.logger.log(logging.WARNING, "Task handler %s removed after stop timeout", handler_name)
 
     def remove_task_handler(self, handler_name: str) -> None:
         """Remove a registered task handler.
