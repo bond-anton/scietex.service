@@ -6,7 +6,7 @@ workers, and resource ownership. Facts unless marked *analysis* or `UNKNOWN`.
 ## Worker lifecycle state machine
 
 States: `ServiceStatus` (STOPPED → STARTING → RUNNING → STOPPING → STOPPED).
-Transitions are driven by `BasicAsyncWorker` (`basic_async_worker.py`).
+Transitions are driven by `BasicWorker` (`basic_async_worker.py`).
 
 Two coordination events exist per worker in `self.events` (a read-only
 `MappingProxyType` view of two `asyncio.Event`s): `"exit_requested"` (set by
@@ -25,7 +25,7 @@ Public: `worker.start()` (671). It:
 3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
    running, with `logger_handler_timeout`.
 4. `initialize()` (575) — subclass hook; must return truthy.
-   - `AsyncTaskProcessor.initialize` (480) starts every registered task handler
+   - `TaskProcessor.initialize` (480) starts every registered task handler
      (`_start_task_handler`, awaited per handler).
    - `ValkeyWorker.initialize` (388) calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows
@@ -89,7 +89,7 @@ already-set `exit_requested` short-circuits so only one shutdown runs
    overrides it to `SREM` its `instance_id` from the worker registry set
    (best-effort: a failure logs a WARNING and does not fail shutdown).
 4. `cleanup()` — subclass hook. Chain:
-   - `AsyncTaskProcessor.cleanup` (498): drain `task_queue` (items fetched from
+   - `TaskProcessor.cleanup` (498): drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
      cancel running per-task workers (wait up to
      `WORKER_TASK_CANCELLATION_TIMEOUT=5 s`); requeue only if the handler
@@ -146,7 +146,7 @@ RUNNING) / `remove_task_handler`.
 
 ## Async logging handler lifecycle
 
-- `BasicAsyncWorker.__init__` attaches `ConsoleHandler` (console);
+- `BasicWorker.__init__` attaches `ConsoleHandler` (console);
   `ValkeyWorker.__init__` additionally attaches `AsyncValkeyHandler`.
 - Lifecycle is owned by `LoggingLifecycle` (logging/lifecycle.py): started in
   `start_handlers` (startup), stopped in `shut_down_handlers` (shutdown), each
@@ -165,7 +165,7 @@ RUNNING) / `remove_task_handler`.
 |---|---|---|---|
 | Logger + async handlers | worker (via `LoggingLifecycle`) | `__init__` / startup | shutdown step 5 |
 | Manager asyncio tasks | worker (via `ManagerRuntime`) | `ManagerRuntime.start_managers` | `ManagerRuntime.stop_managers` |
-| Internal task queue, `running_tasks` | `AsyncTaskProcessor` | `__init__` | drained in `cleanup` |
+| Internal task queue, `running_tasks` | `TaskProcessor` | `__init__` | drained in `cleanup` |
 | Task handler instances | processor (created per handler name) | `initialize` | `cleanup` |
 | Handler `is_ready` state | each `TaskHandler` | `start()` | `stop()` |
 | GlideClient (`ValkeyWorker.client`) | worker | `initialize`→`connect` | `cleanup`→`disconnect` |

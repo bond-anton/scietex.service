@@ -3,7 +3,7 @@
 For each major component: purpose, main classes/functions, public interface,
 dependencies, dependents. Line numbers refer to the module given.
 
-## 1. Worker core — `BasicAsyncWorker`
+## 1. Worker core — `BasicWorker`
 
 **File:** `src/scietex/service/basic_async_worker.py`
 
@@ -17,7 +17,7 @@ config, and the state machine.
 
 **Main symbols:**
 - `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 53
-- `class BasicAsyncWorker` — line 69
+- `class BasicWorker` — line 69
 - Constructor — `__init__(config: WorkerConfig | None = None)`; stores the
   immutable `WorkerConfig` (from `config.py`), resolves identity/conf_dir/
   logging_level, and constructs `ManagerRuntime` + `LoggingLifecycle`.
@@ -57,7 +57,7 @@ managers stop and before `cleanup()` teardown. Both are no-ops in the base;
 (`parse_logging_level`), `.utils` (`prepare_conf_dir`, `print_scietex_logo`);
 external `scietex.logging.ConsoleHandler`.
 
-**Depended on by:** `AsyncTaskProcessor` (extends); `ManagerRuntime` and
+**Depended on by:** `TaskProcessor` (extends); `ManagerRuntime` and
 `LoggingLifecycle` (back-reference to the owning worker); `task_handler`
 (indirectly, via `TaskHandlerContext`).
 
@@ -65,7 +65,7 @@ external `scietex.logging.ConsoleHandler`.
 
 **File:** `src/scietex/service/manager/runtime.py`
 
-**Purpose:** Extracted from `BasicAsyncWorker` (AR-003). Owns manager
+**Purpose:** Extracted from `BasicWorker` (AR-003). Owns manager
 discovery, lifecycle bookkeeping, and the restart-on-error loop. Reads config
 off the worker's public properties.
 
@@ -91,13 +91,13 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 **Public interface:** methods above; constructor takes `worker`.
 
 **Dependencies:** `.manager` (`Manager`, `ManagerStatus`); stdlib.
-**Depended on by:** `BasicAsyncWorker` (constructs and forwards to it).
+**Depended on by:** `BasicWorker` (constructs and forwards to it).
 
 ## 3. Logging lifecycle — `LoggingLifecycle`
 
 **File:** `src/scietex/service/logging/lifecycle.py`
 
-**Purpose:** Extracted from `BasicAsyncWorker` (AR-003). Owns async
+**Purpose:** Extracted from `BasicWorker` (AR-003). Owns async
 logging-handler registration and start/stop with status bookkeeping.
 
 **Main symbols:** `class LoggingLifecycle` (18). Constructor (27) takes the
@@ -117,7 +117,7 @@ owning worker and owns the `statuses` dict (35).
 
 **Dependencies:** `.logging` (`LoggerStatus`), external
 `scietex.logging.AsyncLoggingHandler`.
-**Depended on by:** `BasicAsyncWorker` (constructs and forwards to it).
+**Depended on by:** `BasicWorker` (constructs and forwards to it).
 
 ## 4. Manager decorator — `Manager` / `ManagerStatus`
 
@@ -135,8 +135,8 @@ identity); `Manager.__get__` (73) binds the wrapped method to the instance
 
 **Public interface:** `@Manager(name=..., cleanup=...)`.
 
-**Dependencies:** stdlib only. **Depended on by:** `BasicAsyncWorker`,
-`AsyncTaskProcessor` (decorated managers), examples (`@Manager("cruncher")`).
+**Dependencies:** stdlib only. **Depended on by:** `BasicWorker`,
+`TaskProcessor` (decorated managers), examples (`@Manager("cruncher")`).
 
 ## 5. Logging helpers — module `logging/__init__.py` (in-package)
 
@@ -148,7 +148,7 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 
 **Public interface:** `LoggerStatus` (14), `parse_logging_level` (28),
 `DEFAULT_LOGGING_LEVEL` (11). **Dependencies:** stdlib. **Depended on by:**
-`BasicAsyncWorker`, `LoggingLifecycle`.
+`BasicWorker`, `LoggingLifecycle`.
 
 ## 6. Task schemas
 
@@ -195,9 +195,9 @@ contract; a narrow context decouples handlers from the worker.
   runs `cleanup()`, resets flag; `is_ready` (115)
 
 **Dependencies:** `.context`, `.schemas`. **Depended on by:**
-`AsyncTaskProcessor` (registry + dispatch), examples, tests.
+`TaskProcessor` (registry + dispatch), examples, tests.
 
-## 8. Task processor — `AsyncTaskProcessor`
+## 8. Task processor — `TaskProcessor`
 
 **File:** `src/scietex/service/async_tasks_processor.py`
 
@@ -206,7 +206,7 @@ external tasks are enqueued (override `fetch_tasks`), a `TaskManager` dequeues
 and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
 drains/cancels in-flight work.
 
-**Main symbols:** `class AsyncTaskProcessor(BasicAsyncWorker)` (46).
+**Main symbols:** `class TaskProcessor(BasicWorker)` (46).
 Properties: `task_handlers` 154, `running_tasks` 166 (read-only
 `MappingProxyType` views), `queue_size` 171, `max_concurrent_tasks` 176.
 Registry/dispatch: `add_task_handler` 314 (takes the handler class plus an
@@ -238,7 +238,7 @@ Hooks: `fetch_tasks` 661, `return_task_to_queue` 451, `on_task_completed` 463
 `max_concurrent_tasks` from `os.cpu_count()` at startup when
 `max_concurrent_tasks` is left unset (`None`); an explicit
 `max_concurrent_tasks` always wins (the resolution lives in
-`AsyncTaskProcessor.__init__`).
+`TaskProcessor.__init__`).
 
 **Public interface:** constructor takes a single immutable
 `TaskProcessorConfig` (`config.py`, extends `WorkerConfig`) or `None`; no
@@ -256,11 +256,11 @@ and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
 
 **File:** `src/scietex/service/valkey/worker.py`
 
-**Purpose:** Makes `AsyncTaskProcessor` consume from / write to a Valkey stream
+**Purpose:** Makes `TaskProcessor` consume from / write to a Valkey stream
 via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
-**Main symbols:** `class ValkeyWorker(AsyncTaskProcessor)` (53).
+**Main symbols:** `class ValkeyWorker(TaskProcessor)` (53).
 Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
 `config.valkey_config` or falls back to `read_valkey_config`),
 `connect` 232 (`GlideClient.create` + PING; `_client` assigned only

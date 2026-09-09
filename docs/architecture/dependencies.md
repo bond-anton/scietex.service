@@ -46,7 +46,7 @@ glide (valkey-glide, optional)                              [external]
 | `async_tasks_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskResult`, `TaskTracker` |
 | `task_handler.basic` | `.schemas` | import | runtime |
 | `task_handler.basic` | `.context` | import | `TaskHandlerContext` (narrow context; no worker reference) |
-| `valkey.worker` | `async_tasks_processor` | inheritance | `ValkeyWorker(AsyncTaskProcessor)` |
+| `valkey.worker` | `async_tasks_processor` | inheritance | `ValkeyWorker(TaskProcessor)` |
 | `valkey.worker` | `.task_handler` | import | `TaskData` |
 | `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
@@ -59,11 +59,11 @@ glide (valkey-glide, optional)                              [external]
 
 ## Dependency direction analysis
 
-- **Core → infrastructure**: `BasicAsyncWorker` and `AsyncTaskProcessor` depend
+- **Core → infrastructure**: `BasicWorker` and `TaskProcessor` depend
   on the external async-logging package (`scietex.logging`) and on `msgspec`
   (via task schemas). Neither depends on Valkey/glide. Valkey is infra that
   sits *under* the worker in the class hierarchy (`ValkeyWorker extends
-  AsyncTaskProcessor`), so direction is **feature → core**, never core → feature.
+  TaskProcessor`), so direction is **feature → core**, never core → feature.
 - **Cross-module**: `task_handler` is depended on by the processor, but the
   handler ABC keeps no import of the worker at all — it receives a narrow
   `TaskHandlerContext` (`service_name`, `instance_id`, `logger`) instead of the
@@ -110,9 +110,9 @@ glide (valkey-glide, optional)                              [external]
 1. **Task path (wire)**:
    `ValkeyWorker.return_task_to_queue/fetch_tasks`
    → `msgspec.msgpack.encode/decode(TaskData)`
-   → `task_handler.schemas.TaskData` → `AsyncTaskProcessor.process_task` →
+   → `task_handler.schemas.TaskData` → `TaskProcessor.process_task` →
    `TaskHandler.handle` → `TaskResult`.
-2. **Config path**: `BasicAsyncWorker.conf_dir` → `read_valkey_config`
+2. **Config path**: `BasicWorker.conf_dir` → `read_valkey_config`
    (`valkey.yml`, msgspec yaml) → `ValkeyConfig` → `generate_glide_config` →
    `GlideClientConfiguration` → `GlideClient.create`.
 3. **Log path**: worker logger → `scietex.logging.ConsoleHandler.emit`

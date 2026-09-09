@@ -10,8 +10,8 @@ a later architectural review; it deliberately does not propose changes.
 background daemon/worker services. It provides a three-level class hierarchy:
 
 ```
-BasicAsyncWorker          (foundation: signals, async logging, manager runtime)
- └── AsyncTaskProcessor   (in-process task queue, handler dispatch, timeouts)
+BasicWorker          (foundation: signals, async logging, manager runtime)
+ └── TaskProcessor   (in-process task queue, handler dispatch, timeouts)
       └── ValkeyWorker    (Valkey/Redis stream transport via glide)
 ```
 

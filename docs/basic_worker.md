@@ -1,6 +1,6 @@
-# BasicAsyncWorker
+# BasicWorker
 
-The `BasicAsyncWorker` is the foundation class for building asynchronous
+The `BasicWorker` is the foundation class for building asynchronous
 daemon services in `scietex.service`. It provides signal handling, async
 logging, heartbeat and watchdog managers, automatic manager restart on
 error, and graceful shutdown support.
@@ -8,7 +8,7 @@ error, and graceful shutdown support.
 ## Overview
 
 ```python
-from scietex.service import BasicAsyncWorker
+from scietex.service import BasicWorker
 ```
 
 The worker manages three core subsystems:
@@ -128,11 +128,11 @@ The decorated method performs a single iteration of work.
 `ManagerRuntime.run_manager()` handles the repetition, sleep, and error recovery:
 
 ```python
-from scietex.service import BasicAsyncWorker
+from scietex.service import BasicWorker
 from scietex.service.manager import Manager
 
 
-class MyWorker(BasicAsyncWorker):
+class MyWorker(BasicWorker):
     @Manager(name="HealthCheck")
     async def health_check(self) -> None:
         """One iteration of the health check loop."""
@@ -150,7 +150,7 @@ The `cleanup` callable runs when the manager stops (on cancellation or
 after the final restart failure):
 
 ```python
-class MyWorker(BasicAsyncWorker):
+class MyWorker(BasicWorker):
     @Manager(name="ConnectionPool", cleanup=lambda worker: worker.pool.close())
     async def connection_pool_refresh(self) -> None:
         """One iteration of the pool refresh loop."""
@@ -160,7 +160,7 @@ class MyWorker(BasicAsyncWorker):
 
 ### Built-in Managers
 
-`BasicAsyncWorker` provides two built-in managers:
+`BasicWorker` provides two built-in managers:
 
 | Manager | Method | Interval | Description |
 |---|---|---|---|
@@ -212,7 +212,7 @@ behavior.
 ### Constructor
 
 ```python
-BasicAsyncWorker(
+BasicWorker(
     service_name: str = "service",
     version: str = "0.0.1",
     conf_dir: str | Path | None = None,
@@ -272,10 +272,10 @@ Invalid or `None` values default to `DEFAULT_LOGGING_LEVEL` (DEBUG).
 ```python
 import asyncio
 import logging
-from scietex.service import BasicAsyncWorker
+from scietex.service import BasicWorker
 
 
-class MyService(BasicAsyncWorker):
+class MyService(BasicWorker):
     """A simple daemon service."""
 
     async def initialize(self) -> bool:

@@ -22,7 +22,7 @@ The system consists of:
 ## Handler Lifecycle
 
 Each handler goes through a well-defined lifecycle managed by
-`AsyncTaskProcessor`:
+`TaskProcessor`:
 
 ```
   [created] ──► [start()] ──► [is_ready=initialize()] ──► [stop()] ──► [is_ready=False]
@@ -193,7 +193,7 @@ class TaskTimeout(msgspec.Struct, frozen=True):
 
 ### TaskTracker
 
-Internal structure used by `AsyncTaskProcessor` to monitor running tasks.
+Internal structure used by `TaskProcessor` to monitor running tasks.
 
 ```python
 class TaskTracker(msgspec.Struct, frozen=True):
@@ -208,14 +208,14 @@ class TaskTracker(msgspec.Struct, frozen=True):
 | `data` | `TaskData` | Associated task data |
 | `started` | `int` or `float` | Monotonic timestamp when created |
 
-## Integration with AsyncTaskProcessor
+## Integration with TaskProcessor
 
-The `AsyncTaskProcessor` manages task handler registration and dispatch.
+The `TaskProcessor` manages task handler registration and dispatch.
 
 ### Registration
 
 ```python
-processor = AsyncTaskProcessor(service_name="my_service", version="1.0.0")
+processor = TaskProcessor(service_name="my_service", version="1.0.0")
 
 # Register a handler class (not an instance — processor creates instances)
 processor.add_task_handler(EmailHandler)
@@ -252,7 +252,7 @@ Subclasses can override `return_task_to_queue` to implement custom
 re-queueing logic (e.g., writing timed-out tasks back to a message queue):
 
 ```python
-class MyWorker(AsyncTaskProcessor):
+class MyWorker(TaskProcessor):
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         await self.valkey_client.rpush("retry_queue", msgspec.msgpack.encode(task_data))
 ```

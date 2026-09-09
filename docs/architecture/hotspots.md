@@ -29,7 +29,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_async_worker.py:199,519) |
 | H18 | Open | AR-031 — unused `name` param in `LoggingLifecycle.register_logger_handler` (logging/lifecycle.py:40-57) |
 
-## H1. `BasicAsyncWorker` is a large, multi-responsibility class
+## H1. `BasicWorker` is a large, multi-responsibility class
 
 - **Location:** `src/scietex/service/basic_async_worker.py:69`.
 - **What:** a single class owned: identity/configuration, the lifecycle state
@@ -41,7 +41,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 
 **Resolved (AR-003):** manager discovery/runtime and logging-handler lifecycle
 were extracted to `ManagerRuntime` (manager/runtime.py) and `LoggingLifecycle`
-(logging/lifecycle.py). `BasicAsyncWorker` now keeps identity/config and the
+(logging/lifecycle.py). `BasicWorker` now keeps identity/config and the
 state machine, delegating manager and logging-handler bookkeeping to the
 extracted components directly.
 

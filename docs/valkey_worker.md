@@ -1,7 +1,7 @@
 # ValkeyWorker
 
 The `ValkeyWorker` is a Valkey-backed async task processor that extends
-`AsyncTaskProcessor` with Valkey stream-based task distribution, heartbeat
+`TaskProcessor` with Valkey stream-based task distribution, heartbeat
 publishing, and async logging. It uses the `glide` client for all Valkey
 operations.
 
@@ -12,7 +12,7 @@ from scietex.service.valkey import ValkeyWorker
 ```
 
 `ValkeyWorker` adds Valkey-specific operations on top of
-`AsyncTaskProcessor`:
+`TaskProcessor`:
 
 | Feature | Description |
 |---|---|
@@ -129,7 +129,7 @@ to Valkey, and creates the consumer group for the task stream (with
 | `valkey_config` | `ValkeyConfig \| GlideClientConfiguration` | — | The Valkey configuration used by this worker |
 | `client` | `GlideClient \| None` | `None` | The active Valkey client (``None`` until connected) |
 
-### Inherited from AsyncTaskProcessor
+### Inherited from TaskProcessor
 
 | Property | Type | Default | Description |
 |---|---|---|---|
@@ -169,7 +169,7 @@ ValkeyWorker(
 | `valkey_config` | `None` | Custom Valkey configuration. If ``None``, reads
 ``valkey.yml`` from the config directory |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
-| `**kwargs` | — | Additional kwargs passed to `AsyncTaskProcessor` |
+| `**kwargs` | — | Additional kwargs passed to `TaskProcessor` |
 
 ## Methods
 
@@ -230,7 +230,7 @@ async def cleanup(self):
 ```
 
 Drains the internal task queue and cancels running tasks via the parent
-`AsyncTaskProcessor.cleanup()`, then closes the Valkey connection.
+`TaskProcessor.cleanup()`, then closes the Valkey connection.
 
 ### return_task_to_queue()
 
@@ -273,7 +273,7 @@ async def on_task_completed(self, task_id, task_data, task_result):
     """XACK + XDEL the entry recorded in _task_entry_ids for task_id."""
 ```
 
-Called by the base `AsyncTaskProcessor` when a task's processing
+Called by the base `TaskProcessor` when a task's processing
 terminates (success, error, or cancellation). Looks up the stream entry
 id recorded at fetch time and `XACK`s + `XDEL`s it, so the entry leaves
 the consumer group's pending list only after the handler's work on it is

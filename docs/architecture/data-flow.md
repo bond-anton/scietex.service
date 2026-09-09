@@ -10,11 +10,11 @@ transformations, and any async boundaries (queues/events/tasks).
 `enqueue_task()` directly.
 
 **Processing chain:**
-1. `AsyncTaskProcessor.task_queue_manager` (`async_tasks_processor.py:670`,
+1. `TaskProcessor.task_queue_manager` (`async_tasks_processor.py:670`,
    `@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
    subclass/`ValkeyWorker` `fetch_tasks()`; then sleeps
    `task_queue_manager_sleep_time` (default 0.01 s).
-2. `AsyncTaskProcessor.task_manager` (`async_tasks_processor.py:595`,
+2. `TaskProcessor.task_manager` (`async_tasks_processor.py:595`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `(task_id, task_data)` off `task_queue` with a 1 s fetch timeout,
    wraps `handle_task` in an `asyncio.Task`, records
@@ -85,7 +85,7 @@ cancellation during cleanup, (d) retry-once via `TaskResult.retryable` (an
 error result with `retryable=True` is requeued in `handle_task`'s `finally`
 before acking — see F1).
 
-**Path:** `AsyncTaskProcessor.watchdog` (685) cancels `worker_task` when
+**Path:** `TaskProcessor.watchdog` (685) cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or `DEFAULT_TASK_TIMEOUT=3`), waits up
 to `WORKER_TASK_CANCELLATION_TIMEOUT`, and only if the handler actually
 stopped (`worker_task.done()`) calls `return_task_to_queue(task_id,
@@ -94,7 +94,7 @@ task_data)` when `timeout_action == "requeue"`. Base `return_task_to_queue`
 stream (tail), re-entering F2/F1. A handler that ignores cancellation is not
 requeued (its entry stays pending and is redelivered on restart).
 
-**Shutdown drain** (`AsyncTaskProcessor.cleanup`, 498): queued-but-undispatched
+**Shutdown drain** (`TaskProcessor.cleanup`, 498): queued-but-undispatched
 items are dropped (their transport entries stay pending and are redelivered on
 restart); in-flight running tasks are requeued through the same hook only after
 their handler is confirmed stopped, when `canceled_action == "requeue"`.
@@ -133,7 +133,7 @@ heartbeat never surfaces.
 **Source:** any `self.logger.*` call inside workers/handlers.
 
 **Processing:** standard `logging` → attached handlers:
-- `ConsoleHandler` (console; registered in `BasicAsyncWorker.__init__`
+- `ConsoleHandler` (console; registered in `BasicWorker.__init__`
   (`basic_async_worker.py:153`) via `LoggingLifecycle.register_logger_handler`
   (`logging/lifecycle.py:37`)) — `emit()` puts each record into an internal
   `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`

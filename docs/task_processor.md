@@ -1,17 +1,17 @@
-# AsyncTaskProcessor
+# TaskProcessor
 
-The `AsyncTaskProcessor` is a concurrent task processing framework built
-on `BasicAsyncWorker`. It adds a task queue, handler dispatch, concurrent
+The `TaskProcessor` is a concurrent task processing framework built
+on `BasicWorker`. It adds a task queue, handler dispatch, concurrent
 task execution, timeout monitoring via watchdog, and graceful shutdown
 with task re-queueing.
 
 ## Overview
 
 ```python
-from scietex.service import AsyncTaskProcessor
+from scietex.service import TaskProcessor
 ```
 
-`AsyncTaskProcessor` extends `BasicAsyncWorker` with two additional
+`TaskProcessor` extends `BasicWorker` with two additional
 `@Manager`-decorated loops:
 
 | Manager | Method | Description |
@@ -26,7 +26,7 @@ timeouts.
 
 ```
   ┌─────────────────────────────────────────────────────────────┐
-  │                    AsyncTaskProcessor                        │
+  │                    TaskProcessor                        │
   │                                                              │
   │  ┌─────────────────┐    ┌──────────────────────────────┐    │
   │  │ TaskQueueManager │───►│  task_queue (asyncio.Queue)  │    │
@@ -123,7 +123,7 @@ accept `None` to reset to the default value.
 ## Constructor
 
 ```python
-AsyncTaskProcessor(
+TaskProcessor(
     service_name: str = "service",
     version: str = "0.0.1",
     conf_dir: str | Path | None = None,
@@ -136,7 +136,7 @@ AsyncTaskProcessor(
 )
 ```
 
-Extra parameters (in addition to `BasicAsyncWorker`):
+Extra parameters (in addition to `BasicWorker`):
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -152,7 +152,7 @@ Extra parameters (in addition to `BasicAsyncWorker`):
 | `task_handler_start_timeout` | `5` | Timeout for starting handlers |
 | `task_handler_stop_timeout` | `5` | Timeout for stopping handlers |
 
-Plus all `BasicAsyncWorker` kwargs (`logger_handler_timeout`,
+Plus all `BasicWorker` kwargs (`logger_handler_timeout`,
 `manager_shutdown_timeout`).
 
 ## Task Handler Registration
@@ -160,7 +160,7 @@ Plus all `BasicAsyncWorker` kwargs (`logger_handler_timeout`,
 ### Adding Handlers
 
 ```python
-processor = AsyncTaskProcessor(service_name="task_worker", version="1.0.0")
+processor = TaskProcessor(service_name="task_worker", version="1.0.0")
 
 # Register handler classes (processor creates instances)
 processor.add_task_handler(EmailHandler)
@@ -249,7 +249,7 @@ iteration:
 
 ### Task Timeout Monitoring
 
-The `watchdog()` method (overridden from `BasicAsyncWorker`) checks all
+The `watchdog()` method (overridden from `BasicWorker`) checks all
 running tasks for timeouts:
 
 ```python
@@ -289,7 +289,7 @@ Timeout behavior is controlled by `TaskTimeout`:
 Override to retrieve tasks from an external source and enqueue them:
 
 ```python
-class MyWorker(AsyncTaskProcessor):
+class MyWorker(TaskProcessor):
     async def fetch_tasks(self) -> None:
         """Pull tasks from a message queue."""
         while not self.task_queue_full():
@@ -312,7 +312,7 @@ Override to implement custom re-queueing logic for timed-out or
 cancelled tasks:
 
 ```python
-class MyWorker(AsyncTaskProcessor):
+class MyWorker(TaskProcessor):
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Send timed-out tasks back to the external queue."""
         raw = {
@@ -327,7 +327,7 @@ class MyWorker(AsyncTaskProcessor):
 
 Override to add custom cleanup logic. The base implementation already:
 
-1. Calls `super().cleanup()` (a no-op on `BasicAsyncWorker`)
+1. Calls `super().cleanup()` (a no-op on `BasicWorker`)
 2. Drains the internal queue by dropping items — they stay pending in the
    transport and are redelivered on restart (subclasses whose transport
    does not keep items pending must override to requeue drained items)
@@ -335,7 +335,7 @@ Override to add custom cleanup logic. The base implementation already:
    only after its handler actually stops, honoring `canceled_action`
 4. Stops all task handlers
 
-It does not stop managers or shut down loggers — `BasicAsyncWorker`
+It does not stop managers or shut down loggers — `BasicWorker`
 handles those during shutdown.
 
 ```python
@@ -388,7 +388,7 @@ import json
 import uuid
 from uuid import uuid4
 
-from scietex.service import AsyncTaskProcessor
+from scietex.service import TaskProcessor
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, TaskTimeout
 
 
@@ -408,7 +408,7 @@ class EmailHandler(TaskHandler):
         )
 
 
-class MyTaskWorker(AsyncTaskProcessor):
+class MyTaskWorker(TaskProcessor):
     """A task processor that fetches from a simulated queue."""
 
     def __init__(self, **kwargs):
