@@ -45,6 +45,24 @@ class TaskData(msgspec.Struct, frozen=True):
     payload: bytes = b""
 
 
+class TaskEnvelope(msgspec.Struct, frozen=True):
+    """Versioned transport envelope wrapping a serialized task payload.
+
+    The durable wire format is this envelope, not ``TaskData`` directly, so
+    the transport format can evolve independently of the in-process handler
+    contract (AR-064). ``data`` holds the serialized ``TaskData`` (or a
+    future version's payload) for the given ``version``.
+
+    Args:
+        version: Wire-format version. ``1`` wraps a msgpack-encoded
+            ``TaskData``.
+        data: The serialized task payload bytes for ``version``.
+    """
+
+    version: int = 1
+    data: bytes = b""
+
+
 class TaskResult(msgspec.Struct, frozen=True):
     """Standardized result structure returned from task handlers.
 

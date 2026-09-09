@@ -247,11 +247,12 @@ Re-queue a task by appending it to the Valkey task stream.
 
 ```python
 async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
-    """Encode TaskData with msgpack, append to task stream."""
+    """Encode TaskData into a versioned envelope, append to task stream."""
 ```
 
-Encodes `task_data` with msgpack and appends a new entry to the stream.
-The entry key is the string representation of `task_id`.
+Encodes `task_data` into a versioned `TaskEnvelope` (see [Wire Format](#wire-format))
+and appends a new entry to the stream. The entry key is the string
+representation of `task_id`.
 
 ### fetch_tasks()
 
@@ -259,14 +260,15 @@ Fetch a batch of tasks from the Valkey task stream and enqueue them.
 
 ```python
 async def fetch_tasks(self) -> bool:
-    """XREADGROUP with block_ms=1000, decode msgpack, enqueue (non-blocking)."""
+    """XREADGROUP with block_ms=1000, decode envelope, enqueue (non-blocking)."""
 ```
 
 On the first call, recovers entries left pending by a previous run (see
 [At-Least-Once Delivery](#at-least-once-delivery)). Then reads up to
 `task_fetch_batch_size` entries (default `10`) from the task stream using
 `XREADGROUP` with `block_ms=1000` and the configured consumer group,
-decodes each msgpack payload into a `TaskData` struct, and enqueues it via
+decodes each versioned envelope payload into a `TaskData` struct (see
+[Wire Format](#wire-format)), and enqueues it via
 the non-blocking `enqueue_task()` as a `(UUID, TaskData)` tuple. The
 stream entries are NOT acknowledged here — they stay in the consumer
 group's pending list until `on_task_completed()` acks them after the
@@ -306,6 +308,30 @@ await purge_task_stream(client, stream_name, group_name, consumer_name)
 Reads and acknowledges every entry in the stream via `XREADGROUP` (both
 pending and unclaimed), then deletes them with `XDEL`. Also purges any
 remaining entries via `XREAD`. See `src/scietex/service/valkey/purge.py`.
+
+## Wire Format
+
+Each task stream entry's value is a **versioned transport envelope**, not a
+bare `TaskData`. The envelope is `TaskEnvelope` (from
+`scietex.service.task_handler.schemas`):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `version` | `int` | `1` | Wire-format version |
+| `data` | `bytes` | `b""` | Serialized task payload (version 1: msgpack-encoded `TaskData`) |
+
+The whole `TaskEnvelope` is msgpack-encoded as the entry value. Version 1
+wraps a msgpack-encoded `TaskData`; a future version may carry a different
+payload, which is what the `version` field exists for.
+
+Encoding and decoding are centralized in the shared, transport-agnostic
+helpers `encode_task_envelope(task_data)` and
+`decode_task_envelope(payload)` from `scietex.service.task_handler.wire`.
+`return_task_to_queue()` encodes through `encode_task_envelope`, and
+`fetch_tasks()` / `_recover_pending_tasks()` decode through
+`decode_task_envelope`. A payload that is not a valid envelope, or that
+carries an unknown version, decodes to `None` and the entry is skipped with
+an ERROR log — intake never crashes on an unrecognized wire payload.
 
 ## At-Least-Once Delivery
 

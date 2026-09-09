@@ -19,6 +19,7 @@ import msgspec
 from scietex.logging import AsyncValkeyHandler
 
 from ..task_handler import TaskData, TaskResult
+from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 from ..task_processor import TaskProcessor
 from ._glide import (
     ExpirySet,
@@ -483,9 +484,10 @@ class ValkeyWorker(TaskProcessor):
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Re-queue a task by appending it to the Valkey task stream.
 
-        Encodes ``task_data`` with msgpack and appends a new entry to
-        the stream identified by ``self._task_stream_name``. The entry
-        key is the string representation of ``task_id``.
+        Encodes ``task_data`` into a versioned transport envelope (msgpack)
+        and appends a new entry to the stream identified by
+        ``self._task_stream_name``. The entry key is the string
+        representation of ``task_id``.
 
         Args:
             task_id: The unique identifier of the task.
@@ -496,7 +498,7 @@ class ValkeyWorker(TaskProcessor):
         """
         if self.client:
             t_id: bytes = str(task_id).encode("utf-8")
-            packed = msgspec.msgpack.encode(task_data)  # bytes
+            packed = encode_task_envelope(task_data)
             await self.client.xadd(self._task_stream_name, [(t_id, packed)])
 
     async def _recover_pending_tasks(self) -> tuple[bool, bool]:
@@ -537,10 +539,9 @@ class ValkeyWorker(TaskProcessor):
                 for entry_id, pairs in entries.items():
                     for field, payload_bytes in pairs:
                         task_id = field.decode("utf-8") if isinstance(field, bytes) else field
-                        try:
-                            task_data = msgspec.msgpack.decode(payload_bytes, type=TaskData)
-                        except Exception as exc:
-                            self.logger.error("Failed to decode recovered task data: %s", exc)
+                        task_data = decode_task_envelope(payload_bytes)
+                        if task_data is None:
+                            self.logger.error("Failed to decode recovered task envelope for %s", task_id)
                             continue
                         if not self.enqueue_task(UUID(task_id), task_data):
                             # Queue full mid-recovery; stop claiming so the
@@ -567,7 +568,7 @@ class ValkeyWorker(TaskProcessor):
 
         Reads up to ``task_fetch_batch_size`` entries from the task stream
         using ``XREADGROUP`` with ``block_ms=1000`` and the configured
-        consumer group. Decodes each msgpack payload into a
+        consumer group. Decodes each versioned envelope payload into a
         :class:`TaskData` struct and enqueues it via ``enqueue_task()`` as a
         ``(UUID, TaskData)`` tuple. The stream entries are NOT acknowledged
         here: they stay in the consumer group's pending list until each
@@ -615,10 +616,9 @@ class ValkeyWorker(TaskProcessor):
                             task_id = field.decode("utf-8") if isinstance(field, bytes) else field
                             if payload_bytes is None:
                                 continue
-                            try:
-                                task_data = msgspec.msgpack.decode(payload_bytes, type=TaskData)
-                            except Exception as exc:
-                                self.logger.error("Failed to decode task data: %s", exc)
+                            task_data = decode_task_envelope(payload_bytes)
+                            if task_data is None:
+                                self.logger.error("Failed to decode task envelope for %s", task_id)
                                 continue
                             if not self.enqueue_task(UUID(task_id), task_data):
                                 # Queue is full; leave the stream entry pending

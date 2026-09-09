@@ -360,12 +360,11 @@ def _entry(entry_id: bytes, task_id: str, payload: bytes):
 async def test_fetch_tasks_does_not_ack_on_enqueue():
     """fetch_tasks must not XACK/XDEL on enqueue; it records the entry id so
     the entry stays pending until the handler completes (AR-005)."""
-    import msgspec
-
+    from scietex.service.task_handler import encode_task_envelope
     from scietex.service.task_handler.schemas import TaskData
 
     task_data = TaskData(task="dummy", payload=b"{}")
-    payload = msgspec.msgpack.encode(task_data)
+    payload = encode_task_envelope(task_data)
     client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
@@ -384,12 +383,11 @@ async def test_fetch_tasks_does_not_ack_on_enqueue():
 async def test_fetch_tasks_reads_batch_and_reports_enqueued():
     """fetch_tasks must read up to task_fetch_batch_size entries per XREADGROUP
     and return True when it enqueued at least one task (AR-042)."""
-    import msgspec
-
+    from scietex.service.task_handler import encode_task_envelope
     from scietex.service.task_handler.schemas import TaskData
 
     task_data = TaskData(task="dummy", payload=b"{}")
-    payload = msgspec.msgpack.encode(task_data)
+    payload = encode_task_envelope(task_data)
     client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig(), task_fetch_batch_size=25))
     worker._client = client
@@ -482,12 +480,11 @@ async def test_on_task_completed_acks_and_deletes_entry():
 async def test_recover_pending_tasks_enqueues_pending_entries():
     """_recover_pending_tasks must claim idle pending entries and enqueue them,
     recording their entry ids for later ack (AR-005)."""
-    import msgspec
-
+    from scietex.service.task_handler import encode_task_envelope
     from scietex.service.task_handler.schemas import TaskData
 
     task_data = TaskData(task="dummy", payload=b"{}")
-    payload = msgspec.msgpack.encode(task_data)
+    payload = encode_task_envelope(task_data)
     # xautoclaim returns [next_start, {entry_id: [[field, value]]}, [deleted_ids]]
     client = DummyClient(
         xautoclaim_result=[
@@ -512,12 +509,11 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
 async def test_recover_pending_tasks_uses_configured_claim_min_idle_ms():
     """_recover_pending_tasks passes the configured claim_min_idle_ms to
     XAUTOCLAIM instead of the default floor (AR-062)."""
-    import msgspec
-
+    from scietex.service.task_handler import encode_task_envelope
     from scietex.service.task_handler.schemas import TaskData
 
     task_data = TaskData(task="dummy", payload=b"{}")
-    payload = msgspec.msgpack.encode(task_data)
+    payload = encode_task_envelope(task_data)
     client = DummyClient(
         xautoclaim_result=[
             b"0-0",
@@ -538,12 +534,11 @@ async def test_recover_pending_tasks_uses_configured_claim_min_idle_ms():
 async def test_recover_pending_tasks_incomplete_when_queue_full_leaves_recovered_false():
     """A queue-full mid-recovery returns incomplete and must NOT let fetch_tasks
     mark recovery done, so the remaining pending entries are retried (AR-051)."""
-    import msgspec
-
+    from scietex.service.task_handler import encode_task_envelope
     from scietex.service.task_handler.schemas import TaskData
 
     task_data = TaskData(task="dummy", payload=b"{}")
-    payload = msgspec.msgpack.encode(task_data)
+    payload = encode_task_envelope(task_data)
     # Two pending entries but a queue that holds only one: the second enqueue
     # hits the full queue, so recovery stops before draining.
     client = DummyClient(
@@ -575,12 +570,11 @@ async def test_recover_pending_tasks_incomplete_when_queue_full_leaves_recovered
 async def test_recover_pending_tasks_complete_sets_recovered():
     """A fully-drained recovery reports complete and fetch_tasks marks
     _recovered once it has drained (AR-051)."""
-    import msgspec
-
+    from scietex.service.task_handler import encode_task_envelope
     from scietex.service.task_handler.schemas import TaskData
 
     task_data = TaskData(task="dummy", payload=b"{}")
-    payload = msgspec.msgpack.encode(task_data)
+    payload = encode_task_envelope(task_data)
     # Single pending entry and a default-sized queue: recovery drains fully.
     client = DummyClient(
         xautoclaim_result=[

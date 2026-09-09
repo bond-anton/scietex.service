@@ -177,18 +177,24 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 |---|---|
 | `TaskTimeout` (16) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
 | `TaskData` (30) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
-| `TaskResult` (48) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
-| `TaskTracker` (79) | `worker_task: asyncio.Task`, `data: TaskData`, `started: int\|float` |
+| `TaskEnvelope` (48) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
+| `TaskResult` (66) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
+| `TaskTracker` (97) | `worker_task: asyncio.Task`, `data: TaskData`, `started: int\|float` |
 
 `TaskResult.processed_at` uses `msgspec.field(default_factory=lambda:
-datetime.now(timezone.utc))` (72) so each instance gets its own timestamp
+datetime.now(timezone.utc))` (90) so each instance gets its own timestamp
 (AR-012). The error-taxonomy fields (`error_code`/`retryable`/`partial`,
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
 
+`TaskEnvelope` is the durable wire format (AR-064): the transport persists a
+versioned envelope, not a bare `TaskData`, so the handler contract and the
+on-the-wire format evolve independently. Encoding/decoding lives in
+`task_handler/wire.py` (`encode_task_envelope`/`decode_task_envelope`).
+
 **Public interface:** constructors only (frozen). **Dependencies:** `msgspec`.
-**Depended on by:** `task_handler.basic`, `task_processor`,
-`valkey` (msgpack round-trip of `TaskData`), examples, tests.
+**Depended on by:** `task_handler.basic`, `task_handler.wire`, `task_processor`,
+`valkey` (msgpack round-trip of `TaskData` via the envelope), examples, tests.
 
 ## 7. Task handler contract — `TaskHandler` / `TaskHandlerContext`
 
@@ -298,9 +304,13 @@ assigned only after PING succeeds, 278; then ensures the logging handler and
 starts it), `disconnect` 294, `heartbeat` 320 (writes msgpack `Heartbeat` to
 `...:status` with TTL 2×interval), `initialize` 361 (start handlers, connect,
 `xgroup_create`), `cleanup` 411 (super + stop logging handler + disconnect),
-`return_task_to_queue` 477 (`xadd` re-queue), `_recover_pending_tasks` 496
-(`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 559
-(`xreadgroup` → decode → `enqueue_task`; does **not** ack on enqueue; a glide
+`return_task_to_queue` 477 (`xadd` re-queue via `encode_task_envelope`),
+`_recover_pending_tasks` 496
+(`XAUTOCLAIM` pending entries on first fetch; decodes via
+`decode_task_envelope`, skipping unknown-version/invalid entries with an ERROR
+log), `fetch_tasks` 559
+(`xreadgroup` → `decode_task_envelope` → `enqueue_task`; does **not** ack on
+enqueue; a glide
 error triggers disconnect+reconnect, other errors propagate),
 `on_task_completed` 635 (`xack`+`xdel` the entry after the handler finishes),
 `_register_instance` 433 (`SADD` `instance_id` into the registry set),
@@ -339,6 +349,7 @@ crashed replica is tolerated (the operator probes each member's status key).
 `valkey_config`, `client`.
 
 **Dependencies:** `..task_processor`, `..task_handler.TaskData`,
+`..task_handler.wire` (`encode_task_envelope`/`decode_task_envelope`, AR-064),
 `.schemas.Heartbeat`, `.config` (`ValkeyWorkerConfig`), external
 `scietex.logging.AsyncValkeyHandler`, `._glide` (guarded glide names, AR-048),
 `msgspec`.

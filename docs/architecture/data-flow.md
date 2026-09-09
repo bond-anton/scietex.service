@@ -56,8 +56,9 @@ intake and dispatch; per-task `asyncio.Task`; concurrency cap
 
 **Source:** external producer writes task entries into Valkey stream
 `scietex:{service}:tasks`. Entry shape: one field-value pair per
-message — **field = task UUID string, value = msgpack-encoded `TaskData`**
-(written by `return_task_to_queue`, `worker.py:407`).
+message — **field = task UUID string, value = msgpack-encoded versioned
+`TaskEnvelope` wrapping a `TaskData`** (written by `return_task_to_queue`
+via `encode_task_envelope`, `worker.py`).
 
 **Processing chain (`fetch_tasks`, 489):**
 1. On the first call only, `_recover_pending_tasks` runs `XAUTOCLAIM` to
@@ -65,14 +66,17 @@ message — **field = task UUID string, value = msgpack-encoded `TaskData`**
 2. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
    `block_ms=1000`.
 3. Per entry: decode field → UUID, decode value →
-   `msgspec.msgpack.decode(payload, type=TaskData)`; `enqueue_task(UUID(task_id),
+   `decode_task_envelope(payload)` (→ `TaskData`; an invalid payload or unknown
+   version returns `None` and the entry is skipped with an ERROR log);
+   `enqueue_task(UUID(task_id),
    task_data)` (non-blocking; a full queue leaves the entry pending — its id is
    not recorded — to be redelivered on a later poll) — now flows through F1. On
    success the entry id is recorded in `_task_entry_ids[task_id]`.
 4. Decode errors: logged, entry skipped. Read errors: `disconnect()` +
    `connect()` (reconnect).
 
-**Transformation:** msgpack `bytes` → `TaskData` struct → typed in-memory queue
+**Transformation:** msgpack envelope `bytes` → `TaskData` struct → typed
+in-memory queue
 items. The stream entry is **NOT acknowledged on enqueue**; it stays in the
 consumer group's pending list until `on_task_completed` acks it after the
 handler's work terminates (see F1 destination note).
