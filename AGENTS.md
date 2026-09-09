@@ -34,16 +34,16 @@ Run all commands (linters, tests, examples) within this environment.
 - `examples/` — Service blueprints (see below)
 
 **Core classes:**
-- `BasicAsyncWorker` — Base async worker with signal handling, logging, heartbeat, watchdog
-- `AsyncTaskProcessor` — Extends worker with task queue, concurrent processing, watchdog timeout monitoring
+- `BasicWorker` — Base async worker with signal handling, logging, heartbeat, watchdog
+- `TaskProcessor` — Extends worker with task queue, concurrent processing, watchdog timeout monitoring
 - `ValkeyWorker` — Extends processor with Valkey (Redis) integration via `glide` client
 
 ## Service Entry Points
 
 Run examples with:
 ```bash
-python -m examples.async_service           # BasicAsyncWorker
-python -m examples.async_task_processor    # AsyncTaskProcessor
+python -m examples.basic_worker           # BasicWorker
+python -m examples.task_processor    # TaskProcessor
 python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide)
 ```
 

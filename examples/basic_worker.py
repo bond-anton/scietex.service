@@ -1,12 +1,12 @@
-"""Example of BasicAsyncWorker service."""
+"""Example of BasicWorker service."""
 
 import asyncio
 import random
 
-from scietex.service import BasicAsyncWorker, Manager, WorkerConfig
+from scietex.service import BasicWorker, Manager, WorkerConfig
 
 
-class MyService(BasicAsyncWorker):
+class MyService(BasicWorker):
     """A simple daemon service."""
 
     async def initialize(self) -> bool:

@@ -1,7 +1,7 @@
 """Manager runtime component for ``scietex.service``.
 
 Provides ``ManagerRuntime``, which owns manager discovery, start/stop
-bookkeeping, and the restart-on-error loop used by ``BasicAsyncWorker``.
+bookkeeping, and the restart-on-error loop used by ``BasicWorker``.
 """
 
 import asyncio
@@ -12,26 +12,26 @@ from typing import TYPE_CHECKING
 from . import Manager, ManagerStatus
 
 if TYPE_CHECKING:
-    from ..basic_worker import BasicAsyncWorker
+    from ..basic_worker import BasicWorker
 
 
 class ManagerRuntime:
     """Owns manager discovery, lifecycle bookkeeping, and restart-on-error loops.
 
-    Extracted from ``BasicAsyncWorker`` (AR-003) so the worker delegates its
+    Extracted from ``BasicWorker`` (AR-003) so the worker delegates its
     manager-loop machinery here while keeping its public API and subclass
     hooks stable. Config is read off the worker's public properties, which
     remain the single source of truth for clamped values.
     """
 
-    def __init__(self, worker: "BasicAsyncWorker") -> None:
+    def __init__(self, worker: "BasicWorker") -> None:
         """Initialize the manager runtime with a back-reference to its worker.
 
         Args:
-            worker: The owning ``BasicAsyncWorker`` instance, providing the
+            worker: The owning ``BasicWorker`` instance, providing the
                 logger and clamped config values used by the manager loops.
         """
-        self.worker: BasicAsyncWorker = worker
+        self.worker: BasicWorker = worker
         self.statuses: dict[str, ManagerStatus] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.errors: dict[str, Exception | None] = {}

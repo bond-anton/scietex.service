@@ -1,8 +1,8 @@
 """
 Asynchronous task processing worker for ``scietex.service``.
 
-Provides ``AsyncTaskProcessor``, a concurrent task processing framework
-built on ``BasicAsyncWorker`` with task queue management, timeout
+Provides ``TaskProcessor``, a concurrent task processing framework
+built on ``BasicWorker`` with task queue management, timeout
 monitoring (watchdog), handler dispatch, and graceful shutdown support.
 """
 
@@ -15,7 +15,7 @@ from types import MappingProxyType
 from typing import cast
 from uuid import UUID
 
-from .basic_worker import BasicAsyncWorker, ServiceStatus
+from .basic_worker import BasicWorker, ServiceStatus
 from .config import (
     DEFAULT_MANAGER_SLEEP_TIME,
     DEFAULT_MAX_CONCURRENT_TASKS,
@@ -35,9 +35,9 @@ TASK_QUEUE_FETCH_TIMEOUT: float = 1
 WORKER_TASK_CANCELLATION_TIMEOUT: float = 5
 
 
-class AsyncTaskProcessor(BasicAsyncWorker):
+class TaskProcessor(BasicWorker):
     """
-    Concurrent asynchronous task processor built on ``BasicAsyncWorker``.
+    Concurrent asynchronous task processor built on ``BasicWorker``.
 
     Extends the base worker with a task queue, handler dispatch, concurrent
     task execution, timeout monitoring via watchdog, and cleanup on shutdown.
@@ -61,7 +61,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
     def __init__(self, config: TaskProcessorConfig | None = None):
         """
-        Initialize the AsyncTaskProcessor.
+        Initialize the TaskProcessor.
 
         Args:
             config: A :class:`~scietex.service.config.TaskProcessorConfig`
@@ -529,7 +529,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         execution.
 
         This method is decorated with ``@Manager`` and runs as an
-        infinite loop managed by ``BasicAsyncWorker``.
+        infinite loop managed by ``BasicWorker``.
         """
 
         async def handle_task(t_id: UUID, t_data: TaskData):
@@ -632,7 +632,7 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         waiting. A full queue also backs off, providing backpressure.
 
         This method is decorated with ``@Manager`` and runs as an
-        infinite loop managed by ``BasicAsyncWorker``.
+        infinite loop managed by ``BasicWorker``.
         """
         if not self.__task_queue.full():
             fetched = await self.fetch_tasks()

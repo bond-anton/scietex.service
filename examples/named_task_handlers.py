@@ -14,7 +14,7 @@ import asyncio
 import logging
 from uuid import UUID
 
-from scietex.service import AsyncTaskProcessor, TaskProcessorConfig
+from scietex.service import TaskProcessor, TaskProcessorConfig
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
 
 # ── Handler ──────────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ class InMemoryTaskSource:
 # ── Processor ────────────────────────────────────────────────────────────
 
 
-class NamedTaskProcessor(AsyncTaskProcessor):
+class NamedTaskProcessor(TaskProcessor):
     """Service that fetches tasks from an in-memory source and processes them."""
 
     def __init__(self, task_source: InMemoryTaskSource, config: TaskProcessorConfig | None = None) -> None:

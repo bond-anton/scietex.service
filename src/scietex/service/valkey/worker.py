@@ -1,6 +1,6 @@
 """Valkey-backed async task processor for ``scietex.service``.
 
-Provides ``ValkeyWorker`` — an async worker that extends ``AsyncTaskProcessor``
+Provides ``ValkeyWorker`` — an async worker that extends ``TaskProcessor``
 with Valkey stream-based task distribution, heartbeat publishing, and async
 logging. Uses the ``glide`` client for all Valkey operations.
 
@@ -18,7 +18,7 @@ import msgspec
 from scietex.logging import AsyncValkeyHandler
 
 from ..task_handler import TaskData, TaskResult
-from ..task_processor import AsyncTaskProcessor
+from ..task_processor import TaskProcessor
 from ._glide import (
     ExpirySet,
     ExpiryType,
@@ -49,11 +49,11 @@ so a dead replica's entries are reclaimed promptly.
 """
 
 
-class ValkeyWorker(AsyncTaskProcessor):
+class ValkeyWorker(TaskProcessor):
     """
     Async worker backed by a Valkey (Redis) stream for task distribution.
 
-    Extends ``AsyncTaskProcessor`` with Valkey-specific operations including
+    Extends ``TaskProcessor`` with Valkey-specific operations including
     connection management, stream-based task fetching, heartbeat publishing,
     and async logging to a Valkey stream via the ``glide`` client.
 
@@ -297,7 +297,7 @@ class ValkeyWorker(AsyncTaskProcessor):
     async def initialize(self) -> bool:
         """Initialize the worker and prepare the Valkey task stream.
 
-        Calls the parent ``AsyncTaskProcessor.initialize()`` to start
+        Calls the parent ``TaskProcessor.initialize()`` to start
         registered task handlers, then connects to Valkey and creates
         the consumer group for the task stream (with ``make_stream=True``).
         A pre-existing group (``BUSYGROUP``) is ignored; any other group
@@ -332,7 +332,7 @@ class ValkeyWorker(AsyncTaskProcessor):
     async def _on_queue_drain_task_processing(self, task_id: UUID, task_data: TaskData) -> None:
         """No-op override: drained tasks must not be re-enqueued.
 
-        The base ``AsyncTaskProcessor`` default requeues a drained task when
+        The base ``TaskProcessor`` default requeues a drained task when
         ``canceled_action == "requeue"``. For a durable transport the stream
         entry is still pending and is redelivered on restart, so re-enqueueing
         here would duplicate it (AR-041). Overriding to a no-op lets the
@@ -348,7 +348,7 @@ class ValkeyWorker(AsyncTaskProcessor):
         """Perform cleanup on shutdown.
 
         Drains the internal task queue and cancels running tasks via the
-        parent ``AsyncTaskProcessor.cleanup()``, then clears the pending
+        parent ``TaskProcessor.cleanup()``, then clears the pending
         ``_task_entry_ids`` tracking, stops the Valkey logging handler while the
         shared client is still open (so its worker drains remaining records
         instead of reconnecting to a client that ``disconnect()`` is about to
@@ -577,7 +577,7 @@ class ValkeyWorker(AsyncTaskProcessor):
     ) -> None:
         """Acknowledge and delete the stream entry for a completed task.
 
-        Called by the base ``AsyncTaskProcessor.handle_task`` when a task's
+        Called by the base ``TaskProcessor.handle_task`` when a task's
         processing terminates (success, error, or cancellation). Looks up the
         stream entry id recorded at fetch time and ``XACK``s + ``XDEL``s it, so
         the entry leaves the consumer group's pending list only after the

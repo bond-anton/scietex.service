@@ -79,7 +79,7 @@ class TaskResult(msgspec.Struct, frozen=True):
 class TaskTracker(msgspec.Struct, frozen=True):
     """Tracks a running task's asyncio.Task, data, and start time.
 
-    Used by ``AsyncTaskProcessor`` to monitor task progress, enforce
+    Used by ``TaskProcessor`` to monitor task progress, enforce
     timeouts, and manage cleanup on shutdown.
 
     Args:

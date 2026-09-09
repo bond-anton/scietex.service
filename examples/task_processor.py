@@ -1,4 +1,4 @@
-"""Example demonstrating task handler usage with AsyncTaskProcessor.
+"""Example demonstrating task handler usage with TaskProcessor.
 
 Shows how to:
 - Register multiple task handlers
@@ -13,7 +13,7 @@ import json
 import logging
 from uuid import UUID
 
-from scietex.service import AsyncTaskProcessor, TaskProcessorConfig
+from scietex.service import TaskProcessor, TaskProcessorConfig
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, TaskTimeout
 
 # ── Handler implementations ──────────────────────────────────────────────
@@ -160,7 +160,7 @@ class InMemoryTaskSource:
 # ── Processor ────────────────────────────────────────────────────────────
 
 
-class TaskProcessorService(AsyncTaskProcessor):
+class TaskProcessorService(TaskProcessor):
     """Service that fetches tasks from an in-memory source and processes them."""
 
     def __init__(self, task_source: InMemoryTaskSource, config: TaskProcessorConfig | None = None) -> None:

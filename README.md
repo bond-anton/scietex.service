@@ -10,8 +10,8 @@ concurrent task processors with Valkey-backed distributed queues.
 ## Documentation
 
 - [Overview](docs/index.md) — Core components and architecture
-- [BasicAsyncWorker](docs/basic_async_worker.md) — Signal handling, logging, heartbeat & watchdog managers
-- [AsyncTaskProcessor](docs/async_task_processor.md) — Concurrent task processing, handler dispatch, timeout monitoring
+- [BasicWorker](docs/basic_worker.md) — Signal handling, logging, heartbeat & watchdog managers
+- [TaskProcessor](docs/task_processor.md) — Concurrent task processing, handler dispatch, timeout monitoring
 - [ValkeyWorker](docs/valkey_async_worker.md) — Valkey stream-based task distribution
 - [Task Handler](docs/task_handler.md) — Pluggable handler architecture, typed schemas
 
@@ -31,15 +31,15 @@ pip install "scietex.service[valkey]"
 
 ### Basic Async Worker
 
-A minimal daemon with signal handling, heartbeat, and watchdog. See the [full BasicAsyncWorker docs](docs/basic_async_worker.md) for lifecycle, manager system, and configuration details.
+A minimal daemon with signal handling, heartbeat, and watchdog. See the [full BasicWorker docs](docs/basic_worker.md) for lifecycle, manager system, and configuration details.
 
 ```python
 import asyncio
 import logging
-from scietex.service import BasicAsyncWorker
+from scietex.service import BasicWorker
 
 
-class MyWorker(BasicAsyncWorker):
+class MyWorker(BasicWorker):
     async def heartbeat(self) -> None:
         self.logger.info("Worker is alive")
 
@@ -70,12 +70,12 @@ Send `SIGINT` (Ctrl+C) or `SIGTERM` to trigger graceful shutdown.
 
 ### Task Processor
 
-Register handlers for different task types and process them concurrently. See the [full AsyncTaskProcessor docs](docs/async_task_processor.md) for architecture, task processing flow, and best practices.
+Register handlers for different task types and process them concurrently. See the [full TaskProcessor docs](docs/task_processor.md) for architecture, task processing flow, and best practices.
 
 ```python
 import asyncio
 import logging
-from scietex.service import AsyncTaskProcessor
+from scietex.service import TaskProcessor
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
 
 
@@ -98,7 +98,7 @@ class EmailHandler(TaskHandler):
             return TaskResult(status="error", error=str(exc))
 
 
-class MyProcessor(AsyncTaskProcessor):
+class MyProcessor(TaskProcessor):
     async def fetch_tasks(self) -> None:
         # Pull tasks from your source (DB, API, queue, etc.)
         # and enqueue them for processing:
@@ -175,13 +175,13 @@ group `scietex:{service_name}:task_group`.
 ### Worker Hierarchy
 
 <!-- markdown-link-check-disable -->
-See [BasicAsyncWorker](docs/basic_async_worker.md), [AsyncTaskProcessor](docs/async_task_processor.md), and [ValkeyWorker](docs/valkey_async_worker.md) for detailed architecture diagrams.
+See [BasicWorker](docs/basic_worker.md), [TaskProcessor](docs/task_processor.md), and [ValkeyWorker](docs/valkey_async_worker.md) for detailed architecture diagrams.
 <!-- markdown-link-check-enable -->
 
 ```
-BasicAsyncWorker          — Signal handling, async logging, heartbeat &
+BasicWorker          — Signal handling, async logging, heartbeat &
                             watchdog managers, graceful shutdown
-    └── AsyncTaskProcessor — Task queue, concurrent processing, handler
+    └── TaskProcessor — Task queue, concurrent processing, handler
                             dispatch, timeout watchdog
         └── ValkeyWorker  — Valkey stream integration, connection
                             management, stream-based task fetching
@@ -293,8 +293,8 @@ untouched.
 
 | Symbol | Description |
 |---|---|
-| `BasicAsyncWorker` | Base async daemon worker |
-| `AsyncTaskProcessor` | Concurrent task processor |
+| `BasicWorker` | Base async daemon worker |
+| `TaskProcessor` | Concurrent task processor |
 | `Manager` | Decorator for creating managed async loop methods |
 | `ValkeyWorker` | Valkey-backed distributed worker |
 | `__version__` | Package version string |
@@ -353,8 +353,8 @@ uv sync --extra dev --extra test --extra lint
 ### Running Examples
 
 ```bash
-python -m examples.async_service
-python -m examples.async_task_processor
+python -m examples.basic_worker
+python -m examples.task_processor
 python -m examples.valkey_async_service   # requires valkey-glide
 ```
 

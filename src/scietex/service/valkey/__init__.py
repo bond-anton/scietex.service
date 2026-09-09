@@ -1,6 +1,6 @@
 """Valkey-backed async worker for ``scietex.service``.
 
-Provides :class:`ValkeyWorker` (extends :class:`~scietex.service.task_processor.AsyncTaskProcessor`)
+Provides :class:`ValkeyWorker` (extends :class:`~scietex.service.task_processor.TaskProcessor`)
 for task processing backed by a Valkey/Redis stream, along with
 configuration schemas (:mod:`config`) and data
 schemas (:mod:`schemas`).

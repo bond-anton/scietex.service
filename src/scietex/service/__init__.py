@@ -1,16 +1,16 @@
 """scietex.service — Async worker framework for building background daemon services.
 
 Core classes:
-    - ``BasicAsyncWorker``: Base async worker with signal handling, logging,
+    - ``BasicWorker``: Base async worker with signal handling, logging,
       heartbeat and watchdog managers, and graceful shutdown support.
-    - ``AsyncTaskProcessor``: Extends ``BasicAsyncWorker`` with a task queue,
+    - ``TaskProcessor``: Extends ``BasicWorker`` with a task queue,
       concurrent task processing, handler dispatch, and timeout monitoring.
-    - ``ValkeyWorker``: Extends ``AsyncTaskProcessor`` with Valkey (Redis)
+    - ``ValkeyWorker``: Extends ``TaskProcessor`` with Valkey (Redis)
       integration via the ``glide`` client for distributed task queues.
       (Requires ``scietex.service[valkey]`` extra.)
 
 Module-level exports:
-    ``__version__``, ``BasicAsyncWorker``, ``AsyncTaskProcessor``, and
+    ``__version__``, ``BasicWorker``, ``TaskProcessor``, and
     optionally ``ValkeyWorker`` and its configuration classes.
 
 The ``VALKEY_AVAILABLE`` flag reports whether the Valkey surface could be
@@ -19,16 +19,16 @@ imported at package load time.
 
 import logging
 
-from .basic_worker import BasicAsyncWorker
+from .basic_worker import BasicWorker
 from .config import TaskProcessorConfig, WorkerConfig
 from .manager import Manager
-from .task_processor import AsyncTaskProcessor
+from .task_processor import TaskProcessor
 from .version import __version__
 
 __all__ = [
     "__version__",
-    "AsyncTaskProcessor",
-    "BasicAsyncWorker",
+    "TaskProcessor",
+    "BasicWorker",
     "Manager",
     "TaskProcessorConfig",
     "WorkerConfig",

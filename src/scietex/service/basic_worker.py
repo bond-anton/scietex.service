@@ -1,7 +1,7 @@
 """
 Basic asynchronous worker for ``scietex.service``.
 
-Provides ``BasicAsyncWorker``, a foundation class for building async
+Provides ``BasicWorker``, a foundation class for building async
 daemon services with signal handling, async logging, heartbeat and
 watchdog managers, and graceful shutdown support.
 """
@@ -37,7 +37,7 @@ WAIT_FOR_SERVICE_STOPPED_DELAY: float = 0.1
 
 
 class ServiceStatus(Enum):
-    """Lifecycle states of a ``BasicAsyncWorker`` instance.
+    """Lifecycle states of a ``BasicWorker`` instance.
 
     Attributes:
         STOPPED: The service is not running.
@@ -52,7 +52,7 @@ class ServiceStatus(Enum):
     STOPPING = "Stopping"
 
 
-class BasicAsyncWorker:
+class BasicWorker:
     """
     Base async worker framework for daemon services.
 
@@ -78,7 +78,7 @@ class BasicAsyncWorker:
 
     def __init__(self, config: WorkerConfig | None = None):
         """
-        Initialize the BasicAsyncWorker.
+        Initialize the BasicWorker.
 
         Args:
             config: A :class:`~scietex.service.config.WorkerConfig` holding the

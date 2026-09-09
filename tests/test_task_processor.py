@@ -7,7 +7,7 @@ import pytest
 from scietex.service.config import DEFAULT_MAX_CONCURRENT_TASKS, TaskProcessorConfig
 from scietex.service.task_handler.basic import TaskHandler
 from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeout
-from scietex.service.task_processor import AsyncTaskProcessor
+from scietex.service.task_processor import TaskProcessor
 
 
 class DummyHandler(TaskHandler):
@@ -60,7 +60,7 @@ async def test_stop_task_handler_removes_handler_on_stop_timeout():
     assert "StuckStopHandler" not in proc.task_handlers
 
 
-class DemoProcessor(AsyncTaskProcessor):
+class DemoProcessor(TaskProcessor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.requeued: list = []
@@ -538,7 +538,7 @@ async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monke
         await proc.events["exit"].wait()
 
 
-class DurableProcessor(AsyncTaskProcessor):
+class DurableProcessor(TaskProcessor):
     """A processor whose transport keeps items pending after enqueue (e.g. a
     Valkey stream), so drained tasks must NOT be re-enqueued on shutdown —
     they redeliver on restart (AR-041)."""
@@ -653,7 +653,7 @@ async def test_watchdog_ignores_non_positive_timeout():
         await proc.events["exit"].wait()
 
 
-class ReportingProcessor(AsyncTaskProcessor):
+class ReportingProcessor(TaskProcessor):
     """Processor whose fetch_tasks reports productivity without enqueuing, so
     the task_queue_manager sleep-skip decision can be tested in isolation."""
 

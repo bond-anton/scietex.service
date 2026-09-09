@@ -5,12 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from scietex.service.basic_worker import BasicAsyncWorker, ServiceStatus
+from scietex.service.basic_worker import BasicWorker, ServiceStatus
 from scietex.service.config import WorkerConfig
 from scietex.service.manager import Manager
 
 
-class FlakyWorker(BasicAsyncWorker):
+class FlakyWorker(BasicWorker):
     """Worker whose manager fails a fixed number of times then succeeds."""
 
     def __init__(self, config: WorkerConfig | None = None, *, failures_before_success: int = 1):
@@ -26,7 +26,7 @@ class FlakyWorker(BasicAsyncWorker):
         await asyncio.sleep(0.05)
 
 
-class AlwaysFailingWorker(BasicAsyncWorker):
+class AlwaysFailingWorker(BasicWorker):
     """Worker whose manager always raises."""
 
     def __init__(self, config: WorkerConfig | None = None):
@@ -39,7 +39,7 @@ class AlwaysFailingWorker(BasicAsyncWorker):
         raise RuntimeError("always fails")
 
 
-class BaseWorker(BasicAsyncWorker):
+class BaseWorker(BasicWorker):
     @Manager(name="Shared")
     async def _shared_manager(self) -> None:
         self.base_ran = True
@@ -53,7 +53,7 @@ class DerivedWorker(BaseWorker):
         await asyncio.sleep(0.05)
 
 
-class CleanupRaisingWorker(BasicAsyncWorker):
+class CleanupRaisingWorker(BasicWorker):
     """Worker whose manager cleanup raises."""
 
     def __init__(self, config: WorkerConfig | None = None):
@@ -69,7 +69,7 @@ class CleanupRaisingWorker(BasicAsyncWorker):
         await asyncio.sleep(0.05)
 
 
-class CancellationIgnoringWorker(BasicAsyncWorker):
+class CancellationIgnoringWorker(BasicWorker):
     """Worker whose manager ignores cancellation until told to stop."""
 
     def __init__(self, config: WorkerConfig | None = None):
@@ -165,12 +165,12 @@ async def test_subclass_manager_override_wins():
 @pytest.mark.asyncio
 async def test_manager_decorated_method_is_callable():
     """A @Manager-decorated method must remain callable as a normal bound method."""
-    worker = BasicAsyncWorker()
+    worker = BasicWorker()
     # Accessing the attribute on an instance must return a bound coroutine function.
     bound = worker._heartbeat_manager
     assert callable(bound)
     # The class attribute must still be the Manager instance for discovery.
-    assert isinstance(BasicAsyncWorker.__dict__["_heartbeat_manager"], Manager)
+    assert isinstance(BasicWorker.__dict__["_heartbeat_manager"], Manager)
 
 
 @pytest.mark.asyncio

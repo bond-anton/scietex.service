@@ -1,7 +1,7 @@
 """Logging lifecycle component for ``scietex.service``.
 
 Provides ``LoggingLifecycle``, which owns async logging-handler
-start/stop and status bookkeeping used by ``BasicAsyncWorker``.
+start/stop and status bookkeeping used by ``BasicWorker``.
 """
 
 import asyncio
@@ -12,33 +12,33 @@ from scietex.logging import AsyncLoggingHandler
 from . import LoggerStatus
 
 if TYPE_CHECKING:
-    from ..basic_worker import BasicAsyncWorker
+    from ..basic_worker import BasicWorker
 
 
 class LoggingLifecycle:
     """Owns async logging-handler start/stop and status bookkeeping.
 
-    Extracted from ``BasicAsyncWorker`` (AR-003) so the worker delegates its
+    Extracted from ``BasicWorker`` (AR-003) so the worker delegates its
     logging-handler lifecycle here while keeping its public API and subclass
     hooks stable. Config is read off the worker's public properties, which
     remain the single source of truth for clamped values.
     """
 
-    def __init__(self, worker: "BasicAsyncWorker") -> None:
+    def __init__(self, worker: "BasicWorker") -> None:
         """Initialize the logging lifecycle with a back-reference to its worker.
 
         Args:
-            worker: The owning ``BasicAsyncWorker`` instance, providing the
+            worker: The owning ``BasicWorker`` instance, providing the
                 logger and clamped config values used by handler start/stop.
         """
-        self.worker: BasicAsyncWorker = worker
+        self.worker: BasicWorker = worker
         self.statuses: dict[str, LoggerStatus] = {}
 
     def register_logger_handler(
         self,
         handler: AsyncLoggingHandler,
         # Unused: kept only for the `_register_logger_handler` forwarding wrapper
-        # in `BasicAsyncWorker` (AR-031); remove once that caller drops it.
+        # in `BasicWorker` (AR-031); remove once that caller drops it.
         name: str | None = None,
     ) -> None:
         """
@@ -50,7 +50,7 @@ class LoggingLifecycle:
 
         Args:
             handler: The ``AsyncLoggingHandler`` (or subclass) to attach.
-            name: Unused. Accepted only because ``BasicAsyncWorker``'s
+            name: Unused. Accepted only because ``BasicWorker``'s
                 ``_register_logger_handler`` forwarding wrapper passes it
                 positionally; statuses are keyed by ``handler.name`` or
                 ``handler.__class__.__name__`` instead. Scheduled for removal

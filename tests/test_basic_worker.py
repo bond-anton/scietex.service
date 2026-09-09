@@ -1,11 +1,11 @@
-"""Tests for BasicAsyncWorker: ensure logging drain and graceful stop."""
+"""Tests for BasicWorker: ensure logging drain and graceful stop."""
 
 import asyncio
 import logging
 
 import pytest
 
-from scietex.service.basic_worker import BasicAsyncWorker, ServiceStatus
+from scietex.service.basic_worker import BasicWorker, ServiceStatus
 from scietex.service.config import WorkerConfig
 from scietex.service.logging import LoggerStatus
 from scietex.service.manager import Manager
@@ -14,7 +14,7 @@ from scietex.service.manager import Manager
 @pytest.mark.asyncio
 async def test_graceful_shutdown():
     """Start the worker, enqueue some logs, then stop and ensure drain."""
-    worker = BasicAsyncWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
+    worker = BasicWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
 
     # Start worker (initializes logging handlers and managers)
     await worker.start()
@@ -44,7 +44,7 @@ async def test_graceful_shutdown():
 async def test_logging_handlers_restartable_after_shutdown():
     """After a shutdown, logging handlers must be marked STOPPED and be
     restarted in place (same instance) on the next start (scietex.logging >= 1.0)."""
-    worker = BasicAsyncWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
+    worker = BasicWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
 
     await worker.start()
     for _ in range(50):
@@ -93,7 +93,7 @@ async def test_initialize_runs_before_managers_start():
     client), so a manager must never race a not-yet-initialized worker.
     """
 
-    class OrderingWorker(BasicAsyncWorker):
+    class OrderingWorker(BasicWorker):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.order: list[str] = []
@@ -135,7 +135,7 @@ async def test_shutdown_cancellation_forces_stopped():
     not blocked.
     """
 
-    class SlowCleanupWorker(BasicAsyncWorker):
+    class SlowCleanupWorker(BasicWorker):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.cleanup_started = asyncio.Event()
@@ -187,7 +187,7 @@ async def test_shutdown_cancellation_forces_stopped():
 async def test_signal_handler_no_reentry():
     """Firing the exit handler twice must run only one shutdown (AR-033)."""
 
-    class CountingWorker(BasicAsyncWorker):
+    class CountingWorker(BasicWorker):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.shutdown_calls = 0
@@ -221,7 +221,7 @@ async def test_signal_handler_no_reentry():
 async def test_first_heartbeat_fires_promptly():
     """The first heartbeat must fire promptly, not after a full interval (AR-040)."""
 
-    class HeartbeatWorker(BasicAsyncWorker):
+    class HeartbeatWorker(BasicWorker):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.heartbeat_count = 0

@@ -24,7 +24,7 @@ class Manager:
     """Class-based decorator that wraps an async method into a managed loop.
 
     When applied to an async method, the method becomes a manager loop
-    that runs indefinitely until cancelled. The parent ``BasicAsyncWorker``
+    that runs indefinitely until cancelled. The parent ``BasicWorker``
     iterates over all ``Manager`` instances in the class MRO and executes
     them as ``asyncio.Task`` objects with automatic restart on error.
 

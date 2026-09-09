@@ -6,13 +6,13 @@ from typing import cast
 import pytest
 from scietex.logging import AsyncLoggingHandler
 
-from scietex.service.basic_worker import BasicAsyncWorker
+from scietex.service.basic_worker import BasicWorker
 from scietex.service.logging import LoggerStatus
 from scietex.service.logging.lifecycle import LoggingLifecycle
 
 
 class _StubWorker:
-    """Minimal stand-in for ``BasicAsyncWorker`` used by ``LoggingLifecycle``.
+    """Minimal stand-in for ``BasicWorker`` used by ``LoggingLifecycle``.
 
     Provides only the attributes ``LoggingLifecycle`` reads: the logger, the
     handler logging level, and the per-handler start/stop timeout.
@@ -42,7 +42,7 @@ class _FlakyHandler(AsyncLoggingHandler):
 async def test_start_failure_recorded_as_failed_then_retried():
     """A handler whose start_logging raises is FAILED, then retried to RUNNING."""
     worker = _StubWorker()
-    lifecycle = LoggingLifecycle(cast(BasicAsyncWorker, worker))
+    lifecycle = LoggingLifecycle(cast(BasicWorker, worker))
     handler = _FlakyHandler()
     lifecycle.register_logger_handler(handler)
 

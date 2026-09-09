@@ -2,7 +2,7 @@
 
 Provides ``WorkerConfig`` and ``TaskProcessorConfig`` — immutable
 ``msgspec.Struct`` classes that replace the constructor keyword arguments of
-``BasicAsyncWorker`` and ``AsyncTaskProcessor``. The module-level
+``BasicWorker`` and ``TaskProcessor``. The module-level
 MIN/MAX/DEFAULT constants are the single source of truth for the timing and
 retry bounds; the structs enforce them at construction (raising
 ``msgspec.ValidationError`` on an out-of-range value instead of silently
@@ -94,7 +94,7 @@ def _validate_range(
 
 
 class WorkerConfig(msgspec.Struct, frozen=True):
-    """Immutable configuration for a :class:`~scietex.service.basic_worker.BasicAsyncWorker`.
+    """Immutable configuration for a :class:`~scietex.service.basic_worker.BasicWorker`.
 
     All timing/retry fields are optional; ``None`` means "use the module
     ``DEFAULT_*`` constant" and is resolved by the worker at read time. A
@@ -173,7 +173,7 @@ class WorkerConfig(msgspec.Struct, frozen=True):
 
 
 class TaskProcessorConfig(WorkerConfig, frozen=True):
-    """Immutable configuration for an :class:`~scietex.service.task_processor.AsyncTaskProcessor`.
+    """Immutable configuration for an :class:`~scietex.service.task_processor.TaskProcessor`.
 
     Extends :class:`WorkerConfig` with the task-queue and handler-lifecycle
     fields. A field with a ``None`` default means "use the module ``DEFAULT_*``
