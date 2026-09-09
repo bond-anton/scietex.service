@@ -12,7 +12,7 @@ from scietex.logging import AsyncLoggingHandler
 from . import LoggerStatus
 
 if TYPE_CHECKING:
-    from ..basic_async_worker import BasicAsyncWorker
+    from ..basic_worker import BasicAsyncWorker
 
 
 class LoggingLifecycle:

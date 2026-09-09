@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from scietex.service.valkey.valkey_config import (
+from scietex.service.valkey.config import (
     ValkeyBaseConfig,
     ValkeyConfig,
     ValkeyNode,

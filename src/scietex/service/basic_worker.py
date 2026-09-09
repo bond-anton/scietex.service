@@ -18,35 +18,20 @@ from types import MappingProxyType
 
 from scietex.logging import AsyncLoggingHandler, ConsoleHandler
 
+from .config import (
+    DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_LOGGER_HANDLER_TIMEOUT,
+    DEFAULT_MANAGER_MAX_RETRIES,
+    DEFAULT_MANAGER_RESTART_BACKOFF,
+    DEFAULT_MANAGER_SHUTDOWN_TIMEOUT,
+    DEFAULT_WATCHDOG_INTERVAL,
+    WorkerConfig,
+)
 from .logging import parse_logging_level
 from .logging.lifecycle import LoggingLifecycle
 from .manager import Manager
 from .manager.runtime import ManagerRuntime
 from .utils import prepare_conf_dir, print_scietex_logo
-
-DEFAULT_HEARTBEAT_INTERVAL: float = 10
-MIN_HEARTBEAT_INTERVAL: float = 0.1
-MAX_HEARTBEAT_INTERVAL: float = 600
-
-DEFAULT_WATCHDOG_INTERVAL: float = 1
-MIN_WATCHDOG_INTERVAL: float = 0.01
-MAX_WATCHDOG_INTERVAL: float = 600
-
-DEFAULT_LOGGER_HANDLER_TIMEOUT: float = 2
-MIN_LOGGER_HANDLER_TIMEOUT: float = 1
-MAX_LOGGER_HANDLER_TIMEOUT: float = 10
-
-DEFAULT_MANAGER_SHUTDOWN_TIMEOUT: float = 2
-MIN_MANAGER_SHUTDOWN_TIMEOUT: float = 1
-MAX_MANAGER_SHUTDOWN_TIMEOUT: float = 10
-
-DEFAULT_MANAGER_MAX_RETRIES: int = 5
-MIN_MANAGER_MAX_RETRIES: int = 0
-MAX_MANAGER_MAX_RETRIES: int = 100
-
-DEFAULT_MANAGER_RESTART_BACKOFF: float = 1
-MIN_MANAGER_RESTART_BACKOFF: float = 0
-MAX_MANAGER_RESTART_BACKOFF: float = 60
 
 WAIT_FOR_SERVICE_STOPPED_DELAY: float = 0.1
 
@@ -86,57 +71,35 @@ class BasicAsyncWorker:
         instance_id (str): Unique identifier for this worker instance (read-only).
         version (str): Version string of the service (read-only).
         logger (logging.Logger): Logger instance for the worker.
-        logging_level (int): Current logging level (configurable).
+        logging_level (int): Current logging level (read-only).
         state (ServiceStatus): Current service lifecycle state.
         start_time (datetime | None): Service start timestamp.
     """
 
-    def __init__(
-        self,
-        service_name: str = "service",
-        version: str = "0.0.1",
-        conf_dir: str | Path | None = None,
-        logging_level: int | str = logging.DEBUG,
-        heartbeat_interval: float | None = None,
-        watchdog_interval: float | None = None,
-        **kwargs,
-    ):
+    def __init__(self, config: WorkerConfig | None = None):
         """
         Initialize the BasicAsyncWorker.
 
         Args:
-            service_name: Name of the service, used for logging and identification.
-            version: Version string of the service.
-            conf_dir: Directory to use for configuration files.
-            logging_level: Logging level as string or integer.
-                If invalid, defaults to ``DEFAULT_LOGGING_LEVEL`` (DEBUG).
-            heartbeat_interval: Heartbeat interval in seconds.
-            watchdog_interval: Watchdog check interval in seconds.
-            **kwargs: Additional keyword arguments including:
-                ``logger_handler_timeout``: Timeout for logger handler ops.
-                ``manager_shutdown_timeout``: Timeout for manager shutdown.
+            config: A :class:`~scietex.service.config.WorkerConfig` holding the
+                worker's service identity, config directory, logging level, and
+                timing/retry settings. ``None`` uses the struct defaults. A
+                ``None`` timing/retry field resolves to its ``DEFAULT_*``
+                constant at read time; an out-of-range value is rejected at
+                construction.
 
         Note:
             Each instance auto-generates a unique ``instance_id`` used for
             logger names and (in ``ValkeyWorker``) consumer/status keys, so
             multiple instances of the same service can coexist in one process.
         """
-        self.__service_name: str = service_name
+        cfg = config if config is not None else WorkerConfig()
+        self._config: WorkerConfig = cfg
+        self.__service_name: str = cfg.service_name
         self.__instance_id: str = uuid.uuid4().hex
-        self.__version: str = version
-        self.__logging_level: int = parse_logging_level(logging_level)
-
-        self.__heartbeat_interval: float = max(
-            MIN_HEARTBEAT_INTERVAL,
-            min(MAX_HEARTBEAT_INTERVAL, heartbeat_interval or DEFAULT_HEARTBEAT_INTERVAL),
-        )
-        self.__watchdog_interval: float = max(
-            MIN_WATCHDOG_INTERVAL,
-            min(MAX_WATCHDOG_INTERVAL, watchdog_interval or DEFAULT_WATCHDOG_INTERVAL),
-        )
-
-        # Config dir setup
-        self.__conf_dir: Path = prepare_conf_dir(conf_dir)
+        self.__version: str = cfg.version
+        self.__logging_level: int = parse_logging_level(cfg.logging_level)
+        self.__conf_dir: Path = prepare_conf_dir(cfg.conf_dir)
 
         # Extracted components own their respective bookkeeping; the worker
         # keeps only identity/config and the lifecycle state machine. They are
@@ -152,38 +115,6 @@ class BasicAsyncWorker:
         # single instance is registered once and restarted on each start cycle.
         # The console handler derives its identity from the logger name above.
         self._register_logger_handler(ConsoleHandler())
-
-        self.__logger_handler_timeout = max(
-            MIN_LOGGER_HANDLER_TIMEOUT,
-            min(
-                MAX_LOGGER_HANDLER_TIMEOUT,
-                kwargs.get("logger_handler_timeout", DEFAULT_LOGGER_HANDLER_TIMEOUT),
-            ),
-        )
-
-        self.__manager_shutdown_timeout = max(
-            MIN_MANAGER_SHUTDOWN_TIMEOUT,
-            min(
-                MAX_MANAGER_SHUTDOWN_TIMEOUT,
-                kwargs.get("manager_shutdown_timeout", DEFAULT_MANAGER_SHUTDOWN_TIMEOUT),
-            ),
-        )
-
-        self.__manager_max_retries = max(
-            MIN_MANAGER_MAX_RETRIES,
-            min(
-                MAX_MANAGER_MAX_RETRIES,
-                kwargs.get("manager_max_retries", DEFAULT_MANAGER_MAX_RETRIES),
-            ),
-        )
-
-        self.__manager_restart_backoff = max(
-            MIN_MANAGER_RESTART_BACKOFF,
-            min(
-                MAX_MANAGER_RESTART_BACKOFF,
-                kwargs.get("manager_restart_backoff", DEFAULT_MANAGER_RESTART_BACKOFF),
-            ),
-        )
 
         # State tracking
 
@@ -268,169 +199,88 @@ class BasicAsyncWorker:
     def logger_handler_timeout(self) -> float:
         """Timeout in seconds for logger handler start/stop operations (read-only).
 
-        Clamped between ``MIN_LOGGER_HANDLER_TIMEOUT`` and
-        ``MAX_LOGGER_HANDLER_TIMEOUT``.
+        A ``None`` configuration value resolves to
+        ``DEFAULT_LOGGER_HANDLER_TIMEOUT``; a non-``None`` value is validated
+        against ``[MIN_LOGGER_HANDLER_TIMEOUT, MAX_LOGGER_HANDLER_TIMEOUT]`` at
+        construction.
 
         Returns:
             The current timeout value in seconds.
         """
-        return self.__logger_handler_timeout
-
-    @logger_handler_timeout.setter
-    def logger_handler_timeout(self, timeout: float | None) -> None:
-        """
-        Set the timeout for logger handler operations.
-
-        Args:
-            timeout: Timeout in seconds, clamped between MIN_LOGGER_HANDLER_TIMEOUT
-                and MAX_LOGGER_HANDLER_TIMEOUT, or None to use DEFAULT_LOGGER_HANDLER_TIMEOUT
-        """
-        self.__logger_handler_timeout = max(
-            MIN_LOGGER_HANDLER_TIMEOUT,
-            min(
-                MAX_LOGGER_HANDLER_TIMEOUT,
-                timeout or DEFAULT_LOGGER_HANDLER_TIMEOUT,
-            ),
-        )
+        v = self._config.logger_handler_timeout
+        return v if v is not None else DEFAULT_LOGGER_HANDLER_TIMEOUT
 
     @property
     def manager_shutdown_timeout(self) -> float:
         """Timeout in seconds for manager task shutdown operations (read-only).
 
-        Clamped between ``MIN_MANAGER_SHUTDOWN_TIMEOUT`` and
-        ``MAX_MANAGER_SHUTDOWN_TIMEOUT``.
+        A ``None`` configuration value resolves to
+        ``DEFAULT_MANAGER_SHUTDOWN_TIMEOUT``; a non-``None`` value is validated
+        against ``[MIN_MANAGER_SHUTDOWN_TIMEOUT, MAX_MANAGER_SHUTDOWN_TIMEOUT]``
+        at construction.
 
         Returns:
             The current timeout value in seconds.
         """
-        return self.__manager_shutdown_timeout
-
-    @manager_shutdown_timeout.setter
-    def manager_shutdown_timeout(self, timeout: float | None) -> None:
-        """
-        Set the timeout for manager shutdown operations.
-
-        Args:
-            timeout: Timeout in seconds, clamped between MIN_MANAGER_SHUTDOWN_TIMEOUT
-                and MAX_MANAGER_SHUTDOWN_TIMEOUT, or None to use DEFAULT_MANAGER_SHUTDOWN_TIMEOUT
-        """
-        self.__manager_shutdown_timeout = max(
-            MIN_MANAGER_SHUTDOWN_TIMEOUT,
-            min(
-                MAX_MANAGER_SHUTDOWN_TIMEOUT,
-                timeout or DEFAULT_MANAGER_SHUTDOWN_TIMEOUT,
-            ),
-        )
+        v = self._config.manager_shutdown_timeout
+        return v if v is not None else DEFAULT_MANAGER_SHUTDOWN_TIMEOUT
 
     @property
     def manager_max_retries(self) -> int:
         """Maximum consecutive failures before a manager gives up (read-only).
 
-        Clamped between ``MIN_MANAGER_MAX_RETRIES`` and
-        ``MAX_MANAGER_MAX_RETRIES``.
+        A ``None`` configuration value resolves to ``DEFAULT_MANAGER_MAX_RETRIES``;
+        a non-``None`` value is validated against
+        ``[MIN_MANAGER_MAX_RETRIES, MAX_MANAGER_MAX_RETRIES]`` at construction.
 
         Returns:
             The current maximum retry count.
         """
-        return self.__manager_max_retries
-
-    @manager_max_retries.setter
-    def manager_max_retries(self, retries: int | None) -> None:
-        """
-        Set the maximum consecutive failures before a manager gives up.
-
-        Args:
-            retries: Maximum retry count, clamped between MIN_MANAGER_MAX_RETRIES
-                and MAX_MANAGER_MAX_RETRIES, or None to use DEFAULT_MANAGER_MAX_RETRIES
-        """
-        self.__manager_max_retries = max(
-            MIN_MANAGER_MAX_RETRIES,
-            min(
-                MAX_MANAGER_MAX_RETRIES,
-                retries if retries is not None else DEFAULT_MANAGER_MAX_RETRIES,
-            ),
-        )
+        v = self._config.manager_max_retries
+        return v if v is not None else DEFAULT_MANAGER_MAX_RETRIES
 
     @property
     def manager_restart_backoff(self) -> float:
         """Backoff delay in seconds between manager restart attempts (read-only).
 
-        Clamped between ``MIN_MANAGER_RESTART_BACKOFF`` and
-        ``MAX_MANAGER_RESTART_BACKOFF``.
+        A ``None`` configuration value resolves to
+        ``DEFAULT_MANAGER_RESTART_BACKOFF``; a non-``None`` value is validated
+        against ``[MIN_MANAGER_RESTART_BACKOFF, MAX_MANAGER_RESTART_BACKOFF]`` at
+        construction.
 
         Returns:
             The current backoff delay in seconds.
         """
-        return self.__manager_restart_backoff
-
-    @manager_restart_backoff.setter
-    def manager_restart_backoff(self, backoff: float | None) -> None:
-        """
-        Set the backoff delay between manager restart attempts.
-
-        Args:
-            backoff: Backoff in seconds, clamped between MIN_MANAGER_RESTART_BACKOFF
-                and MAX_MANAGER_RESTART_BACKOFF, or None to use DEFAULT_MANAGER_RESTART_BACKOFF
-        """
-        self.__manager_restart_backoff = max(
-            MIN_MANAGER_RESTART_BACKOFF,
-            min(
-                MAX_MANAGER_RESTART_BACKOFF,
-                backoff if backoff is not None else DEFAULT_MANAGER_RESTART_BACKOFF,
-            ),
-        )
+        v = self._config.manager_restart_backoff
+        return v if v is not None else DEFAULT_MANAGER_RESTART_BACKOFF
 
     @property
     def heartbeat_interval(self) -> float:
         """Interval in seconds between heartbeat calls (read-only).
 
-        Clamped between ``MIN_HEARTBEAT_INTERVAL`` and
-        ``MAX_HEARTBEAT_INTERVAL``.
+        A ``None`` configuration value resolves to ``DEFAULT_HEARTBEAT_INTERVAL``;
+        a non-``None`` value is validated against
+        ``[MIN_HEARTBEAT_INTERVAL, MAX_HEARTBEAT_INTERVAL]`` at construction.
 
         Returns:
             The current heartbeat interval in seconds.
         """
-        return self.__heartbeat_interval
-
-    @heartbeat_interval.setter
-    def heartbeat_interval(self, interval: float) -> None:
-        """
-        Set the heartbeat interval.
-
-        Args:
-            interval: Heartbeat interval in seconds, clamped between
-                MIN_HEARTBEAT_INTERVAL and MAX_HEARTBEAT_INTERVAL
-        """
-        self.__heartbeat_interval = max(
-            MIN_HEARTBEAT_INTERVAL,
-            min(MAX_HEARTBEAT_INTERVAL, interval),
-        )
+        v = self._config.heartbeat_interval
+        return v if v is not None else DEFAULT_HEARTBEAT_INTERVAL
 
     @property
     def watchdog_interval(self) -> float:
         """Interval in seconds between watchdog checks (read-only).
 
-        Clamped between ``MIN_WATCHDOG_INTERVAL`` and
-        ``MAX_WATCHDOG_INTERVAL``.
+        A ``None`` configuration value resolves to ``DEFAULT_WATCHDOG_INTERVAL``;
+        a non-``None`` value is validated against
+        ``[MIN_WATCHDOG_INTERVAL, MAX_WATCHDOG_INTERVAL]`` at construction.
 
         Returns:
             The current watchdog interval in seconds.
         """
-        return self.__watchdog_interval
-
-    @watchdog_interval.setter
-    def watchdog_interval(self, interval: float) -> None:
-        """
-        Set the watchdog interval.
-
-        Args:
-            interval: Watchdog interval in seconds, clamped between
-                MIN_WATCHDOG_INTERVAL and MAX_WATCHDOG_INTERVAL
-        """
-        self.__watchdog_interval = max(
-            MIN_WATCHDOG_INTERVAL,
-            min(MAX_WATCHDOG_INTERVAL, interval),
-        )
+        v = self._config.watchdog_interval
+        return v if v is not None else DEFAULT_WATCHDOG_INTERVAL
 
     @property
     def start_time(self) -> datetime | None:
@@ -457,39 +307,15 @@ class BasicAsyncWorker:
 
     @property
     def logging_level(self) -> int:
-        """Current logging level for the worker (configurable).
+        """Current logging level for the worker (read-only).
+
+        Parsed once from the worker's configuration at construction.
 
         Returns:
             The logging level as an integer constant from the
             ``logging`` module (e.g., ``logging.DEBUG``, ``logging.INFO``).
         """
         return self.__logging_level
-
-    @logging_level.setter
-    def logging_level(self, level: int | str | None) -> None:
-        """
-        Set the logging level for the worker.
-
-        Args:
-            level: Logging level as string or integer. Supported string values:
-                - DEBUG: 'D', 'DBG', 'DEBUG', logging.DEBUG
-                - INFO: 'I', 'INF', 'INFO', 'INFORMATION', logging.INFO
-                - WARNING: 'W', 'WRN', 'WARN', 'WARNING', logging.WARNING
-                - ERROR: 'E', 'ERR', 'ERROR', logging.ERROR
-                - CRITICAL: 'C', 'CRT', 'CRIT', 'CRITICAL', logging.CRITICAL
-                - FATAL: 'F', 'FTL', 'FAT', 'FATAL', logging.FATAL
-
-        Note:
-            If level is None or not recognized, defaults to DEFAULT_LOGGING_LEVEL
-        """
-
-        self.__logging_level = parse_logging_level(level)
-
-        # Update logger and all handlers
-        self.logger.setLevel(self.__logging_level)
-        for handler in self.logger.handlers:
-            handler.setLevel(self.__logging_level)
-        self.logger.debug("Logging level set to %s", logging.getLevelName(self.logging_level))
 
     def _iter_manager_definitions(self) -> Generator[tuple[str, Manager]]:
         """Iterate over all registered managers from the class MRO.

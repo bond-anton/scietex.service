@@ -5,7 +5,8 @@ import logging
 
 import pytest
 
-from scietex.service.basic_async_worker import BasicAsyncWorker, ServiceStatus
+from scietex.service.basic_worker import BasicAsyncWorker, ServiceStatus
+from scietex.service.config import WorkerConfig
 from scietex.service.logging import LoggerStatus
 from scietex.service.manager import Manager
 
@@ -13,7 +14,7 @@ from scietex.service.manager import Manager
 @pytest.mark.asyncio
 async def test_graceful_shutdown():
     """Start the worker, enqueue some logs, then stop and ensure drain."""
-    worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
+    worker = BasicAsyncWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
 
     # Start worker (initializes logging handlers and managers)
     await worker.start()
@@ -43,7 +44,7 @@ async def test_graceful_shutdown():
 async def test_logging_handlers_restartable_after_shutdown():
     """After a shutdown, logging handlers must be marked STOPPED and be
     restarted in place (same instance) on the next start (scietex.logging >= 1.0)."""
-    worker = BasicAsyncWorker(service_name="test_service", version="1.0.0")
+    worker = BasicAsyncWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
 
     await worker.start()
     for _ in range(50):
@@ -111,7 +112,7 @@ async def test_initialize_runs_before_managers_start():
             # Block so the manager records its event only once per iteration.
             await asyncio.sleep(3600)
 
-    worker = OrderingWorker(service_name="test_service", version="1.0.0")
+    worker = OrderingWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
 
     await worker.start()
     for _ in range(100):
@@ -145,7 +146,7 @@ async def test_shutdown_cancellation_forces_stopped():
             if self.block_cleanup:
                 await asyncio.sleep(3600)
 
-    worker = SlowCleanupWorker(service_name="test_service", version="1.0.0")
+    worker = SlowCleanupWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
 
     await worker.start()
     for _ in range(50):
@@ -195,7 +196,7 @@ async def test_signal_handler_no_reentry():
             self.shutdown_calls += 1
             await super()._shutdown()
 
-    worker = CountingWorker(service_name="test_service", version="1.0.0")
+    worker = CountingWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
 
     await worker.start()
     for _ in range(50):
@@ -229,9 +230,11 @@ async def test_first_heartbeat_fires_promptly():
             self.heartbeat_count += 1
 
     worker = HeartbeatWorker(
-        service_name="test_service",
-        version="1.0.0",
-        heartbeat_interval=5,
+        WorkerConfig(
+            service_name="test_service",
+            version="1.0.0",
+            heartbeat_interval=5,
+        )
     )
 
     await worker.start()

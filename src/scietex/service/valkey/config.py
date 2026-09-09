@@ -32,6 +32,8 @@ except ImportError as e:
         "Please install it by running:\n\n    pip install scietex.service[valkey]\n"
     ) from e
 
+from ..config import TaskProcessorConfig, _validate_range
+
 
 class ValkeyNode(msgspec.Struct, frozen=True):
     """Represents a single Valkey server node.
@@ -234,6 +236,33 @@ class ValkeyConfig(msgspec.Struct, frozen=True):
 
     base_config: ValkeyBaseConfig = ValkeyBaseConfig()
     advanced_config: ValkeyAdvancedConfig = ValkeyAdvancedConfig()
+
+
+class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
+    """Immutable configuration for a :class:`~scietex.service.valkey.worker.ValkeyWorker`.
+
+    Extends :class:`~scietex.service.config.TaskProcessorConfig` with the
+    Valkey-specific fields. Its ``valkey_config`` field references the optional
+    ``glide.GlideClientConfiguration`` type, which is why this struct lives here
+    (alongside :class:`ValkeyConfig`) rather than in the always-imported core
+    :mod:`scietex.service.config` module.
+
+    Args:
+        valkey_config: A :class:`ValkeyConfig` schema or a raw
+            :class:`~glide.GlideClientConfiguration`. ``None`` means the worker
+            reads ``valkey.yml`` from its config directory.
+        log_stream_name: Name of the Valkey stream used for log entries.
+        task_fetch_batch_size: Maximum number of stream entries read per
+            ``XREADGROUP`` call (``>= 1``).
+    """
+
+    valkey_config: "ValkeyConfig | GlideClientConfiguration | None" = None
+    log_stream_name: str = "scietex:log"
+    task_fetch_batch_size: int = 10
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _validate_range(self.task_fetch_batch_size, "task_fetch_batch_size", minimum=1)
 
 
 def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:

@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 from scietex.logging import AsyncLoggingHandler
 
-from scietex.service.basic_async_worker import BasicAsyncWorker
+from scietex.service.basic_worker import BasicAsyncWorker
 from scietex.service.logging import LoggerStatus
 from scietex.service.logging.lifecycle import LoggingLifecycle
 

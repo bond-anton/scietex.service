@@ -5,15 +5,16 @@ from unittest.mock import patch
 
 import pytest
 
-from scietex.service.basic_async_worker import BasicAsyncWorker, ServiceStatus
+from scietex.service.basic_worker import BasicAsyncWorker, ServiceStatus
+from scietex.service.config import WorkerConfig
 from scietex.service.manager import Manager
 
 
 class FlakyWorker(BasicAsyncWorker):
     """Worker whose manager fails a fixed number of times then succeeds."""
 
-    def __init__(self, failures_before_success: int = 1, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: WorkerConfig | None = None, *, failures_before_success: int = 1):
+        super().__init__(config)
         self.failures_before_success = failures_before_success
         self.attempts = 0
 
@@ -28,8 +29,8 @@ class FlakyWorker(BasicAsyncWorker):
 class AlwaysFailingWorker(BasicAsyncWorker):
     """Worker whose manager always raises."""
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: WorkerConfig | None = None):
+        super().__init__(config)
         self.attempts = 0
 
     @Manager(name="Doomed")
@@ -55,8 +56,8 @@ class DerivedWorker(BaseWorker):
 class CleanupRaisingWorker(BasicAsyncWorker):
     """Worker whose manager cleanup raises."""
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: WorkerConfig | None = None):
+        super().__init__(config)
         self.cleaned_up = False
 
     async def _raise_on_cleanup(worker) -> None:
@@ -71,8 +72,8 @@ class CleanupRaisingWorker(BasicAsyncWorker):
 class CancellationIgnoringWorker(BasicAsyncWorker):
     """Worker whose manager ignores cancellation until told to stop."""
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: WorkerConfig | None = None):
+        super().__init__(config)
         self.ignore_cancellation = True
 
     @Manager(name="Stubborn")
@@ -89,7 +90,7 @@ class CancellationIgnoringWorker(BasicAsyncWorker):
 @pytest.mark.asyncio
 async def test_manager_retries_after_error_without_deadlock():
     """A manager that fails once must be retried in the same task, not deadlock."""
-    worker = FlakyWorker(failures_before_success=1, manager_max_retries=5, manager_restart_backoff=0.01)
+    worker = FlakyWorker(WorkerConfig(manager_max_retries=5, manager_restart_backoff=0.01), failures_before_success=1)
     await worker.start()
     try:
         # Give the manager time to fail once and be retried successfully.
@@ -106,7 +107,7 @@ async def test_manager_retries_after_error_without_deadlock():
 @pytest.mark.asyncio
 async def test_manager_gives_up_and_removes_stale_task_entry():
     """A manager that exhausts retries must give up and clear its task entry."""
-    worker = AlwaysFailingWorker(manager_max_retries=2, manager_restart_backoff=0.01)
+    worker = AlwaysFailingWorker(WorkerConfig(manager_max_retries=2, manager_restart_backoff=0.01))
     await worker.start()
     try:
         # Wait long enough for the manager to fail 3 times (2 retries + initial).
@@ -124,7 +125,7 @@ async def test_manager_gives_up_and_removes_stale_task_entry():
 @pytest.mark.asyncio
 async def test_manager_can_restart_after_giving_up():
     """After a manager gives up, it must be restartable (no stale bookkeeping)."""
-    worker = AlwaysFailingWorker(manager_max_retries=1, manager_restart_backoff=0.01)
+    worker = AlwaysFailingWorker(WorkerConfig(manager_max_retries=1, manager_restart_backoff=0.01))
     await worker.start()
     try:
         for _ in range(100):

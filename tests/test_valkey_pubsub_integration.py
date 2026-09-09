@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from scietex.service.valkey.valkey_config import ValkeyConfig, generate_glide_config
+from scietex.service.valkey.config import ValkeyConfig, generate_glide_config
 
 
 def _server_reachable() -> bool:

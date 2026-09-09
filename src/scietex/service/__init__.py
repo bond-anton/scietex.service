@@ -19,12 +19,20 @@ imported at package load time.
 
 import logging
 
-from .async_tasks_processor import AsyncTaskProcessor
-from .basic_async_worker import BasicAsyncWorker
+from .basic_worker import BasicAsyncWorker
+from .config import TaskProcessorConfig, WorkerConfig
 from .manager import Manager
+from .task_processor import AsyncTaskProcessor
 from .version import __version__
 
-__all__ = ["__version__", "AsyncTaskProcessor", "BasicAsyncWorker", "Manager"]
+__all__ = [
+    "__version__",
+    "AsyncTaskProcessor",
+    "BasicAsyncWorker",
+    "Manager",
+    "TaskProcessorConfig",
+    "WorkerConfig",
+]
 
 VALKEY_AVAILABLE = False
 try:
@@ -37,6 +45,7 @@ try:
         ValkeyTlsAdvancedConfiguration,
         ValkeyUserCredentials,
         ValkeyWorker,
+        ValkeyWorkerConfig,
     )
 
     VALKEY_AVAILABLE = True
@@ -50,6 +59,7 @@ try:
         "ValkeyConfig",
         "ValkeyAdvancedConfig",
         "ValkeyTlsAdvancedConfiguration",
+        "ValkeyWorkerConfig",
     ]
 except ImportError:
     # If the Valkey dependency (glide) is missing, swallow the ImportError so

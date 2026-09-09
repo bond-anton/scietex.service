@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from . import Manager, ManagerStatus
 
 if TYPE_CHECKING:
-    from ..basic_async_worker import BasicAsyncWorker
+    from ..basic_worker import BasicAsyncWorker
 
 
 class ManagerRuntime:

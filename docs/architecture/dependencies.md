@@ -30,8 +30,9 @@ glide (valkey-glide, optional)                              [external]
 
 | From | To | Kind | Notes |
 |---|---|---|---|
-| `scietex.service/__init__` | `async_tasks_processor`, `basic_async_worker`, `manager`, `version` | import | unconditional |
+| `scietex.service/__init__` | `async_tasks_processor`, `basic_async_worker`, `config`, `manager`, `version` | import | unconditional |
 | `scietex.service/__init__` | `valkey` | import | inside `try/except ImportError` — optional feature |
+| `basic_async_worker` | `.config` | import | `WorkerConfig`, `DEFAULT_*` constants |
 | `basic_async_worker` | `.manager` | import | `Manager` |
 | `basic_async_worker` | `.manager.runtime` | import | `ManagerRuntime` (owns `ManagerStatus` bookkeeping) |
 | `basic_async_worker` | `.logging` | import | `parse_logging_level` |
@@ -40,16 +41,18 @@ glide (valkey-glide, optional)                              [external]
 | `basic_async_worker` | `scietex.logging` | import (external) | `ConsoleHandler` |
 | `utils.logo` | `..version` | import | `__version__` |
 | `async_tasks_processor` | `basic_async_worker` | inheritance | extends |
+| `async_tasks_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `async_tasks_processor` | `.manager` | import | for `@Manager` decorators |
 | `async_tasks_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskResult`, `TaskTracker` |
 | `task_handler.basic` | `.schemas` | import | runtime |
 | `task_handler.basic` | `.context` | import | `TaskHandlerContext` (narrow context; no worker reference) |
 | `valkey.worker` | `async_tasks_processor` | inheritance | `ValkeyWorker(AsyncTaskProcessor)` |
 | `valkey.worker` | `.task_handler` | import | `TaskData` |
-| `valkey.worker` | `.valkey_config`, `.schemas` | import | |
+| `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
 | `valkey.worker` | `glide` | import (external, optional extra) | guarded `try/except ImportError` re-raise with install hint; errors surface to top-level guard |
-| `valkey.valkey_config` | `glide`, `msgspec` | import | guarded `try/except ImportError` re-raise with install hint; config cannot load without the extra |
+| `valkey.config` | `glide`, `msgspec` | import | guarded `try/except ImportError` re-raise with install hint; config cannot load without the extra |
+| `valkey.config` | `..config` | import | `TaskProcessorConfig`, `_validate_range` |
 | `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; no runtime import — caller supplies an open client |
 | `task_handler.schemas` | `msgspec` | import | struct + serialization |
 
@@ -64,8 +67,11 @@ glide (valkey-glide, optional)                              [external]
   handler ABC keeps no import of the worker at all — it receives a narrow
   `TaskHandlerContext` (`service_name`, `instance_id`, `logger`) instead of the
   worker instance, so the boundary is clean in both directions.
-- **Configuration split**: `valkey_config` is independent of
-  `worker`; only `read_valkey_config`/`generate_glide_config`
+- **Configuration split**: the core worker config (`config.py`, holding
+  `WorkerConfig`/`TaskProcessorConfig` and the MIN/MAX/DEFAULT constants) is
+  imported by `basic_async_worker` and `async_tasks_processor`; the Valkey
+  config schema/loader (`valkey/config.py`, including `ValkeyWorkerConfig`) is
+  independent of `worker` — only `read_valkey_config`/`generate_glide_config`
   flow into the worker.
 - **Logging has two dependency arrows** (see `scietex.logging` above): both the
   base worker (console handler) and `ValkeyWorker` (Valkey handler) attach

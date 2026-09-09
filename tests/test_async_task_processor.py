@@ -1,11 +1,13 @@
 import asyncio
+import os
 from uuid import uuid4
 
 import pytest
 
-from scietex.service.async_tasks_processor import AsyncTaskProcessor
+from scietex.service.config import DEFAULT_MAX_CONCURRENT_TASKS, TaskProcessorConfig
 from scietex.service.task_handler.basic import TaskHandler
 from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeout
+from scietex.service.task_processor import AsyncTaskProcessor
 
 
 class DummyHandler(TaskHandler):
@@ -40,6 +42,26 @@ class DemoProcessor(AsyncTaskProcessor):
     async def return_task_to_queue(self, task_id, task_data):
         # record requeued tasks for assertions
         self.requeued.append((task_id, task_data))
+
+
+def test_auto_tune_uses_cpu_count_when_max_concurrent_is_none():
+    """auto_tune=True with max_concurrent_tasks=None derives the concurrency
+    from the CPU count at startup."""
+    proc = DemoProcessor(TaskProcessorConfig(auto_tune=True))
+    assert proc.max_concurrent_tasks == max(1, os.cpu_count() or 1)
+
+
+def test_auto_tune_explicit_max_concurrent_wins():
+    """An explicit max_concurrent_tasks always wins over auto_tune."""
+    proc = DemoProcessor(TaskProcessorConfig(auto_tune=True, max_concurrent_tasks=3))
+    assert proc.max_concurrent_tasks == 3
+
+
+def test_auto_tune_default_off_uses_static_default():
+    """auto_tune=False (default) with max_concurrent_tasks=None resolves to the
+    static DEFAULT_MAX_CONCURRENT_TASKS."""
+    proc = DemoProcessor(TaskProcessorConfig())
+    assert proc.max_concurrent_tasks == DEFAULT_MAX_CONCURRENT_TASKS
 
 
 @pytest.mark.asyncio
@@ -400,7 +422,7 @@ class StubbornHandler(TaskHandler):
 async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monkeypatch):
     """A handler that swallows CancelledError must not be requeued by the
     watchdog: it is still running, so requeueing would run it twice (AR-005)."""
-    import scietex.service.async_tasks_processor as mod
+    import scietex.service.task_processor as mod
 
     # Shorten the cancellation wait so the test does not block for 5s.
     monkeypatch.setattr(mod, "WORKER_TASK_CANCELLATION_TIMEOUT", 0.05)
@@ -515,7 +537,7 @@ class NeverFinishesHandler(TaskHandler):
 async def test_watchdog_ignores_non_positive_timeout():
     """timeout <= 0 means 'no timeout': the watchdog must never cancel the
     task (AR-034)."""
-    proc = DemoProcessor(watchdog_interval=0.05)
+    proc = DemoProcessor(TaskProcessorConfig(watchdog_interval=0.05))
     proc.add_task_handler(NeverFinishesHandler)
     await proc.start()
     try:
@@ -548,8 +570,8 @@ class ReportingProcessor(AsyncTaskProcessor):
     """Processor whose fetch_tasks reports productivity without enqueuing, so
     the task_queue_manager sleep-skip decision can be tested in isolation."""
 
-    def __init__(self, *args, fetch_result: bool = False, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, config: TaskProcessorConfig | None = None, *, fetch_result: bool = False):
+        super().__init__(config)
         self._fetch_result = fetch_result
 
     async def fetch_tasks(self) -> bool:
@@ -560,7 +582,7 @@ class ReportingProcessor(AsyncTaskProcessor):
 async def test_task_queue_manager_skips_sleep_after_productive_fetch():
     """task_queue_manager must not sleep after a fetch_tasks that reports it
     enqueued work, so a backlog drains back-to-back (AR-042)."""
-    proc = ReportingProcessor(fetch_result=True, task_queue_manager_sleep_time=0.01)
+    proc = ReportingProcessor(TaskProcessorConfig(task_queue_manager_sleep_time=0.01), fetch_result=True)
     backoff_delays: list = []
     real_sleep = asyncio.sleep
 
@@ -569,7 +591,7 @@ async def test_task_queue_manager_skips_sleep_after_productive_fetch():
             backoff_delays.append(delay)
         await real_sleep(delay)
 
-    import scietex.service.async_tasks_processor as mod
+    import scietex.service.task_processor as mod
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(mod.asyncio, "sleep", spy_sleep)
@@ -591,7 +613,7 @@ async def test_task_queue_manager_skips_sleep_after_productive_fetch():
 async def test_task_queue_manager_sleeps_after_empty_fetch():
     """task_queue_manager must sleep after a fetch_tasks that reports nothing
     enqueued, to avoid busy-polling an empty source (AR-042)."""
-    proc = ReportingProcessor(fetch_result=False, task_queue_manager_sleep_time=0.01)
+    proc = ReportingProcessor(TaskProcessorConfig(task_queue_manager_sleep_time=0.01), fetch_result=False)
     backoff_delays: list = []
     real_sleep = asyncio.sleep
 
@@ -600,7 +622,7 @@ async def test_task_queue_manager_sleeps_after_empty_fetch():
             backoff_delays.append(delay)
         await real_sleep(delay)
 
-    import scietex.service.async_tasks_processor as mod
+    import scietex.service.task_processor as mod
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(mod.asyncio, "sleep", spy_sleep)

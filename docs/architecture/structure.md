@@ -23,8 +23,9 @@ Layout of the repository and the Python package.
 
 | Module | Responsibility |
 |---|---|
-| `__init__.py` | Public API. Always exports `__version__`, `BasicAsyncWorker`, `AsyncTaskProcessor`, `Manager`. In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
+| `__init__.py` | Public API. Always exports `__version__`, `BasicAsyncWorker`, `AsyncTaskProcessor`, `Manager`, `WorkerConfig`, `TaskProcessorConfig`. In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types including `ValkeyWorkerConfig`) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
 | `version.py` | Single source `__version__ = "4.0.0"` (also read by setuptools dynamic version) |
+| `config.py` | `WorkerConfig` + `TaskProcessorConfig` — immutable `msgspec.Struct`s (`frozen=True`) replacing the old per-worker constructor kwargs. Also holds the MIN/MAX/DEFAULT constants (single source of truth for timing/retry bounds and the task-queue defaults, `DEFAULT_MAX_TASKS_QUEUE_SIZE=100` / `DEFAULT_MAX_CONCURRENT_TASKS=10`). `__post_init__` validates ranges and raises `msgspec.ValidationError` on an out-of-range value; a `None` field resolves to its `DEFAULT_*` constant at read time |
 | `manager/__init__.py` | `Manager` class-decorator (name + optional cleanup callable, stores `method`) and `ManagerStatus` enum |
 | `manager/runtime.py` | `ManagerRuntime(worker)`: manager discovery across the class MRO (`iter_manager_definitions`), start/stop bookkeeping (`statuses`/`tasks`/`errors`), and the bounded restart-on-error loop (`run_manager`). Extracted from `BasicAsyncWorker` (AR-003) |
 | `logging/lifecycle.py` | `LoggingLifecycle(worker)`: async logging-handler registration and start/stop with `statuses` bookkeeping. Extracted from `BasicAsyncWorker` (AR-003) |
@@ -39,7 +40,7 @@ Layout of the repository and the Python package.
 | `utils/conf.py` | `prepare_conf_dir()` + `_resolve_xdg_path()` config-dir search |
 | `utils/logo.py` | ASCII `LOGO` template and `print_scietex_logo()` |
 | `valkey/__init__.py` | Re-exports `ValkeyWorker`, config types, and `purge_task_stream` from the sibling modules |
-| `valkey/valkey_config.py` | Typed config structs + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports `glide` in a guarded `try/except ImportError` that re-raises with an install hint if `glide` is absent |
+| `valkey/config.py` | Typed config structs (`ValkeyConfig`, `ValkeyBaseConfig`, ...) + `ValkeyWorkerConfig` (worker-level config struct extending `TaskProcessorConfig`) + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports `glide` in a guarded `try/except ImportError` that re-raises with an install hint if `glide` is absent |
 | `valkey/worker.py` | `ValkeyWorker(AsyncTaskProcessor)` + stream/connection logic. Imports `glide` via the same guarded re-raise (`ImportError` → install hint); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
 | `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry); no runtime `glide` import (`TYPE_CHECKING` only) |
 | `valkey/schemas.py` | `Heartbeat` msgpack schema |
@@ -56,8 +57,8 @@ Layout of the repository and the Python package.
 - **Worker ⇄ runtime components**: `basic_async_worker.py` imports
   `manager/runtime` and `logging/lifecycle`, which hold only a back-reference
   to the worker under `TYPE_CHECKING` (no runtime cycle).
-- **Valkey internal split**: config schema/loader (`valkey_config.py`) is
-  independent of the worker (`worker.py`); `valkey_config` can be
+- **Valkey internal split**: config schema/loader (`valkey/config.py`) is
+  independent of the worker (`worker.py`); `valkey/config` can be
   used/tested without a worker, but not without `glide`.
 - **Package ⇄ external `scietex.logging`**: `basic_async_worker.py` and
   `valkey/worker.py` attach external logging handlers. The worker

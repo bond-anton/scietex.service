@@ -14,9 +14,10 @@ is a library whose entry point is the consumer's own `main()`.
 | Logging lifecycle | `src/scietex/service/logging/lifecycle.py` | `LoggingLifecycle`: async logging-handler registration and start/stop with per-handler status bookkeeping |
 | Manager decorator | `src/scietex/service/manager/__init__.py` | `@Manager` class-decorator and `ManagerStatus`; wraps an async method into a managed loop |
 | Logging helpers | `src/scietex/service/logging/__init__.py` | `LoggerStatus` enum and `parse_logging_level()` string/int normalization |
+| Configuration | `src/scietex/service/config.py` | `WorkerConfig` + `TaskProcessorConfig` (immutable `msgspec.Struct`s) and the MIN/MAX/DEFAULT constants they enforce at construction (`msgspec.ValidationError` on out-of-range values) |
 | Task processing | `src/scietex/service/async_tasks_processor.py` | `AsyncTaskProcessor`: in-process bounded task queue, concurrency limit, handler registry/dispatch, timeout watchdog, drain/requeue on shutdown |
 | Task handler contract | `src/scietex/service/task_handler/` | `TaskHandler` ABC + `TaskHandlerContext` + typed schemas `TaskData`, `TaskResult`, `TaskTimeout`, `TaskTracker` (frozen `msgspec.Struct`) |
-| Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (stream transport over glide), typed Valkey config schema + YAML loader + schema→glide converter (`valkey_config.py`), `Heartbeat` schema |
+| Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (stream transport over glide), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`), `Heartbeat` schema |
 | Utilities | `src/scietex/service/utils/` | `prepare_conf_dir()` config-dir resolution (`conf.py`); ASCII logo printer (`logo.py`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional import of Valkey exports |
 | Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |

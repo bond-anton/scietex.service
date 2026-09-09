@@ -4,7 +4,7 @@ Provides configuration directory resolution via ``prepare_conf_dir``,
 and the service logo printer via ``print_scietex_logo``.
 """
 
-from .conf import prepare_conf_dir
+from .config import prepare_conf_dir
 from .logo import print_scietex_logo
 
 __all__ = [

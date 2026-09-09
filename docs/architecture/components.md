@@ -18,8 +18,12 @@ config, and the state machine.
 **Main symbols:**
 - `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 53
 - `class BasicAsyncWorker` — line 69
-- Constructor — line 93; clamps all intervals/timeouts to module constants
-  (lines 26–48); constructs `ManagerRuntime` + `LoggingLifecycle` (145–146)
+- Constructor — `__init__(config: WorkerConfig | None = None)`; stores the
+  immutable `WorkerConfig` (from `config.py`), resolves identity/conf_dir/
+  logging_level, and constructs `ManagerRuntime` + `LoggingLifecycle`.
+  Timing/retry fields are validated at construction — an out-of-range value
+  raises `msgspec.ValidationError`, and `None` resolves to the matching
+  `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
 - Forwarding wrappers (delegate to the extracted components, kept for
   subclass/test compatibility):
   - `_iter_manager_definitions()` — line 493 (→ `ManagerRuntime.iter_manager_definitions`)
@@ -39,13 +43,14 @@ config, and the state machine.
 - `_setup_signal_handlers` called from `start()` (696), not `__init__`;
   `_remove_signal_handlers` called from `stop()` (778)
 
-**Public interface:** constructor + read-only properties (with setters where
-config is mutable at runtime): `state`, `events` (read-only `MappingProxyType`
-of two `asyncio.Event`s: `"exit_requested"`, `"exit"`), `service_name`,
-`instance_id`, `version`, `conf_dir`, `logger`, `logging_level`,
-`heartbeat_interval`, `watchdog_interval`, `start_time`,
-`logger_handler_timeout`, `manager_shutdown_timeout`, `manager_max_retries`,
-`manager_restart_backoff`. Extension contract: override
+**Public interface:** constructor takes a single immutable `WorkerConfig`
+(`config.py`) or `None`; all properties are read-only (no runtime setters):
+`state`, `events` (read-only `MappingProxyType` of two `asyncio.Event`s:
+`"exit_requested"`, `"exit"`), `service_name`, `instance_id`, `version`,
+`conf_dir`, `logger`, `logging_level`, `heartbeat_interval`,
+`watchdog_interval`, `start_time`, `logger_handler_timeout`,
+`manager_shutdown_timeout`, `manager_max_retries`, `manager_restart_backoff`.
+Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
 subclass hooks govern registry-set membership: `_register_instance` (873) —
 called by `_startup()` after `initialize()` succeeds and before managers
@@ -227,20 +232,27 @@ Hooks: `fetch_tasks` 661, `return_task_to_queue` 451, `on_task_completed` 463
 (transport ack seam), `initialize` 480 (starts handlers), `cleanup` 498
 (drains queue, cancels running tasks, stops handlers), `watchdog` 685.
 
-**Config constants:** `DEFAULT_MAX_TASKS_QUEUE_SIZE=2` (21),
-`DEFAULT_MAX_CONCURRENT_TASKS=2` (23), `DEFAULT_TASK_TIMEOUT=3` (26),
-`TASK_QUEUE_FETCH_TIMEOUT=1` (29), `DEFAULT_MANAGER_SLEEP_TIME=0.01` (31),
-`WORKER_TASK_CANCELLATION_TIMEOUT=5` (35), handler start/stop timeouts (37–43,
-default 5 s).
+**Config constants:** timing/retry MIN/MAX/DEFAULT bounds live in `config.py`
+(single source of truth); the task-queue defaults are
+`DEFAULT_MAX_TASKS_QUEUE_SIZE=100` and `DEFAULT_MAX_CONCURRENT_TASKS=10`
+(AR-055). Remaining processor-local constants stay in this module:
+`DEFAULT_TASK_TIMEOUT=3`, `TASK_QUEUE_FETCH_TIMEOUT=1`,
+`WORKER_TASK_CANCELLATION_TIMEOUT=5`.
 
-**Public interface:** constructor kwargs (`queue_size`,
-`max_concurrent_tasks`, `task_manager_sleep_time`,
-`task_queue_manager_sleep_time`, `task_handler_start_timeout`,
-`task_handler_stop_timeout`), properties (`task_handlers`, `running_tasks` —
-read-only `MappingProxyType` views; `queue_size`, `max_concurrent_tasks`,
+`TaskProcessorConfig.auto_tune` (bool, default `False`) makes the worker derive
+`max_concurrent_tasks` from `os.cpu_count()` at startup when
+`max_concurrent_tasks` is left unset (`None`); an explicit
+`max_concurrent_tasks` always wins (the resolution lives in
+`AsyncTaskProcessor.__init__`).
+
+**Public interface:** constructor takes a single immutable
+`TaskProcessorConfig` (`config.py`, extends `WorkerConfig`) or `None`; no
+runtime setters. Properties (`task_handlers`, `running_tasks` — read-only
+`MappingProxyType` views; `queue_size`, `max_concurrent_tasks`,
 `task_manager_sleep_time`, `task_queue_manager_sleep_time`,
-`task_handler_start_timeout`, `task_handler_stop_timeout`), and queue methods
-`enqueue_task`/`dequeue_task`/`task_queue_empty`/`task_queue_full`.
+`task_handler_start_timeout`, `task_handler_stop_timeout` — all read-only),
+and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
+`task_queue_full`.
 
 **Dependencies:** `.basic_async_worker`, `.manager`, `.task_handler`.
 **Depended on by:** `ValkeyWorker`, examples, tests.
@@ -254,8 +266,9 @@ via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
 **Main symbols:** `class ValkeyWorker(AsyncTaskProcessor)` (53).
-Constructor 76 (accepts `valkey_config` or falls back to `read_valkey_config`,
-140–151), `connect` 232 (`GlideClient.create` + PING; `_client` assigned only
+Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
+`config.valkey_config` or falls back to `read_valkey_config`),
+`connect` 232 (`GlideClient.create` + PING; `_client` assigned only
 after PING succeeds, 261; then wires the shared client into the logging handler),
 `disconnect` 277, `heartbeat` 291 (writes msgpack `Heartbeat` to `...:status`
 with TTL 2×interval), `initialize` 327 (start handlers, connect,
@@ -290,37 +303,43 @@ shutdown — both best-effort (a failure logs a WARNING and continues). Liveness
 is the status-key TTL refreshed by `heartbeat()`, so a stale member left by a
 crashed replica is tolerated (the operator probes each member's status key).
 
-**Public interface:** properties `valkey_config`, `client`; constructor kwargs
-(`valkey_config`, `log_stream_name`, ...).
+**Public interface:** constructor takes a single immutable `ValkeyWorkerConfig`
+(`valkey/config.py`, extends `TaskProcessorConfig`) or `None`; properties
+`valkey_config`, `client`.
 
 **Dependencies:** `..async_tasks_processor`, `..task_handler.TaskData`,
-`.schemas.Heartbeat`, `.valkey_config`, external
+`.schemas.Heartbeat`, `.config` (`ValkeyWorkerConfig`), external
 `scietex.logging.AsyncValkeyHandler`, `glide`, `msgspec`.
 **Depended on by:** `valkey/__init__.py`, package `__init__.py` (guarded),
 example `examples/valkey_async_service.py`.
 
-## 10. Valkey configuration — `valkey_config.py`
+## 10. Valkey configuration — `valkey/config.py`
 
-**File:** `src/scietex/service/valkey/valkey_config.py`
+**File:** `src/scietex/service/valkey/config.py`
 
 **Purpose:** Typed config that mirrors glide options, plus YAML persistence and
-schema→glide translation.
+schema→glide translation. Also hosts `ValkeyWorkerConfig` (the worker-level
+config struct) so its optional `glide`-typed field stays out of the
+always-imported core `config.py`.
 
-**Main symbols:** frozen structs `ValkeyNode` (36), `ValkeyUserCredentials`
-(48), `ValkeyBackoffStrategy` (60), `ValkeyTlsAdvancedConfiguration` (91),
-`ValkeyAdvancedConfig` (119), `ValkeyBaseConfig` (149), `ValkeyConfig` (227);
-`read_valkey_config(conf_dir)` (239) — creates `valkey.yml` with defaults only
-if the file is missing; raises `RuntimeError` on a present-but-invalid file
-(277), never overwriting it; `generate_glide_config(...)` (282, converts to
-`GlideClientConfiguration`, validates `read_from`/`protocol`, optional PubSub
-subscriptions when `listening=True`).
+**Main symbols:** frozen structs `ValkeyNode` (38), `ValkeyUserCredentials`
+(50), `ValkeyBackoffStrategy` (62), `ValkeyTlsAdvancedConfiguration` (93),
+`ValkeyAdvancedConfig` (121), `ValkeyBaseConfig` (151), `ValkeyConfig` (229);
+`ValkeyWorkerConfig` (241, extends `TaskProcessorConfig` with `valkey_config`,
+`log_stream_name`, `task_fetch_batch_size`); `read_valkey_config(conf_dir)`
+(268) — creates `valkey.yml` with defaults only if the file is missing; raises
+`RuntimeError` on a present-but-invalid file (306), never overwriting it;
+`generate_glide_config(...)` (311, converts to `GlideClientConfiguration`,
+validates `read_from`/`protocol`, optional PubSub subscriptions when
+`listening=True`).
 
 **Public interface:** struct constructors; config conversion properties
 (`addresses`, `credentials`, `reconnect_strategy`, `to_advanced_config`, ...).
 
 **Dependencies:** `msgspec`; `glide` types (unguarded import with an explicit
-`ImportError` + install hint). **Depended on by:** `ValkeyWorker`,
-`valkey/__init__.py`, tests.
+`ImportError` + install hint); `..config` (`TaskProcessorConfig`,
+`_validate_range`). **Depended on by:** `ValkeyWorker`, `valkey/__init__.py`,
+tests.
 
 ## 11. Valkey heartbeat schema
 

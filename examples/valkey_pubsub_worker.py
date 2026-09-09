@@ -17,6 +17,7 @@ Any message published to either channel is delivered to the
 import asyncio
 import logging
 
+import msgspec
 from glide import GlideClientConfiguration
 
 from scietex.service import (
@@ -25,8 +26,9 @@ from scietex.service import (
     ValkeyConfig,
     ValkeyNode,
     ValkeyWorker,
+    ValkeyWorkerConfig,
 )
-from scietex.service.valkey.valkey_config import generate_glide_config
+from scietex.service.valkey.config import generate_glide_config
 
 
 def parse_control_message(message, context) -> None:
@@ -43,41 +45,35 @@ def parse_control_message(message, context) -> None:
 class PubSubValkeyWorker(ValkeyWorker):
     """A Valkey worker that also listens on the PubSub control channels."""
 
-    def __init__(
-        self,
-        service_name: str,
-        version: str,
-        valkey_config: ValkeyConfig,
-        **kwargs,
-    ) -> None:
+    def __init__(self, config: ValkeyWorkerConfig | None = None) -> None:
         # Build a client configuration that subscribes to the control
         # channels instead of letting ValkeyWorker build a non-listening one.
-        client_config: GlideClientConfiguration = generate_glide_config(
-            valkey_config,
-            service_name=service_name,
-            worker_id="pubsub-example",
-            listening=True,
-            parse_control_message=parse_control_message,
-        )
-        super().__init__(
-            service_name=service_name,
-            version=version,
-            valkey_config=client_config,
-            **kwargs,
-        )
+        cfg = config if config is not None else ValkeyWorkerConfig()
+        if isinstance(cfg.valkey_config, ValkeyConfig):
+            client_config: GlideClientConfiguration = generate_glide_config(
+                cfg.valkey_config,
+                service_name=cfg.service_name,
+                worker_id="pubsub-example",
+                listening=True,
+                parse_control_message=parse_control_message,
+            )
+            cfg = msgspec.structs.replace(cfg, valkey_config=client_config)
+        super().__init__(cfg)
 
 
 async def main(config: ValkeyConfig) -> None:
     """Main function."""
 
     worker = PubSubValkeyWorker(
-        service_name="MyPubSubValkeyService",
-        version="0.0.1",
-        logging_level=logging.DEBUG,
-        heartbeat_interval=4,
-        valkey_config=config,
-        queue_size=100,
-        max_concurrent_tasks=100,
+        ValkeyWorkerConfig(
+            service_name="MyPubSubValkeyService",
+            version="0.0.1",
+            logging_level=logging.DEBUG,
+            heartbeat_interval=4,
+            valkey_config=config,
+            queue_size=100,
+            max_concurrent_tasks=100,
+        )
     )
     await worker.start()
     await worker.events["exit"].wait()

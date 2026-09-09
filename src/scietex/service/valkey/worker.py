@@ -11,7 +11,7 @@ import logging
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import msgspec
@@ -40,14 +40,15 @@ except ImportError as e:
 
 from scietex.logging import AsyncValkeyHandler
 
-from ..async_tasks_processor import AsyncTaskProcessor
 from ..task_handler import TaskData, TaskResult
-from .schemas import Heartbeat
-from .valkey_config import (
+from ..task_processor import AsyncTaskProcessor
+from .config import (
     ValkeyConfig,
+    ValkeyWorkerConfig,
     generate_glide_config,
     read_valkey_config,
 )
+from .schemas import Heartbeat
 
 DEFAULT_CLAIM_MIN_IDLE_MS: int = 1000
 """Idle floor (ms) before XAUTOCLAIM reclaims a pending entry.
@@ -83,51 +84,20 @@ class ValkeyWorker(AsyncTaskProcessor):
             during ``initialize()``.
     """
 
-    def __init__(
-        self,
-        service_name: str = "service",
-        version: str = "0.0.1",
-        conf_dir: str | Path | None = None,
-        logging_level: int | str = logging.DEBUG,
-        heartbeat_interval: float | None = None,
-        watchdog_interval: float | None = None,
-        queue_size: int | None = None,
-        max_concurrent_tasks: int | None = None,
-        valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
-        log_stream_name: str = "scietex:log",
-        task_fetch_batch_size: int = 10,
-        **kwargs,
-    ):
+    def __init__(self, config: ValkeyWorkerConfig | None = None):
         """Initialize the ``ValkeyWorker``.
 
-        Configures the Valkey client from ``valkey_config`` or by reading
-        ``valkey.yml`` from the config directory. Sets up stream names for
-        tasks, heartbeat status, and logging. The
+        Configures the Valkey client from ``config.valkey_config`` or, when
+        that is ``None``, by reading ``valkey.yml`` from the config directory.
+        Sets up stream names for tasks, heartbeat status, and logging. The
         :class:`~scietex.logging.AsyncValkeyHandler` for async log entries is
         built and registered on the first successful :meth:`connect`, sharing
         the worker's single ``GlideClient``.
 
         Args:
-            service_name: Name of the service, used for logging and identification.
-            version: Version string of the service.
-            conf_dir: Directory to use for configuration files.
-            logging_level: Logging level as string or integer.
-            heartbeat_interval: Heartbeat interval in seconds.
-            watchdog_interval: Watchdog check interval in seconds.
-            queue_size: Maximum size of the internal task queue.
-            max_concurrent_tasks: Maximum number of tasks processed concurrently.
-            valkey_config: Custom Valkey configuration. If ``None``, reads
-                ``valkey.yml`` from the config directory; on failure falls back
-                to minimal defaults. Accepts either a :class:`ValkeyConfig`
-                or a raw :class:`~glide.GlideClientConfiguration`.
-            log_stream_name: Name of the Valkey stream used for log entries.
-            task_fetch_batch_size: Maximum number of stream entries read per
-                ``XREADGROUP`` call. Batching decouples the intake rate from
-                the per-call round-trip so the internal queue can fill up to
-                ``max_concurrent_tasks`` (AR-042); a single-entry read would
-                cap effective concurrency at roughly one task per round-trip.
-            **kwargs: Additional keyword arguments passed to the parent
-                ``AsyncTaskProcessor`` constructor.
+            config: A :class:`~scietex.service.valkey.config.ValkeyWorkerConfig`
+                holding the worker's service identity, task-queue settings, and
+                Valkey-specific fields. ``None`` uses the struct defaults.
 
         Attributes:
             _client (GlideClient | None): Valkey client, initialized during
@@ -141,20 +111,15 @@ class ValkeyWorker(AsyncTaskProcessor):
             _consumer_name (str): Consumer identifier within the task group.
             _registry_key (str): Service-scoped worker registry set key.
         """
-        super().__init__(
-            service_name=service_name,
-            version=version,
-            conf_dir=conf_dir,
-            logging_level=logging_level,
-            heartbeat_interval=heartbeat_interval,
-            watchdog_interval=watchdog_interval,
-            queue_size=queue_size,
-            max_concurrent_tasks=max_concurrent_tasks,
-            **kwargs,
-        )
-        self._log_stream_name = log_stream_name
-        if valkey_config is None:
-            valkey_config = read_valkey_config(self.conf_dir)
+        super().__init__(config)
+        cfg = config if config is not None else ValkeyWorkerConfig()
+        # The base stores WorkerConfig()/TaskProcessorConfig() when config is
+        # None; re-store the full ValkeyWorkerConfig so fetch_tasks can read
+        # task_fetch_batch_size off self._config.
+        self._config = cfg
+
+        self._log_stream_name = cfg.log_stream_name
+        valkey_config = read_valkey_config(self.conf_dir) if cfg.valkey_config is None else cfg.valkey_config
         self._valkey_config = valkey_config
         if isinstance(valkey_config, GlideClientConfiguration):
             self._client_config = valkey_config
@@ -187,10 +152,6 @@ class ValkeyWorker(AsyncTaskProcessor):
         # True once pending-entry recovery has run (start of the first
         # fetch_tasks), so a crash's unacked entries are redelivered once.
         self._recovered: bool = False
-
-        # Number of stream entries read per XREADGROUP call (AR-042). Clamped
-        # to >= 1 so a misconfiguration cannot disable intake.
-        self._task_fetch_batch_size: int = max(1, task_fetch_batch_size)
 
     @property
     def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
@@ -570,7 +531,9 @@ class ValkeyWorker(AsyncTaskProcessor):
                 {self._task_stream_name: ">"},
                 self._task_group_name,
                 self._consumer_name,
-                StreamReadGroupOptions(count=self._task_fetch_batch_size, block_ms=1000),
+                StreamReadGroupOptions(
+                    count=cast(ValkeyWorkerConfig, self._config).task_fetch_batch_size, block_ms=1000
+                ),
             )
             if res:
                 for stream, entries in res.items():

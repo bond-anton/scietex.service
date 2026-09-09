@@ -45,9 +45,11 @@ transport-agnostic ack/result-sink seam. `ValkeyWorker` overrides it to
 still acked (the retry copy is lost, but the entry must not stay pending
 forever).
 
-**Async boundaries:** `asyncio.Queue` (bounded, `queue_size` default 2) between
+**Async boundaries:** `asyncio.Queue` (bounded, `queue_size` default 100) between
 intake and dispatch; per-task `asyncio.Task`; concurrency cap
-`max_concurrent_tasks` (default 2).
+`max_concurrent_tasks` (default 10). When `TaskProcessorConfig.auto_tune` is
+`True` and `max_concurrent_tasks` is unset, the cap is derived from
+`os.cpu_count()` at startup instead of the static default.
 
 ## F2. Valkey task intake / transport (ValkeyWorker)
 
@@ -156,18 +158,18 @@ timeout (`logger_handler_timeout`, default 2 s).
 `utils/conf.py:33`), i.e. `valkey.yml` in the chosen dir, or programmatic
 `ValkeyConfig`.
 
-**Path:** `ValkeyWorker.__init__` (142-153): if no `valkey_config` argument,
+**Path:** `ValkeyWorker.__init__`: if `config.valkey_config` is `None`,
 `read_valkey_config(self.conf_dir)` loads or creates `valkey.yml`
 (msgspec YAML, strict decode; a present-but-invalid file raises `RuntimeError`,
 only a missing file is created with defaults) →
 `ValkeyConfig` → `generate_glide_config(...)` → `GlideClientConfiguration`
-→ `GlideClient.create` in `connect()` (255).
+→ `GlideClient.create` in `connect()`.
 
 ## F8. Control / PubSub (defined but unused in package)
 
 `generate_glide_config` supports `listening=True` + `parse_control_message`
 callback → subscribes to channels `scietex:{service}:{instance_id}` and
-`scietex:broadcast` (valkey_config.py:314-325). **`ValkeyWorker` always
+`scietex:broadcast` (valkey/config.py:344-355). **`ValkeyWorker` always
 passes `listening=False`**; nothing in the package consumes control messages.
 The PubSub path exists only in config/translation code (`UNKNOWN` consumers —
 likely future or external).

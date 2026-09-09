@@ -11,6 +11,7 @@ from scietex.service import (
     ValkeyConfig,
     ValkeyNode,
     ValkeyWorker,
+    ValkeyWorkerConfig,
 )
 
 
@@ -18,13 +19,15 @@ async def main(config: ValkeyConfig | None) -> None:
     """Main function."""
 
     worker = ValkeyWorker(
-        service_name="MyValkeyService",
-        version="0.0.1",
-        logging_level=logging.DEBUG,
-        heartbeat_interval=4,
-        valkey_config=config,
-        queue_size=100,
-        max_concurrent_tasks=100,
+        ValkeyWorkerConfig(
+            service_name="MyValkeyService",
+            version="0.0.1",
+            logging_level=logging.DEBUG,
+            heartbeat_interval=4,
+            valkey_config=config,
+            queue_size=100,
+            max_concurrent_tasks=100,
+        )
     )
     await worker.start()
     await worker.events["exit"].wait()

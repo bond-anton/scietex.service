@@ -3,7 +3,7 @@
 import pytest
 
 from scietex.service import ValkeyWorker
-from scietex.service.valkey.valkey_config import ValkeyConfig
+from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
 
 class DummyClient:
@@ -66,7 +66,7 @@ async def test_connect_success(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     ok = await worker.connect()
     assert ok is True
     assert worker.client is not None
@@ -75,7 +75,7 @@ async def test_connect_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_disconnect_closes_client(monkeypatch):
     # Create a worker and attach a dummy client
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     client = DummyClient()
     worker._client = client
 
@@ -107,7 +107,7 @@ async def test_logging_handler_created_on_connect(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     assert worker._valkey_handler is None  # not built until connect
 
     ok = await worker.connect()
@@ -131,7 +131,7 @@ async def test_connect_ping_failure_clears_client(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     ok = await worker.connect()
     assert ok is False
     assert worker.client is None, "failed ping must clear _client"
@@ -149,7 +149,7 @@ async def test_connect_create_failure_leaves_client_none(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     ok = await worker.connect()
     assert ok is False
     assert worker.client is None
@@ -171,7 +171,7 @@ async def test_initialize_group_already_exists_succeeds(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     ok = await worker.initialize()
     assert ok is True
 
@@ -189,7 +189,7 @@ async def test_initialize_group_create_failure_fails(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     ok = await worker.initialize()
     assert ok is False
 
@@ -210,7 +210,7 @@ async def test_fetch_tasks_does_not_ack_on_enqueue():
     task_data = TaskData(task="dummy", payload=b"{}")
     payload = msgspec.msgpack.encode(task_data)
     client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
 
     await worker.fetch_tasks()
@@ -234,7 +234,7 @@ async def test_fetch_tasks_reads_batch_and_reports_enqueued():
     task_data = TaskData(task="dummy", payload=b"{}")
     payload = msgspec.msgpack.encode(task_data)
     client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
-    worker = ValkeyWorker(valkey_config=ValkeyConfig(), task_fetch_batch_size=25)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig(), task_fetch_batch_size=25))
     worker._client = client
 
     enqueued = await worker.fetch_tasks()
@@ -251,7 +251,7 @@ async def test_fetch_tasks_reports_nothing_when_stream_empty():
     """fetch_tasks must return False when no entries are read, so the intake
     manager backs off instead of busy-polling (AR-042)."""
     client = DummyClient(xreadgroup_result=None)
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
 
     enqueued = await worker.fetch_tasks()
@@ -261,20 +261,12 @@ async def test_fetch_tasks_reports_nothing_when_stream_empty():
 
 
 @pytest.mark.asyncio
-async def test_fetch_tasks_batch_size_clamped_to_at_least_one():
-    """A task_fetch_batch_size below 1 must be clamped to 1 so intake cannot be
-    disabled by misconfiguration (AR-042)."""
-    worker = ValkeyWorker(valkey_config=ValkeyConfig(), task_fetch_batch_size=0)
-    assert worker._task_fetch_batch_size == 1
-
-
-@pytest.mark.asyncio
 async def test_on_task_completed_acks_and_deletes_entry():
     """on_task_completed must XACK+XDEL the recorded entry id and clear the map (AR-005)."""
     from uuid import UUID
 
     client = DummyClient()
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     worker._task_entry_ids[t_id] = b"1-0"
@@ -304,7 +296,7 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
             [],
         ]
     )
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
 
     await worker._recover_pending_tasks()
@@ -317,8 +309,8 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
 
 
 def test_two_workers_share_stream_group_differ_in_consumer_status():
-    a = ValkeyWorker(service_name="svc", valkey_config=ValkeyConfig())
-    b = ValkeyWorker(service_name="svc", valkey_config=ValkeyConfig())
+    a = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    b = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
 
     assert a._task_stream_name == b._task_stream_name == "scietex:svc:tasks"
     assert a._task_group_name == b._task_group_name == "scietex:svc:task_group"
@@ -326,6 +318,15 @@ def test_two_workers_share_stream_group_differ_in_consumer_status():
     assert a._heartbeat_key != b._heartbeat_key
     assert a._consumer_name == f"scietex:svc:{a.instance_id}"
     assert a._heartbeat_key == f"scietex:svc:{a.instance_id}:status"
+
+
+def test_auto_tune_derives_concurrency_from_cpu_count():
+    """auto_tune is inherited from TaskProcessorConfig: a ValkeyWorkerConfig with
+    auto_tune=True and no max_concurrent_tasks derives it from the CPU count."""
+    import os
+
+    worker = ValkeyWorker(ValkeyWorkerConfig(auto_tune=True, valkey_config=ValkeyConfig()))
+    assert worker.max_concurrent_tasks == max(1, os.cpu_count() or 1)
 
 
 @pytest.mark.asyncio
@@ -342,7 +343,7 @@ async def test_disconnect_closes_shared_client_once(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     await worker.connect()
     client = worker.client
     handler = worker._valkey_handler
@@ -369,7 +370,7 @@ async def test_cleanup_stops_logging_before_disconnect(monkeypatch):
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
-    worker = ValkeyWorker(valkey_config=ValkeyConfig())
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     ok = await worker.connect()
     assert ok is True
     handler = worker._valkey_handler

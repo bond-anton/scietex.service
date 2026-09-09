@@ -8,39 +8,31 @@ monitoring (watchdog), handler dispatch, and graceful shutdown support.
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Mapping
-from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 from uuid import UUID
 
-from .basic_async_worker import BasicAsyncWorker, ServiceStatus
+from .basic_worker import BasicAsyncWorker, ServiceStatus
+from .config import (
+    DEFAULT_MANAGER_SLEEP_TIME,
+    DEFAULT_MAX_CONCURRENT_TASKS,
+    DEFAULT_MAX_TASKS_QUEUE_SIZE,
+    DEFAULT_TASK_HANDLER_START_TIMEOUT,
+    DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+    TaskProcessorConfig,
+)
 from .manager import Manager
 from .task_handler import TaskData, TaskHandler, TaskHandlerContext, TaskResult, TaskTracker
-
-DEFAULT_MAX_TASKS_QUEUE_SIZE = 2
-"""Default maximum number of tasks queue size."""
-DEFAULT_MAX_CONCURRENT_TASKS = 2
-"""Default maximum number of concurrent tasks that can be processed."""
 
 DEFAULT_TASK_TIMEOUT = 3  # Timeout in seconds for task completion
 """Timeout in seconds for task completion before cancellation."""
 
 TASK_QUEUE_FETCH_TIMEOUT: float = 1
 
-DEFAULT_MANAGER_SLEEP_TIME: float = 0.01
-MIN_MANAGER_SLEEP_TIME: float = 0.001
-MAX_MANAGER_SLEEP_TIME: float = 1
-
 WORKER_TASK_CANCELLATION_TIMEOUT: float = 5
-
-MIN_TASK_HANDLER_START_TIMEOUT: float = 1
-MAX_TASK_HANDLER_START_TIMEOUT: float = 60
-DEFAULT_TASK_HANDLER_START_TIMEOUT: float = 5
-
-MIN_TASK_HANDLER_STOP_TIMEOUT: float = 1
-MAX_TASK_HANDLER_STOP_TIMEOUT: float = 60
-DEFAULT_TASK_HANDLER_STOP_TIMEOUT: float = 5
 
 
 class AsyncTaskProcessor(BasicAsyncWorker):
@@ -67,86 +59,45 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         max_concurrent_tasks (int): Maximum concurrent task count.
     """
 
-    def __init__(
-        self,
-        service_name: str = "service",
-        version: str = "0.0.1",
-        conf_dir: str | Path | None = None,
-        logging_level: int | str = logging.DEBUG,
-        heartbeat_interval: float | None = None,
-        watchdog_interval: float | None = None,
-        queue_size: int | None = None,
-        max_concurrent_tasks: int | None = None,
-        **kwargs,
-    ):
+    def __init__(self, config: TaskProcessorConfig | None = None):
         """
         Initialize the AsyncTaskProcessor.
 
         Args:
-            service_name: Name of the service, used for logging and identification.
-            version: Version string of the service.
-            conf_dir: Directory to use for configuration files.
-            logging_level: Logging level as string or integer.
-            heartbeat_interval: Heartbeat interval in seconds.
-            watchdog_interval: Watchdog check interval in seconds.
-            queue_size: Maximum size of the internal task queue.
-            max_concurrent_tasks: Maximum number of tasks processed concurrently.
-            **kwargs: Additional keyword arguments passed to the parent
-                ``BasicAsyncWorker`` constructor. May include
-                ``task_manager_sleep_time``, ``task_queue_manager_sleep_time``,
-                ``logger_handler_timeout``, and ``manager_shutdown_timeout``.
+            config: A :class:`~scietex.service.config.TaskProcessorConfig`
+                holding the worker's service identity and task-queue /
+                handler-lifecycle settings. ``None`` uses the struct defaults.
+                A ``None`` timing/count field resolves to its ``DEFAULT_*``
+                constant at read time; an out-of-range value is rejected at
+                construction.
         """
-        super().__init__(
-            service_name=service_name,
-            version=version,
-            conf_dir=conf_dir,
-            logging_level=logging_level,
-            heartbeat_interval=heartbeat_interval,
-            watchdog_interval=watchdog_interval,
-            **kwargs,
-        )
+        super().__init__(config)
+        cfg = config if config is not None else TaskProcessorConfig()
+        # The base stores WorkerConfig() when config is None; re-store the full
+        # TaskProcessorConfig so the read-time getters below have its fields.
+        self._config = cfg
 
         self.__task_handlers_map: dict[str, type[TaskHandler]] = {}
         self.__task_handlers: dict[str, TaskHandler] = {}
 
         # Initialize queues and tracking structures
         self.__running_tasks: dict[UUID, TaskTracker] = {}  # Track running tasks
-        self.__queue_size: int = queue_size if queue_size is not None else DEFAULT_MAX_TASKS_QUEUE_SIZE
-        self.__max_concurrent_tasks: int = max(1, max_concurrent_tasks or DEFAULT_MAX_CONCURRENT_TASKS)
+        self.__queue_size: int = cfg.queue_size if cfg.queue_size is not None else DEFAULT_MAX_TASKS_QUEUE_SIZE
+        if cfg.max_concurrent_tasks is not None:
+            self.__max_concurrent_tasks: int = cfg.max_concurrent_tasks
+        elif cfg.auto_tune:
+            cpu_count = os.cpu_count() or 1
+            self.__max_concurrent_tasks: int = max(1, cpu_count)
+            self.logger.log(
+                logging.INFO,
+                "Auto-tuned max_concurrent_tasks to %d (from %d CPUs)",
+                self.__max_concurrent_tasks,
+                cpu_count,
+            )
+        else:
+            self.__max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS
 
         self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
-
-        self.__task_manager_sleep_time: float = min(
-            MAX_MANAGER_SLEEP_TIME,
-            max(
-                MIN_MANAGER_SLEEP_TIME,
-                kwargs.get("task_manager_sleep_time", DEFAULT_MANAGER_SLEEP_TIME),
-            ),
-        )
-
-        self.__task_queue_manager_sleep_time: float = min(
-            MAX_MANAGER_SLEEP_TIME,
-            max(
-                MIN_MANAGER_SLEEP_TIME,
-                kwargs.get("task_queue_manager_sleep_time", DEFAULT_MANAGER_SLEEP_TIME),
-            ),
-        )
-
-        self.__task_handler_start_timeout: float = min(
-            MAX_TASK_HANDLER_START_TIMEOUT,
-            max(
-                MIN_TASK_HANDLER_START_TIMEOUT,
-                kwargs.get("task_handler_start_timeout", DEFAULT_TASK_HANDLER_START_TIMEOUT),
-            ),
-        )
-
-        self.__task_handler_stop_timeout: float = min(
-            MAX_TASK_HANDLER_STOP_TIMEOUT,
-            max(
-                MIN_TASK_HANDLER_STOP_TIMEOUT,
-                kwargs.get("task_handler_stop_timeout", DEFAULT_TASK_HANDLER_STOP_TIMEOUT),
-            ),
-        )
 
     @property
     def task_handlers(self) -> Mapping[str, TaskHandler]:
@@ -210,103 +161,57 @@ class AsyncTaskProcessor(BasicAsyncWorker):
 
     @property
     def task_manager_sleep_time(self) -> float:
-        """Sleep time in seconds between task manager loop iterations."""
-        return self.__task_manager_sleep_time
+        """Sleep time in seconds between task manager loop iterations (read-only).
 
-    @task_manager_sleep_time.setter
-    def task_manager_sleep_time(self, delay: float | None) -> None:
+        A ``None`` configuration value resolves to
+        ``DEFAULT_MANAGER_SLEEP_TIME``; a non-``None`` value is validated against
+        ``[MIN_MANAGER_SLEEP_TIME, MAX_MANAGER_SLEEP_TIME]`` at construction.
         """
-        Set the sleep time for the task manager loop.
-
-        Args:
-            delay: Sleep time in seconds, clamped between MIN_MANAGER_SLEEP_TIME
-                and MAX_MANAGER_SLEEP_TIME, or None to use DEFAULT_MANAGER_SLEEP_TIME
-        """
-        self.__task_manager_sleep_time: float = min(
-            MAX_MANAGER_SLEEP_TIME,
-            max(MIN_MANAGER_SLEEP_TIME, delay or DEFAULT_MANAGER_SLEEP_TIME),
-        )
+        v = cast(TaskProcessorConfig, self._config).task_manager_sleep_time
+        return v if v is not None else DEFAULT_MANAGER_SLEEP_TIME
 
     @property
     def task_queue_manager_sleep_time(self) -> float:
-        """Sleep time in seconds between task queue manager loop iterations."""
-        return self.__task_queue_manager_sleep_time
+        """Sleep time in seconds between task queue manager loop iterations (read-only).
 
-    @task_queue_manager_sleep_time.setter
-    def task_queue_manager_sleep_time(self, delay: float | None) -> None:
+        A ``None`` configuration value resolves to
+        ``DEFAULT_MANAGER_SLEEP_TIME``; a non-``None`` value is validated against
+        ``[MIN_MANAGER_SLEEP_TIME, MAX_MANAGER_SLEEP_TIME]`` at construction.
         """
-        Set the sleep time for the task queue manager loop.
-
-        Args:
-            delay: Sleep time in seconds, clamped between MIN_MANAGER_SLEEP_TIME
-                and MAX_MANAGER_SLEEP_TIME, or None to use DEFAULT_MANAGER_SLEEP_TIME
-        """
-        self.__task_queue_manager_sleep_time: float = min(
-            MAX_MANAGER_SLEEP_TIME,
-            max(MIN_MANAGER_SLEEP_TIME, delay or DEFAULT_MANAGER_SLEEP_TIME),
-        )
+        v = cast(TaskProcessorConfig, self._config).task_queue_manager_sleep_time
+        return v if v is not None else DEFAULT_MANAGER_SLEEP_TIME
 
     @property
     def task_handler_start_timeout(self) -> float:
         """Timeout in seconds for starting task handlers (read-only).
 
-        Clamped between ``MIN_TASK_HANDLER_START_TIMEOUT`` and
-        ``MAX_TASK_HANDLER_START_TIMEOUT``.
+        A ``None`` configuration value resolves to
+        ``DEFAULT_TASK_HANDLER_START_TIMEOUT``; a non-``None`` value is validated
+        against
+        ``[MIN_TASK_HANDLER_START_TIMEOUT, MAX_TASK_HANDLER_START_TIMEOUT]``
+        at construction.
 
         Returns:
             The current task handler start timeout in seconds.
         """
-        return self.__task_handler_start_timeout
-
-    @task_handler_start_timeout.setter
-    def task_handler_start_timeout(self, timeout: float | None) -> None:
-        """
-        Set the timeout for starting task handlers.
-
-        Args:
-            timeout: Timeout in seconds, clamped between
-                ``MIN_TASK_HANDLER_START_TIMEOUT`` and
-                ``MAX_TASK_HANDLER_START_TIMEOUT``, or None to use
-                ``DEFAULT_TASK_HANDLER_START_TIMEOUT``.
-        """
-        self.__task_handler_start_timeout = min(
-            MAX_TASK_HANDLER_START_TIMEOUT,
-            max(
-                MIN_TASK_HANDLER_START_TIMEOUT,
-                timeout or DEFAULT_TASK_HANDLER_START_TIMEOUT,
-            ),
-        )
+        v = cast(TaskProcessorConfig, self._config).task_handler_start_timeout
+        return v if v is not None else DEFAULT_TASK_HANDLER_START_TIMEOUT
 
     @property
     def task_handler_stop_timeout(self) -> float:
         """Timeout in seconds for stopping task handlers (read-only).
 
-        Clamped between ``MIN_TASK_HANDLER_STOP_TIMEOUT`` and
-        ``MAX_TASK_HANDLER_STOP_TIMEOUT``.
+        A ``None`` configuration value resolves to
+        ``DEFAULT_TASK_HANDLER_STOP_TIMEOUT``; a non-``None`` value is validated
+        against
+        ``[MIN_TASK_HANDLER_STOP_TIMEOUT, MAX_TASK_HANDLER_STOP_TIMEOUT]``
+        at construction.
 
         Returns:
             The current task handler stop timeout in seconds.
         """
-        return self.__task_handler_stop_timeout
-
-    @task_handler_stop_timeout.setter
-    def task_handler_stop_timeout(self, timeout: float | None) -> None:
-        """
-        Set the timeout for stopping task handlers.
-
-        Args:
-            timeout: Timeout in seconds, clamped between
-                ``MIN_TASK_HANDLER_STOP_TIMEOUT`` and
-                ``MAX_TASK_HANDLER_STOP_TIMEOUT``, or None to use
-                ``DEFAULT_TASK_HANDLER_STOP_TIMEOUT``.
-        """
-        self.__task_handler_stop_timeout = min(
-            MAX_TASK_HANDLER_STOP_TIMEOUT,
-            max(
-                MIN_TASK_HANDLER_STOP_TIMEOUT,
-                timeout or DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
-            ),
-        )
+        v = cast(TaskProcessorConfig, self._config).task_handler_stop_timeout
+        return v if v is not None else DEFAULT_TASK_HANDLER_STOP_TIMEOUT
 
     def add_task_handler(self, handler_class: type[TaskHandler]) -> None:
         """Register a task handler class.

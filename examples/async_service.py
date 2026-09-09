@@ -3,7 +3,7 @@
 import asyncio
 import random
 
-from scietex.service import BasicAsyncWorker, Manager
+from scietex.service import BasicAsyncWorker, Manager, WorkerConfig
 
 
 class MyService(BasicAsyncWorker):
@@ -51,11 +51,13 @@ class MyService(BasicAsyncWorker):
 
 async def main():
     worker = MyService(
-        service_name="my_daemon",
-        version="1.0.0",
-        heartbeat_interval=15,
-        watchdog_interval=5,
-        logging_level="DEBUG",
+        WorkerConfig(
+            service_name="my_daemon",
+            version="1.0.0",
+            heartbeat_interval=15,
+            watchdog_interval=5,
+            logging_level="DEBUG",
+        )
     )
 
     await worker.start()
