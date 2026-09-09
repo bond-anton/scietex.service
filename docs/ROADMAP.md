@@ -20,7 +20,7 @@ replicas can consume one shared queue:
 - status/heartbeat key: `scietex:{service}:{instance_id}:status` (worker-scoped)
 - worker registry: `scietex:{service}:workers` (service-scoped set; SADD on
   startup, SREM on shutdown; liveness is the status-key TTL, not set membership)
-- `XAUTOCLAIM` recovery floor raised to `DEFAULT_CLAIM_MIN_IDLE_MS = 1000` so a
+- `XAUTOCLAIM` recovery floor raised to `claim_min_idle_ms` (default 1000 ms) so a
   replica's startup recovery does not claim entries a slow-but-alive handler on
   another replica is still processing.
 
@@ -117,6 +117,13 @@ and obscuring ownership.
 module's public API. Pure move, no logic changes.
 
 **Status: implemented** in v4.0.0 (commit `91b0afe`).
+
+> **Follow-up (AR-065):** the `__init__.py` re-exports this grouping introduced
+> (`ManagerRuntime` from `manager/__init__.py`, `LoggingLifecycle` from
+> `log_handlers/__init__.py`) caused circular imports and were removed. These
+> symbols are now importable only from their real homes
+> (`scietex.service.manager.runtime.ManagerRuntime`,
+> `scietex.service.log_handlers.lifecycle.LoggingLifecycle`).
 
 ## v4 — migrate to scietex.logging 2.0.0 API
 

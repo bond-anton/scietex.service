@@ -53,7 +53,7 @@ Interaction notes:
   asyncio tasks are created for periodic/background behavior (manager tasks,
   logger tasks inside handlers). Manager and logging bookkeeping are delegated
   to `ManagerRuntime` and `LoggingLifecycle`, which the worker constructs in
-  `__init__` (basic_worker.py:107-108).
+  `__init__` (basic_worker.py:114-115).
 - **Handlers are invoked by the processor, not by the worker.** Dispatch is
   type-based: first active handler whose `supports(task_type)` returns `True`
   wins.
@@ -72,6 +72,8 @@ The package is a library. Each runnable artifact is a consumer:
 | Entry | Class used | Behavior |
 |---|---|---|
 | `examples/basic_worker.py` | `BasicWorker` + custom `@Manager("cruncher")` | Minimal daemon; prints logo; runs managers until SIGINT/SIGTERM |
+| `examples/manager_cleanup.py` | `BasicWorker` + `@Manager(name="data_pump", cleanup=...)` | Manager `cleanup` callable runs on shutdown (AR-067) |
+| `examples/manager_collision.py` | `BasicWorker` + two `@Manager(name="worker")` | Name-collision WARNING; first (most-derived) definition wins (AR-068) |
 | `examples/task_processor.py` | `TaskProcessor` + three `TaskHandler`s + in-memory source | Feeds tasks from an in-memory list, processes concurrently |
 | `examples/named_task_handlers.py` | `TaskProcessor` + one handler class registered under two names (AR-053) | Splits one class's task types across named instances |
 | `examples/stateful_handler.py` | `TaskProcessor` + one handler injected with a shared `SharedCounter` via `**handler_kwargs` | Mutates shared state across tasks; the injected object survives handler re-instantiation |
@@ -91,14 +93,14 @@ asyncio.run(main())  # SIGINT/SIGTERM → exit() → STOPPED
 ```
 
 Two constraints now derive from signal handling in `BasicWorker.start` /
-`stop` (basic_worker.py:453, 538):
+`stop` (basic_worker.py:459, 548):
 
 1. A worker can be constructed **anywhere** — `__init__` no longer calls
    `asyncio.get_running_loop()`; the running loop is only touched in `start()`
    and `stop()`.
 2. Signal handlers (SIGINT/SIGTERM) are registered per instance in `start()`
-   (`_setup_signal_handlers`, 319) and removed in `stop()`
-   (`_remove_signal_handlers`, 349). Registration is a Windows-safe no-op when
+   (`_setup_signal_handlers`, 350) and removed in `stop()`
+   (`_remove_signal_handlers`, 380). Registration is a Windows-safe no-op when
    `loop.add_signal_handler` is unavailable. Because registration happens on
    `start()` rather than construction, the **last started worker in a process**
    owns the signals.
@@ -112,7 +114,7 @@ process/loop:
 |---|---|---|
 | `Start` task → `_startup()` | `BasicWorker.start()` | state → `RUNNING` (or init failure → `stop()`) |
 | `Stop` task → `_shutdown()` | `BasicWorker.stop()` / signal | state → `STOPPED`, `exit` event set |
-| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_worker.py:336, AR-033) | one shutdown; repeat signals short-circuit |
+| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_worker.py:367, AR-033) | one shutdown; repeat signals short-circuit |
 | Manager task `Heartbeat` → `_heartbeat_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `Watchdog` → `_watchdog_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `TaskManager` → `task_manager` (processor only) | `ManagerRuntime.start_managers()` | cancelled on shutdown |

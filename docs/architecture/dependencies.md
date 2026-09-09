@@ -13,7 +13,7 @@ scietex.service (public API)                 __init__.py
 valkey  (valkey/worker.py)
    │ extends │ imports
    ▼         ▼
-task_processor ──► task_handler (basic ─► schemas)
+task_processor ──► task_handler (basic ─► schemas; wire)
    │ extends
    ▼
 basic_worker ──► manager
@@ -43,11 +43,11 @@ glide (valkey-glide, optional)                              [external]
 | `task_processor` | `basic_worker` | inheritance | extends |
 | `task_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `task_processor` | `.manager` | import | for `@Manager` decorators |
-| `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskResult`, `TaskTracker` |
+| `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskHandlerContext`, `TaskResult`, `TaskTracker` |
 | `task_handler.basic` | `.schemas` | import | runtime |
 | `task_handler.basic` | `.context` | import | `TaskHandlerContext` (narrow context; no worker reference) |
 | `valkey.worker` | `task_processor` | inheritance | `ValkeyWorker(TaskProcessor)` |
-| `valkey.worker` | `.task_handler` | import | `TaskData` |
+| `valkey.worker` | `.task_handler`, `.task_handler.wire` | import | `TaskData`, `TaskResult`, `encode_task_envelope`/`decode_task_envelope` |
 | `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
 | `valkey.worker` | `glide` | import (external, optional extra) | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); errors surface to top-level guard |
@@ -111,7 +111,8 @@ glide (valkey-glide, optional)                              [external]
 
 1. **Task path (wire)**:
    `ValkeyWorker.return_task_to_queue/fetch_tasks`
-   → `msgspec.msgpack.encode/decode(TaskData)`
+   → `encode_task_envelope`/`decode_task_envelope`
+   (`task_handler/wire.py`, msgpack `TaskEnvelope` wrapping a `TaskData`)
    → `task_handler.schemas.TaskData` → `TaskProcessor.process_task` →
    `TaskHandler.handle` → `TaskResult`.
 2. **Config path**: `BasicWorker.conf_dir` → `read_valkey_config`

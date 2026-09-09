@@ -206,7 +206,9 @@ discovers them via the class MRO and runs each as an `asyncio.Task`:
 2. **Error** — On any exception (except `CancelledError`), the error is
    recorded and the manager is automatically restarted, up to
    `manager_max_retries` consecutive failures (default 5), after which
-   the manager gives up and stops restarting.
+   the manager gives up and ends in the terminal `FAILED` state
+   (observable via `worker.failed_managers`; the watchdog logs CRITICAL
+   but does not auto-shutdown).
 3. **Stop** — On shutdown, managers are cancelled and their optional
    `cleanup` callbacks are invoked.
 
@@ -249,6 +251,7 @@ All schemas are frozen `msgspec.Struct` instances (immutable).
 | `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes), plus error-taxonomy fields `error_code`, `retryable`, `partial` |
 | `TaskTimeout` | Timeout config: `timeout` (seconds, `None` for default 3s), `timeout_action` ("requeue"/"discard") |
 | `TaskTracker` | Internal: tracks running `asyncio.Task`, associated `TaskData`, and monotonic start time |
+| `TaskEnvelope` | Versioned transport envelope: `version` (int, `1`) wrapping `data` (serialized `TaskData` bytes) — the durable on-the-wire format |
 
 ## Configuration
 
@@ -299,7 +302,9 @@ advanced_config:
 
 If the file is missing, it is created with default values. If the file is
 present but invalid, a ``RuntimeError`` is raised and the file is left
-untouched.
+untouched. The read (and the default-file write) is deferred to the first
+`connect()`/`initialize()` call — constructing `ValkeyWorker()` with no
+explicit `valkey_config` does not touch the filesystem (AR-066).
 
 ## API Reference
 
@@ -333,6 +338,9 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `TaskResult` | Task result schema |
 | `TaskTimeout` | Timeout configuration schema |
 | `TaskTracker` | Internal task tracker schema |
+| `TaskEnvelope` | Versioned transport envelope (version + serialized payload bytes) |
+| `encode_task_envelope` | Wrap a `TaskData` in a versioned envelope and msgpack-encode it |
+| `decode_task_envelope` | Decode an envelope back to a `TaskData` (returns `None` on invalid/unknown version) |
 
 ### Exported from `scietex.service.valkey`
 
@@ -345,6 +353,8 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `ValkeyUserCredentials` | Authentication credentials |
 | `ValkeyBackoffStrategy` | Reconnection backoff config |
 | `ValkeyTlsAdvancedConfiguration` | TLS settings |
+| `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |
+| `purge_task_stream` | Standalone operational utility to purge a task stream |
 
 ## Development
 

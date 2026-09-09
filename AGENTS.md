@@ -76,6 +76,7 @@ is created.
 **Valkey config:**
 - Reads `valkey.yml` from config dir (YAML, uses `msgspec.yaml.decode`)
 - Raises RuntimeError if the file is present but invalid; creates defaults only if missing
+- Read deferred to first `connect()` (AR-066): constructing `ValkeyWorker()` with no explicit `valkey_config` does not touch the filesystem
 - Install extras: `uv sync --extra valkey` or `pip install "scietex.service[valkey]"`
 
 ## Task Handler System
@@ -90,6 +91,7 @@ is created.
 - `TaskData`: `task: str`, `payload: bytes`, `timeout: TaskTimeout`, `canceled_action: "requeue"|"discard"`
 - `TaskResult`: `status: "success"|"error"`, `error: str`, `payload: bytes`, `processed_at: datetime`, `error_code: str`, `retryable: bool`, `partial: bool`
 - `TaskTimeout`: `timeout: float | None`, `timeout_action: "requeue"|"discard"`
+- `TaskEnvelope`: `version: int = 1`, `data: bytes` — versioned transport envelope; encode/decode via `task_handler.wire` (`encode_task_envelope`/`decode_task_envelope`)
 
 ## Testing
 
@@ -108,5 +110,5 @@ is created.
 - **Logging is async** — uses `ConsoleHandler` and `AsyncValkeyHandler` (both subclass `AsyncLoggingHandler`); shutdown has timeout
 - **Manager restart** — fails restarts automatically on error (except `CancelledError`), up to `manager_max_retries` consecutive failures (default 5), after which it gives up
 - **Valkey stream names:** `scietex:{service_name}:tasks` with group `scietex:{service_name}:task_group`
-- **Timeout defaults:** `DEFAULT_TASK_TIMEOUT = 3s`, `DEFAULT_HEARTBEAT_INTERVAL = 10s`, `DEFAULT_WATCHDOG_INTERVAL = 1s`
+- **Timeout defaults:** `task_timeout` (config `TaskProcessorConfig.task_timeout`) = 3s, `heartbeat_interval` = 10s, `watchdog_interval` = 1s
 - **Python 3.10+ required** (per `requires-python = ">=3.10"`)

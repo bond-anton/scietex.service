@@ -7,7 +7,7 @@ Layout of the repository and the Python package.
 | Path | Contents |
 |---|---|
 | `src/scietex/service/` | The package (see below). Marked PEP 561 via `py.typed` |
-| `examples/` | Runnable blueprints: `basic_worker.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py` |
+| `examples/` | Runnable blueprints: `basic_worker.py`, `manager_cleanup.py`, `manager_collision.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py` |
 | `tests/` | Pytest suite, one file per component plus `test_version.py`; Valkey tests mock `GlideClient` (no server needed) |
 | `docs/` | Usage docs (`index.md`, per-component guides); `docs/architecture/` is this map |
 | `pyproject.toml` | Package metadata, deps, extras (`valkey`, `dev`, `test`, `lint`), setuptools build config, and pytest config (`[tool.pytest.ini_options]`) |

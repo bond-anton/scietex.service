@@ -18,6 +18,7 @@ The system consists of:
 - **`TaskResult`** — Standardized result returned by handlers
 - **`TaskTimeout`** — Configuration for task timeout behavior
 - **`TaskTracker`** — Internal structure for monitoring running tasks
+- **`TaskEnvelope`** — Versioned transport envelope for the durable wire format
 
 ## Handler Lifecycle
 
@@ -207,6 +208,42 @@ class TaskTracker(msgspec.Struct, frozen=True):
 | `worker_task` | `asyncio.Task` | The async task executing this work |
 | `data` | `TaskData` | Associated task data |
 | `started` | `int` or `float` | Monotonic timestamp when created |
+
+### TaskEnvelope
+
+Versioned transport envelope (AR-064). The durable on-the-wire format for a
+task is this envelope, not a bare `TaskData`, so the transport format can
+evolve independently of the handler contract:
+
+```python
+class TaskEnvelope(msgspec.Struct, frozen=True):
+    version: int = 1   # Wire-format version
+    data: bytes = b""  # Serialized task payload (version 1: msgpack TaskData)
+```
+
+| Field | Type | Default | Description |
+|---|---|---|
+| `version` | `int` | `1` | Wire-format version |
+| `data` | `bytes` | `b""` | Serialized task payload; version 1 wraps a msgpack-encoded `TaskData` |
+
+### Wire Format
+
+The durable stream value is
+`msgpack(TaskEnvelope(version=1, data=msgpack(TaskData)))`. Two
+transport-agnostic helpers centralize encoding/decoding
+(`scietex.service.task_handler.wire`, exported from
+`scietex.service.task_handler`):
+
+- `encode_task_envelope(task_data: TaskData) -> bytes` — wraps a `TaskData`
+  into the versioned envelope and msgpack-encodes it.
+- `decode_task_envelope(payload: bytes) -> TaskData | None` — decodes an
+  envelope back to a `TaskData`; returns `None` on an invalid payload or an
+  unknown version so callers skip the entry without crashing intake.
+
+Handlers never see the envelope — they receive the decoded `TaskData` and
+their contract is unchanged. See
+[ValkeyWorker — Wire Format](valkey_worker.md#wire-format) for the transport
+contract.
 
 ## Integration with TaskProcessor
 

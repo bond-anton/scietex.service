@@ -10,23 +10,23 @@ transformations, and any async boundaries (queues/events/tasks).
 `enqueue_task()` directly.
 
 **Processing chain:**
-1. `TaskProcessor.task_queue_manager` (`task_processor.py:625`,
+1. `TaskProcessor.task_queue_manager` (`task_processor.py:651`,
    `@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
    subclass/`ValkeyWorker` `fetch_tasks()`; then sleeps
    `task_queue_manager_sleep_time` (default 0.01 s).
-2. `TaskProcessor.task_manager` (`task_processor.py:523`,
+2. `TaskProcessor.task_manager` (`task_processor.py:547`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `(task_id, task_data)` off `task_queue` with a fetch timeout of
    `task_queue_fetch_timeout` (default 1 s),
    wraps `handle_task` in an `asyncio.Task`, records
    `running_tasks[task_id] = TaskTracker(...)`.
-3. `handle_task` (inner, 535) calls `process_task(task_id, task_data)`.
-4. `process_task` (470): guards the empty-`task` case first — an empty
+3. `handle_task` (inner, 560) calls `process_task(task_id, task_data)`.
+4. `process_task` (495): guards the empty-`task` case first — an empty
    `task_data.task` returns `TaskResult(status="error", error="Task data must
-   contain 'task' field")` (495–504) — then selects a handler with
+   contain 'task' field")` (521–529) — then selects a handler with
    `_find_task_handler` (`handler.supports(task_type)`, first match among
    **active/started** handlers).
-5. Dispatch is gated by `handler.is_ready` (507): only a found **and
+5. Dispatch is gated by `handler.is_ready` (532): only a found **and
    initialized** handler runs `await handler.handle(task_data)`. A `handle()`
    exception is converted into `TaskResult(status="error", error=str(e))` with
    the default `retryable=False` — a **raised exception is permanent** (a
@@ -38,7 +38,7 @@ transformations, and any async boundaries (queues/events/tasks).
 **Destination:** the `TaskResult` is returned to `handle_task`, whose `finally`
 pops the `running_tasks` entry and calls `task_queue.task_done()`, then: a
 `retryable=True` error result is requeued via
-`return_task_to_queue(task_id, task_data)` **before** acking (568–578) — the
+`return_task_to_queue(task_id, task_data)` **before** acking (593–603) — the
 retry copy is made durable (XADD) before the original is dropped (XACK) — and
 then `on_task_completed(task_id, task_data, task_result)` is invoked — the
 transport-agnostic ack/result-sink seam. `ValkeyWorker` overrides it to
@@ -60,7 +60,7 @@ message — **field = task UUID string, value = msgpack-encoded versioned
 `TaskEnvelope` wrapping a `TaskData`** (written by `return_task_to_queue`
 via `encode_task_envelope`, `worker.py`).
 
-**Processing chain (`fetch_tasks`, 489):**
+**Processing chain (`fetch_tasks`, 607):**
 1. On the first call only, `_recover_pending_tasks` runs `XAUTOCLAIM` to
    re-enqueue entries left pending by a previous crash (at-least-once).
 2. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
@@ -90,17 +90,17 @@ cancellation during cleanup, (d) retry-once via `TaskResult.retryable` (an
 error result with `retryable=True` is requeued in `handle_task`'s `finally`
 before acking — see F1).
 
-**Path:** `TaskProcessor.watchdog` (644) cancels `worker_task` when
+**Path:** `TaskProcessor.watchdog` (671) cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or the configured `task_timeout`, default
 3), waits up to the configured `task_cancellation_timeout` (default 5), and only
 if the handler actually
 stopped (`worker_task.done()`) calls `return_task_to_queue(task_id,
 task_data)` when `timeout_action == "requeue"`. Base `return_task_to_queue`
-(355) is a no-op; `ValkeyWorker` (407) does `XADD` back to the same task
+(380) is a no-op; `ValkeyWorker` (525) does `XADD` back to the same task
 stream (tail), re-entering F2/F1. A handler that ignores cancellation is not
 requeued (its entry stays pending and is redelivered on restart).
 
-**Shutdown drain** (`TaskProcessor.cleanup`, 423): queued-but-undispatched
+**Shutdown drain** (`TaskProcessor.cleanup`, 448): queued-but-undispatched
 items are dropped (their transport entries stay pending and are redelivered on
 restart); in-flight running tasks are requeued through the same hook only after
 their handler is confirmed stopped, when `canceled_action == "requeue"`.
@@ -113,7 +113,7 @@ exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
 ## F4. Handler dispatch (selection)
 
 **Source:** `TaskData.task` string. **Processing:** `_find_task_handler`
-(337) iterates `task_handlers` dict (active instances) and returns the first
+(362) iterates `task_handlers` dict (active instances) and returns the first
 `handler.supports(task_type)`. **Destination:** `handler.handle(task_data)`.
 Selection is by `supported_tasks` membership, **not** by a registration key
 (the `add_task_handler` key is the resolved handler name — the handler class
@@ -124,8 +124,8 @@ a class's per-instance task sets must not overlap.
 ## F5. Heartbeat flow
 
 **Source:** `@Manager("Heartbeat") _heartbeat_manager`
-(`basic_worker.py:571`) — sleeps `heartbeat_interval`, calls
-`self.heartbeat()`, repeats. `ValkeyWorker.heartbeat` (249) is the only
+(`basic_worker.py:601`) — sleeps `heartbeat_interval`, calls
+`self.heartbeat()`, repeats. `ValkeyWorker.heartbeat` (368) is the only
 concrete override.
 
 **Processing/destination:** encodes `Heartbeat` struct (msgpack) and writes it
@@ -140,14 +140,14 @@ heartbeat never surfaces.
 
 **Processing:** standard `logging` → attached handlers:
 - `ConsoleHandler` (console; registered in `BasicWorker.__init__`
-  (`basic_worker.py:116`) via `LoggingLifecycle.register_logger_handler`
+  (`basic_worker.py:123`) via `LoggingLifecycle.register_logger_handler`
   (`log_handlers/lifecycle.py:37`)) — `emit()` puts each record into an internal
   `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`
   and writes to stdout. Identity comes from the stdlib logger name it is
   registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
-  `worker.py:203`) — owns its own `GlideClient`, built from a `valkey_config=`
+  `worker.py:248`) — owns its own `GlideClient`, built from a `valkey_config=`
   dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
   longer shares the worker's client; formats records to a dict and `xadd`s to
   the log stream `scietex:log` (default). A raw `GlideClientConfiguration`
@@ -155,8 +155,8 @@ heartbeat never surfaces.
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
-`LoggingLifecycle.start_handlers` (`log_handlers/lifecycle.py:62`) /
-`shut_down_handlers` (`log_handlers/lifecycle.py:104`), with a per-handler
+`LoggingLifecycle.start_handlers` (`log_handlers/lifecycle.py:51`) /
+`shut_down_handlers` (`log_handlers/lifecycle.py:93`), with a per-handler
 timeout (`logger_handler_timeout`, default 2 s).
 
 ## F7. Configuration flow
@@ -178,7 +178,7 @@ only a missing file is created with defaults) →
 
 `generate_glide_config` supports `listening=True` + `parse_control_message`
 callback → subscribes to channels `scietex:{service}:{instance_id}` and
-`scietex:broadcast` (valkey/config.py:338-348). **`ValkeyWorker` always
+`scietex:broadcast` (valkey/config.py:367-378). **`ValkeyWorker` always
 passes `listening=False`**; nothing in the package consumes control messages.
 The PubSub path exists only in config/translation code (`UNKNOWN` consumers —
 likely future or external).

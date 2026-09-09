@@ -16,8 +16,8 @@ logging-handler lifecycle are delegated to `ManagerRuntime` and
 config, and the state machine.
 
 **Main symbols:**
-- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 39
-- `class BasicWorker` — line 55
+- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 40
+- `class BasicWorker` — line 56
 - Constructor — `__init__(config: WorkerConfig | None = None)`; stores the
   immutable `WorkerConfig` (from `config.py`), resolves identity/conf_dir/
   logging_level, and constructs `ManagerRuntime` + `LoggingLifecycle`.
@@ -30,17 +30,17 @@ config, and the state machine.
   type (e.g. `TaskProcessor`→`TaskProcessorConfig`, `ValkeyWorker`→
   `ValkeyWorkerConfig`) so the base stores the concrete type and subclass
   constructors no longer re-store / double-instantiate
-- Signals: `_setup_signal_handlers` 319 (Windows-safe no-op),
-  `_remove_signal_handlers` 349
-- Lifecycle: `_startup` 373, `start` 428, `_shutdown` 470, `stop` 517, `exit` 560
-- Cancellation terminal-state helper: `_force_stopped` 456 (AR-017 — forces
+- Signals: `_setup_signal_handlers` 350 (Windows-safe no-op),
+  `_remove_signal_handlers` 380
+- Lifecycle: `_startup` 404, `start` 459, `_shutdown` 501, `stop` 548, `exit` 591
+- Cancellation terminal-state helper: `_force_stopped` 487 (AR-017 — forces
   STOPPED + `exit` event on startup/shutdown cancellation)
-- Hooks: `initialize` 363, `heartbeat` 592, `watchdog` 604, `cleanup` 616,
-  `_register_instance` 625, `_unregister_instance` 635
-- Built-in managers: `@Manager(name="Heartbeat") _heartbeat_manager` 571,
-  `@Manager(name="Watchdog") _watchdog_manager` 582
-- `_setup_signal_handlers` called from `start()` (453), not `__init__`;
-  `_remove_signal_handlers` called from `stop()` (538)
+- Hooks: `initialize` 394, `heartbeat` 623, `watchdog` 635, `cleanup` 655,
+  `_register_instance` 664, `_unregister_instance` 674
+- Built-in managers: `@Manager(name="Heartbeat") _heartbeat_manager` 601,
+  `@Manager(name="Watchdog") _watchdog_manager` 612
+- `_setup_signal_handlers` called from `start()` (484), not `__init__`;
+  `_remove_signal_handlers` called from `stop()` (569)
 
 **Public interface:** constructor takes a single immutable `WorkerConfig`
 (`config.py`) or `None`; all properties are read-only (no runtime setters):
@@ -48,14 +48,16 @@ config, and the state machine.
 `"exit_requested"`, `"exit"`), `service_name`, `instance_id`, `version`,
 `conf_dir`, `logger`, `logging_level`, `heartbeat_interval`,
 `watchdog_interval`, `start_time`, `logger_handler_timeout`,
-`manager_shutdown_timeout`, `manager_max_retries`, `manager_restart_backoff`.
+`manager_shutdown_timeout`, `manager_max_retries`, `manager_restart_backoff`,
+`manager_runtime` (the `ManagerRuntime`, AR-071), `failed_managers` (list of
+`FAILED` manager names, AR-063).
 Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
-subclass hooks govern registry-set membership: `_register_instance` (625) —
+subclass hooks govern registry-set membership: `_register_instance` (664) —
 called by `_startup()` after `initialize()` succeeds and before managers
-start — and `_unregister_instance` (635) — called by `_shutdown()` after
+start — and `_unregister_instance` (674) — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
-`ValkeyWorker` overrides them (worker.py:363, 386) to `SADD`/
+`ValkeyWorker` overrides them (worker.py:481, 504) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
@@ -78,29 +80,29 @@ off the worker's public properties.
 **Main symbols:** `class ManagerRuntime` (18). Constructor (27) takes the
 owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 (37).
-- `iter_manager_definitions()` (39) — iterates `type(self.worker).__mro__`
-  **most-derived-first** (52), de-duplicating names via a `seen` set so a
+- `iter_manager_definitions()` (49) — iterates `type(self.worker).__mro__`
+  **most-derived-first** (64), de-duplicating names via a `seen` set so a
   subclass override shadows the base definition. When two managers
   independently pick the same `name=`, a WARNING is logged naming the
   colliding manager and the class it was found on (AR-068); the first
   (most-derived) definition still wins, so the collision is surfaced rather
   than silently dropped.
-- `run_manager(name, manager)` (62) — runs `manager.method(self.worker)` in a
-  `while True` loop (83); on a non-`CancelledError` exception records the error
-  (92) and retries after `manager_restart_backoff` (110), giving up when
+- `run_manager(name, manager)` (82) — runs `manager.method(self.worker)` in a
+  `while True` loop (111); on a non-`CancelledError` exception records the error
+  (120) and retries after `manager_restart_backoff` (139), giving up when
   `consecutive_failures > manager_max_retries` — i.e. on the
-  (max_retries+1)-th consecutive failure (94–101). A successful iteration
-  resets the `consecutive_failures` counter to 0 (112–113), so the budget
-  counts consecutive failures only. `CancelledError` stops cleanly (89–90).
+  (max_retries+1)-th consecutive failure (122–130). A successful iteration
+  resets the `consecutive_failures` counter to 0 (141–142), so the budget
+  counts consecutive failures only. `CancelledError` stops cleanly (117–118).
   The retry happens **inside the same task** — the manager never cancels
-  itself. `finally` (116–125) runs `manager.cleanup`, marks STOPPED, and
+  itself. `finally` (145–161) runs `manager.cleanup`, marks STOPPED, and
   removes the task from tracking. A manager that gave up (exhausted the retry
   budget) is instead ended in the terminal `FAILED` state (AR-063) so the
   death is observable rather than silent.
-- `failed_managers` (property) — names whose `statuses[name]` is
+- `failed_managers` (property, 39) — names whose `statuses[name]` is
   `ManagerStatus.FAILED` (the recorded exception for each is in `errors`).
-- `start_manager` (130), `stop_manager` (151), `start_managers` (178),
-  `stop_managers` (188).
+- `start_manager` (163), `stop_manager` (184), `start_managers` (211),
+  `stop_managers` (221).
 
 **Public interface:** methods above; constructor takes `worker`.
 
@@ -116,17 +118,16 @@ logging-handler registration and start/stop with status bookkeeping.
 
 **Main symbols:** `class LoggingLifecycle` (18). Constructor (27) takes the
 owning worker and owns the `statuses` dict (35).
-- `register_logger_handler(handler, name)` (37) — sets the handler level and
+- `register_logger_handler(handler)` (37) — sets the handler level and
   attaches it to the worker logger; the handler is registered once and reused
-  across start/stop cycles. The `name` parameter is **unused** (AR-031): it is
-  accepted only because `ValkeyWorker._ensure_logging_handler` passes it
-  through; statuses are keyed by `handler.name` or
-  `handler.__class__.__name__` instead (lifecycle.py:40–43).
-- `start_handlers()` (62) — starts each `AsyncLoggingHandler` whose recorded
+  across start/stop cycles. The unused `name` parameter was removed (AR-070);
+  statuses are keyed by `handler.name` or `handler.__class__.__name__`
+  (lifecycle.py:64).
+- `start_handlers()` (51) — starts each `AsyncLoggingHandler` whose recorded
   status is not RUNNING, with `logger_handler_timeout`; sets status RUNNING on
   success, FAILED on timeout/exception so it is retried on the next start
   (AR-020).
-- `shut_down_handlers()` (104) — stops each handler (idempotent
+- `shut_down_handlers()` (93) — stops each handler (idempotent
   `stop_logging()`), sets status STOPPED.
 
 **Dependencies:** `.log_handlers` (`LoggerStatus`), external
@@ -142,9 +143,9 @@ loop". The worker (via `ManagerRuntime`) detects `Manager` instances in the
 MRO, runs their `method` in an infinite loop under an `asyncio.Task`, restarts
 on error, and invokes an optional `cleanup` callable on stop.
 
-**Main symbols:** `ManagerStatus` (14), `Manager` (23). Attributes: `name`,
-`cleanup`, `method`. `Manager.__call__` (56) returns `self` (decorator
-identity); `Manager.__get__` (73) binds the wrapped method to the instance
+**Main symbols:** `ManagerStatus` (14), `Manager` (24). Attributes: `name`,
+`cleanup`, `method`. `Manager.__call__` (57) returns `self` (decorator
+identity); `Manager.__get__` (74) binds the wrapped method to the instance
 (descriptor protocol). `ManagerStatus` values: `STARTING`, `RUNNING`,
 `STOPPING`, `STOPPED`, and terminal `FAILED` (AR-063) — set when a manager
 exhausts its retry budget instead of stopping cleanly.
@@ -228,34 +229,34 @@ external tasks are enqueued (override `fetch_tasks`), a `TaskManager` dequeues
 and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
 drains/cancels in-flight work.
 
-**Main symbols:** `class TaskProcessor(BasicWorker)` (38).
+**Main symbols:** `class TaskProcessor(BasicWorker)` (34).
 Overrides `_config_type` (61) to `TaskProcessorConfig`, so the base
 instantiates the concrete config when `config=None` and `__init__` reads its
 fields from `self._config` rather than re-storing (AR-069).
-Properties: `task_handlers` 103, `running_tasks` 115 (read-only
-`MappingProxyType` views), `queue_size` 120, `max_concurrent_tasks` 125.
-Registry/dispatch: `add_task_handler` 216 (takes the handler class plus an
+Properties: `task_handlers` 121, `running_tasks` 133 (read-only
+`MappingProxyType` views), `queue_size` 138, `max_concurrent_tasks` 143.
+Registry/dispatch: `add_task_handler` 234 (takes the handler class plus an
 optional keyword-only `name` and arbitrary `**handler_kwargs`; the lifecycle
 key is the resolved name — `name` if given, otherwise `handler_class.__name__`
 — so multiple instances of one class can coexist under distinct keys, a
 duplicate resolved key raises; the map stores a `(class, handler_kwargs)`
 tuple and the kwargs are forwarded to the handler constructor on every
-instantiation), `_start_task_handler` 258
-(unpacks the tuple, builds a `TaskHandlerContext` at 279–283, and calls
-`handler_class(handler_name, context, **handler_kwargs)` at 284),
-`_stop_task_handler` 302, `remove_task_handler` 328, `_find_task_handler` 344,
-`process_task` 477.
-Queue access: `enqueue_task` 129, `dequeue_task` 150, `task_queue_empty` 142,
-`task_queue_full` 146 (the raw `task_queue` attribute is no longer exposed;
+instantiation), `_start_task_handler` 276
+(unpacks the tuple, builds a `TaskHandlerContext` at 297–301, and calls
+`handler_class(handler_name, context, **handler_kwargs)` at 302),
+`_stop_task_handler` 320, `remove_task_handler` 346, `_find_task_handler` 362,
+`process_task` 495.
+Queue access: `enqueue_task` 147, `dequeue_task` 168, `task_queue_empty` 160,
+`task_queue_full` 164 (the raw `task_queue` attribute is no longer exposed;
 non-blocking `put_nowait`/`get_nowait` underneath). State:
-`__task_handlers_map`/`__task_handlers` (80–81; the map holds
+`__task_handlers_map`/`__task_handlers` (81–82; the map holds
 `(class, handler_kwargs)` tuples keyed by resolved name), `__running_tasks`
-(84), `__task_queue` (100, bounded `asyncio.Queue[(UUID, TaskData)]`).
-Managers: `@Manager("TaskManager") task_manager` 523 (inner `handle_task`
-wrapper at 535), `@Manager("TaskQueueManager") task_queue_manager` 625.
-Hooks: `fetch_tasks` 606, `return_task_to_queue` 355, `on_task_completed` 368
-(transport ack seam), `initialize` 385 (starts handlers), `cleanup` 423
-(drains queue, cancels running tasks, stops handlers), `watchdog` 644.
+(85), `__task_queue` (118, bounded `asyncio.Queue[(UUID, TaskData)]`).
+Managers: `@Manager("TaskManager") task_manager` 547 (inner `handle_task`
+wrapper at 560), `@Manager("TaskQueueManager") task_queue_manager` 651.
+Hooks: `fetch_tasks` 633, `return_task_to_queue` 380, `on_task_completed` 393
+(transport ack seam), `initialize` 410 (starts handlers), `cleanup` 448
+(drains queue, cancels running tasks, stops handlers), `watchdog` 671.
 
 **Config constants:** timing/retry MIN/MAX/DEFAULT bounds live in `config.py`
 (single source of truth); the task-queue defaults are
@@ -293,38 +294,38 @@ and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
 via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
-**Main symbols:** `class ValkeyWorker(TaskProcessor)` (52).
-Overrides `_config_type` (99) to `ValkeyWorkerConfig`, so the base instantiates
+**Main symbols:** `class ValkeyWorker(TaskProcessor)` (71).
+Overrides `_config_type` (100) to `ValkeyWorkerConfig`, so the base instantiates
 the concrete config when `config=None` and `__init__` reads its fields from
 `self._config` rather than re-storing (AR-069).
 Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
 `config.valkey_config`; when `None`, defers the disk read to
 `_ensure_client_config()`, called at first connect — AR-066, so construction
 is side-effect-free),
-`connect` 236 (`GlideClient.create` + PING under `_client_lock`; `_client`
-assigned only after PING succeeds, 278; then ensures the logging handler and
-starts it), `disconnect` 294, `heartbeat` 320 (writes msgpack `Heartbeat` to
-`...:status` with TTL 2×interval), `initialize` 361 (start handlers, connect,
-`xgroup_create`), `cleanup` 411 (super + stop logging handler + disconnect),
-`return_task_to_queue` 477 (`xadd` re-queue via `encode_task_envelope`),
-`_recover_pending_tasks` 496
+`connect` 283 (`GlideClient.create` + PING under `_client_lock`; `_client`
+assigned only after PING succeeds, 326; then ensures the logging handler and
+starts it), `disconnect` 342, `heartbeat` 368 (writes msgpack `Heartbeat` to
+`...:status` with TTL 2×interval), `initialize` 409 (start handlers, connect,
+`xgroup_create`), `cleanup` 459 (super + stop logging handler + disconnect),
+`return_task_to_queue` 525 (`xadd` re-queue via `encode_task_envelope`),
+`_recover_pending_tasks` 545
 (`XAUTOCLAIM` pending entries on first fetch; decodes via
 `decode_task_envelope`, skipping unknown-version/invalid entries with an ERROR
-log), `fetch_tasks` 559
+log), `fetch_tasks` 607
 (`xreadgroup` → `decode_task_envelope` → `enqueue_task`; does **not** ack on
 enqueue; a glide
 error triggers disconnect+reconnect, other errors propagate),
-`on_task_completed` 635 (`xack`+`xdel` the entry after the handler finishes),
-`_register_instance` 433 (`SADD` `instance_id` into the registry set),
-`_unregister_instance` 456 (`SREM` it back out).
+`on_task_completed` 682 (`xack`+`xdel` the entry after the handler finishes),
+`_register_instance` 481 (`SADD` `instance_id` into the registry set),
+`_unregister_instance` 504 (`SREM` it back out).
 
 Connection ownership (AR-059/061): the worker runs one operational
 `GlideClient` for heartbeat, registry, intake, and task completion;
 `connect()`/`disconnect()` serialize the create→ping→assign and close→null
-sequences behind `_client_lock` (163), and intake reconnects only on glide
+sequences behind `_client_lock` (166), and intake reconnects only on glide
 errors. The logging handler is an independent owner: `_ensure_logging_handler`
-(203) constructs `AsyncValkeyHandler` with `valkey_config=` (a scalar dict
-translated from the typed config by `_logging_handler_config`, 53) when a typed
+(248) constructs `AsyncValkeyHandler` with `valkey_config=` (a scalar dict
+translated from the typed config by `_logging_handler_config`, 45) when a typed
 `ValkeyConfig` is available, so the handler builds/closes/reconnects its own
 connection and the worker never touches `handler.client`; only a raw
 `GlideClientConfiguration` falls back to `client=` injection (see §14).
@@ -336,12 +337,12 @@ connection and the worker never touches `handler.client`; only a raw
 `scietex:{service}:{instance_id}`, registry set
 `scietex:{service}:workers`. The stream and group are service-scoped so
 replicas share one queue; the consumer/status keys are worker-scoped per
-auto-generated `instance_id`. `_task_entry_ids` (138) maps task UUID → stream
-entry id for deferred acknowledgement; `_recovered` (142) guards one-time
+auto-generated `instance_id`. `_task_entry_ids` (176) maps task UUID → stream
+entry id for deferred acknowledgement; `_recovered` (180) guards one-time
 pending recovery.
 
-The registry set is the enumeration index: `_register_instance` (363) `SADD`s
-the `instance_id` on startup and `_unregister_instance` (386) `SREM`s it on
+The registry set is the enumeration index: `_register_instance` (481) `SADD`s
+the `instance_id` on startup and `_unregister_instance` (504) `SREM`s it on
 shutdown — both best-effort (a failure logs a WARNING and continues). Liveness
 is the status-key TTL refreshed by `heartbeat()`, so a stale member left by a
 crashed replica is tolerated (the operator probes each member's status key).
@@ -370,11 +371,11 @@ always-imported core `config.py`.
 **Main symbols:** frozen structs `ValkeyNode` (31), `ValkeyUserCredentials`
 (43), `ValkeyBackoffStrategy` (55), `ValkeyTlsAdvancedConfiguration` (86),
 `ValkeyAdvancedConfig` (114), `ValkeyBaseConfig` (144), `ValkeyConfig` (222);
-`ValkeyWorkerConfig` (234, extends `TaskProcessorConfig` with `valkey_config`,
+`ValkeyWorkerConfig` (239, extends `TaskProcessorConfig` with `valkey_config`,
 `log_stream_name`, `task_fetch_batch_size`, `claim_min_idle_ms`); `read_valkey_config(conf_dir)`
-(261) — creates `valkey.yml` with defaults only if the file is missing; raises
-`RuntimeError` on a present-but-invalid file (299), never overwriting it;
-`generate_glide_config(...)` (304, converts to `GlideClientConfiguration`,
+(275) — creates `valkey.yml` with defaults only if the file is missing; raises
+`RuntimeError` on a present-but-invalid file (329), never overwriting it;
+`generate_glide_config(...)` (334, converts to `GlideClientConfiguration`,
 validates `read_from`/`protocol`, optional PubSub subscriptions when
 `listening=True`).
 
@@ -431,17 +432,17 @@ Consumed classes:
   it.
 - `ConsoleHandler(AsyncLoggingHandler)` — console sink. Constructed with no
   arguments; identity comes from the stdlib logger name it is registered on
-  (e.g. `f"{service_name}.{instance_id}"`).
+  (e.g. `f"{service_name}:{instance_id}"`).
 - `AsyncBrokerHandler` — adds a broker queue + `_worker` that connects,
   formats records into dicts, `send_message()`; accepts an injected `client`
   and, when one is provided, never closes it (`_owns_client=False`).
 - `AsyncValkeyHandler(AsyncBrokerHandler)` — `xadd` to a stream. `ValkeyWorker`
   constructs it with `valkey_config=` (a dict of scalar
   `GlideClientConfiguration` options translated from the typed `ValkeyConfig`)
-  on the first successful `connect()` (worker.py:229–232), so the handler owns
+  on the first successful `connect()` (worker.py:273–279), so the handler owns
   an independent connection and reconnects autonomously. Only when the worker
   was given a raw `GlideClientConfiguration` does it fall back to `client=`
-  injection (worker.py:224–227).
+  injection (worker.py:266–272).
 - `ScietexFormatter`.
 
 **Important:** a handler built from `valkey_config=` owns and closes its own

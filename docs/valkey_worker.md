@@ -96,10 +96,10 @@ shared across all replicas of a service; worker-scoped keys are unique per
 |---|---|---|
 | `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `100` | Default max queue size (inherited) |
 | `DEFAULT_MAX_CONCURRENT_TASKS` | `10` | Default max concurrent tasks (inherited) |
-| `DEFAULT_TASK_TIMEOUT` | `3` | Default task timeout in seconds (inherited from `TaskProcessorConfig.task_timeout`) |
+| `task_timeout` (`TaskProcessorConfig`) | `3` | Default task timeout in seconds (inherited) |
 | `DEFAULT_HEARTBEAT_INTERVAL` | `10` | Default heartbeat interval in seconds |
 | `DEFAULT_WATCHDOG_INTERVAL` | `1` | Default watchdog check interval in seconds |
-| `DEFAULT_CLAIM_MIN_IDLE_MS` | `1000` | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry (`ValkeyWorkerConfig.claim_min_idle_ms`) |
+| `claim_min_idle_ms` (`ValkeyWorkerConfig`) | `1000` | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry |
 
 ## Lifecycle
 
@@ -174,7 +174,7 @@ worker = ValkeyWorker(
 | `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig` or raw `GlideClientConfiguration`). If `None`, `valkey.yml` is read lazily from the config directory at first connect (not at construction) |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
-| `claim_min_idle_ms` | `None` (uses `DEFAULT_CLAIM_MIN_IDLE_MS`, `1000`) | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry during startup recovery |
+| `claim_min_idle_ms` | `None` (default `1000`) | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry during startup recovery |
 
 All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
 Configuration is immutable: values are fixed at construction, and
@@ -320,9 +320,18 @@ bare `TaskData`. The envelope is `TaskEnvelope` (from
 | `version` | `int` | `1` | Wire-format version |
 | `data` | `bytes` | `b""` | Serialized task payload (version 1: msgpack-encoded `TaskData`) |
 
-The whole `TaskEnvelope` is msgpack-encoded as the entry value. Version 1
-wraps a msgpack-encoded `TaskData`; a future version may carry a different
-payload, which is what the `version` field exists for.
+The whole `TaskEnvelope` is msgpack-encoded as the entry value. The durable
+stream value is therefore:
+
+```
+msgpack(TaskEnvelope(version=1, data=msgpack(TaskData)))
+```
+
+Version 1 wraps a msgpack-encoded `TaskData`; a future version may carry a
+different payload, which is what the `version` field exists for. The handler
+contract (`TaskData`) is unchanged, and handlers **never see the envelope** —
+they receive the decoded `TaskData`. This decoupling lets the wire format
+evolve independently of the in-process handler contract (AR-064).
 
 Encoding and decoding are centralized in the shared, transport-agnostic
 helpers `encode_task_envelope(task_data)` and

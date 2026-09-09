@@ -117,7 +117,10 @@ method is called repeatedly by `ManagerRuntime.run_manager()` in a `while True` 
 On `CancelledError` the loop stops cleanly. On any other exception, the
 error is recorded and the manager is automatically restarted after a
 `manager_restart_backoff` delay. Restarts are bounded: after
-`manager_max_retries` consecutive failures the manager gives up and stops.
+`manager_max_retries` consecutive failures the manager gives up and ends in
+the terminal `FAILED` state (AR-063) — the watchdog logs CRITICAL when a
+manager has failed, but the worker does not auto-shutdown (the degradation
+stays observable via `worker.failed_managers`).
 
 Managers are discovered via the class MRO (most-derived to base classes)
 and executed as named `asyncio.Task` objects.
@@ -177,6 +180,22 @@ class MyWorker(BasicWorker):
 Subclasses can override `heartbeat()` and `watchdog()` to define custom
 behavior.
 
+### Manager Status Lifecycle
+
+Each manager tracks a `ManagerStatus` (from `scietex.service.manager`),
+owned by `ManagerRuntime`. The normal path is
+STARTING → RUNNING → STOPPING → STOPPED; a manager that exhausts its retry
+budget ends in the terminal `FAILED` state instead of stopping cleanly
+(AR-063):
+
+| Value | Description |
+|---|---|
+| `STARTING` | Set by `start_manager` while spawning the manager task |
+| `RUNNING` | Set as soon as the manager loop starts; stays `RUNNING` through error-retry backoff (AR-057) |
+| `STOPPING` | Set during the final cleanup phase |
+| `STOPPED` | Terminal: the manager stopped cleanly |
+| `FAILED` | Terminal: the manager gave up after exhausting its retry budget |
+
 ## Properties
 
 ### Identity
@@ -213,6 +232,8 @@ behavior.
 | Property | Type | Description |
 |---|---|---|
 | `logger` | `logging.Logger` | Logger instance (named `{service_name}:{instance_id}`) |
+| `manager_runtime` | `ManagerRuntime` | The worker's manager runtime (read-only view): inspect manager tasks/statuses/errors and control individual managers via `start_manager`/`stop_manager` |
+| `failed_managers` | `list[str]` | Names of managers that exhausted their retry budget and gave up (empty `[]` when none failed) |
 
 ## Configuration
 

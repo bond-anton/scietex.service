@@ -26,12 +26,12 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
 | H16 | Resolved | AR-022 — structured error taxonomy fields on `TaskResult` |
-| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:336) |
-| H18 | Open | AR-031 — unused `name` param in `LoggingLifecycle.register_logger_handler` (log_handlers/lifecycle.py:40-57) |
+| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:367) |
+| H18 | Resolved | AR-070 — removed unused `name` param from `LoggingLifecycle.register_logger_handler` |
 
 ## H1. `BasicWorker` is a large, multi-responsibility class
 
-- **Location:** `src/scietex/service/basic_worker.py:55`.
+- **Location:** `src/scietex/service/basic_worker.py:56`.
 - **What:** a single class owned: identity/configuration, the lifecycle state
   machine, signal registration, async-logging handler lifecycle, the manager
   discovery + task runtime, startup and shutdown orchestration, and the default
@@ -48,7 +48,7 @@ extracted components directly.
 ## H2. Manager error-handling relies on private per-worker bookkeeping
 
 - **Location:** was `basic_worker.py` (`_run_manager`/`_restart_manager`);
-  now `manager/runtime.py:62-125`.
+  now `manager/runtime.py:82-161`.
 - **What:** managers were restarted "automatically on error" with unbounded
   restart and no backoff.
 - **Why significant:** a persistently failing manager yielded an unbounded
@@ -62,7 +62,7 @@ delay (default 1 s) between attempts; the error record lives in
 ## H3. Manager "restart" path appears to cancel the running task itself
 
 - **Location:** was `_restart_manager`; now inlined in
-  `manager/runtime.py:62-125`.
+  `manager/runtime.py:82-161`.
 - **What:** the old restart path cancelled and awaited the **same
   currently-executing task**.
 - **Why significant:** a raising manager ended as `CancelledError` rather than
@@ -75,7 +75,7 @@ tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
 
-- **Location:** `log_handlers/lifecycle.py:104-133` (`shut_down_handlers`), plus
+- **Location:** `log_handlers/lifecycle.py:93-122` (`shut_down_handlers`), plus
   external `scietex.logging` (`stop_logging()` calls `self.close()`).
 - **What:** after shutdown, each `AsyncLoggingHandler` was closed yet recorded as
   RUNNING, so a later start skipped it.
@@ -109,15 +109,15 @@ restarts the same handler instances. See
   and could not construct workers outside a running loop.
 
 **Resolved (AR-015 + AR-008):** signal handlers are registered in `start()`
-(`_setup_signal_handlers`, basic_worker.py:319, Windows-safe no-op) and
-removed in `stop()` (`_remove_signal_handlers`, 349); `__init__` no longer
+(`_setup_signal_handlers`, basic_worker.py:350, Windows-safe no-op) and
+removed in `stop()` (`_remove_signal_handlers`, 380); `__init__` no longer
 touches the loop, so workers may be constructed outside a running loop.
-`events` (basic_worker.py:143), `task_handlers` (task_processor.py:103)
-and `running_tasks` (115) now return read-only `MappingProxyType` views.
+`events` (basic_worker.py:150), `task_handlers` (task_processor.py:121)
+and `running_tasks` (133) now return read-only `MappingProxyType` views.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 
-- **Location:** `basic_worker.py:470-515` (`_shutdown`).
+- **Location:** `basic_worker.py:501-546` (`_shutdown`).
 - **What:** `_shutdown` has no rollback if it is cancelled mid-way (e.g. during
   `ManagerRuntime.stop_managers()`); its `except asyncio.CancelledError` swallows the
   cancellation without re-raising or forcing STOPPED/`exit`.
@@ -127,7 +127,7 @@ and `running_tasks` (115) now return read-only `MappingProxyType` views.
   timeout-guarded, but an unexpected cancellation path is not.
 
 **Resolved (AR-017):** `_shutdown` (and `_startup`) now catch `CancelledError`,
-call `_force_stopped()` (basic_worker.py:456) — which sets
+call `_force_stopped()` (basic_worker.py:487) — which sets
 `state = STOPPED`, clears `start_time`, and sets the `exit` event if
 `exit_requested` — then re-raise, so a cancelled startup/shutdown always lands
 in a terminal state and the worker can be restarted.
@@ -218,11 +218,11 @@ replica is still processing.
 - **What:** the usage docs are not kept in lockstep with the code. Discrepancies
   previously noted — MRO discovery order and import-time `processed_at` /
   `timestamp` defaults — are fixed in the source (AR-003, AR-012), but the
-  usage docs themselves have not been re-verified against v3.1.0 in this
-  rewrite.
+  usage docs themselves had not been re-verified in this rewrite.
 - **Why significant:** the docs are the intended-architecture record; drift
   between usage guides and the code marks where design intent and implementation
-  have diverged. (Out of scope for this architecture-map rewrite.)
+  have diverged. (The usage docs were re-synced against the v4.0.0 code in a
+  follow-up pass.)
 
 ## H13. Duplicated/inconsistent developer configuration
 
@@ -255,12 +255,12 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 46-48).
 
 **Resolved (AR-012):** both fields now use
 `msgspec.field(default_factory=lambda: datetime.now(timezone.utc))`
-(`task_handler/schemas.py:76`, `valkey/schemas.py:38`), producing a per-instance
+(`task_handler/schemas.py:90`, `valkey/schemas.py:38`), producing a per-instance
 value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `task_processor.py:470-520` (`process_task`), 216-353
+- **Location:** `task_processor.py:495-545` (`process_task`), 234-379
   (handler registry).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no
@@ -273,7 +273,7 @@ value.
   is delegated to `return_task_to_queue` at the processor level.
 
 **Resolved (AR-022, v4):** `TaskResult` carries the error-taxonomy fields
-`error_code`, `retryable`, `partial` (task_handler/schemas.py:78-81) — all
+`error_code`, `retryable`, `partial` (task_handler/schemas.py:92-94) — all
 defaulting to "no extra information" so existing handlers keep working; the
 redundant `retry_count`/`requeue` fields are dropped. `process_task` treats a
 handler that *raises* as permanent (`retryable=False`) and passes a
