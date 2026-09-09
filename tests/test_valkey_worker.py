@@ -121,11 +121,11 @@ async def test_logging_handler_created_on_connect(monkeypatch):
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
 
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
-    assert worker._valkey_handler is None  # not built until connect
+    assert worker._valkey_logger_handler is None  # not built until connect
 
     ok = await worker.connect()
     assert ok is True
-    handler = worker._valkey_handler
+    handler = worker._valkey_logger_handler
     assert handler is not None
     assert handler.client is worker.client  # shared, not a second client
     assert handler._owns_client is False  # worker owns teardown
@@ -429,7 +429,7 @@ async def test_disconnect_closes_shared_client_once(monkeypatch):
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     await worker.connect()
     client = worker.client
-    handler = worker._valkey_handler
+    handler = worker._valkey_logger_handler
     assert handler.client is client
 
     await worker.disconnect()
@@ -456,7 +456,7 @@ async def test_cleanup_stops_logging_before_disconnect(monkeypatch):
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     ok = await worker.connect()
     assert ok is True
-    handler = worker._valkey_handler
+    handler = worker._valkey_logger_handler
     client = worker.client
     assert handler is not None
     assert client is not None

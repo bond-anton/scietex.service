@@ -90,7 +90,7 @@ class ValkeyWorker(TaskProcessor):
         Attributes:
             _client (GlideClient | None): Valkey client, initialized during
                 :meth:`initialize`.
-            _valkey_handler (AsyncValkeyHandler | None): The shared-client
+            _valkey_logger_handler (AsyncValkeyHandler | None): The shared-client
                 logging handler, built lazily on the first successful
                 :meth:`connect` and reused across restarts.
             _heartbeat_key (str): Key for the worker status heartbeat entry.
@@ -123,7 +123,7 @@ class ValkeyWorker(TaskProcessor):
         # asynchronously in connect(), and the seam fixes ownership at
         # construction. It is built lazily on the first successful connect()
         # and reused across restarts (see _ensure_logging_handler).
-        self._valkey_handler: AsyncValkeyHandler | None = None
+        self._valkey_logger_handler: AsyncValkeyHandler | None = None
 
         self._client: GlideClient | None = None
         self._heartbeat_key = f"scietex:{self.service_name}:{self.instance_id}:status"
@@ -165,13 +165,6 @@ class ValkeyWorker(TaskProcessor):
         """
         return self._client
 
-    def _valkey_logging_handler(self) -> AsyncValkeyHandler | None:
-        """Return the registered ``AsyncValkeyHandler``, or ``None`` if absent."""
-        for handler in self.logger.handlers:
-            if isinstance(handler, AsyncValkeyHandler):
-                return handler
-        return None
-
     def _ensure_logging_handler(self) -> AsyncValkeyHandler | None:
         """Build and register the shared-client logging handler on first connect.
 
@@ -182,17 +175,17 @@ class ValkeyWorker(TaskProcessor):
         """
         if self._client is None:
             return None
-        if self._valkey_handler is None:
-            self._valkey_handler = AsyncValkeyHandler(
+        if self._valkey_logger_handler is None:
+            self._valkey_logger_handler = AsyncValkeyHandler(
                 stream_name=self._log_stream_name,
                 client=self._client,
             )
-            self._logging_lifecycle.register_logger_handler(self._valkey_handler, name="AsyncValkeyHandler")
+            self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler, name="AsyncValkeyHandler")
         else:
             # The seam fixes _injected_client at construction; keep the handler
             # on the worker's *current* client across reconnects/restarts.
-            self._valkey_handler.client = self._client
-        return self._valkey_handler
+            self._valkey_logger_handler.client = self._client
+        return self._valkey_logger_handler
 
     async def connect(self) -> bool:
         """Establish an asynchronous connection to the Valkey server.
@@ -247,8 +240,8 @@ class ValkeyWorker(TaskProcessor):
         the disconnection, and sets ``_client`` to ``None``.
         """
         if self._client is not None:
-            if self._valkey_handler is not None:
-                self._valkey_handler.client = None
+            if self._valkey_logger_handler is not None:
+                self._valkey_logger_handler.client = None
             await self._client.close()
             self.logger.info("Valkey client disconnected")
             self._client = None
@@ -363,8 +356,8 @@ class ValkeyWorker(TaskProcessor):
         # Stop the valkey logging handler while the shared client is still open so
         # its worker drains remaining records instead of reconnecting to a client
         # that disconnect() is about to close (shutdown error flood).
-        if self._valkey_handler is not None:
-            await self._valkey_handler.stop_logging()
+        if self._valkey_logger_handler is not None:
+            await self._valkey_logger_handler.stop_logging()
         await self.disconnect()
 
     async def _register_instance(self) -> None:
