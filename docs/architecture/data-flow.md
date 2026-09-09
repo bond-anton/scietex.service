@@ -110,8 +110,10 @@ exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
 (433) iterates `task_handlers` dict (active instances) and returns the first
 `handler.supports(task_type)`. **Destination:** `handler.handle(task_data)`.
 Selection is by `supported_tasks` membership, **not** by a registration key
-(the `add_task_handler` key is the handler class name; one instance per class,
-so the same class cannot be registered under several keys).
+(the `add_task_handler` key is the resolved handler name — the handler class
+name by default, or an explicit `name` keyword — so the same class can now be
+registered under several distinct names). Because the first active match wins,
+a class's per-instance task sets must not overlap.
 
 ## F5. Heartbeat flow
 

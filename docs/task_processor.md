@@ -167,11 +167,32 @@ processor.add_task_handler(EmailHandler)
 processor.add_task_handler(ReportHandler)
 ```
 
-`add_task_handler()` takes only the handler class. The lifecycle key is the
-class name (`handler_class.__name__`), and a single instance per class is
-created on start. Dispatch selects handlers by their `supported_tasks`
-membership, not by the registration key, so registering the same class
-twice raises a `ValueError`.
+`add_task_handler()` takes the handler class and an optional keyword-only
+`name`. The lifecycle key is the resolved name: `name` if given, otherwise the
+class name (`handler_class.__name__`). By default a single instance per class
+is created on start, and registering the same resolved key twice raises a
+`ValueError`. The optional `name` lets multiple instances of one class coexist
+under distinct keys. Dispatch selects handlers by their `supported_tasks`
+membership, not by the registration key, so a subclass can derive its task set
+from `self.name` and split one class across several non-overlapping instances:
+
+```python
+class SlicedHandler(TaskHandler):
+    _TASKS_BY_NAME = {"alpha": ["alpha_task"], "beta": ["beta_task"]}
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return self._TASKS_BY_NAME[self.name]
+
+processor.add_task_handler(SlicedHandler, name="alpha")
+processor.add_task_handler(SlicedHandler, name="beta")
+```
+
+Because `_find_task_handler()` returns the first active instance whose
+`supports(task)` is `True`, name-derived task sets must NOT overlap — if two
+instances of the same class both claim the same task type, dispatch is
+ambiguous (the first-registered wins). Choosing non-overlapping names is the
+caller's responsibility.
 
 Handlers can be registered before or after `start()`. If the worker is
 already running, the handler is started asynchronously.

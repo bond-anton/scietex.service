@@ -280,7 +280,10 @@ handler-returned `TaskResult` through unchanged; framework-level failures
 (empty `task` field, no matching handler) remain permanent. `handle_task`
 executes a single retry: a `retryable=True` error is requeued via
 `return_task_to_queue` before the transport entry is acked (XADD then XACK);
-permanent errors are acked and dropped. Registration is class-only:
-`add_task_handler` takes only the handler class, with `handler_class.__name__`
-as the lifecycle key (single instance per class, a duplicate class name
-raises).
+permanent errors are acked and dropped. Registration keys handlers by the
+resolved handler name: `add_task_handler` takes the handler class plus an
+optional keyword-only `name`, defaulting to `handler_class.__name__` as the
+lifecycle key (single instance per resolved key, a duplicate resolved name
+raises). The optional `name` lets the same class be registered under several
+distinct keys, e.g. to split one class's task types across instances via
+name-derived `supported_tasks`.

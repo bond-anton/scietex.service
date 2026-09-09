@@ -124,6 +124,64 @@ async def test_add_task_handler_duplicate_class_raises():
         proc.add_task_handler(DummyHandler)
 
 
+class NameDerivedHandler(TaskHandler):
+    """A handler whose task support is derived from its lifecycle name, so one
+    class can be split across instances that each serve a disjoint task set
+    (AR-053)."""
+
+    _TASKS_BY_NAME = {
+        "alpha": ["alpha_task"],
+        "beta": ["beta_task"],
+    }
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        return TaskResult(status="success", error="No error", payload=task_data.payload)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return self._TASKS_BY_NAME[self.name]
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_named_instances_coexist_and_dispatch():
+    """add_task_handler's optional name key lets one class register as several
+    distinct instances; dispatch routes by the name-derived supported_tasks
+    (AR-053)."""
+    proc = DemoProcessor()
+    proc.add_task_handler(NameDerivedHandler, name="alpha")
+    proc.add_task_handler(NameDerivedHandler, name="beta")
+
+    await proc._start_task_handler("alpha")
+    await proc._start_task_handler("beta")
+    assert "alpha" in proc.task_handlers
+    assert "beta" in proc.task_handlers
+
+    alpha_result = await proc.process_task(uuid4(), TaskData(task="alpha_task", payload=b"alpha"))
+    assert alpha_result.status == "success"
+    beta_result = await proc.process_task(uuid4(), TaskData(task="beta_task", payload=b"beta"))
+    assert beta_result.status == "success"
+    assert beta_result.payload == b"beta"
+
+    # no handler claims the other instance's task types
+    missing = await proc.process_task(uuid4(), TaskData(task="other_task", payload=b"{}"))
+    assert missing.status == "error"
+    assert "No handler" in missing.error
+
+
+@pytest.mark.asyncio
+async def test_add_task_handler_named_duplicate_resolved_key_raises():
+    """Registering the same resolved name twice — explicit or via the class-name
+    default — must still raise ValueError (AR-053 backward compat)."""
+    proc = DemoProcessor()
+    proc.add_task_handler(NameDerivedHandler, name="alpha")
+    with pytest.raises(ValueError):
+        proc.add_task_handler(NameDerivedHandler, name="alpha")
+    # the class-name default is another resolved key, so it does not collide
+    proc.add_task_handler(NameDerivedHandler)
+    with pytest.raises(ValueError):
+        proc.add_task_handler(NameDerivedHandler)
+
+
 @pytest.mark.asyncio
 async def test_watchdog_requeues_timed_out_task():
     proc = DemoProcessor()

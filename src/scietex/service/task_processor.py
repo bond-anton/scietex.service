@@ -213,23 +213,34 @@ class AsyncTaskProcessor(BasicAsyncWorker):
         v = cast(TaskProcessorConfig, self._config).task_handler_stop_timeout
         return v if v is not None else DEFAULT_TASK_HANDLER_STOP_TIMEOUT
 
-    def add_task_handler(self, handler_class: type[TaskHandler]) -> None:
+    def add_task_handler(
+        self,
+        handler_class: type[TaskHandler],
+        *,
+        name: str | None = None,
+    ) -> None:
         """Register a task handler class.
 
-        The handler class is stored in the internal map under its class name
-        (``handler_class.__name__``), which is the lifecycle key. Dispatch is
-        driven by ``_find_task_handler``, which selects handlers by their
+        The handler class is stored in the internal map under its lifecycle
+        key, which is the resolved handler name: ``name`` if given, otherwise
+        ``handler_class.__name__``. Dispatch is driven by
+        ``_find_task_handler``, which selects handlers by their
         ``supported_tasks`` membership — the class-level declaration is the
-        dispatch contract, not an argument. A single instance per class is
-        created on start; registering the same class twice raises.
+        dispatch contract, not an argument. One instance per registered key is
+        created on start; the optional ``name`` lets multiple instances of a
+        single class coexist under distinct keys (e.g. to split one class's
+        task types across instances via name-derived ``supported_tasks``).
+        Duplicate detection is on the resolved key.
 
         Args:
             handler_class: The ``TaskHandler`` subclass to register.
+            name: Optional lifecycle key, defaulting to the handler class name.
+                Enables multiple instances of one class under distinct keys.
 
         Raises:
-            ValueError: If ``handler_class`` is already registered.
+            ValueError: If the resolved handler name is already registered.
         """
-        handler_name = handler_class.__name__
+        handler_name = name or handler_class.__name__
         if handler_name in self.__task_handlers_map:
             raise ValueError(f"Task handler {handler_name!r} is already registered")
         self.__task_handlers_map[handler_name] = handler_class
