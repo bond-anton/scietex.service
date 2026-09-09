@@ -58,7 +58,7 @@ class Manager:
 
         Stores the method reference and returns ``self`` so the decorated
         method can be used as a ``Manager`` instance by
-        ``BasicAsyncWorker._iter_manager_definitions()``.
+        ``ManagerRuntime.iter_manager_definitions()``.
 
         Args:
             method: The async method to wrap as a manager loop.
@@ -76,7 +76,7 @@ class Manager:
         Because ``Manager`` is a descriptor, the decorated method remains
         callable as a normal bound method (``self._heartbeat_manager()``)
         while the class attribute still holds the ``Manager`` instance that
-        ``_iter_manager_definitions()`` discovers.
+        ``ManagerRuntime.iter_manager_definitions()`` discovers.
 
         Args:
             instance: The worker instance the manager is accessed through,

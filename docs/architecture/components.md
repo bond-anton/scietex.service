@@ -24,13 +24,6 @@ config, and the state machine.
   Timing/retry fields are validated at construction — an out-of-range value
   raises `msgspec.ValidationError`, and `None` resolves to the matching
   `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
-- Forwarding wrappers (delegate to the extracted components, kept for
-  subclass/test compatibility):
-  - `_iter_manager_definitions()` — line 493 (→ `ManagerRuntime.iter_manager_definitions`)
-  - manager wrappers: `_run_manager` 585, `_start_manager` 593, `_stop_manager`
-    601, `_start_managers` 609, `_stop_managers` 617
-  - logging wrappers: `_register_logger_handler` 545, `_logger_start_handlers`
-    558, `_logger_shut_down_handlers` 566
 - Signals: `_setup_signal_handlers` 501 (Windows-safe no-op),
   `_remove_signal_handlers` 531
 - Lifecycle: `_startup` 625, `start` 671, `_shutdown` 713, `stop` 757, `exit` 800
@@ -112,7 +105,7 @@ owning worker and owns the `statuses` dict (35).
 - `register_logger_handler(handler, name)` (37) — sets the handler level and
   attaches it to the worker logger; the handler is registered once and reused
   across start/stop cycles. The `name` parameter is **unused** (AR-031): it is
-  accepted only because `BasicAsyncWorker._register_logger_handler` passes it
+  accepted only because `ValkeyWorker._ensure_logging_handler` passes it
   through; statuses are keyed by `handler.name` or
   `handler.__class__.__name__` instead (lifecycle.py:40–57).
 - `start_handlers()` (62) — starts each `AsyncLoggingHandler` whose recorded

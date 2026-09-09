@@ -22,8 +22,8 @@ Public: `worker.start()` (671). It:
 `_startup()`:
 1. If not STOPPED, waits (0.1 s poll) for a prior shutdown to finish.
 2. Sets STARTING; prints logo.
-3. `_logger_start_handlers()` (558) → `LoggingLifecycle.start_handlers()` —
-   starts each async handler not yet running, with `logger_handler_timeout`.
+3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
+   running, with `logger_handler_timeout`.
 4. `initialize()` (575) — subclass hook; must return truthy.
    - `AsyncTaskProcessor.initialize` (480) starts every registered task handler
      (`_start_task_handler`, awaited per handler).
@@ -35,10 +35,12 @@ Public: `worker.start()` (671). It:
    start. Base is a no-op; `ValkeyWorker` overrides it to `SADD` its
    `instance_id` into the worker registry set (best-effort: a failure logs a
    WARNING and does not fail startup).
-6. `_start_managers()` (609) → `ManagerRuntime.start_managers()` — discover
-   `@Manager`s via `ManagerRuntime.iter_manager_definitions()`
-   (manager/runtime.py:39) and start each as a named task.
-7. Sets `start_time` (UTC) and state = RUNNING.
+6. Sets `start_time` (UTC) — before the managers start, so the heartbeat
+   manager's immediate first beat is not skipped by the `start_time` guard
+   (AR-049).
+7. `ManagerRuntime.start_managers()` — discover `@Manager`s via
+   `ManagerRuntime.iter_manager_definitions()` (manager/runtime.py:39), start
+   each as a named task, then set state = RUNNING.
 
 Failure: if `initialize()` returns `False` → `RuntimeError("Initialization
 failed")` → `_startup` calls `stop()` → shutdown begins. If `_startup` is
@@ -46,11 +48,11 @@ cancelled, it logs, forces `_force_stopped()` (STOPPED + `exit` event), and
 re-raises — no stranded STARTING state (AR-017).
 
 > Ordering note: `initialize()` runs **before** `_register_instance()`, which
-> runs **before** `_start_managers()` (steps 4–6). Managers and handlers may
-> depend on resources created by `initialize()` (e.g. a Valkey client), so
-> this ordering removes the previous startup race (see §H5, resolved);
-> instance registration is deferred until after `initialize()` so the
-> transport/client exists.
+> runs **before** `ManagerRuntime.start_managers()` (steps 4–6). Managers and
+> handlers may depend on resources created by `initialize()` (e.g. a Valkey
+> client), so this ordering removes the previous startup race (see §H5,
+> resolved); instance registration is deferred until after `initialize()` so
+> the transport/client exists.
 
 ### Normal operation
 
@@ -79,7 +81,7 @@ already-set `exit_requested` short-circuits so only one shutdown runs
 
 `_shutdown()`:
 1. State = STOPPING.
-2. `_stop_managers()` (617) → `ManagerRuntime.stop_managers()` — cancel each
+2. `ManagerRuntime.stop_managers()` — cancel each
    manager task; wait per-manager up to `manager_shutdown_timeout` (default 2 s).
 3. `_unregister_instance()` (737) — subclass hook, runs after managers stop
    and before `cleanup()` teardown, deliberately while the transport is still
@@ -95,8 +97,7 @@ already-set `exit_requested` short-circuits so only one shutdown runs
      (`_stop_task_handler`, per-handler 5 s timeout).
    - `ValkeyWorker.cleanup` (423): super then `disconnect()` (close glide
      client).
-5. `_logger_shut_down_handlers()` (566) →
-   `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
+5. `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
    with per-handler timeout; overall `loggers_timeout =
    handlers × logger_handler_timeout + 1`.
 6. `start_time = None`; state = STOPPED.
@@ -163,7 +164,7 @@ RUNNING) / `remove_task_handler`.
 | Resource | Owner | Acquired | Released |
 |---|---|---|---|
 | Logger + async handlers | worker (via `LoggingLifecycle`) | `__init__` / startup | shutdown step 5 |
-| Manager asyncio tasks | worker (via `ManagerRuntime`) | `_start_managers` | `_stop_managers` |
+| Manager asyncio tasks | worker (via `ManagerRuntime`) | `ManagerRuntime.start_managers` | `ManagerRuntime.stop_managers` |
 | Internal task queue, `running_tasks` | `AsyncTaskProcessor` | `__init__` | drained in `cleanup` |
 | Task handler instances | processor (created per handler name) | `initialize` | `cleanup` |
 | Handler `is_ready` state | each `TaskHandler` | `start()` | `stop()` |

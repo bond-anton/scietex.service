@@ -63,9 +63,7 @@ Interaction notes:
   defines as no-ops.
 - **Async logging crosses the package boundary**: the worker attaches handlers
   from the external `scietex.logging` package and drives their
-  `start_logging()`/`stop_logging()` lifecycle via `LoggingLifecycle`
-  (`BasicAsyncWorker._logger_start_handlers` / `_logger_shut_down_handlers`
-  are thin forwarding wrappers).
+  `start_logging()`/`stop_logging()` lifecycle via `LoggingLifecycle`.
 
 ## Application entry points
 
@@ -112,11 +110,11 @@ process/loop:
 | `Start` task → `_startup()` | `BasicAsyncWorker.start()` | state → `RUNNING` (or init failure → `stop()`) |
 | `Stop` task → `_shutdown()` | `BasicAsyncWorker.stop()` / signal | state → `STOPPED`, `exit` event set |
 | `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_async_worker.py:519, AR-033) | one shutdown; repeat signals short-circuit |
-| Manager task `Heartbeat` → `_heartbeat_manager` | `_start_managers()` | cancelled on shutdown |
-| Manager task `Watchdog` → `_watchdog_manager` | `_start_managers()` | cancelled on shutdown |
-| Manager task `TaskManager` → `task_manager` (processor only) | `_start_managers()` | cancelled on shutdown |
-| Manager task `TaskQueueManager` → `task_queue_manager` (processor only) | `_start_managers()` | cancelled on shutdown |
-| Per-logger console worker (`scietex.logging` `ConsoleHandler._console_logging_worker`) | `_logger_start_handlers()` → handler `start_logging()` | handler `stop_logging()` during shutdown |
+| Manager task `Heartbeat` → `_heartbeat_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
+| Manager task `Watchdog` → `_watchdog_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
+| Manager task `TaskManager` → `task_manager` (processor only) | `ManagerRuntime.start_managers()` | cancelled on shutdown |
+| Manager task `TaskQueueManager` → `task_queue_manager` (processor only) | `ManagerRuntime.start_managers()` | cancelled on shutdown |
+| Per-logger console worker (`scietex.logging` `ConsoleHandler._console_logging_worker`) | `LoggingLifecycle.start_handlers()` → handler `start_logging()` | handler `stop_logging()` during shutdown |
 | Per-logger Valkey log worker (`AsyncBrokerHandler._worker` → connects, `xadd`) | same | handler `stop_logging()` during shutdown |
 | Per-task worker task (`handle_task` wrapper) | `AsyncTaskProcessor.task_manager` | task `handle()` returns/raises, or watchdog cancellation |
 

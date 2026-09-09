@@ -149,9 +149,7 @@ heartbeat never surfaces.
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
 `LoggingLifecycle.start_handlers` (`logging/lifecycle.py:62`) /
-`shut_down_handlers` (`logging/lifecycle.py:104`), exposed as worker wrappers
-`_logger_start_handlers` (`basic_async_worker.py:558`) /
-`_logger_shut_down_handlers` (`basic_async_worker.py:566`), with a per-handler
+`shut_down_handlers` (`logging/lifecycle.py:104`), with a per-handler
 timeout (`logger_handler_timeout`, default 2 s).
 
 ## F7. Configuration flow

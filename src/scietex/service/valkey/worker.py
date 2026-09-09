@@ -187,7 +187,7 @@ class ValkeyWorker(AsyncTaskProcessor):
                 stream_name=self._log_stream_name,
                 client=self._client,
             )
-            self._register_logger_handler(self._valkey_handler, name="AsyncValkeyHandler")
+            self._logging_lifecycle.register_logger_handler(self._valkey_handler, name="AsyncValkeyHandler")
         else:
             # The seam fixes _injected_client at construction; keep the handler
             # on the worker's *current* client across reconnects/restarts.

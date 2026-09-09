@@ -14,7 +14,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H2 | Resolved | AR-003 — bounded restart in `ManagerRuntime.run_manager` |
 | H3 | Resolved | AR-003 — retry inlined; no self-cancel |
 | H4 | Resolved | 2026-09-06 — handlers restartable in place |
-| H5 | Resolved | AR-007 — `initialize()` before `_start_managers()` |
+| H5 | Resolved | AR-007 — `initialize()` before `ManagerRuntime.start_managers()` |
 | H6 | Resolved | AR-015 + AR-008 — signals in `start()`; read-only views |
 | H7 | Resolved | AR-017 — `_force_stopped()` forces STOPPED on cancellation |
 | H8 | Resolved | AR-005 — at-least-once delivery |
@@ -41,9 +41,9 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 
 **Resolved (AR-003):** manager discovery/runtime and logging-handler lifecycle
 were extracted to `ManagerRuntime` (manager/runtime.py) and `LoggingLifecycle`
-(logging/lifecycle.py). `BasicAsyncWorker` now keeps identity/config, the state
-machine, and forwarding wrappers (`_run_manager`, `_start_managers`,
-`_logger_start_handlers`, etc.) that delegate to the extracted components.
+(logging/lifecycle.py). `BasicAsyncWorker` now keeps identity/config and the
+state machine, delegating manager and logging-handler bookkeeping to the
+extracted components directly.
 
 ## H2. Manager error-handling relies on private per-worker bookkeeping
 
@@ -96,7 +96,7 @@ restarts the same handler instances. See
   `initialize()`-created resources could race.
 
 **Resolved (AR-007):** `_startup` now calls `initialize()` before
-`_start_managers()` (basic_async_worker.py:650-658).
+`ManagerRuntime.start_managers()`.
 
 ## H6. Single-worker-per-process assumption (signal + event ownership)
 
@@ -119,7 +119,7 @@ and `running_tasks` (166) now return read-only `MappingProxyType` views.
 
 - **Location:** `basic_async_worker.py:713-755` (`_shutdown`).
 - **What:** `_shutdown` has no rollback if it is cancelled mid-way (e.g. during
-  `_stop_managers`); its `except asyncio.CancelledError` swallows the
+  `ManagerRuntime.stop_managers()`); its `except asyncio.CancelledError` swallows the
   cancellation without re-raising or forcing STOPPED/`exit`.
 - **Why significant:** a second stop/exit during shutdown may leave the state at
   STOPPING and `exit` unset, and `start()` in that state waits on a poll loop.

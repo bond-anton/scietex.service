@@ -137,7 +137,7 @@ async def test_manager_can_restart_after_giving_up():
 
         # A fresh start of the same manager must succeed (task entry was cleared).
         manager = AlwaysFailingWorker.__dict__["_doomed_manager"]
-        await worker._start_manager("Doomed", manager)
+        await worker._manager_runtime.start_manager("Doomed", manager)
         assert "Doomed" in worker._manager_runtime.tasks
     finally:
         await worker.stop()
@@ -148,7 +148,7 @@ async def test_subclass_manager_override_wins():
     """Most-derived manager definition must win over a base-class override."""
     worker = DerivedWorker()
     # Discovery must yield the derived manager only (base is shadowed).
-    names = [name for name, _ in worker._iter_manager_definitions()]
+    names = [name for name, _ in worker._manager_runtime.iter_manager_definitions()]
     assert names.count("Shared") == 1
     await worker.start()
     try:
@@ -188,7 +188,7 @@ async def test_cleanup_raising_manager_still_removed_from_tracking():
         # Cleanup raises, which must propagate out of stop_manager, but the
         # task must still remove itself from tracking.
         with pytest.raises(RuntimeError):
-            await worker._stop_manager("Messy")
+            await worker._manager_runtime.stop_manager("Messy")
         assert worker.cleaned_up
         assert "Messy" not in worker._manager_runtime.tasks
     finally:
@@ -215,7 +215,7 @@ async def test_cancellation_ignoring_manager_stays_tracked_after_timeout():
         # Use asyncio.TimeoutError (not the builtin): on 3.10 it is a distinct
         # subclass, so the builtin would not be caught by stop_manager.
         with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
-            await worker._stop_manager("Stubborn")
+            await worker._manager_runtime.stop_manager("Stubborn")
 
         # The still-running task must remain tracked.
         assert "Stubborn" in worker._manager_runtime.tasks
@@ -223,12 +223,12 @@ async def test_cancellation_ignoring_manager_stays_tracked_after_timeout():
 
         # A restart attempt must not double-spawn the same name.
         manager = CancellationIgnoringWorker.__dict__["_stubborn_manager"]
-        await worker._start_manager("Stubborn", manager)
+        await worker._manager_runtime.start_manager("Stubborn", manager)
         assert worker._manager_runtime.tasks["Stubborn"] is original_task
     finally:
         # Flip the flag so the manager honors the next cancellation and the
         # test cleans up without leaving a pending task.
         worker.ignore_cancellation = False
         if "Stubborn" in worker._manager_runtime.tasks:
-            await worker._stop_manager("Stubborn")
+            await worker._manager_runtime.stop_manager("Stubborn")
         await worker.stop()

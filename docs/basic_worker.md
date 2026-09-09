@@ -113,7 +113,7 @@ class ServiceStatus(Enum):
 ## Manager System
 
 The `@Manager` decorator marks an async method as a managed loop. The
-method is called repeatedly by `_run_manager()` in a `while True` loop.
+method is called repeatedly by `ManagerRuntime.run_manager()` in a `while True` loop.
 On `CancelledError` the loop stops cleanly. On any other exception, the
 error is recorded and the manager is automatically restarted after a
 `manager_restart_backoff` delay. Restarts are bounded: after
@@ -124,8 +124,8 @@ and executed as named `asyncio.Task` objects.
 
 ### Creating a Manager
 
-The decorated method performs a single iteration of work. `_run_manager()`
-handles the repetition, sleep, and error recovery:
+The decorated method performs a single iteration of work.
+`ManagerRuntime.run_manager()` handles the repetition, sleep, and error recovery:
 
 ```python
 from scietex.service import BasicAsyncWorker

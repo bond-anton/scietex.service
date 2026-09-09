@@ -541,11 +541,23 @@ async def test_first_heartbeat_writes_status_key_promptly():
             self._client = self._dummy
             return True
 
-        async def _start_managers(self):
+        async def _startup(self):
             # AR-049: the heartbeat manager fires its first beat immediately, so
-            # start_time must already be set when the managers begin.
-            self.managers_saw_start_time = self.start_time is not None
-            await super()._start_managers()
+            # start_time must already be set when the managers begin. The base
+            # _startup sets start_time just before it starts the managers; wrap
+            # the manager-start call to capture the ordering invariant at the
+            # moment the managers actually begin.
+            original = self._manager_runtime.start_managers
+
+            async def record_then_start():
+                self.managers_saw_start_time = self.start_time is not None
+                await original()
+
+            self._manager_runtime.start_managers = record_then_start
+            try:
+                await super()._startup()
+            finally:
+                self._manager_runtime.start_managers = original
 
     worker = TestWorker(
         ValkeyWorkerConfig(
