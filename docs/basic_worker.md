@@ -54,7 +54,7 @@ Subclasses should override:
 ### Starting
 
 ```python
-worker = MyWorker(service_name="my_service", version="1.0.0")
+worker = MyWorker(WorkerConfig(service_name="my_service", version="1.0.0"))
 await worker.start()
 ```
 
@@ -211,35 +211,50 @@ behavior.
 
 ### Constructor
 
+`BasicWorker` takes a single immutable configuration object
+(`WorkerConfig`, from `scietex.service.config`), or `None` to use the
+struct defaults:
+
 ```python
-BasicWorker(
-    service_name: str = "service",
-    version: str = "0.0.1",
-    conf_dir: str | Path | None = None,
-    logging_level: int | str = logging.DEBUG,
-    heartbeat_interval: float | None = None,
-    watchdog_interval: float | None = None,
-    **kwargs,
+import logging
+
+from scietex.service import BasicWorker, WorkerConfig
+
+worker = BasicWorker(
+    WorkerConfig(
+        service_name="service",
+        version="0.0.1",
+        conf_dir=None,
+        logging_level=logging.DEBUG,
+        heartbeat_interval=None,
+        watchdog_interval=None,
+        logger_handler_timeout=None,
+        manager_shutdown_timeout=None,
+        manager_max_retries=None,
+        manager_restart_backoff=None,
+    )
 )
 ```
 
-| Parameter | Default | Description |
+`WorkerConfig` is a frozen `msgspec.Struct`. Fields:
+
+| Field | Default | Description |
 |---|---|---|
 | `service_name` | `"service"` | Service name for logging and identification |
 | `version` | `"0.0.1"` | Version string |
-| `conf_dir` | `None` | Configuration directory (see precedence below) |
+| `conf_dir` | `None` | Configuration directory (`str` or `Path`; see precedence below) |
 | `logging_level` | `logging.DEBUG` | Logging level as string or integer |
-| `heartbeat_interval` | `None` (uses default) | Heartbeat interval in seconds |
-| `watchdog_interval` | `None` (uses default) | Watchdog interval in seconds |
+| `heartbeat_interval` | `None` (uses `DEFAULT_HEARTBEAT_INTERVAL`) | Heartbeat interval in seconds |
+| `watchdog_interval` | `None` (uses `DEFAULT_WATCHDOG_INTERVAL`) | Watchdog interval in seconds |
+| `logger_handler_timeout` | `None` (uses `DEFAULT_LOGGER_HANDLER_TIMEOUT`) | Timeout for logger handler operations |
+| `manager_shutdown_timeout` | `None` (uses `DEFAULT_MANAGER_SHUTDOWN_TIMEOUT`) | Timeout for manager shutdown |
+| `manager_max_retries` | `None` (uses `DEFAULT_MANAGER_MAX_RETRIES`) | Max consecutive failures before a manager gives up |
+| `manager_restart_backoff` | `None` (uses `DEFAULT_MANAGER_RESTART_BACKOFF`) | Seconds between manager restart attempts |
 
-**kwargs** supports:
-
-| Key | Default | Description |
-|---|---|---|
-| `logger_handler_timeout` | `2` | Timeout for logger handler operations |
-| `manager_shutdown_timeout` | `2` | Timeout for manager shutdown |
-| `manager_max_retries` | `5` | Max consecutive failures before a manager gives up |
-| `manager_restart_backoff` | `1` | Seconds between manager restart attempts |
+A `None` timing/retry field resolves to its `DEFAULT_*` constant when the
+worker reads it. Configuration is **immutable**: out-of-range values raise
+`msgspec.ValidationError` at construction (no silent clamping), and the
+worker exposes no runtime setters — all values are fixed at construction.
 
 ### Config Directory Precedence
 
@@ -272,7 +287,7 @@ Invalid or `None` values default to `DEFAULT_LOGGING_LEVEL` (DEBUG).
 ```python
 import asyncio
 import logging
-from scietex.service import BasicWorker
+from scietex.service import BasicWorker, WorkerConfig
 
 
 class MyService(BasicWorker):
@@ -302,11 +317,13 @@ class MyService(BasicWorker):
 
 async def main():
     worker = MyService(
-        service_name="my_daemon",
-        version="1.0.0",
-        heartbeat_interval=15,
-        watchdog_interval=5,
-        logging_level="INFO",
+        WorkerConfig(
+            service_name="my_daemon",
+            version="1.0.0",
+            heartbeat_interval=15,
+            watchdog_interval=5,
+            logging_level="INFO",
+        )
     )
 
     await worker.start()
@@ -328,8 +345,8 @@ manual id management:
 
 ```python
 # Both instances get distinct logger names automatically
-worker_a = MyService(service_name="worker")
-worker_b = MyService(service_name="worker")
+worker_a = MyService(WorkerConfig(service_name="worker"))
+worker_b = MyService(WorkerConfig(service_name="worker"))
 
 assert worker_a.instance_id != worker_b.instance_id
 ```

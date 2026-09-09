@@ -107,6 +107,7 @@ class ValkeyWorker(TaskProcessor):
         self._config = cfg
 
         self._log_stream_name = cfg.log_stream_name
+        # Deliberate write-capable bootstrap path: default create_default=True creates config + defaults.
         valkey_config = read_valkey_config(self.conf_dir) if cfg.valkey_config is None else cfg.valkey_config
         self._valkey_config = valkey_config
         if isinstance(valkey_config, GlideClientConfiguration):

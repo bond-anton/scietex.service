@@ -12,7 +12,7 @@ concurrent task processors with Valkey-backed distributed queues.
 - [Overview](docs/index.md) — Core components and architecture
 - [BasicWorker](docs/basic_worker.md) — Signal handling, logging, heartbeat & watchdog managers
 - [TaskProcessor](docs/task_processor.md) — Concurrent task processing, handler dispatch, timeout monitoring
-- [ValkeyWorker](docs/valkey_async_worker.md) — Valkey stream-based task distribution
+- [ValkeyWorker](docs/valkey_worker.md) — Valkey stream-based task distribution
 - [Task Handler](docs/task_handler.md) — Pluggable handler architecture, typed schemas
 
 ## Installation
@@ -36,7 +36,7 @@ A minimal daemon with signal handling, heartbeat, and watchdog. See the [full Ba
 ```python
 import asyncio
 import logging
-from scietex.service import BasicWorker
+from scietex.service import BasicWorker, WorkerConfig
 
 
 class MyWorker(BasicWorker):
@@ -52,11 +52,13 @@ class MyWorker(BasicWorker):
 
 async def main() -> None:
     worker = MyWorker(
-        service_name="my_service",
-        version="1.0.0",
-        logging_level=logging.DEBUG,
-        heartbeat_interval=10,
-        watchdog_interval=1,
+        WorkerConfig(
+            service_name="my_service",
+            version="1.0.0",
+            logging_level=logging.DEBUG,
+            heartbeat_interval=10,
+            watchdog_interval=1,
+        )
     )
     await worker.start()
     await worker.events["exit"].wait()
@@ -75,7 +77,7 @@ Register handlers for different task types and process them concurrently. See th
 ```python
 import asyncio
 import logging
-from scietex.service import TaskProcessor
+from scietex.service import TaskProcessor, TaskProcessorConfig
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
 
 
@@ -99,19 +101,23 @@ class EmailHandler(TaskHandler):
 
 
 class MyProcessor(TaskProcessor):
-    async def fetch_tasks(self) -> None:
+    async def fetch_tasks(self) -> bool:
         # Pull tasks from your source (DB, API, queue, etc.)
         # and enqueue them for processing:
         #     self.enqueue_task(task_id, task_data)
-        pass
+        # Return True when at least one task was enqueued so the
+        # task_queue_manager drains a backlog back-to-back.
+        return False
 
 
 async def main() -> None:
     processor = MyProcessor(
-        service_name="email_worker",
-        version="1.0.0",
-        queue_size=100,
-        max_concurrent_tasks=5,
+        TaskProcessorConfig(
+            service_name="email_worker",
+            version="1.0.0",
+            queue_size=100,
+            max_concurrent_tasks=5,
+        )
     )
     processor.add_task_handler(EmailHandler)
     await processor.start()
@@ -124,7 +130,7 @@ if __name__ == "__main__":
 
 ### Valkey Worker
 
-Distributed task processing backed by a Valkey (Redis-compatible) stream. See the [full ValkeyWorker docs](docs/valkey_async_worker.md) for architecture, key naming, and configuration reference.
+Distributed task processing backed by a Valkey (Redis-compatible) stream. See the [full ValkeyWorker docs](docs/valkey_worker.md) for architecture, key naming, and configuration reference.
 
 ```python
 import asyncio
@@ -135,6 +141,7 @@ from scietex.service import (
     ValkeyConfig,
     ValkeyNode,
     ValkeyWorker,
+    ValkeyWorkerConfig,
 )
 
 
@@ -150,13 +157,15 @@ async def main() -> None:
         ),
     )
     worker = ValkeyWorker(
-        service_name="distributed_worker",
-        version="1.0.0",
-        logging_level=logging.DEBUG,
-        heartbeat_interval=10,
-        valkey_config=config,
-        queue_size=100,
-        max_concurrent_tasks=10,
+        ValkeyWorkerConfig(
+            service_name="distributed_worker",
+            version="1.0.0",
+            logging_level=logging.DEBUG,
+            heartbeat_interval=10,
+            valkey_config=config,
+            queue_size=100,
+            max_concurrent_tasks=10,
+        )
     )
     await worker.start()
     await worker.events["exit"].wait()
@@ -175,7 +184,7 @@ group `scietex:{service_name}:task_group`.
 ### Worker Hierarchy
 
 <!-- markdown-link-check-disable -->
-See [BasicWorker](docs/basic_worker.md), [TaskProcessor](docs/task_processor.md), and [ValkeyWorker](docs/valkey_async_worker.md) for detailed architecture diagrams.
+See [BasicWorker](docs/basic_worker.md), [TaskProcessor](docs/task_processor.md), and [ValkeyWorker](docs/valkey_worker.md) for detailed architecture diagrams.
 <!-- markdown-link-check-enable -->
 
 ```
@@ -209,7 +218,9 @@ See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle
    Registers a handler class under its class name. The processor
    creates a single handler instance on start. Dispatch is driven by
    the handler's `supported_tasks` declaration, not by a registration
-   key.
+   key. An optional keyword-only `name`
+   (`processor.add_task_handler(HandlerClass, name="...")`) lets
+   multiple instances of one class coexist under distinct keys.
 2. **Declare support**: `Handler.supported_tasks` property must return
    a list of task type strings this handler can process.
 3. **Dispatch**: When a task arrives, the processor calls
@@ -297,11 +308,15 @@ untouched.
 | `TaskProcessor` | Concurrent task processor |
 | `Manager` | Decorator for creating managed async loop methods |
 | `ValkeyWorker` | Valkey-backed distributed worker |
+| `WorkerConfig` | Immutable `msgspec.Struct` configuration for `BasicWorker` |
+| `TaskProcessorConfig` | Immutable configuration for `TaskProcessor` (extends `WorkerConfig`) |
+| `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |
 | `__version__` | Package version string |
 
 The Valkey configuration classes (`ValkeyConfig`, `ValkeyNode`,
 `ValkeyUserCredentials`, `ValkeyBackoffStrategy`, `ValkeyBaseConfig`,
-`ValkeyAdvancedConfig`, `ValkeyTlsAdvancedConfiguration`) are top-level
+`ValkeyAdvancedConfig`, `ValkeyTlsAdvancedConfiguration`, `ValkeyWorkerConfig`)
+are top-level
 re-exports: they are importable directly from `scietex.service` (as in the
 Valkey quick-start above), not only from `scietex.service.valkey`.
 
@@ -352,10 +367,15 @@ uv sync --extra dev --extra test --extra lint
 
 ### Running Examples
 
+The `examples/` directory contains runnable blueprints; see
+[`examples/README.md`](examples/README.md) for what each demonstrates.
+
 ```bash
 python -m examples.basic_worker
 python -m examples.task_processor
-python -m examples.valkey_async_service   # requires valkey-glide
+python -m examples.named_task_handlers
+python -m examples.valkey_async_service      # requires valkey-glide
+python -m examples.valkey_pubsub_worker      # requires valkey-glide
 ```
 
 ## License

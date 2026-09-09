@@ -55,8 +55,8 @@ timeouts.
 
 | Constant | Default | Min | Max | Description |
 |---|---|---|---|---|
-| `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `2` | — | — | Default max queue size |
-| `DEFAULT_MAX_CONCURRENT_TASKS` | `2` | `1` | — | Default max concurrent tasks |
+| `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `100` | — | — | Default max queue size |
+| `DEFAULT_MAX_CONCURRENT_TASKS` | `10` | `1` | — | Default max concurrent tasks |
 | `DEFAULT_TASK_TIMEOUT` | `3` | — | — | Default task timeout in seconds |
 | `TASK_QUEUE_FETCH_TIMEOUT` | `1` | — | — | Timeout waiting for task from queue |
 | `DEFAULT_MANAGER_SLEEP_TIME` | `0.01` | `0.001` | `1` | Default manager loop sleep |
@@ -88,8 +88,8 @@ the worker enters `RUNNING` state.
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `queue_size` | `int` | `2` | Maximum size of the internal task queue |
-| `max_concurrent_tasks` | `int` | `2` | Maximum tasks processed in parallel |
+| `queue_size` | `int` | `100` | Maximum size of the internal task queue |
+| `max_concurrent_tasks` | `int` | `10` | Maximum tasks processed in parallel |
 
 The internal queue is private. Access it through these non-blocking
 methods:
@@ -117,50 +117,67 @@ methods:
 | `task_handlers` | `Mapping[str, TaskHandler]` | Currently active (started) handlers, as a read-only `MappingProxyType` view |
 | `running_tasks` | `Mapping[UUID, TaskTracker]` | Currently running tasks and their trackers, as a read-only `MappingProxyType` view |
 
-All timing properties are clamped to their min/max bounds. Setters
-accept `None` to reset to the default value.
+All timing properties are read-only and derive from the immutable
+`TaskProcessorConfig`; a `None` field resolves to its `DEFAULT_*` constant,
+and an out-of-range value raises `msgspec.ValidationError` at construction
+(no runtime clamping or setters).
 
 ## Constructor
 
+`TaskProcessor` takes a single immutable configuration object
+(`TaskProcessorConfig`, from `scietex.service.config`, which extends
+`WorkerConfig`), or `None` to use the struct defaults:
+
 ```python
-TaskProcessor(
-    service_name: str = "service",
-    version: str = "0.0.1",
-    conf_dir: str | Path | None = None,
-    logging_level: int | str = logging.DEBUG,
-    heartbeat_interval: float | None = None,
-    watchdog_interval: float | None = None,
-    queue_size: int | None = None,
-    max_concurrent_tasks: int | None = None,
-    **kwargs,
+import logging
+
+from scietex.service import TaskProcessor, TaskProcessorConfig
+
+processor = TaskProcessor(
+    TaskProcessorConfig(
+        service_name="service",
+        version="0.0.1",
+        conf_dir=None,
+        logging_level=logging.DEBUG,
+        heartbeat_interval=None,
+        watchdog_interval=None,
+        queue_size=None,
+        max_concurrent_tasks=None,
+        auto_tune=False,
+        task_manager_sleep_time=None,
+        task_queue_manager_sleep_time=None,
+        task_handler_start_timeout=None,
+        task_handler_stop_timeout=None,
+    )
 )
 ```
 
-Extra parameters (in addition to `BasicWorker`):
+Fields added by `TaskProcessorConfig` (in addition to `WorkerConfig`):
 
-| Parameter | Default | Description |
+| Field | Default | Description |
 |---|---|---|
-| `queue_size` | `None` (uses `DEFAULT_MAX_TASKS_QUEUE_SIZE`) | Max queue size |
-| `max_concurrent_tasks` | `None` (uses `DEFAULT_MAX_CONCURRENT_TASKS`) | Max concurrent tasks |
+| `queue_size` | `None` (uses `DEFAULT_MAX_TASKS_QUEUE_SIZE`, `100`) | Max queue size |
+| `max_concurrent_tasks` | `None` (uses `DEFAULT_MAX_CONCURRENT_TASKS`, `10`) | Max concurrent tasks |
+| `auto_tune` | `False` | If `True` and `max_concurrent_tasks` is `None`, derive the concurrency from `os.cpu_count()` at startup |
+| `task_manager_sleep_time` | `None` (uses `DEFAULT_MANAGER_SLEEP_TIME`, `0.01`) | Sleep between task manager iterations |
+| `task_queue_manager_sleep_time` | `None` (uses `DEFAULT_MANAGER_SLEEP_TIME`, `0.01`) | Sleep between queue manager iterations |
+| `task_handler_start_timeout` | `None` (uses `DEFAULT_TASK_HANDLER_START_TIMEOUT`, `5`) | Timeout for starting handlers |
+| `task_handler_stop_timeout` | `None` (uses `DEFAULT_TASK_HANDLER_STOP_TIMEOUT`, `5`) | Timeout for stopping handlers |
 
-**kwargs** supports additional keys:
-
-| Key | Default | Description |
-|---|---|---|
-| `task_manager_sleep_time` | `0.01` | Sleep between task manager iterations |
-| `task_queue_manager_sleep_time` | `0.01` | Sleep between queue manager iterations |
-| `task_handler_start_timeout` | `5` | Timeout for starting handlers |
-| `task_handler_stop_timeout` | `5` | Timeout for stopping handlers |
-
-Plus all `BasicWorker` kwargs (`logger_handler_timeout`,
-`manager_shutdown_timeout`).
+All `WorkerConfig` fields (`logger_handler_timeout`,
+`manager_shutdown_timeout`, `manager_max_retries`,
+`manager_restart_backoff`, etc.) are inherited. Configuration is
+immutable: values are fixed at construction, and out-of-range values raise
+`msgspec.ValidationError`.
 
 ## Task Handler Registration
 
 ### Adding Handlers
 
 ```python
-processor = TaskProcessor(service_name="task_worker", version="1.0.0")
+processor = TaskProcessor(
+    TaskProcessorConfig(service_name="task_worker", version="1.0.0")
+)
 
 # Register handler classes (processor creates instances)
 processor.add_task_handler(EmailHandler)
@@ -183,6 +200,7 @@ class SlicedHandler(TaskHandler):
     @property
     def supported_tasks(self) -> list[str]:
         return self._TASKS_BY_NAME[self.name]
+
 
 processor.add_task_handler(SlicedHandler, name="alpha")
 processor.add_task_handler(SlicedHandler, name="beta")
@@ -290,7 +308,7 @@ Override to retrieve tasks from an external source and enqueue them:
 
 ```python
 class MyWorker(TaskProcessor):
-    async def fetch_tasks(self) -> None:
+    async def fetch_tasks(self) -> bool:
         """Pull tasks from a message queue."""
         while not self.task_queue_full():
             try:
@@ -304,6 +322,9 @@ class MyWorker(TaskProcessor):
                 self.enqueue_task(task_id, task_data)
             except Empty:
                 break
+        # Return True when at least one task was enqueued so the
+        # task_queue_manager skips its idle backoff and drains back-to-back.
+        return True
 ```
 
 ### return_task_to_queue()
@@ -388,7 +409,7 @@ import json
 import uuid
 from uuid import uuid4
 
-from scietex.service import TaskProcessor
+from scietex.service import TaskProcessor, TaskProcessorConfig
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, TaskTimeout
 
 
@@ -411,8 +432,8 @@ class EmailHandler(TaskHandler):
 class MyTaskWorker(TaskProcessor):
     """A task processor that fetches from a simulated queue."""
 
-    def __init__(self, **kwargs):
-        super().__init__(service_name="task_worker", version="1.0.0", **kwargs)
+    def __init__(self, config: TaskProcessorConfig | None = None):
+        super().__init__(config)
         self._external_queue: list[dict] = []
 
     async def initialize(self) -> bool:
@@ -420,8 +441,9 @@ class MyTaskWorker(TaskProcessor):
         self.add_task_handler(EmailHandler)
         return await super().initialize()
 
-    async def fetch_tasks(self) -> None:
+    async def fetch_tasks(self) -> bool:
         """Pull tasks from the simulated external queue."""
+        enqueued = False
         while not self.task_queue_full():
             if not self._external_queue:
                 break
@@ -433,6 +455,8 @@ class MyTaskWorker(TaskProcessor):
                 timeout=TaskTimeout(timeout=item.get("timeout")),
             )
             self.enqueue_task(task_id, task_data)
+            enqueued = True
+        return enqueued
 
     async def return_task_to_queue(self, task_id: uuid.UUID, task_data: TaskData) -> None:
         """Re-queue timed-out tasks."""
@@ -457,9 +481,13 @@ class MyTaskWorker(TaskProcessor):
 
 async def main():
     worker = MyTaskWorker(
-        queue_size=10,
-        max_concurrent_tasks=4,
-        watchdog_interval=2,
+        TaskProcessorConfig(
+            service_name="task_worker",
+            version="1.0.0",
+            queue_size=10,
+            max_concurrent_tasks=4,
+            watchdog_interval=2,
+        )
     )
 
     # Simulate incoming tasks
@@ -488,8 +516,10 @@ external service rate limits):
 
 ```python
 worker = MyWorker(
-    queue_size=100,  # Buffer for bursts
-    max_concurrent_tasks=8,  # Respect API rate limits
+    TaskProcessorConfig(
+        queue_size=100,  # Buffer for bursts
+        max_concurrent_tasks=8,  # Respect API rate limits
+    )
 )
 ```
 
@@ -563,7 +593,9 @@ times reduce CPU but increase task fetch delay:
 
 ```python
 worker = MyWorker(
-    task_manager_sleep_time=0.001,  # Low latency, higher CPU
-    task_queue_manager_sleep_time=0.1,  # Lower CPU for fetch loop
+    TaskProcessorConfig(
+        task_manager_sleep_time=0.001,  # Low latency, higher CPU
+        task_queue_manager_sleep_time=0.1,  # Lower CPU for fetch loop
+    )
 )
 ```

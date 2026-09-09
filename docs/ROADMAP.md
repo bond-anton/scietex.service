@@ -61,6 +61,14 @@ same class under multiple keys, relied on a custom lifecycle name, or passed a
 
 **Status: implemented** in v4.0.0 (commits `3400420`, `9c7689f`).
 
+> **Follow-up (AR-053):** the optional keyword-only `name` was later
+> re-introduced. The current signature is
+> `add_task_handler(handler_class, *, name: str | None = None)` — the
+> lifecycle key is the resolved name (`name` if given, otherwise
+> `handler_class.__name__`), re-enabling multiple named instances of one
+> class. The class-level `supported_tasks` declaration remains the dispatch
+> contract (selection is by `supports()` membership, not the key).
+
 ## v4 — Error-policy enforcement on task results
 
 **Motivation:** AR-022 (docs/reviews/architecture/2026-09-06.md). The v3 error

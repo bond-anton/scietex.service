@@ -4,7 +4,7 @@
 
 - [BasicWorker](./basic_worker.md) — Foundation async daemon worker with signal handling, logging, heartbeat and watchdog managers
 - [TaskProcessor](./task_processor.md) — Concurrent task processing framework built on BasicWorker with task queue and handler dispatch
-- [ValkeyWorker](./valkey_async_worker.md) — Valkey-backed task processor with stream-based task distribution and heartbeat publishing
+- [ValkeyWorker](./valkey_worker.md) — Valkey-backed task processor with stream-based task distribution and heartbeat publishing
 
 ## Task System
 

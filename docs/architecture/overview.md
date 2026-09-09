@@ -9,16 +9,16 @@ is a library whose entry point is the consumer's own `main()`.
 
 | Subsystem | Location | Responsibility |
 |---|---|---|
-| Worker core | `src/scietex/service/basic_async_worker.py` | `BasicWorker`: identity, lifecycle state machine, signal handling (registered in `start()`), startup/shutdown/restart orchestration, default heartbeat/watchdog/cleanup hooks. Delegates manager runtime and logging lifecycle to `ManagerRuntime` / `LoggingLifecycle` |
+| Worker core | `src/scietex/service/basic_worker.py` | `BasicWorker`: identity, lifecycle state machine, signal handling (registered in `start()`), startup/shutdown/restart orchestration, default heartbeat/watchdog/cleanup hooks. Delegates manager runtime and logging lifecycle to `ManagerRuntime` / `LoggingLifecycle` |
 | Manager runtime | `src/scietex/service/manager/runtime.py` | `ManagerRuntime`: discovers `@Manager` methods across the class MRO, runs each as a task with bounded restart-on-error, owns manager status/task/error bookkeeping |
 | Logging lifecycle | `src/scietex/service/logging/lifecycle.py` | `LoggingLifecycle`: async logging-handler registration and start/stop with per-handler status bookkeeping |
 | Manager decorator | `src/scietex/service/manager/__init__.py` | `@Manager` class-decorator and `ManagerStatus`; wraps an async method into a managed loop |
 | Logging helpers | `src/scietex/service/logging/__init__.py` | `LoggerStatus` enum and `parse_logging_level()` string/int normalization |
 | Configuration | `src/scietex/service/config.py` | `WorkerConfig` + `TaskProcessorConfig` (immutable `msgspec.Struct`s) and the MIN/MAX/DEFAULT constants they enforce at construction (`msgspec.ValidationError` on out-of-range values) |
-| Task processing | `src/scietex/service/async_tasks_processor.py` | `TaskProcessor`: in-process bounded task queue, concurrency limit, handler registry/dispatch, timeout watchdog, drain/requeue on shutdown |
+| Task processing | `src/scietex/service/task_processor.py` | `TaskProcessor`: in-process bounded task queue, concurrency limit, handler registry/dispatch, timeout watchdog, drain/requeue on shutdown |
 | Task handler contract | `src/scietex/service/task_handler/` | `TaskHandler` ABC + `TaskHandlerContext` + typed schemas `TaskData`, `TaskResult`, `TaskTimeout`, `TaskTracker` (frozen `msgspec.Struct`) |
 | Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (stream transport over glide), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`), `Heartbeat` schema |
-| Utilities | `src/scietex/service/utils/` | `prepare_conf_dir()` config-dir resolution (`conf.py`); ASCII logo printer (`logo.py`) |
+| Utilities | `src/scietex/service/utils/` | `prepare_conf_dir()` config-dir resolution (`config.py`); ASCII logo printer (`logo.py`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional import of Valkey exports |
 | Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
 
@@ -53,7 +53,7 @@ Interaction notes:
   asyncio tasks are created for periodic/background behavior (manager tasks,
   logger tasks inside handlers). Manager and logging bookkeeping are delegated
   to `ManagerRuntime` and `LoggingLifecycle`, which the worker constructs in
-  `__init__` (basic_async_worker.py:145-146).
+  `__init__` (basic_worker.py:107-108).
 - **Handlers are invoked by the processor, not by the worker.** Dispatch is
   type-based: first active handler whose `supports(task_type)` returns `True`
   wins.
@@ -73,7 +73,9 @@ The package is a library. Each runnable artifact is a consumer:
 |---|---|---|
 | `examples/basic_worker.py` | `BasicWorker` + custom `@Manager("cruncher")` | Minimal daemon; prints logo; runs managers until SIGINT/SIGTERM |
 | `examples/task_processor.py` | `TaskProcessor` + three `TaskHandler`s + in-memory source | Feeds tasks from an in-memory list, processes concurrently |
+| `examples/named_task_handlers.py` | `TaskProcessor` + one handler class registered under two names (AR-053) | Splits one class's task types across named instances |
 | `examples/valkey_async_service.py` | `ValkeyWorker` | Connects to Valkey, consumes a task stream |
+| `examples/valkey_pubsub_worker.py` | `ValkeyWorker` subclass + PubSub control channels | Subscribes to `scietex:{service}:{instance_id}` and `scietex:broadcast` |
 
 Pattern (all examples and README follow it):
 
@@ -88,14 +90,14 @@ asyncio.run(main())  # SIGINT/SIGTERM → exit() → STOPPED
 ```
 
 Two constraints now derive from signal handling in `BasicWorker.start` /
-`stop` (basic_async_worker.py:696, 778):
+`stop` (basic_worker.py:453, 538):
 
 1. A worker can be constructed **anywhere** — `__init__` no longer calls
    `asyncio.get_running_loop()`; the running loop is only touched in `start()`
    and `stop()`.
 2. Signal handlers (SIGINT/SIGTERM) are registered per instance in `start()`
-   (`_setup_signal_handlers`, 501) and removed in `stop()`
-   (`_remove_signal_handlers`, 531). Registration is a Windows-safe no-op when
+   (`_setup_signal_handlers`, 319) and removed in `stop()`
+   (`_remove_signal_handlers`, 349). Registration is a Windows-safe no-op when
    `loop.add_signal_handler` is unavailable. Because registration happens on
    `start()` rather than construction, the **last started worker in a process**
    owns the signals.
@@ -109,7 +111,7 @@ process/loop:
 |---|---|---|
 | `Start` task → `_startup()` | `BasicWorker.start()` | state → `RUNNING` (or init failure → `stop()`) |
 | `Stop` task → `_shutdown()` | `BasicWorker.stop()` / signal | state → `STOPPED`, `exit` event set |
-| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_async_worker.py:519, AR-033) | one shutdown; repeat signals short-circuit |
+| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_worker.py:336, AR-033) | one shutdown; repeat signals short-circuit |
 | Manager task `Heartbeat` → `_heartbeat_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `Watchdog` → `_watchdog_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `TaskManager` → `task_manager` (processor only) | `ManagerRuntime.start_managers()` | cancelled on shutdown |

@@ -5,7 +5,7 @@ dependencies, dependents. Line numbers refer to the module given.
 
 ## 1. Worker core — `BasicWorker`
 
-**File:** `src/scietex/service/basic_async_worker.py`
+**File:** `src/scietex/service/basic_worker.py`
 
 **Purpose:** Foundation for daemon workers: identity (`service_name`,
 `instance_id`, `version`), lifecycle state machine, signal-driven graceful
@@ -16,25 +16,25 @@ logging-handler lifecycle are delegated to `ManagerRuntime` and
 config, and the state machine.
 
 **Main symbols:**
-- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 53
-- `class BasicWorker` — line 69
+- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 39
+- `class BasicWorker` — line 55
 - Constructor — `__init__(config: WorkerConfig | None = None)`; stores the
   immutable `WorkerConfig` (from `config.py`), resolves identity/conf_dir/
   logging_level, and constructs `ManagerRuntime` + `LoggingLifecycle`.
   Timing/retry fields are validated at construction — an out-of-range value
   raises `msgspec.ValidationError`, and `None` resolves to the matching
   `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
-- Signals: `_setup_signal_handlers` 501 (Windows-safe no-op),
-  `_remove_signal_handlers` 531
-- Lifecycle: `_startup` 625, `start` 671, `_shutdown` 713, `stop` 757, `exit` 800
-- Cancellation terminal-state helper: `_force_stopped` 699 (AR-017 — forces
+- Signals: `_setup_signal_handlers` 319 (Windows-safe no-op),
+  `_remove_signal_handlers` 349
+- Lifecycle: `_startup` 373, `start` 428, `_shutdown` 470, `stop` 517, `exit` 560
+- Cancellation terminal-state helper: `_force_stopped` 456 (AR-017 — forces
   STOPPED + `exit` event on startup/shutdown cancellation)
-- Hooks: `initialize` 575, `heartbeat` 832, `watchdog` 844, `cleanup` 856,
-  `_register_instance` 873, `_unregister_instance` 883
-- Built-in managers: `@Manager(name="Heartbeat") _heartbeat_manager` 810,
-  `@Manager(name="Watchdog") _watchdog_manager` 821
-- `_setup_signal_handlers` called from `start()` (696), not `__init__`;
-  `_remove_signal_handlers` called from `stop()` (778)
+- Hooks: `initialize` 363, `heartbeat` 592, `watchdog` 604, `cleanup` 616,
+  `_register_instance` 625, `_unregister_instance` 635
+- Built-in managers: `@Manager(name="Heartbeat") _heartbeat_manager` 571,
+  `@Manager(name="Watchdog") _watchdog_manager` 582
+- `_setup_signal_handlers` called from `start()` (453), not `__init__`;
+  `_remove_signal_handlers` called from `stop()` (538)
 
 **Public interface:** constructor takes a single immutable `WorkerConfig`
 (`config.py`) or `None`; all properties are read-only (no runtime setters):
@@ -45,11 +45,11 @@ config, and the state machine.
 `manager_shutdown_timeout`, `manager_max_retries`, `manager_restart_backoff`.
 Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
-subclass hooks govern registry-set membership: `_register_instance` (873) —
+subclass hooks govern registry-set membership: `_register_instance` (625) —
 called by `_startup()` after `initialize()` succeeds and before managers
-start — and `_unregister_instance` (883) — called by `_shutdown()` after
+start — and `_unregister_instance` (635) — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
-`ValkeyWorker` overrides them (worker.py:386, 408) to `SADD`/
+`ValkeyWorker` overrides them (worker.py:363, 386) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.logging.lifecycle`
@@ -107,7 +107,7 @@ owning worker and owns the `statuses` dict (35).
   across start/stop cycles. The `name` parameter is **unused** (AR-031): it is
   accepted only because `ValkeyWorker._ensure_logging_handler` passes it
   through; statuses are keyed by `handler.name` or
-  `handler.__class__.__name__` instead (lifecycle.py:40–57).
+  `handler.__class__.__name__` instead (lifecycle.py:40–43).
 - `start_handlers()` (62) — starts each `AsyncLoggingHandler` whose recorded
   status is not RUNNING, with `logger_handler_timeout`; sets status RUNNING on
   success, FAILED on timeout/exception so it is retried on the next start
@@ -162,16 +162,16 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 | `TaskTimeout` (16) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
 | `TaskData` (30) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
 | `TaskResult` (48) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
-| `TaskTracker` (85) | `worker_task: asyncio.Task`, `data: TaskData`, `started: int\|float` |
+| `TaskTracker` (79) | `worker_task: asyncio.Task`, `data: TaskData`, `started: int\|float` |
 
 `TaskResult.processed_at` uses `msgspec.field(default_factory=lambda:
-datetime.now(timezone.utc))` (76) so each instance gets its own timestamp
+datetime.now(timezone.utc))` (72) so each instance gets its own timestamp
 (AR-012). The error-taxonomy fields (`error_code`/`retryable`/`partial`,
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
 
 **Public interface:** constructors only (frozen). **Dependencies:** `msgspec`.
-**Depended on by:** `task_handler.basic`, `async_tasks_processor`,
+**Depended on by:** `task_handler.basic`, `task_processor`,
 `valkey` (msgpack round-trip of `TaskData`), examples, tests.
 
 ## 7. Task handler contract — `TaskHandler` / `TaskHandlerContext`
@@ -199,33 +199,33 @@ contract; a narrow context decouples handlers from the worker.
 
 ## 8. Task processor — `TaskProcessor`
 
-**File:** `src/scietex/service/async_tasks_processor.py`
+**File:** `src/scietex/service/task_processor.py`
 
 **Purpose:** Adds concurrent in-process task execution on top of the worker:
 external tasks are enqueued (override `fetch_tasks`), a `TaskManager` dequeues
 and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
 drains/cancels in-flight work.
 
-**Main symbols:** `class TaskProcessor(BasicWorker)` (46).
-Properties: `task_handlers` 154, `running_tasks` 166 (read-only
-`MappingProxyType` views), `queue_size` 171, `max_concurrent_tasks` 176.
-Registry/dispatch: `add_task_handler` 314 (takes the handler class plus an
+**Main symbols:** `class TaskProcessor(BasicWorker)` (38).
+Properties: `task_handlers` 103, `running_tasks` 115 (read-only
+`MappingProxyType` views), `queue_size` 120, `max_concurrent_tasks` 125.
+Registry/dispatch: `add_task_handler` 216 (takes the handler class plus an
 optional keyword-only `name`; the lifecycle key is the resolved name — `name`
 if given, otherwise `handler_class.__name__` — so multiple instances of one
 class can coexist under distinct keys, a duplicate resolved key raises),
-`_start_task_handler` 360
-(builds a `TaskHandlerContext` at 381–385), `_stop_task_handler` 404,
-`remove_task_handler` 423, `_find_task_handler` 433, `process_task` 544.
-Queue access: `enqueue_task` 181, `dequeue_task` 202, `task_queue_empty` 194,
-`task_queue_full` 198 (the raw `task_queue` attribute is no longer exposed;
+`_start_task_handler` 251
+(builds a `TaskHandlerContext` at 272–276), `_stop_task_handler` 295,
+`remove_task_handler` 321, `_find_task_handler` 337, `process_task` 470.
+Queue access: `enqueue_task` 129, `dequeue_task` 150, `task_queue_empty` 142,
+`task_queue_full` 146 (the raw `task_queue` attribute is no longer exposed;
 non-blocking `put_nowait`/`get_nowait` underneath). State:
-`__task_handlers_map`/`__task_handlers` (112–113), `__running_tasks` (116),
-`__task_queue` (120, bounded `asyncio.Queue[(UUID, TaskData)]`).
-Managers: `@Manager("TaskManager") task_manager` 595 (inner `handle_task`
-wrapper at 608), `@Manager("TaskQueueManager") task_queue_manager` 670.
-Hooks: `fetch_tasks` 661, `return_task_to_queue` 451, `on_task_completed` 463
-(transport ack seam), `initialize` 480 (starts handlers), `cleanup` 498
-(drains queue, cancels running tasks, stops handlers), `watchdog` 685.
+`__task_handlers_map`/`__task_handlers` (80–81), `__running_tasks` (84),
+`__task_queue` (100, bounded `asyncio.Queue[(UUID, TaskData)]`).
+Managers: `@Manager("TaskManager") task_manager` 523 (inner `handle_task`
+wrapper at 535), `@Manager("TaskQueueManager") task_queue_manager` 625.
+Hooks: `fetch_tasks` 606, `return_task_to_queue` 355, `on_task_completed` 368
+(transport ack seam), `initialize` 385 (starts handlers), `cleanup` 423
+(drains queue, cancels running tasks, stops handlers), `watchdog` 644.
 
 **Config constants:** timing/retry MIN/MAX/DEFAULT bounds live in `config.py`
 (single source of truth); the task-queue defaults are
@@ -249,7 +249,7 @@ runtime setters. Properties (`task_handlers`, `running_tasks` — read-only
 and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
 `task_queue_full`.
 
-**Dependencies:** `.basic_async_worker`, `.manager`, `.task_handler`.
+**Dependencies:** `.basic_worker`, `.manager`, `.task_handler`.
 **Depended on by:** `ValkeyWorker`, examples, tests.
 
 ## 9. Valkey worker — `ValkeyWorker`
@@ -260,25 +260,25 @@ and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
 via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
-**Main symbols:** `class ValkeyWorker(TaskProcessor)` (53).
+**Main symbols:** `class ValkeyWorker(TaskProcessor)` (52).
 Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
 `config.valkey_config` or falls back to `read_valkey_config`),
-`connect` 232 (`GlideClient.create` + PING; `_client` assigned only
-after PING succeeds, 261; then wires the shared client into the logging handler),
-`disconnect` 277, `heartbeat` 291 (writes msgpack `Heartbeat` to `...:status`
-with TTL 2×interval), `initialize` 327 (start handlers, connect,
-`xgroup_create`), `cleanup` 362 (super + disconnect),
-`return_task_to_queue` 438 (`xadd` re-queue), `_recover_pending_tasks` 457
-(`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 513
+`connect` 190 (`GlideClient.create` + PING; `_client` assigned only
+after PING succeeds, 219; then wires the shared client into the logging handler),
+`disconnect` 235, `heartbeat` 249 (writes msgpack `Heartbeat` to `...:status`
+with TTL 2×interval), `initialize` 290 (start handlers, connect,
+`xgroup_create`), `cleanup` 340 (super + disconnect),
+`return_task_to_queue` 407 (`xadd` re-queue), `_recover_pending_tasks` 426
+(`XAUTOCLAIM` pending entries on first fetch), `fetch_tasks` 489
 (`xreadgroup` → decode → `enqueue_task`; does **not** ack on enqueue),
-`on_task_completed` 572 (`xack`+`xdel` the entry after the handler finishes),
-`_register_instance` 386 (`SADD` `instance_id` into the registry set),
-`_unregister_instance` 408 (`SREM` it back out).
+`on_task_completed` 565 (`xack`+`xdel` the entry after the handler finishes),
+`_register_instance` 363 (`SADD` `instance_id` into the registry set),
+`_unregister_instance` 386 (`SREM` it back out).
 
 Single client (AR-018): the worker runs one `GlideClient` shared with the
-logging handler. `_ensure_logging_handler` (207) constructs the
+logging handler. `_ensure_logging_handler` (168) constructs the
 `AsyncValkeyHandler` with the worker's client injected on the first successful
-`connect()`, and `disconnect()` (277) clears the handler's reference before
+`connect()`, and `disconnect()` (235) clears the handler's reference before
 closing the shared client — the worker is the sole teardown owner (see §H9).
 
 **Key names** (constructed in `__init__`): status key
@@ -288,12 +288,12 @@ closing the shared client — the worker is the sole teardown owner (see §H9).
 `scietex:{service}:{instance_id}`, registry set
 `scietex:{service}:workers`. The stream and group are service-scoped so
 replicas share one queue; the consumer/status keys are worker-scoped per
-auto-generated `instance_id`. `_task_entry_ids` (170) maps task UUID → stream
-entry id for deferred acknowledgement; `_recovered` (174) guards one-time
+auto-generated `instance_id`. `_task_entry_ids` (138) maps task UUID → stream
+entry id for deferred acknowledgement; `_recovered` (142) guards one-time
 pending recovery.
 
-The registry set is the enumeration index: `_register_instance` (386) `SADD`s
-the `instance_id` on startup and `_unregister_instance` (408) `SREM`s it on
+The registry set is the enumeration index: `_register_instance` (363) `SADD`s
+the `instance_id` on startup and `_unregister_instance` (386) `SREM`s it on
 shutdown — both best-effort (a failure logs a WARNING and continues). Liveness
 is the status-key TTL refreshed by `heartbeat()`, so a stale member left by a
 crashed replica is tolerated (the operator probes each member's status key).
@@ -302,7 +302,7 @@ crashed replica is tolerated (the operator probes each member's status key).
 (`valkey/config.py`, extends `TaskProcessorConfig`) or `None`; properties
 `valkey_config`, `client`.
 
-**Dependencies:** `..async_tasks_processor`, `..task_handler.TaskData`,
+**Dependencies:** `..task_processor`, `..task_handler.TaskData`,
 `.schemas.Heartbeat`, `.config` (`ValkeyWorkerConfig`), external
 `scietex.logging.AsyncValkeyHandler`, `._glide` (guarded glide names, AR-048),
 `msgspec`.
@@ -318,14 +318,14 @@ schema→glide translation. Also hosts `ValkeyWorkerConfig` (the worker-level
 config struct) so its optional `glide`-typed field stays out of the
 always-imported core `config.py`.
 
-**Main symbols:** frozen structs `ValkeyNode` (38), `ValkeyUserCredentials`
-(50), `ValkeyBackoffStrategy` (62), `ValkeyTlsAdvancedConfiguration` (93),
-`ValkeyAdvancedConfig` (121), `ValkeyBaseConfig` (151), `ValkeyConfig` (229);
-`ValkeyWorkerConfig` (241, extends `TaskProcessorConfig` with `valkey_config`,
+**Main symbols:** frozen structs `ValkeyNode` (31), `ValkeyUserCredentials`
+(43), `ValkeyBackoffStrategy` (55), `ValkeyTlsAdvancedConfiguration` (86),
+`ValkeyAdvancedConfig` (114), `ValkeyBaseConfig` (144), `ValkeyConfig` (222);
+`ValkeyWorkerConfig` (234, extends `TaskProcessorConfig` with `valkey_config`,
 `log_stream_name`, `task_fetch_batch_size`); `read_valkey_config(conf_dir)`
-(268) — creates `valkey.yml` with defaults only if the file is missing; raises
-`RuntimeError` on a present-but-invalid file (306), never overwriting it;
-`generate_glide_config(...)` (311, converts to `GlideClientConfiguration`,
+(261) — creates `valkey.yml` with defaults only if the file is missing; raises
+`RuntimeError` on a present-but-invalid file (299), never overwriting it;
+`generate_glide_config(...)` (304, converts to `GlideClientConfiguration`,
 validates `read_from`/`protocol`, optional PubSub subscriptions when
 `listening=True`).
 
@@ -365,7 +365,7 @@ consumer_name, logger=None)` (22) — orchestrates the purge; private helpers
 
 ## 13. Utilities
 
-- **`utils/conf.py`** — `prepare_conf_dir()` (33): returns first existing dir
+- **`utils/config.py`** — `prepare_conf_dir()` (33): returns first existing dir
   in order `conf_dir` arg → `SCIETEX_CONFIG_DIR` env → `$XDG_CONFIG_HOME/scietex`
   → `~/.config/scietex` → `/etc/scietex` → `/usr/local/etc/scietex` →
   `./config` (CWD); creates `~/.config/scietex` if none exist.
@@ -388,7 +388,7 @@ Consumed classes:
   and, when one is provided, never closes it (`_owns_client=False`).
 - `AsyncValkeyHandler(AsyncBrokerHandler)` — `xadd` to a stream. `ValkeyWorker`
   injects its own `GlideClient` via the `client` kwarg on the first successful
-  `connect()` (worker.py:207–223), so logging shares the worker's
+  `connect()` (worker.py:179–182), so logging shares the worker's
   single connection rather than opening a second one.
 - `ScietexFormatter`.
 

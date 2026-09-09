@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import msgspec
 import pytest
 
 from scietex.service.valkey.config import (
@@ -45,6 +46,52 @@ def test_read_valkey_config_missing_file_creates_defaults(tmp_path: Path):
 
     assert isinstance(cfg, ValkeyConfig)
     assert valkey_yml.exists()
+
+
+def test_read_valkey_config_no_create_default_does_not_write(tmp_path: Path):
+    conf_dir = tmp_path
+    valkey_yml = conf_dir / "valkey.yml"
+    assert not valkey_yml.exists()
+
+    with pytest.raises(RuntimeError):
+        read_valkey_config(conf_dir, create_default=False)
+
+    assert not valkey_yml.exists()
+    assert not any(conf_dir.iterdir())
+
+
+def test_read_valkey_config_no_create_default_reads_existing(tmp_path: Path):
+    conf_dir = tmp_path
+    valkey_yml = conf_dir / "valkey.yml"
+    expected = ValkeyConfig()
+    valkey_yml.write_bytes(msgspec.yaml.encode(expected))
+
+    cfg = read_valkey_config(conf_dir, create_default=False)
+
+    assert isinstance(cfg, ValkeyConfig)
+    assert valkey_yml.read_bytes() == msgspec.yaml.encode(expected)
+
+
+def test_read_valkey_config_no_create_default_missing_dir_raises(tmp_path: Path):
+    conf_dir = tmp_path / "missing"
+    assert not conf_dir.exists()
+
+    with pytest.raises(RuntimeError):
+        read_valkey_config(conf_dir, create_default=False)
+
+    assert not conf_dir.exists()
+
+
+def test_read_valkey_config_no_create_default_invalid_file_preserves(tmp_path: Path):
+    conf_dir = tmp_path
+    valkey_yml = conf_dir / "valkey.yml"
+    malformed = b"not: [valid: yaml\n  base_config: broken"
+    valkey_yml.write_bytes(malformed)
+
+    with pytest.raises(RuntimeError):
+        read_valkey_config(conf_dir, create_default=False)
+
+    assert valkey_yml.read_bytes() == malformed
 
 
 def test_generate_glide_config_defaults():

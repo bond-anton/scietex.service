@@ -94,8 +94,8 @@ shared across all replicas of a service; worker-scoped keys are unique per
 
 | Constant | Default | Description |
 |---|---|---|
-| `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `2` | Default max queue size (inherited) |
-| `DEFAULT_MAX_CONCURRENT_TASKS` | `2` | Default max concurrent tasks (inherited) |
+| `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `100` | Default max queue size (inherited) |
+| `DEFAULT_MAX_CONCURRENT_TASKS` | `10` | Default max concurrent tasks (inherited) |
 | `DEFAULT_TASK_TIMEOUT` | `3` | Default task timeout in seconds (inherited) |
 | `DEFAULT_HEARTBEAT_INTERVAL` | `10` | Default heartbeat interval in seconds |
 | `DEFAULT_WATCHDOG_INTERVAL` | `1` | Default watchdog check interval in seconds |
@@ -133,43 +133,50 @@ to Valkey, and creates the consumer group for the task stream (with
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `queue_size` | `int` | `2` | Maximum size of the internal task queue |
-| `max_concurrent_tasks` | `int` | `2` | Maximum tasks processed in parallel |
+| `queue_size` | `int` | `100` | Maximum size of the internal task queue |
+| `max_concurrent_tasks` | `int` | `10` | Maximum tasks processed in parallel |
 | `task_handlers` | `Mapping[str, TaskHandler]` | — | Currently active (started) handlers, as a read-only `MappingProxyType` view |
 | `running_tasks` | `Mapping[UUID, TaskTracker]` | — | Currently running tasks and their trackers, as a read-only `MappingProxyType` view |
 
 ## Constructor
 
+`ValkeyWorker` takes a single immutable configuration object
+(`ValkeyWorkerConfig`, from `scietex.service.valkey.config`, which extends
+`TaskProcessorConfig`), or `None` to use the struct defaults:
+
 ```python
-ValkeyWorker(
-    service_name: str = "service",
-    version: str = "0.0.1",
-    conf_dir: str | Path | None = None,
-    logging_level: int | str = logging.DEBUG,
-    heartbeat_interval: float | None = None,
-    watchdog_interval: float | None = None,
-    queue_size: int | None = None,
-    max_concurrent_tasks: int | None = None,
-    valkey_config: ValkeyConfig | GlideClientConfiguration | None = None,
-    log_stream_name: str = "scietex:log",
-    **kwargs,
+import logging
+
+from scietex.service import ValkeyWorker, ValkeyWorkerConfig
+
+worker = ValkeyWorker(
+    ValkeyWorkerConfig(
+        service_name="service",
+        version="0.0.1",
+        conf_dir=None,
+        logging_level=logging.DEBUG,
+        heartbeat_interval=None,
+        watchdog_interval=None,
+        queue_size=None,
+        max_concurrent_tasks=None,
+        valkey_config=None,
+        log_stream_name="scietex:log",
+        task_fetch_batch_size=10,
+    )
 )
 ```
 
-| Parameter | Default | Description |
+`ValkeyWorkerConfig` adds these fields on top of `TaskProcessorConfig`:
+
+| Field | Default | Description |
 |---|---|---|
-| `service_name` | `"service"` | Name of the service, used for key naming and logging |
-| `version` | `"0.0.1"` | Version string of the service |
-| `conf_dir` | `None` | Directory to use for configuration files |
-| `logging_level` | `logging.DEBUG` | Logging level as string or integer |
-| `heartbeat_interval` | `None` (uses `DEFAULT_HEARTBEAT_INTERVAL`) | Heartbeat interval in seconds |
-| `watchdog_interval` | `None` (uses `DEFAULT_WATCHDOG_INTERVAL`) | Watchdog check interval in seconds |
-| `queue_size` | `None` (uses `DEFAULT_MAX_TASKS_QUEUE_SIZE`) | Max queue size |
-| `max_concurrent_tasks` | `None` (uses `DEFAULT_MAX_CONCURRENT_TASKS`) | Max concurrent tasks |
-| `valkey_config` | `None` | Custom Valkey configuration. If ``None``, reads
-``valkey.yml`` from the config directory |
+| `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig` or raw `GlideClientConfiguration`). If `None`, reads `valkey.yml` from the config directory |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
-| `**kwargs` | — | Additional kwargs passed to `TaskProcessor` |
+| `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
+
+All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
+Configuration is immutable: values are fixed at construction, and
+out-of-range values raise `msgspec.ValidationError`.
 
 ## Methods
 
@@ -246,23 +253,25 @@ The entry key is the string representation of `task_id`.
 
 ### fetch_tasks()
 
-Fetch a single task from the Valkey task stream and enqueue it.
+Fetch a batch of tasks from the Valkey task stream and enqueue them.
 
 ```python
-async def fetch_tasks(self):
+async def fetch_tasks(self) -> bool:
     """XREADGROUP with block_ms=1000, decode msgpack, enqueue (non-blocking)."""
 ```
 
 On the first call, recovers entries left pending by a previous run (see
-[At-Least-Once Delivery](#at-least-once-delivery)). Then reads one entry
-from the task stream using `XREADGROUP` with `block_ms=1000` and the
-configured consumer group, decodes the msgpack payload into a `TaskData`
-struct, and enqueues it via the non-blocking `enqueue_task()` as a
-`(UUID, TaskData)` tuple. The stream entry is NOT acknowledged here — it
-stays in the consumer group's pending list until `on_task_completed()`
-acks it after the handler finishes. If the queue is full, the entry is
-left pending (deferred) and is never blocking. On read errors,
-disconnects and attempts to reconnect to Valkey.
+[At-Least-Once Delivery](#at-least-once-delivery)). Then reads up to
+`task_fetch_batch_size` entries (default `10`) from the task stream using
+`XREADGROUP` with `block_ms=1000` and the configured consumer group,
+decodes each msgpack payload into a `TaskData` struct, and enqueues it via
+the non-blocking `enqueue_task()` as a `(UUID, TaskData)` tuple. The
+stream entries are NOT acknowledged here — they stay in the consumer
+group's pending list until `on_task_completed()` acks them after the
+handler finishes. If the queue is full, an entry is left pending (deferred)
+and is never blocking. On read errors, disconnects and attempts to
+reconnect to Valkey. Returns `True` if at least one task was enqueued,
+`False` otherwise.
 
 ### on_task_completed()
 
@@ -324,7 +333,7 @@ import json
 import uuid
 from uuid import uuid4
 
-from scietex.service.valkey import ValkeyWorker
+from scietex.service.valkey import ValkeyWorker, ValkeyWorkerConfig
 from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
 from scietex.service.task_handler import TaskTimeout
 
@@ -348,12 +357,8 @@ class EmailHandler(TaskHandler):
 class MyValkeyWorker(ValkeyWorker):
     """A Valkey-backed task processor."""
 
-    def __init__(self, **kwargs):
-        super().__init__(
-            service_name="email_service",
-            version="1.0.0",
-            **kwargs,
-        )
+    def __init__(self, config: ValkeyWorkerConfig | None = None):
+        super().__init__(config)
 
     async def initialize(self) -> bool:
         """Register handlers and prepare Valkey resources."""
@@ -363,10 +368,14 @@ class MyValkeyWorker(ValkeyWorker):
 
 async def main():
     worker = MyValkeyWorker(
-        queue_size=10,
-        max_concurrent_tasks=4,
-        heartbeat_interval=10,
-        watchdog_interval=2,
+        ValkeyWorkerConfig(
+            service_name="email_service",
+            version="1.0.0",
+            queue_size=10,
+            max_concurrent_tasks=4,
+            heartbeat_interval=10,
+            watchdog_interval=2,
+        )
     )
 
     await worker.start()
@@ -425,6 +434,7 @@ from scietex.service.valkey import (
     ValkeyBackoffStrategy,
     ValkeyBaseConfig,
     ValkeyUserCredentials,
+    ValkeyWorkerConfig,
 )
 
 config = ValkeyConfig(
@@ -444,7 +454,7 @@ config = ValkeyConfig(
     ),
 )
 
-worker = MyValkeyWorker(valkey_config=config)
+worker = MyValkeyWorker(ValkeyWorkerConfig(valkey_config=config))
 ```
 
 ### Async Logging

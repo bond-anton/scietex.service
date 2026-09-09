@@ -215,17 +215,25 @@ The `TaskProcessor` manages task handler registration and dispatch.
 ### Registration
 
 ```python
-processor = TaskProcessor(service_name="my_service", version="1.0.0")
+from scietex.service import TaskProcessor, TaskProcessorConfig
+
+processor = TaskProcessor(
+    TaskProcessorConfig(service_name="my_service", version="1.0.0")
+)
 
 # Register a handler class (not an instance — processor creates instances)
 processor.add_task_handler(EmailHandler)
 processor.add_task_handler(DataHandler)
 ```
 
-`add_task_handler()` takes only the handler class. The lifecycle key is the
-class name (`handler_class.__name__`), and a single instance per class is
-created on start. Dispatch selects handlers by their `supported_tasks`
-membership, so registering the same class twice raises a `ValueError`.
+`add_task_handler()` takes the handler class plus an optional keyword-only
+`name`. The lifecycle key is the resolved name: `name` if given, otherwise
+the class name (`handler_class.__name__`). A single instance per resolved
+key is created on start. Dispatch selects handlers by their `supported_tasks`
+membership, so registering the same resolved key twice raises a
+`ValueError`. The optional `name` lets multiple instances of one class
+coexist under distinct keys (e.g. to split one class's task types across
+instances via name-derived `supported_tasks`).
 
 A handler can support multiple task types by returning them all from
 `supported_tasks`. The processor matches incoming tasks by calling

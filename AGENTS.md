@@ -43,8 +43,10 @@ Run all commands (linters, tests, examples) within this environment.
 Run examples with:
 ```bash
 python -m examples.basic_worker           # BasicWorker
-python -m examples.task_processor    # TaskProcessor
-python -m examples.valkey_async_service    # ValkeyWorker (requires valkey-glide)
+python -m examples.task_processor         # TaskProcessor
+python -m examples.named_task_handlers    # TaskProcessor with named handler instances (AR-053)
+python -m examples.valkey_async_service   # ValkeyWorker (requires valkey-glide)
+python -m examples.valkey_pubsub_worker   # ValkeyWorker + PubSub control channels (requires valkey-glide)
 ```
 
 **Worker lifecycle:**
@@ -76,7 +78,7 @@ is created.
 ## Task Handler System
 
 **Workflow:**
-1. Register handler: `processor.add_task_handler(HandlerClass)`
+1. Register handler: `processor.add_task_handler(HandlerClass)` — an optional keyword-only `name` (`add_task_handler(HandlerClass, name="...")`) lets multiple instances of one class coexist under distinct keys
 2. Handler `supports(task_type)` must return `True`
 3. Handler `is_ready` (initialized) required before processing
 4. `handle(task_data)` returns `TaskResult`

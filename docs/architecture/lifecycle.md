@@ -6,7 +6,7 @@ workers, and resource ownership. Facts unless marked *analysis* or `UNKNOWN`.
 ## Worker lifecycle state machine
 
 States: `ServiceStatus` (STOPPED → STARTING → RUNNING → STOPPING → STOPPED).
-Transitions are driven by `BasicWorker` (`basic_async_worker.py`).
+Transitions are driven by `BasicWorker` (`basic_worker.py`).
 
 Two coordination events exist per worker in `self.events` (a read-only
 `MappingProxyType` view of two `asyncio.Event`s): `"exit_requested"` (set by
@@ -14,23 +14,23 @@ Two coordination events exist per worker in `self.events` (a read-only
 
 ### Startup
 
-Public: `worker.start()` (671). It:
+Public: `worker.start()` (428). It:
 1. Guards: if RUNNING or STARTING → warn and return.
 2. If STOPPING/STOPPED → registers signal handlers (`_setup_signal_handlers`,
-   696) and spawns task `"Start"` running `_startup()` (625).
+   453) and spawns task `"Start"` running `_startup()` (373).
 
 `_startup()`:
 1. If not STOPPED, waits (0.1 s poll) for a prior shutdown to finish.
 2. Sets STARTING; prints logo.
 3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
    running, with `logger_handler_timeout`.
-4. `initialize()` (575) — subclass hook; must return truthy.
-   - `TaskProcessor.initialize` (480) starts every registered task handler
+4. `initialize()` (363) — subclass hook; must return truthy.
+   - `TaskProcessor.initialize` (385) starts every registered task handler
      (`_start_task_handler`, awaited per handler).
-   - `ValkeyWorker.initialize` (388) calls super then `connect()` and creates
+   - `ValkeyWorker.initialize` (290) calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows
      "already exists" errors).
-5. `_register_instance()` (660) — subclass hook, runs only after
+5. `_register_instance()` (625) — subclass hook, runs only after
    `initialize()` succeeded (transport/client exists) and before managers
    start. Base is a no-op; `ValkeyWorker` overrides it to `SADD` its
    `instance_id` into the worker registry set (best-effort: a failure logs a
@@ -67,35 +67,35 @@ re-raises — no stranded STARTING state (AR-017).
 
 ### Shutdown
 
-Signal (`SIGINT`/`SIGTERM`) → `_request_exit` (519), which spawns a single
-`"StopTask"` running `exit()` (800); `exit()` sets `exit_requested` and calls
+Signal (`SIGINT`/`SIGTERM`) → `_request_exit` (336), which spawns a single
+`"StopTask"` running `exit()` (560); `exit()` sets `exit_requested` and calls
 `stop()`. Repeat signals are deduplicated: a pending stop task or an
 already-set `exit_requested` short-circuits so only one shutdown runs
 (AR-033).
 
-`stop()` (757):
+`stop()` (517):
 - STOPPED → clear/set exit events, remove signal handlers
-  (`_remove_signal_handlers`, 778), return.
+  (`_remove_signal_handlers`, 538), return.
 - STOPPING → set exit event if `exit_requested`, return.
-- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (713).
+- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (470).
 
 `_shutdown()`:
 1. State = STOPPING.
 2. `ManagerRuntime.stop_managers()` — cancel each
    manager task; wait per-manager up to `manager_shutdown_timeout` (default 2 s).
-3. `_unregister_instance()` (737) — subclass hook, runs after managers stop
+3. `_unregister_instance()` (635) — subclass hook, runs after managers stop
    and before `cleanup()` teardown, deliberately while the transport is still
    open (`cleanup()` may disconnect it). Base is a no-op; `ValkeyWorker`
    overrides it to `SREM` its `instance_id` from the worker registry set
    (best-effort: a failure logs a WARNING and does not fail shutdown).
 4. `cleanup()` — subclass hook. Chain:
-   - `TaskProcessor.cleanup` (498): drain `task_queue` (items fetched from
+   - `TaskProcessor.cleanup` (423): drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
      cancel running per-task workers (wait up to
      `WORKER_TASK_CANCELLATION_TIMEOUT=5 s`); requeue only if the handler
      actually stopped and `canceled_action=="requeue"`; stop all task handlers
      (`_stop_task_handler`, per-handler 5 s timeout).
-   - `ValkeyWorker.cleanup` (423): super then `disconnect()` (close glide
+   - `ValkeyWorker.cleanup` (340): super then `disconnect()` (close glide
      client).
 5. `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
    with per-handler timeout; overall `loggers_timeout =

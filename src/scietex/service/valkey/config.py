@@ -258,40 +258,56 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
         _validate_range(self.task_fetch_batch_size, "task_fetch_batch_size", minimum=1)
 
 
-def read_valkey_config(conf_dir: Path | None) -> ValkeyConfig:
+def read_valkey_config(conf_dir: Path | None, *, create_default: bool = True) -> ValkeyConfig:
     """Read Valkey configuration from a YAML file in the given config directory.
 
-    If the YAML file does not exist, it is created with default values.
-    If the file exists but cannot be parsed, a ``RuntimeError`` is raised and
-    the file is left untouched.
+    The ``valkey.yml`` file (and, when missing, its config directory) is only
+    created when ``create_default=True`` (the default), which is the deliberate
+    write-capable bootstrap path used on worker first-run. When
+    ``create_default=False`` the read is write-free: a missing file or directory
+    raises a ``RuntimeError`` instead of writing defaults. If the file exists but
+    cannot be parsed, a ``RuntimeError`` is raised and the file is left untouched
+    regardless of ``create_default``.
 
     Args:
         conf_dir: Path to the configuration directory.
+        create_default: Whether to create the config directory and write a
+            default ``valkey.yml`` when missing. Default ``True``.
 
     Returns:
         A ``ValkeyConfig`` instance loaded from ``valkey.yml`` or with
-        default values if the file was missing.
+        default values if the file was missing (only when ``create_default=True``).
 
     Raises:
-        RuntimeError: If ``conf_dir`` is ``None``, not a directory, or if the
-            ``valkey.yml`` file is present but invalid.
+        RuntimeError: If ``conf_dir`` is ``None``, not a directory, if the
+            ``valkey.yml`` file is present but invalid, or if a missing file or
+            directory is encountered while ``create_default=False``.
     """
-    if isinstance(conf_dir, Path):
-        if not conf_dir.exists():
+    if not isinstance(conf_dir, Path):
+        raise RuntimeError("Configuration dir was not set!")
+    if not conf_dir.exists():
+        if create_default:
             try:
                 conf_dir.mkdir(parents=True, exist_ok=True)
             except Exception as exc:
                 raise RuntimeError(f"Failed to create configuration directory {conf_dir}!") from exc
-        elif not conf_dir.is_dir():
-            raise RuntimeError(f"Provided configuration directory path {conf_dir} is not a directory!")
-        valkey_yml = conf_dir.joinpath("valkey.yml")
-    else:
-        raise RuntimeError("Configuration dir was not set!")
+        else:
+            raise RuntimeError(
+                f"Configuration directory {conf_dir} does not exist and create_default=False (no default generated)."
+            )
+    elif not conf_dir.is_dir():
+        raise RuntimeError(f"Provided configuration directory path {conf_dir} is not a directory!")
+    valkey_yml = conf_dir.joinpath("valkey.yml")
     if not valkey_yml.exists():
-        valkey_config = ValkeyConfig()
-        with open(valkey_yml, "wb") as f:
-            f.write(msgspec.yaml.encode(valkey_config))
-        return valkey_config
+        if create_default:
+            valkey_config = ValkeyConfig()
+            with open(valkey_yml, "wb") as f:
+                f.write(msgspec.yaml.encode(valkey_config))
+            return valkey_config
+        raise RuntimeError(
+            f"Valkey configuration file {valkey_yml} does not exist and create_default=False "
+            "(pass create_default=True to generate defaults)."
+        )
     try:
         with open(valkey_yml, "rb") as f:
             return msgspec.yaml.decode(f.read(), type=ValkeyConfig, strict=True)
