@@ -28,9 +28,9 @@ Layout of the repository and the Python package.
 | `config.py` | `WorkerConfig` + `TaskProcessorConfig` — immutable `msgspec.Struct`s (`frozen=True`) replacing the old per-worker constructor kwargs. Also holds the MIN/MAX/DEFAULT constants (single source of truth for timing/retry bounds and the task-queue defaults, `DEFAULT_MAX_TASKS_QUEUE_SIZE=100` / `DEFAULT_MAX_CONCURRENT_TASKS=10`). `__post_init__` validates ranges and raises `msgspec.ValidationError` on an out-of-range value; a `None` field resolves to its `DEFAULT_*` constant at read time |
 | `manager/__init__.py` | `Manager` class-decorator (name + optional cleanup callable, stores `method`) and `ManagerStatus` enum |
 | `manager/runtime.py` | `ManagerRuntime(worker)`: manager discovery across the class MRO (`iter_manager_definitions`), start/stop bookkeeping (`statuses`/`tasks`/`errors`), and the bounded restart-on-error loop (`run_manager`). Extracted from `BasicWorker` (AR-003) |
-| `logging/lifecycle.py` | `LoggingLifecycle(worker)`: async logging-handler registration and start/stop with `statuses` bookkeeping. Extracted from `BasicWorker` (AR-003) |
+| `log_handlers/lifecycle.py` | `LoggingLifecycle(worker)`: async logging-handler registration and start/stop with `statuses` bookkeeping. Extracted from `BasicWorker` (AR-003) |
 | `basic_worker.py` | `BasicWorker` + `ServiceStatus`. Owns identity/config, the lifecycle state machine, signal handlers (registered in `start()`), startup/shutdown orchestration, and the built-in `Heartbeat`/`Watchdog` managers. Delegates manager runtime and logging lifecycle to `ManagerRuntime`/`LoggingLifecycle` directly (the AR-045 forwarding wrappers were removed; the worker calls the components' methods itself) |
-| `logging/__init__.py` | `LoggerStatus` (STOPPED/RUNNING/FAILED), `parse_logging_level()`, `DEFAULT_LOGGING_LEVEL` |
+| `log_handlers/__init__.py` | `LoggerStatus` (STOPPED/RUNNING/FAILED), `parse_logging_level()`, `DEFAULT_LOGGING_LEVEL` |
 | `task_processor.py` | `TaskProcessor(BasicWorker)`. Task registry maps (`__task_handlers_map` name→`(class, handler_kwargs)`, `__task_handlers` active instances), bounded task queue (accessed via `enqueue_task`/`dequeue_task`/`task_queue_empty`/`task_queue_full` — the raw `task_queue` is no longer public), `running_tasks` (`UUID → TaskTracker`), `@Manager("TaskManager") task_manager`, `@Manager("TaskQueueManager") task_queue_manager`, `process_task()`, watchdog timeout logic, handler start/stop, drain-and-cancel cleanup, `on_task_completed()` ack seam |
 | `task_handler/__init__.py` | Re-exports `TaskHandler`, `TaskHandlerContext`, `TaskData`, `TaskResult`, `TaskTimeout`, `TaskTracker` |
 | `task_handler/context.py` | `TaskHandlerContext` — frozen dataclass (`service_name`, `instance_id`, `logger`) passed to handlers instead of the full worker |
@@ -56,7 +56,7 @@ Layout of the repository and the Python package.
   (handlers receive a `TaskHandlerContext`, so there is no runtime or type
   cycle).
 - **Worker ⇄ runtime components**: `basic_worker.py` imports
-  `manager/runtime` and `logging/lifecycle`, which hold only a back-reference
+  `manager/runtime` and `log_handlers/lifecycle`, which hold only a back-reference
   to the worker under `TYPE_CHECKING` (no runtime cycle).
 - **Valkey internal split**: config schema/loader (`valkey/config.py`) is
   independent of the worker (`worker.py`); both import their `glide` names

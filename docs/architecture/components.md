@@ -52,8 +52,8 @@ managers stop and before `cleanup()` teardown. Both are no-ops in the base;
 `ValkeyWorker` overrides them (worker.py:363, 386) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
-**Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.logging.lifecycle`
-(`LoggingLifecycle`), `.manager` (`Manager`), `.logging`
+**Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
+(`LoggingLifecycle`), `.manager` (`Manager`), `.log_handlers`
 (`parse_logging_level`), `.utils` (`prepare_conf_dir`, `print_scietex_logo`);
 external `scietex.logging.ConsoleHandler`.
 
@@ -95,7 +95,7 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 
 ## 3. Logging lifecycle — `LoggingLifecycle`
 
-**File:** `src/scietex/service/logging/lifecycle.py`
+**File:** `src/scietex/service/log_handlers/lifecycle.py`
 
 **Purpose:** Extracted from `BasicWorker` (AR-003). Owns async
 logging-handler registration and start/stop with status bookkeeping.
@@ -115,7 +115,7 @@ owning worker and owns the `statuses` dict (35).
 - `shut_down_handlers()` (104) — stops each handler (idempotent
   `stop_logging()`), sets status STOPPED.
 
-**Dependencies:** `.logging` (`LoggerStatus`), external
+**Dependencies:** `.log_handlers` (`LoggerStatus`), external
 `scietex.logging.AsyncLoggingHandler`.
 **Depended on by:** `BasicWorker` (constructs and forwards to it).
 
@@ -138,9 +138,9 @@ identity); `Manager.__get__` (73) binds the wrapped method to the instance
 **Dependencies:** stdlib only. **Depended on by:** `BasicWorker`,
 `TaskProcessor` (decorated managers), examples (`@Manager("cruncher")`).
 
-## 5. Logging helpers — module `logging/__init__.py` (in-package)
+## 5. Logging helpers — module `log_handlers/__init__.py` (in-package)
 
-**File:** `src/scietex/service/logging/__init__.py`
+**File:** `src/scietex/service/log_handlers/__init__.py`
 
 **Purpose:** `LoggerStatus` (track async logging handler state: STOPPED /
 RUNNING / FAILED) and `parse_logging_level()` (accepts short/long strings or

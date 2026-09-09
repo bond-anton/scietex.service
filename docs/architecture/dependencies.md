@@ -35,8 +35,8 @@ glide (valkey-glide, optional)                              [external]
 | `basic_worker` | `.config` | import | `WorkerConfig`, `DEFAULT_*` constants |
 | `basic_worker` | `.manager` | import | `Manager` |
 | `basic_worker` | `.manager.runtime` | import | `ManagerRuntime` (owns `ManagerStatus` bookkeeping) |
-| `basic_worker` | `.logging` | import | `parse_logging_level` |
-| `basic_worker` | `.logging.lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
+| `basic_worker` | `.log_handlers` | import | `parse_logging_level` |
+| `basic_worker` | `.log_handlers.lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
 | `basic_worker` | `.utils` | import | `prepare_conf_dir`, `print_scietex_logo` |
 | `basic_worker` | `scietex.logging` | import (external) | `ConsoleHandler` |
 | `utils.logo` | `..version` | import | `__version__` |

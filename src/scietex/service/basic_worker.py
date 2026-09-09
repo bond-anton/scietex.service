@@ -27,8 +27,8 @@ from .config import (
     DEFAULT_WATCHDOG_INTERVAL,
     WorkerConfig,
 )
-from .logging import parse_logging_level
-from .logging.lifecycle import LoggingLifecycle
+from .log_handlers import parse_logging_level
+from .log_handlers.lifecycle import LoggingLifecycle
 from .manager import Manager
 from .manager.runtime import ManagerRuntime
 from .utils import prepare_conf_dir, print_scietex_logo

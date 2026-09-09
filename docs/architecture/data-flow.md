@@ -135,7 +135,7 @@ heartbeat never surfaces.
 **Processing:** standard `logging` → attached handlers:
 - `ConsoleHandler` (console; registered in `BasicWorker.__init__`
   (`basic_worker.py:116`) via `LoggingLifecycle.register_logger_handler`
-  (`logging/lifecycle.py:37`)) — `emit()` puts each record into an internal
+  (`log_handlers/lifecycle.py:37`)) — `emit()` puts each record into an internal
   `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`
   and writes to stdout. Identity comes from the stdlib logger name it is
   registered on.
@@ -148,8 +148,8 @@ heartbeat never surfaces.
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
-`LoggingLifecycle.start_handlers` (`logging/lifecycle.py:62`) /
-`shut_down_handlers` (`logging/lifecycle.py:104`), with a per-handler
+`LoggingLifecycle.start_handlers` (`log_handlers/lifecycle.py:62`) /
+`shut_down_handlers` (`log_handlers/lifecycle.py:104`), with a per-handler
 timeout (`logger_handler_timeout`, default 2 s).
 
 ## F7. Configuration flow

@@ -7,7 +7,7 @@ import pytest
 
 from scietex.service.basic_worker import BasicWorker, ServiceStatus
 from scietex.service.config import WorkerConfig
-from scietex.service.logging import LoggerStatus
+from scietex.service.log_handlers import LoggerStatus
 from scietex.service.manager import Manager
 
 

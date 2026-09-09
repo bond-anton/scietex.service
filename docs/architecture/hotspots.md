@@ -27,7 +27,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
 | H16 | Resolved | AR-022 — structured error taxonomy fields on `TaskResult` |
 | H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:336) |
-| H18 | Open | AR-031 — unused `name` param in `LoggingLifecycle.register_logger_handler` (logging/lifecycle.py:40-57) |
+| H18 | Open | AR-031 — unused `name` param in `LoggingLifecycle.register_logger_handler` (log_handlers/lifecycle.py:40-57) |
 
 ## H1. `BasicWorker` is a large, multi-responsibility class
 
@@ -41,7 +41,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 
 **Resolved (AR-003):** manager discovery/runtime and logging-handler lifecycle
 were extracted to `ManagerRuntime` (manager/runtime.py) and `LoggingLifecycle`
-(logging/lifecycle.py). `BasicWorker` now keeps identity/config and the
+(log_handlers/lifecycle.py). `BasicWorker` now keeps identity/config and the
 state machine, delegating manager and logging-handler bookkeeping to the
 extracted components directly.
 
@@ -75,7 +75,7 @@ tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
 
-- **Location:** `logging/lifecycle.py:104-133` (`shut_down_handlers`), plus
+- **Location:** `log_handlers/lifecycle.py:104-133` (`shut_down_handlers`), plus
   external `scietex.logging` (`stop_logging()` calls `self.close()`).
 - **What:** after shutdown, each `AsyncLoggingHandler` was closed yet recorded as
   RUNNING, so a later start skipped it.

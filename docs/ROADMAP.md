@@ -112,7 +112,7 @@ top-level modules (`logging.py` + `logging_lifecycle.py`, `manager.py` +
 and obscuring ownership.
 
 **Decision (v4):** group each component into its own subpackage —
-`LoggingLifecycle` moves to `logging/lifecycle.py` and `ManagerRuntime` to
+`LoggingLifecycle` moves to `log_handlers/lifecycle.py` and `ManagerRuntime` to
 `manager/runtime.py` — with each `__init__.py` re-exporting its sibling
 module's public API. Pure move, no logic changes.
 

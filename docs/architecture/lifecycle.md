@@ -148,7 +148,7 @@ RUNNING) / `remove_task_handler`.
 
 - `BasicWorker.__init__` attaches `ConsoleHandler` (console);
   `ValkeyWorker.__init__` additionally attaches `AsyncValkeyHandler`.
-- Lifecycle is owned by `LoggingLifecycle` (logging/lifecycle.py): started in
+- Lifecycle is owned by `LoggingLifecycle` (log_handlers/lifecycle.py): started in
   `start_handlers` (startup), stopped in `shut_down_handlers` (shutdown), each
   bounded by `logger_handler_timeout`.
 - The external `scietex.logging` handlers (>= 2.0.0) are restartable in place:
