@@ -430,7 +430,7 @@ class ValkeyWorker(AsyncTaskProcessor):
             packed = msgspec.msgpack.encode(task_data)  # bytes
             await self.client.xadd(self._task_stream_name, [(t_id, packed)])
 
-    async def _recover_pending_tasks(self) -> bool:
+    async def _recover_pending_tasks(self) -> tuple[bool, bool]:
         """Re-enqueue stream entries left pending by a previous run.
 
         Uses ``XAUTOCLAIM`` to claim every entry in the consumer group's
@@ -440,11 +440,13 @@ class ValkeyWorker(AsyncTaskProcessor):
         ``fetch_tasks``, before any ``'>'`` read, when no tasks are in flight.
 
         Returns:
-            ``True`` if at least one pending entry was enqueued, ``False``
-            otherwise (including when the Valkey client is ``None``).
+            A ``(recovery_complete, enqueued)`` tuple. ``recovery_complete`` is
+            ``True`` only when the pending list was fully drained (or there was
+            nothing to recover); ``enqueued`` is ``True`` if at least one
+            pending entry was enqueued.
         """
         if self.client is None:
-            return False
+            return True, False
         enqueued = False
         try:
             start: str | bytes = "0-0"
@@ -480,7 +482,7 @@ class ValkeyWorker(AsyncTaskProcessor):
                                 "Task queue full during recovery; deferring task %s",
                                 task_id,
                             )
-                            return enqueued
+                            return False, enqueued
                         self._task_entry_ids[UUID(task_id)] = entry_id
                         enqueued = True
                 if next_start == b"0-0" or next_start == "0-0":
@@ -488,7 +490,8 @@ class ValkeyWorker(AsyncTaskProcessor):
                 start = next_start
         except Exception as exc:
             self.logger.log(logging.ERROR, "Failed to recover pending tasks: %s", exc)
-        return enqueued
+            return False, enqueued
+        return True, enqueued
 
     async def fetch_tasks(self) -> bool:
         """Fetch new tasks from the Valkey task stream and enqueue them.
@@ -519,8 +522,12 @@ class ValkeyWorker(AsyncTaskProcessor):
             return False
         enqueued = False
         if not self._recovered:
-            self._recovered = True
-            enqueued = await self._recover_pending_tasks()
+            # Only mark recovery done when the pending list was fully drained;
+            # a queue-full/error interruption is retried on the next poll (AR-051).
+            recovery_complete, recovered_enqueued = await self._recover_pending_tasks()
+            if recovery_complete:
+                self._recovered = True
+            enqueued = recovered_enqueued
         try:
             res = await self.client.xreadgroup(
                 {self._task_stream_name: ">"},

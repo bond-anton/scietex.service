@@ -321,6 +321,76 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
     assert worker._task_entry_ids[t_id] == b"9-0"
 
 
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_incomplete_when_queue_full_leaves_recovered_false():
+    """A queue-full mid-recovery returns incomplete and must NOT let fetch_tasks
+    mark recovery done, so the remaining pending entries are retried (AR-051)."""
+    import msgspec
+
+    from scietex.service.task_handler.schemas import TaskData
+
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = msgspec.msgpack.encode(task_data)
+    # Two pending entries but a queue that holds only one: the second enqueue
+    # hits the full queue, so recovery stops before draining.
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {
+                b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]],
+                b"9-1": [[b"33333333-3333-3333-3333-333333333333", payload]],
+            },
+            [],
+        ]
+    )
+    worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
+    worker._client = client
+    assert worker._recovered is False
+
+    # First entry is enqueued; the second finds the queue full -> incomplete.
+    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    assert recovery_complete is False
+    assert enqueued is True
+
+    # fetch_tasks retries recovery instead of skipping it: incomplete recovery
+    # must not set _recovered=True.
+    await worker.fetch_tasks()
+    assert worker._recovered is False
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_complete_sets_recovered():
+    """A fully-drained recovery reports complete and fetch_tasks marks
+    _recovered once it has drained (AR-051)."""
+    import msgspec
+
+    from scietex.service.task_handler.schemas import TaskData
+
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = msgspec.msgpack.encode(task_data)
+    # Single pending entry and a default-sized queue: recovery drains fully.
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ]
+    )
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker._client = client
+    assert worker._recovered is False
+
+    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    assert recovery_complete is True
+    assert enqueued is True
+
+    # fetch_tasks marks recovery done only on completion.
+    worker._recovered = False
+    ok = await worker.fetch_tasks()
+    assert ok is True
+    assert worker._recovered is True
+
+
 def test_two_workers_share_stream_group_differ_in_consumer_status():
     a = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
     b = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
