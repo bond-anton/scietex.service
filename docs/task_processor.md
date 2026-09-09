@@ -182,9 +182,7 @@ immutable: values are fixed at construction, and out-of-range values raise
 ### Adding Handlers
 
 ```python
-processor = TaskProcessor(
-    TaskProcessorConfig(service_name="task_worker", version="1.0.0")
-)
+processor = TaskProcessor(TaskProcessorConfig(service_name="task_worker", version="1.0.0"))
 
 # Register handler classes (processor creates instances)
 processor.add_task_handler(EmailHandler)

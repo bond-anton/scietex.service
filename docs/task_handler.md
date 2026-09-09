@@ -217,7 +217,7 @@ evolve independently of the handler contract:
 
 ```python
 class TaskEnvelope(msgspec.Struct, frozen=True):
-    version: int = 1   # Wire-format version
+    version: int = 1  # Wire-format version
     data: bytes = b""  # Serialized task payload (version 1: msgpack TaskData)
 ```
 
@@ -254,9 +254,7 @@ The `TaskProcessor` manages task handler registration and dispatch.
 ```python
 from scietex.service import TaskProcessor, TaskProcessorConfig
 
-processor = TaskProcessor(
-    TaskProcessorConfig(service_name="my_service", version="1.0.0")
-)
+processor = TaskProcessor(TaskProcessorConfig(service_name="my_service", version="1.0.0"))
 
 # Register a handler class (not an instance — processor creates instances)
 processor.add_task_handler(EmailHandler)
