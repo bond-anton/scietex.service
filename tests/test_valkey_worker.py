@@ -1,5 +1,7 @@
 """Valkey async task processor testing."""
 
+from uuid import UUID
+
 import pytest
 
 from scietex.service import ValkeyWorker
@@ -404,3 +406,30 @@ async def test_cleanup_stops_logging_before_disconnect(monkeypatch):
     )
     assert client.closed is True
     assert worker.client is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_clears_pending_task_entry_ids(monkeypatch):
+    """cleanup must clear _task_entry_ids so entries for tasks whose handlers
+    ignored cancellation do not leak across repeated stop/start cycles
+    (AR-050)."""
+
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=True)
+
+    import scietex.service.valkey.worker as mod
+
+    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
+    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    ok = await worker.connect()
+    assert ok is True
+
+    # Simulate a task whose handler ignored cancellation and is still tracked.
+    worker._task_entry_ids[UUID("12345678-1234-5678-1234-567812345678")] = b"1-0"
+
+    await worker.cleanup()
+
+    assert worker._task_entry_ids == {}
