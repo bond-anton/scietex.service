@@ -96,10 +96,10 @@ shared across all replicas of a service; worker-scoped keys are unique per
 |---|---|---|
 | `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `100` | Default max queue size (inherited) |
 | `DEFAULT_MAX_CONCURRENT_TASKS` | `10` | Default max concurrent tasks (inherited) |
-| `DEFAULT_TASK_TIMEOUT` | `3` | Default task timeout in seconds (inherited) |
+| `DEFAULT_TASK_TIMEOUT` | `3` | Default task timeout in seconds (inherited from `TaskProcessorConfig.task_timeout`) |
 | `DEFAULT_HEARTBEAT_INTERVAL` | `10` | Default heartbeat interval in seconds |
 | `DEFAULT_WATCHDOG_INTERVAL` | `1` | Default watchdog check interval in seconds |
-| `DEFAULT_CLAIM_MIN_IDLE_MS` | `1000` | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry |
+| `DEFAULT_CLAIM_MIN_IDLE_MS` | `1000` | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry (`ValkeyWorkerConfig.claim_min_idle_ms`) |
 
 ## Lifecycle
 
@@ -162,6 +162,7 @@ worker = ValkeyWorker(
         valkey_config=None,
         log_stream_name="scietex:log",
         task_fetch_batch_size=10,
+        claim_min_idle_ms=None,
     )
 )
 ```
@@ -173,6 +174,7 @@ worker = ValkeyWorker(
 | `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig` or raw `GlideClientConfiguration`). If `None`, reads `valkey.yml` from the config directory |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
+| `claim_min_idle_ms` | `None` (uses `DEFAULT_CLAIM_MIN_IDLE_MS`, `1000`) | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry during startup recovery |
 
 All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
 Configuration is immutable: values are fixed at construction, and

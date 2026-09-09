@@ -205,9 +205,10 @@ The consumer (`scietex:{service}:{instance_id}`) and status key
 (`scietex:{service}:{instance_id}:status`) remain **worker-scoped** per
 auto-generated `instance_id`. A service-scoped worker registry set
 (`scietex:{service}:workers`) was added (SADD on startup, SREM on shutdown),
-and the XAUTOCLAIM recovery floor was raised to `DEFAULT_CLAIM_MIN_IDLE_MS = 1000`
-so a replica's startup recovery does not reclaim entries a slow-but-alive
-handler on another replica is still processing.
+and the XAUTOCLAIM recovery floor was raised to `claim_min_idle_ms` (default
+1000 ms, configurable via `ValkeyWorkerConfig` since AR-062) so a replica's
+startup recovery does not reclaim entries a slow-but-alive handler on another
+replica is still processing.
 
 ## H12. Usage documentation diverges from the code
 

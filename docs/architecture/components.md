@@ -235,9 +235,12 @@ Hooks: `fetch_tasks` 606, `return_task_to_queue` 355, `on_task_completed` 368
 **Config constants:** timing/retry MIN/MAX/DEFAULT bounds live in `config.py`
 (single source of truth); the task-queue defaults are
 `DEFAULT_MAX_TASKS_QUEUE_SIZE=100` and `DEFAULT_MAX_CONCURRENT_TASKS=10`
-(AR-055). Remaining processor-local constants stay in this module:
-`DEFAULT_TASK_TIMEOUT=3`, `TASK_QUEUE_FETCH_TIMEOUT=1`,
-`WORKER_TASK_CANCELLATION_TIMEOUT=5`.
+(AR-055). The task-level timing knobs moved there too (AR-062):
+`TaskProcessorConfig.task_timeout` (default 3, bounds `[0.1, 3600]`; `<= 0`
+means "no timeout"), `task_queue_fetch_timeout` (default 1, `[0.01, 60]`), and
+`task_cancellation_timeout` (default 5, `[0.1, 60]`). Each resolves once in
+`TaskProcessor.__init__` into a private attribute read by the watchdog/
+task_manager hot loops; no processor-local timing constants remain.
 
 `TaskProcessorConfig.auto_tune` (bool, default `False`) makes the worker derive
 `max_concurrent_tasks` from `os.cpu_count()` at startup when
@@ -333,7 +336,7 @@ always-imported core `config.py`.
 (43), `ValkeyBackoffStrategy` (55), `ValkeyTlsAdvancedConfiguration` (86),
 `ValkeyAdvancedConfig` (114), `ValkeyBaseConfig` (144), `ValkeyConfig` (222);
 `ValkeyWorkerConfig` (234, extends `TaskProcessorConfig` with `valkey_config`,
-`log_stream_name`, `task_fetch_batch_size`); `read_valkey_config(conf_dir)`
+`log_stream_name`, `task_fetch_batch_size`, `claim_min_idle_ms`); `read_valkey_config(conf_dir)`
 (261) — creates `valkey.yml` with defaults only if the file is missing; raises
 `RuntimeError` on a present-but-invalid file (299), never overwriting it;
 `generate_glide_config(...)` (304, converts to `GlideClientConfiguration`,

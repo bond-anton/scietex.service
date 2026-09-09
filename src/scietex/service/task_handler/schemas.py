@@ -18,7 +18,7 @@ class TaskTimeout(msgspec.Struct, frozen=True):
 
     Args:
         timeout: Maximum seconds allowed for task completion. ``None``
-            means use ``DEFAULT_TASK_TIMEOUT`` (3s).
+            means use the processor's configured ``task_timeout`` (default 3 s).
         timeout_action: Action when timeout is exceeded: ``"requeue"``
             returns the task to the queue; ``"discard"`` drops it.
     """

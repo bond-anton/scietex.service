@@ -62,6 +62,18 @@ MIN_TASK_HANDLER_STOP_TIMEOUT: float = 1
 MAX_TASK_HANDLER_STOP_TIMEOUT: float = 60
 DEFAULT_TASK_HANDLER_STOP_TIMEOUT: float = 5
 
+MIN_TASK_TIMEOUT: float = 0.1
+MAX_TASK_TIMEOUT: float = 3600
+DEFAULT_TASK_TIMEOUT: float = 3
+
+MIN_TASK_QUEUE_FETCH_TIMEOUT: float = 0.01
+MAX_TASK_QUEUE_FETCH_TIMEOUT: float = 60
+DEFAULT_TASK_QUEUE_FETCH_TIMEOUT: float = 1
+
+MIN_TASK_CANCELLATION_TIMEOUT: float = 0.1
+MAX_TASK_CANCELLATION_TIMEOUT: float = 60
+DEFAULT_TASK_CANCELLATION_TIMEOUT: float = 5
+
 
 def _validate_range(
     value: float | int | None,
@@ -69,23 +81,30 @@ def _validate_range(
     *,
     minimum: float | int,
     maximum: float | int | None = None,
+    unbounded_ok: bool = False,
 ) -> None:
     """Raise ``msgspec.ValidationError`` if ``value`` is outside the bounds.
 
     ``None`` is always allowed (it means "use the default"). ``maximum`` may be
-    ``None`` to enforce only a lower bound.
+    ``None`` to enforce only a lower bound. When ``unbounded_ok`` is ``True``, a
+    non-positive value is also allowed: it is the "unbounded" sentinel (e.g. the
+    task timeout watchdog treats ``<= 0`` as "no timeout").
 
     Args:
         value: The value to validate.
         name: Field name used in the error message.
         minimum: Inclusive lower bound.
         maximum: Inclusive upper bound, or ``None`` for no upper bound.
+        unbounded_ok: If ``True``, allow ``value <= 0`` as the unbounded
+            sentinel, bypassing the lower-bound check.
 
     Raises:
         msgspec.ValidationError: If ``value`` is below ``minimum`` or above
             ``maximum``.
     """
     if value is None:
+        return
+    if unbounded_ok and value <= 0:
         return
     if value < minimum:
         raise msgspec.ValidationError(f"{name} must be >= {minimum}, got {value!r}")
@@ -195,6 +214,15 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
             seconds (``[1, 60]``).
         task_handler_stop_timeout: Timeout for stopping a task handler in
             seconds (``[1, 60]``).
+        task_timeout: Global per-task timeout in seconds used when a task's own
+            ``TaskTimeout.timeout`` is ``None``. Bounds ``[0.1, 3600]`` for a
+            positive deadline; ``<= 0`` means "no timeout" (unbounded — the
+            watchdog never cancels the task).
+        task_queue_fetch_timeout: Timeout in seconds for waiting to dequeue the
+            next task (``[0.01, 60]``).
+        task_cancellation_timeout: Timeout in seconds for waiting on a
+            cancelled task to actually stop during cleanup/watchdog
+            (``[0.1, 60]``).
     """
 
     queue_size: int | None = None
@@ -204,6 +232,9 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
     task_queue_manager_sleep_time: float | None = None
     task_handler_start_timeout: float | None = None
     task_handler_stop_timeout: float | None = None
+    task_timeout: float | None = None
+    task_queue_fetch_timeout: float | None = None
+    task_cancellation_timeout: float | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -231,4 +262,23 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
             "task_handler_stop_timeout",
             minimum=MIN_TASK_HANDLER_STOP_TIMEOUT,
             maximum=MAX_TASK_HANDLER_STOP_TIMEOUT,
+        )
+        _validate_range(
+            self.task_timeout,
+            "task_timeout",
+            minimum=MIN_TASK_TIMEOUT,
+            maximum=MAX_TASK_TIMEOUT,
+            unbounded_ok=True,
+        )
+        _validate_range(
+            self.task_queue_fetch_timeout,
+            "task_queue_fetch_timeout",
+            minimum=MIN_TASK_QUEUE_FETCH_TIMEOUT,
+            maximum=MAX_TASK_QUEUE_FETCH_TIMEOUT,
+        )
+        _validate_range(
+            self.task_cancellation_timeout,
+            "task_cancellation_timeout",
+            minimum=MIN_TASK_CANCELLATION_TIMEOUT,
+            maximum=MAX_TASK_CANCELLATION_TIMEOUT,
         )

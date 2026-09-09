@@ -32,22 +32,13 @@ from ._glide import (
     StreamReadGroupOptions,
 )
 from .config import (
+    DEFAULT_CLAIM_MIN_IDLE_MS,
     ValkeyConfig,
     ValkeyWorkerConfig,
     generate_glide_config,
     read_valkey_config,
 )
 from .schemas import Heartbeat
-
-DEFAULT_CLAIM_MIN_IDLE_MS: int = 1000
-"""Idle floor (ms) before XAUTOCLAIM reclaims a pending entry.
-
-With 0, a replica's startup recovery can claim an entry a slow-but-alive
-handler on another replica is still processing, causing double-processing.
-A positive floor means only entries idle >= the floor (genuinely abandoned)
-are claimed. Must be well under the status-key TTL (2 x heartbeat_interval)
-so a dead replica's entries are reclaimed promptly.
-"""
 
 
 def _logging_handler_config(valkey_config: ValkeyConfig) -> dict:
@@ -175,6 +166,17 @@ class ValkeyWorker(TaskProcessor):
         # True once pending-entry recovery has run (start of the first
         # fetch_tasks), so a crash's unacked entries are redelivered once.
         self._recovered: bool = False
+
+        # Idle floor (ms) before XAUTOCLAIM reclaims a pending entry. With 0, a
+        # replica's startup recovery can claim an entry a slow-but-alive handler
+        # on another replica is still processing, causing double-processing. A
+        # positive floor means only entries idle >= the floor (genuinely
+        # abandoned) are claimed. Must be well under the status-key TTL
+        # (2 x heartbeat_interval) so a dead replica's entries are reclaimed
+        # promptly.
+        self.__claim_min_idle_ms: int = (
+            cfg.claim_min_idle_ms if cfg.claim_min_idle_ms is not None else DEFAULT_CLAIM_MIN_IDLE_MS
+        )
 
     @property
     def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
@@ -497,7 +499,7 @@ class ValkeyWorker(TaskProcessor):
         """Re-enqueue stream entries left pending by a previous run.
 
         Uses ``XAUTOCLAIM`` to claim every entry in the consumer group's
-        pending list that is idle for at least ``DEFAULT_CLAIM_MIN_IDLE_MS``
+        pending list that is idle for at least ``claim_min_idle_ms``
         and enqueue it, so tasks that were read but never acknowledged before
         a crash are redelivered (at-least-once). Called once from the first
         ``fetch_tasks``, before any ``'>'`` read, when no tasks are in flight.
@@ -518,7 +520,7 @@ class ValkeyWorker(TaskProcessor):
                     self._task_stream_name,
                     self._task_group_name,
                     self._consumer_name,
-                    DEFAULT_CLAIM_MIN_IDLE_MS,
+                    self.__claim_min_idle_ms,
                     start,
                     count=10,
                 )

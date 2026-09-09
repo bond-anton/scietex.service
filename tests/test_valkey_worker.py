@@ -498,6 +498,32 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
 
 
 @pytest.mark.asyncio
+async def test_recover_pending_tasks_uses_configured_claim_min_idle_ms():
+    """_recover_pending_tasks passes the configured claim_min_idle_ms to
+    XAUTOCLAIM instead of the default floor (AR-062)."""
+    import msgspec
+
+    from scietex.service.task_handler.schemas import TaskData
+
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = msgspec.msgpack.encode(task_data)
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ]
+    )
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig(), claim_min_idle_ms=5000))
+    worker._client = client
+
+    await worker._recover_pending_tasks()
+
+    assert client.xautoclaim_calls[0][3] == 5000  # min_idle_time_ms
+    assert not worker.task_queue_empty()
+
+
+@pytest.mark.asyncio
 async def test_recover_pending_tasks_incomplete_when_queue_full_leaves_recovered_false():
     """A queue-full mid-recovery returns incomplete and must NOT let fetch_tasks
     mark recovery done, so the remaining pending entries are retried (AR-051)."""

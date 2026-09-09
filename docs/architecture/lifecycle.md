@@ -91,8 +91,8 @@ already-set `exit_requested` short-circuits so only one shutdown runs
 4. `cleanup()` — subclass hook. Chain:
    - `TaskProcessor.cleanup` (423): drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
-     cancel running per-task workers (wait up to
-     `WORKER_TASK_CANCELLATION_TIMEOUT=5 s`); requeue only if the handler
+     cancel running per-task workers (wait up to the configured
+     `task_cancellation_timeout`, default 5 s); requeue only if the handler
      actually stopped and `canceled_action=="requeue"`; stop all task handlers
      (`_stop_task_handler`, per-handler 5 s timeout).
    - `ValkeyWorker.cleanup` (340): super then `disconnect()` (close glide

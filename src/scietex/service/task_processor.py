@@ -20,19 +20,15 @@ from .config import (
     DEFAULT_MANAGER_SLEEP_TIME,
     DEFAULT_MAX_CONCURRENT_TASKS,
     DEFAULT_MAX_TASKS_QUEUE_SIZE,
+    DEFAULT_TASK_CANCELLATION_TIMEOUT,
     DEFAULT_TASK_HANDLER_START_TIMEOUT,
     DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+    DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
+    DEFAULT_TASK_TIMEOUT,
     TaskProcessorConfig,
 )
 from .manager import Manager
 from .task_handler import TaskData, TaskHandler, TaskHandlerContext, TaskResult, TaskTracker
-
-DEFAULT_TASK_TIMEOUT = 3  # Timeout in seconds for task completion
-"""Timeout in seconds for task completion before cancellation."""
-
-TASK_QUEUE_FETCH_TIMEOUT: float = 1
-
-WORKER_TASK_CANCELLATION_TIMEOUT: float = 5
 
 
 class TaskProcessor(BasicWorker):
@@ -96,6 +92,23 @@ class TaskProcessor(BasicWorker):
             )
         else:
             self.__max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS
+
+        # Resolve the task-level timing fields once: they are read in the
+        # watchdog/task_manager hot loops, so per-iteration property indirection
+        # is avoided. `is not None` (not `or`) preserves an explicit 0/negative
+        # task_timeout as the "unbounded" sentinel instead of falling back to
+        # the default.
+        self.__task_timeout: float = cfg.task_timeout if cfg.task_timeout is not None else DEFAULT_TASK_TIMEOUT
+        self.__task_queue_fetch_timeout: float = (
+            cfg.task_queue_fetch_timeout
+            if cfg.task_queue_fetch_timeout is not None
+            else DEFAULT_TASK_QUEUE_FETCH_TIMEOUT
+        )
+        self.__task_cancellation_timeout: float = (
+            cfg.task_cancellation_timeout
+            if cfg.task_cancellation_timeout is not None
+            else DEFAULT_TASK_CANCELLATION_TIMEOUT
+        )
 
         self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
 
@@ -462,7 +475,7 @@ class TaskProcessor(BasicWorker):
                 # swallows cancellation, hanging shutdown.
                 await asyncio.wait(
                     [task_tracker.worker_task],
-                    timeout=WORKER_TASK_CANCELLATION_TIMEOUT,
+                    timeout=self.__task_cancellation_timeout,
                 )
                 if task_tracker.worker_task.done() and task_tracker.data.canceled_action == "requeue":
                     self.logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
@@ -602,7 +615,9 @@ class TaskProcessor(BasicWorker):
 
         if len(self.running_tasks) < self.max_concurrent_tasks:
             try:
-                task_id, task_data = await asyncio.wait_for(self.__task_queue.get(), timeout=TASK_QUEUE_FETCH_TIMEOUT)
+                task_id, task_data = await asyncio.wait_for(
+                    self.__task_queue.get(), timeout=self.__task_queue_fetch_timeout
+                )
                 task = asyncio.create_task(handle_task(task_id, task_data))
                 self.__running_tasks[task_id] = TaskTracker(worker_task=task, data=task_data, started=time.monotonic())
             except asyncio.TimeoutError:
@@ -652,9 +667,10 @@ class TaskProcessor(BasicWorker):
         """Monitor running tasks for timeouts and handle stalled tasks.
 
         Periodically checks all running tasks and cancels any that have
-        exceeded their configured ``timeout`` (or ``DEFAULT_TASK_TIMEOUT``
-        if no timeout is set). Tasks with ``timeout_action="requeue"`` are
-        returned to the external queue for potential retry.
+        exceeded their configured ``timeout`` (or the configured
+        ``task_timeout`` if no timeout is set). Tasks with
+        ``timeout_action="requeue"`` are returned to the external queue for
+        potential retry.
 
         Requeue boundary: error-path requeue is handled in ``handle_task``
         (retry-once via ``TaskResult.retryable``); the watchdog handles only
@@ -670,7 +686,7 @@ class TaskProcessor(BasicWorker):
         for task_id, task_tracker in list(self.running_tasks.items()):
             timeout = task_tracker.data.timeout.timeout
             if timeout is None:
-                timeout = DEFAULT_TASK_TIMEOUT
+                timeout = self.__task_timeout
             # A non-positive timeout means "no timeout": the watchdog never
             # cancels the task (timeout <= 0 is treated as unbounded).
             if timeout > 0 and (now - task_tracker.started) > timeout and not task_tracker.worker_task.done():
@@ -688,7 +704,7 @@ class TaskProcessor(BasicWorker):
                 # still pending when the handler ignored the cancellation.
                 await asyncio.wait(
                     [task_tracker.worker_task],
-                    timeout=WORKER_TASK_CANCELLATION_TIMEOUT,
+                    timeout=self.__task_cancellation_timeout,
                 )
                 if task_tracker.worker_task.done():
                     # The handler actually stopped; handle_task's finally has

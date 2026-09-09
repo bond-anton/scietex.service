@@ -291,6 +291,67 @@ async def test_watchdog_requeues_timed_out_task():
 
 
 @pytest.mark.asyncio
+async def test_watchdog_uses_configured_task_timeout_when_per_task_none():
+    """When a task's own timeout is None, the watchdog uses the configured
+    task_timeout (not the 3s default) as the cancellation deadline (AR-062)."""
+    proc = DemoProcessor(TaskProcessorConfig(task_timeout=0.1, watchdog_interval=0.05))
+    proc.add_task_handler(SlowHandler)
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(
+            t_id,
+            TaskData(
+                task="slow",
+                payload=b"{}",
+                timeout=TaskTimeout(timeout=None, timeout_action="requeue"),
+            ),
+        )
+        # The 3s default would not have cancelled SlowHandler (2s) yet, but the
+        # configured 0.1s deadline does, so the task is requeued well under 2s.
+        await asyncio.sleep(1.0)
+        assert any(tid == t_id for tid, _ in proc.requeued)
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+@pytest.mark.asyncio
+async def test_task_manager_uses_configured_queue_fetch_timeout():
+    """task_manager passes the configured task_queue_fetch_timeout to the
+    wait_for that guards the queue get (AR-062)."""
+    import scietex.service.task_processor as mod
+
+    proc = DemoProcessor(TaskProcessorConfig(task_queue_fetch_timeout=0.25))
+    observed: list = []
+    real_wait_for = mod.asyncio.wait_for
+
+    async def spy_wait_for(coro, timeout=None):
+        observed.append(timeout)
+        return await real_wait_for(coro, timeout=timeout)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod.asyncio, "wait_for", spy_wait_for)
+    try:
+        mgr = asyncio.create_task(proc.task_manager())
+        # The queue is empty, so task_manager blocks in wait_for(get(), ...)
+        # for the configured timeout; wait until the spy has recorded it.
+        for _ in range(100):
+            if observed:
+                break
+            await asyncio.sleep(0.01)
+        mgr.cancel()
+        try:
+            await mgr
+        except asyncio.CancelledError:
+            pass
+    finally:
+        monkeypatch.undo()
+
+    assert observed == [0.25], "task_manager must use the configured task_queue_fetch_timeout"
+
+
+@pytest.mark.asyncio
 async def test_process_task_empty_task_returns_error_result():
     """An empty task type must yield an error TaskResult, not raise (AR-010)."""
     proc = DemoProcessor()
@@ -582,14 +643,11 @@ class StubbornHandler(TaskHandler):
 
 
 @pytest.mark.asyncio
-async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation(monkeypatch):
+async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation():
     """A handler that swallows CancelledError must not be requeued by the
-    watchdog: it is still running, so requeueing would run it twice (AR-005)."""
-    import scietex.service.task_processor as mod
-
-    # Shorten the cancellation wait so the test does not block for 5s.
-    monkeypatch.setattr(mod, "WORKER_TASK_CANCELLATION_TIMEOUT", 0.05)
-    proc = DemoProcessor()
+    watchdog: it is still running, so requeueing would run it twice (AR-005).
+    A short task_cancellation_timeout (config, AR-062) keeps the test fast."""
+    proc = DemoProcessor(TaskProcessorConfig(task_cancellation_timeout=0.1))
     proc.add_task_handler(StubbornHandler)
     await proc._start_task_handler("StubbornHandler")
     await proc.start()
@@ -716,6 +774,37 @@ async def test_watchdog_ignores_non_positive_timeout():
         # Wait until the task has been dispatched, then let the watchdog run
         # several times (interval 50ms). The task must still be running and
         # must not have been requeued.
+        for _ in range(100):
+            if t_id in proc.running_tasks:
+                break
+            await asyncio.sleep(0.01)
+        assert t_id in proc.running_tasks
+        await asyncio.sleep(0.3)
+        assert t_id in proc.running_tasks
+        assert not any(tid == t_id for tid, _ in proc.requeued)
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_ignores_non_positive_configured_task_timeout():
+    """A configured task_timeout <= 0 means 'no timeout': when a task's own
+    timeout is None, the watchdog must never cancel it (AR-062 preserves the
+    unbounded sentinel and the is-not-None resolution of 0)."""
+    proc = DemoProcessor(TaskProcessorConfig(task_timeout=0, watchdog_interval=0.05))
+    proc.add_task_handler(NeverFinishesHandler)
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(
+            t_id,
+            TaskData(
+                task="never",
+                payload=b"{}",
+                timeout=TaskTimeout(timeout=None, timeout_action="requeue"),
+            ),
+        )
         for _ in range(100):
             if t_id in proc.running_tasks:
                 break

@@ -57,10 +57,10 @@ timeouts.
 |---|---|---|---|---|
 | `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `100` | — | — | Default max queue size |
 | `DEFAULT_MAX_CONCURRENT_TASKS` | `10` | `1` | — | Default max concurrent tasks |
-| `DEFAULT_TASK_TIMEOUT` | `3` | — | — | Default task timeout in seconds |
-| `TASK_QUEUE_FETCH_TIMEOUT` | `1` | — | — | Timeout waiting for task from queue |
+| `DEFAULT_TASK_TIMEOUT` | `3` | `0.1` | `3600` | Default task timeout in seconds (`<= 0` means no timeout) |
+| `DEFAULT_TASK_QUEUE_FETCH_TIMEOUT` | `1` | `0.01` | `60` | Timeout waiting for task from queue |
 | `DEFAULT_MANAGER_SLEEP_TIME` | `0.01` | `0.001` | `1` | Default manager loop sleep |
-| `WORKER_TASK_CANCELLATION_TIMEOUT` | `5` | — | — | Timeout waiting for task cancellation |
+| `DEFAULT_TASK_CANCELLATION_TIMEOUT` | `5` | `0.1` | `60` | Timeout waiting for task cancellation |
 | `DEFAULT_TASK_HANDLER_START_TIMEOUT` | `5` | `1` | `60` | Timeout for starting a handler |
 | `DEFAULT_TASK_HANDLER_STOP_TIMEOUT` | `5` | `1` | `60` | Timeout for stopping a handler |
 
@@ -148,6 +148,9 @@ processor = TaskProcessor(
         task_queue_manager_sleep_time=None,
         task_handler_start_timeout=None,
         task_handler_stop_timeout=None,
+        task_timeout=None,
+        task_queue_fetch_timeout=None,
+        task_cancellation_timeout=None,
     )
 )
 ```
@@ -163,6 +166,9 @@ Fields added by `TaskProcessorConfig` (in addition to `WorkerConfig`):
 | `task_queue_manager_sleep_time` | `None` (uses `DEFAULT_MANAGER_SLEEP_TIME`, `0.01`) | Sleep between queue manager iterations |
 | `task_handler_start_timeout` | `None` (uses `DEFAULT_TASK_HANDLER_START_TIMEOUT`, `5`) | Timeout for starting handlers |
 | `task_handler_stop_timeout` | `None` (uses `DEFAULT_TASK_HANDLER_STOP_TIMEOUT`, `5`) | Timeout for stopping handlers |
+| `task_timeout` | `None` (uses `DEFAULT_TASK_TIMEOUT`, `3`) | Global per-task timeout used when a task's `TaskTimeout.timeout` is `None`; `<= 0` means no timeout (unbounded) |
+| `task_queue_fetch_timeout` | `None` (uses `DEFAULT_TASK_QUEUE_FETCH_TIMEOUT`, `1`) | Timeout waiting to dequeue the next task |
+| `task_cancellation_timeout` | `None` (uses `DEFAULT_TASK_CANCELLATION_TIMEOUT`, `5`) | Timeout waiting for a cancelled task to actually stop |
 
 All `WorkerConfig` fields (`logger_handler_timeout`,
 `manager_shutdown_timeout`, `manager_max_retries`,
@@ -303,17 +309,17 @@ running tasks for timeouts:
 
 ```python
 async def watchdog(self) -> None:
-    now = time.time()
+    now = time.monotonic()
     for task_id, tracker in list(self.running_tasks.items()):
         timeout = tracker.data.timeout.timeout
         if timeout is None:
-            timeout = DEFAULT_TASK_TIMEOUT
+            timeout = DEFAULT_TASK_TIMEOUT  # config: task_timeout (default 3 s)
         if 0 < timeout < (now - tracker.started) and not tracker.worker_task.done():
             # Task exceeded its timeout and is still running
             tracker.worker_task.cancel()
             await asyncio.wait(
                 [tracker.worker_task],
-                timeout=WORKER_TASK_CANCELLATION_TIMEOUT,
+                timeout=DEFAULT_TASK_CANCELLATION_TIMEOUT,  # config (default 5 s)
             )
             if tracker.worker_task.done():
                 # Handler actually stopped; requeue a fresh delivery only now
@@ -326,7 +332,7 @@ Timeout behavior is controlled by `TaskTimeout`:
 
 | `timeout` | `timeout_action` | Behavior |
 |---|---|---|
-| `None` | — | Uses `DEFAULT_TASK_TIMEOUT` (3s) |
+| `None` | — | Uses `task_timeout` (default 3s) |
 | `> 0` | `"requeue"` | Cancel task and return to external queue |
 | `> 0` | `"discard"` | Cancel task, do not requeue |
 | `<= 0` | — | No timeout (unbounded) — the watchdog never cancels the task |

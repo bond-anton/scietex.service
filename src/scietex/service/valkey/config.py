@@ -231,6 +231,11 @@ class ValkeyConfig(msgspec.Struct, frozen=True):
     advanced_config: ValkeyAdvancedConfig = ValkeyAdvancedConfig()
 
 
+MIN_CLAIM_MIN_IDLE_MS: int = 1
+MAX_CLAIM_MIN_IDLE_MS: int = 3_600_000
+DEFAULT_CLAIM_MIN_IDLE_MS: int = 1000
+
+
 class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     """Immutable configuration for a :class:`~scietex.service.valkey.worker.ValkeyWorker`.
 
@@ -247,15 +252,24 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
         log_stream_name: Name of the Valkey stream used for log entries.
         task_fetch_batch_size: Maximum number of stream entries read per
             ``XREADGROUP`` call (``>= 1``).
+        claim_min_idle_ms: Idle floor in milliseconds before ``XAUTOCLAIM``
+            reclaims a pending entry during startup recovery (``[1, 3600000]``).
     """
 
     valkey_config: "ValkeyConfig | GlideClientConfiguration | None" = None
     log_stream_name: str = "scietex:log"
     task_fetch_batch_size: int = 10
+    claim_min_idle_ms: int | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         _validate_range(self.task_fetch_batch_size, "task_fetch_batch_size", minimum=1)
+        _validate_range(
+            self.claim_min_idle_ms,
+            "claim_min_idle_ms",
+            minimum=MIN_CLAIM_MIN_IDLE_MS,
+            maximum=MAX_CLAIM_MIN_IDLE_MS,
+        )
 
 
 def read_valkey_config(conf_dir: Path | None, *, create_default: bool = True) -> ValkeyConfig:

@@ -100,6 +100,52 @@ def test_task_processor_config_in_range_values_accepted():
     assert cfg.max_concurrent_tasks == 5
 
 
+def test_task_processor_config_timing_fields_default_none():
+    """The task-level timing fields default to None (resolved by the worker at
+    read time to their DEFAULT_* constants)."""
+    cfg = TaskProcessorConfig()
+    assert cfg.task_timeout is None
+    assert cfg.task_queue_fetch_timeout is None
+    assert cfg.task_cancellation_timeout is None
+
+
+def test_task_processor_config_timing_fields_in_range_accepted():
+    cfg = TaskProcessorConfig(
+        task_timeout=10,
+        task_queue_fetch_timeout=0.5,
+        task_cancellation_timeout=2,
+    )
+    assert cfg.task_timeout == 10
+    assert cfg.task_queue_fetch_timeout == 0.5
+    assert cfg.task_cancellation_timeout == 2
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        # task_timeout: below the positive min (0.1) but above the unbounded
+        # sentinel (<= 0) is invalid; above the max is invalid.
+        ("task_timeout", 0.05),
+        ("task_timeout", 3601),
+        ("task_queue_fetch_timeout", 0.005),
+        ("task_queue_fetch_timeout", 61),
+        ("task_cancellation_timeout", 0.05),
+        ("task_cancellation_timeout", 61),
+    ],
+)
+def test_task_processor_config_timing_fields_out_of_range_raises(field_name, value):
+    with pytest.raises(msgspec.ValidationError):
+        TaskProcessorConfig(**{field_name: value})
+
+
+@pytest.mark.parametrize("value", [0, -1, -5])
+def test_task_timeout_unbounded_sentinel_accepted(value):
+    """task_timeout <= 0 is the unbounded sentinel (watchdog never cancels) and
+    must pass validation instead of being rejected by the [0.1, 3600] bound."""
+    cfg = TaskProcessorConfig(task_timeout=value)
+    assert cfg.task_timeout == value
+
+
 def test_config_is_immutable():
     cfg = WorkerConfig()
     with pytest.raises(AttributeError):
@@ -116,3 +162,15 @@ def test_valkey_worker_config_defaults():
     assert cfg.valkey_config is None
     assert cfg.log_stream_name == "scietex:log"
     assert cfg.task_fetch_batch_size == 10
+    assert cfg.claim_min_idle_ms is None
+
+
+def test_valkey_worker_config_claim_min_idle_ms_in_range_accepted():
+    cfg = ValkeyWorkerConfig(valkey_config=ValkeyConfig(), claim_min_idle_ms=5000)
+    assert cfg.claim_min_idle_ms == 5000
+
+
+@pytest.mark.parametrize("value", [0, 3_600_001])
+def test_valkey_worker_config_claim_min_idle_ms_out_of_range_raises(value):
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(valkey_config=ValkeyConfig(), claim_min_idle_ms=value)

@@ -16,7 +16,8 @@ transformations, and any async boundaries (queues/events/tasks).
    `task_queue_manager_sleep_time` (default 0.01 s).
 2. `TaskProcessor.task_manager` (`task_processor.py:523`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
-   pops `(task_id, task_data)` off `task_queue` with a 1 s fetch timeout,
+   pops `(task_id, task_data)` off `task_queue` with a fetch timeout of
+   `task_queue_fetch_timeout` (default 1 s),
    wraps `handle_task` in an `asyncio.Task`, records
    `running_tasks[task_id] = TaskTracker(...)`.
 3. `handle_task` (inner, 535) calls `process_task(task_id, task_data)`.
@@ -86,8 +87,9 @@ error result with `retryable=True` is requeued in `handle_task`'s `finally`
 before acking — see F1).
 
 **Path:** `TaskProcessor.watchdog` (644) cancels `worker_task` when
-`elapsed > task_data.timeout.timeout` (or `DEFAULT_TASK_TIMEOUT=3`), waits up
-to `WORKER_TASK_CANCELLATION_TIMEOUT`, and only if the handler actually
+`elapsed > task_data.timeout.timeout` (or the configured `task_timeout`, default
+3), waits up to the configured `task_cancellation_timeout` (default 5), and only
+if the handler actually
 stopped (`worker_task.done()`) calls `return_task_to_queue(task_id,
 task_data)` when `timeout_action == "requeue"`. Base `return_task_to_queue`
 (355) is a no-op; `ValkeyWorker` (407) does `XADD` back to the same task
