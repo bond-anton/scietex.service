@@ -1,5 +1,6 @@
 """Valkey async task processor testing."""
 
+import asyncio
 from uuid import UUID
 
 import pytest
@@ -27,6 +28,16 @@ class DummyClient:
         self.deleted: list = []
         self.xautoclaim_calls: list = []
         self.xreadgroup_calls: list = []
+        self.sets: list = []
+
+    async def set(self, key, value=None, expiry=None, *args, **kwargs):
+        self.sets.append((key, value, expiry))
+
+    async def sadd(self, *args, **kwargs):
+        pass
+
+    async def srem(self, *args, **kwargs):
+        pass
 
     async def xgroup_create(self, *args, **kwargs):
         if self.xgroup_create_error is not None:
@@ -433,3 +444,61 @@ async def test_cleanup_clears_pending_task_entry_ids(monkeypatch):
     await worker.cleanup()
 
     assert worker._task_entry_ids == {}
+
+
+@pytest.mark.asyncio
+async def test_first_heartbeat_writes_status_key_promptly():
+    """The first ValkeyWorker heartbeat must write the status key promptly.
+
+    ``heartbeat()`` is guarded by ``self.client and self.start_time``. To
+    guarantee the heartbeat manager's immediate first beat is not skipped,
+    ``_startup`` must set ``start_time`` before the managers start (AR-049).
+    Because manager tasks only run once ``_startup`` yields to the event loop,
+    an end-to-end timing check cannot distinguish the old from the new ordering,
+    so this asserts the ordering invariant directly (start_time is already set
+    when managers begin) and confirms the status-key write fires on startup.
+    """
+
+    class TestWorker(ValkeyWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._dummy = DummyClient()
+            self.managers_saw_start_time = False
+
+        async def initialize(self) -> bool:
+            # Bypass connect()/xgroup_create and inject a DummyClient directly
+            # so no real Valkey server is required (mirrors the file's pattern).
+            self._client = self._dummy
+            return True
+
+        async def _start_managers(self):
+            # AR-049: the heartbeat manager fires its first beat immediately, so
+            # start_time must already be set when the managers begin.
+            self.managers_saw_start_time = self.start_time is not None
+            await super()._start_managers()
+
+    worker = TestWorker(
+        ValkeyWorkerConfig(
+            service_name="hb_test",
+            heartbeat_interval=1.0,
+            valkey_config=ValkeyConfig(),
+        )
+    )
+    await worker.start()
+    try:
+        # A status-key write must appear promptly after start (the immediate
+        # first beat) rather than only on the second beat a full interval later.
+        key = worker._heartbeat_key
+        for _ in range(100):
+            if any(k == key for k, _value, _expiry in worker._dummy.sets):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("heartbeat() never wrote the status key (AR-049)")
+
+        assert worker.managers_saw_start_time, (
+            "start_time must be set before the managers start, or the first "
+            "heartbeat is skipped by the start_time guard (AR-049)"
+        )
+    finally:
+        await worker.stop()

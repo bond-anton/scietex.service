@@ -260,10 +260,10 @@ class ValkeyWorker(AsyncTaskProcessor):
         to ``self._heartbeat_key`` with a TTL set to twice the heartbeat
         interval. Logs the duration at DEBUG and any failure at WARNING.
 
-        The write is guarded by ``self.client and self.start_time``:
-        ``start_time`` is set only after the managers start in ``_startup``,
-        so the first heartbeat after connect is skipped and the status key's
-        TTL is not refreshed until the second beat.
+        The write is guarded by ``self.client and self.start_time``. The start
+        time is set in ``_startup`` before the managers start, so the first
+        heartbeat fires promptly and the status key's TTL is refreshed from the
+        first beat (AR-049).
         """
 
         if self.client and self.start_time:

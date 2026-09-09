@@ -455,8 +455,9 @@ class BasicAsyncWorker:
 
         Waits for any previous shutdown to complete, prints the service logo,
         starts logging handlers, runs custom initialization via initialize(),
-        then starts all managers, sets the start time, and transitions to
-        RUNNING state.
+        sets the start time, then starts all managers, and transitions to
+        RUNNING state. The start time is set before the managers start so the
+        first immediate heartbeat is not skipped (AR-049).
 
         Raises:
             asyncio.CancelledError: If the startup process is cancelled
@@ -485,10 +486,14 @@ class BasicAsyncWorker:
             # succeeded (transport/client exists) and before managers start.
             await self._register_instance()
 
+            # Set the start time before managers start: the heartbeat manager
+            # fires its first beat immediately, and the heartbeat is guarded by
+            # start_time, so a late set would skip the first beat (AR-049).
+            self.__start_time = datetime.now(timezone.utc)
+
             # Start managers
             await self._start_managers()
 
-            self.__start_time = datetime.now(timezone.utc)
             self.logger.log(logging.DEBUG, "Worker %s:%s started", self.service_name, self.instance_id)
             self.__state = ServiceStatus.RUNNING
         except asyncio.CancelledError:
