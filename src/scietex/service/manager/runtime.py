@@ -77,6 +77,10 @@ class ManagerRuntime:
             manager: The Manager instance whose method will be executed
         """
         self.worker.logger.info("[START] Manager %s started", name)
+        # Mark RUNNING as soon as the loop starts; it stays RUNNING through
+        # error-retry backoff because the task is still alive. The enum is the
+        # source of truth for manager lifecycle (AR-057).
+        self.statuses[name] = ManagerStatus.RUNNING
 
         consecutive_failures = 0
         try:
@@ -135,7 +139,7 @@ class ManagerRuntime:
             name: Identifier for the manager
             manager: The Manager instance to execute
         """
-        if name in self.tasks:
+        if self.statuses.get(name) in (ManagerStatus.STARTING, ManagerStatus.RUNNING):
             self.worker.logger.log(logging.DEBUG, "%s is already running", name)
             return
         self.statuses[name] = ManagerStatus.STARTING

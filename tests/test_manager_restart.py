@@ -7,7 +7,7 @@ import pytest
 
 from scietex.service.basic_worker import BasicWorker, ServiceStatus
 from scietex.service.config import WorkerConfig
-from scietex.service.manager import Manager
+from scietex.service.manager import Manager, ManagerStatus
 
 
 class FlakyWorker(BasicWorker):
@@ -85,6 +85,39 @@ class CancellationIgnoringWorker(BasicWorker):
                 # Swallow cancellation until the test flips the flag.
                 if not self.ignore_cancellation:
                     raise
+
+
+class RunLoopWorker(BasicWorker):
+    """Worker whose manager runs a long-lived loop."""
+
+    @Manager(name="Loop")
+    async def _loop_manager(self) -> None:
+        while True:
+            await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_manager_status_reports_running_and_stopped():
+    """The manager enum status must reflect RUNNING while alive and STOPPED after."""
+    worker = RunLoopWorker()
+    await worker.start()
+    try:
+        # Wait until the manager task is tracked so its loop has begun.
+        for _ in range(50):
+            if "Loop" in worker._manager_runtime.tasks:
+                break
+            await asyncio.sleep(0.05)
+        assert "Loop" in worker._manager_runtime.tasks
+        assert worker._manager_runtime.statuses["Loop"] == ManagerStatus.RUNNING
+    finally:
+        await worker.stop()
+    # The task marks itself STOPPED in its finally block, which may complete
+    # asynchronously after stop() returns; poll until it lands.
+    for _ in range(50):
+        if worker._manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
+    assert worker._manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED
 
 
 @pytest.mark.asyncio
