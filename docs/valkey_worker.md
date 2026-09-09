@@ -126,7 +126,7 @@ to Valkey, and creates the consumer group for the task stream (with
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `valkey_config` | `ValkeyConfig \| GlideClientConfiguration` | — | The Valkey configuration used by this worker |
+| `valkey_config` | `ValkeyConfig \| GlideClientConfiguration \| None` | `None` | The Valkey configuration used by this worker. When no explicit config was given at construction, it is loaded lazily from disk at first connect, so it is `None` until then |
 | `client` | `GlideClient \| None` | `None` | The active Valkey client (``None`` until connected) |
 
 ### Inherited from TaskProcessor
@@ -171,7 +171,7 @@ worker = ValkeyWorker(
 
 | Field | Default | Description |
 |---|---|---|
-| `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig` or raw `GlideClientConfiguration`). If `None`, reads `valkey.yml` from the config directory |
+| `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig` or raw `GlideClientConfiguration`). If `None`, `valkey.yml` is read lazily from the config directory at first connect (not at construction) |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
 | `claim_min_idle_ms` | `None` (uses `DEFAULT_CLAIM_MIN_IDLE_MS`, `1000`) | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry during startup recovery |
@@ -448,9 +448,11 @@ if __name__ == "__main__":
 ### YAML Configuration File
 
 `ValkeyWorker` reads configuration from `valkey.yml` in the config
-directory. The file is created automatically with default values if it
-does not exist. If the file exists but is invalid (unparseable), a
-`RuntimeError` is raised and the file is left untouched.
+directory. The read (and, when missing, the write of a default file) is
+deferred to the first `connect()`/`initialize()` call — construction has no
+filesystem side effects (AR-066). The file is created automatically with
+default values if it does not exist. If the file exists but is invalid
+(unparseable), a `RuntimeError` is raised and the file is left untouched.
 
 ```yaml
 base_config:

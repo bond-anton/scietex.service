@@ -298,7 +298,9 @@ Overrides `_config_type` (99) to `ValkeyWorkerConfig`, so the base instantiates
 the concrete config when `config=None` and `__init__` reads its fields from
 `self._config` rather than re-storing (AR-069).
 Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
-`config.valkey_config` or falls back to `read_valkey_config`),
+`config.valkey_config`; when `None`, defers the disk read to
+`_ensure_client_config()`, called at first connect — AR-066, so construction
+is side-effect-free),
 `connect` 236 (`GlideClient.create` + PING under `_client_lock`; `_client`
 assigned only after PING succeeds, 278; then ensures the logging handler and
 starts it), `disconnect` 294, `heartbeat` 320 (writes msgpack `Heartbeat` to

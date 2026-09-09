@@ -103,10 +103,11 @@ class ValkeyWorker(TaskProcessor):
         """Initialize the ``ValkeyWorker``.
 
         Configures the Valkey client from ``config.valkey_config`` or, when
-        that is ``None``, by reading ``valkey.yml`` from the config directory.
-        Sets up stream names for tasks, heartbeat status, and logging. The
-        :class:`~scietex.logging.AsyncValkeyHandler` for async log entries owns
-        its own connection (``valkey_config=`` mode) when a typed
+        that is ``None``, defers reading ``valkey.yml`` from the config
+        directory to the first :meth:`connect` (AR-066), so construction is
+        side-effect-free. Sets up stream names for tasks, heartbeat status, and
+        logging. The :class:`~scietex.logging.AsyncValkeyHandler` for async log
+        entries owns its own connection (``valkey_config=`` mode) when a typed
         ``ValkeyConfig`` is available, and is built and registered on the first
         successful :meth:`connect`.
 
@@ -136,18 +137,24 @@ class ValkeyWorker(TaskProcessor):
         cfg = cast(ValkeyWorkerConfig, self._config)
 
         self._log_stream_name = cfg.log_stream_name
-        # Deliberate write-capable bootstrap path: default create_default=True creates config + defaults.
-        valkey_config = read_valkey_config(self.conf_dir) if cfg.valkey_config is None else cfg.valkey_config
-        self._valkey_config = valkey_config
-        if isinstance(valkey_config, GlideClientConfiguration):
-            self._client_config = valkey_config
+        # AR-066: when no explicit config was given, defer the filesystem read
+        # (and the default valkey.yml write / config-dir mkdir it triggers) to
+        # the first connect, so construction is side-effect-free. Both
+        # attributes stay None until _ensure_client_config() loads them.
+        if cfg.valkey_config is None:
+            self._valkey_config: ValkeyConfig | GlideClientConfiguration | None = None
+            self._client_config: GlideClientConfiguration | None = None
         else:
-            self._client_config: GlideClientConfiguration = generate_glide_config(
-                valkey_config,
-                service_name=self.service_name,
-                worker_id=self.instance_id,
-                listening=False,
-            )
+            self._valkey_config = cfg.valkey_config
+            if isinstance(cfg.valkey_config, GlideClientConfiguration):
+                self._client_config = cfg.valkey_config
+            else:
+                self._client_config = generate_glide_config(
+                    cfg.valkey_config,
+                    service_name=self.service_name,
+                    worker_id=self.instance_id,
+                    listening=False,
+                )
         # The logging handler owns its own connection when a typed ValkeyConfig
         # is available (AR-059/061); it is built lazily on the first successful
         # connect() and reused across restarts (see _ensure_logging_handler).
@@ -184,15 +191,19 @@ class ValkeyWorker(TaskProcessor):
         )
 
     @property
-    def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration:
+    def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration | None:
         """The Valkey configuration used by this worker.
 
         Returns either a :class:`ValkeyConfig` schema or a raw
         :class:`~glide.GlideClientConfiguration`, depending on how the
-        worker was constructed.
+        worker was constructed. When no explicit config was given at
+        construction, the config is loaded lazily from disk at first connect,
+        so this is ``None`` until :meth:`connect`/:meth:`initialize` has run
+        (AR-066).
 
         Returns:
-            The Valkey configuration instance.
+            The Valkey configuration instance, or ``None`` before the first
+            connect when no explicit config was provided.
         """
         return self._valkey_config
 
@@ -206,6 +217,33 @@ class ValkeyWorker(TaskProcessor):
             The active Valkey client, or ``None`` if not connected.
         """
         return self._client
+
+    def _ensure_client_config(self) -> GlideClientConfiguration:
+        """Load the Valkey config on first connect (AR-066).
+
+        Defers the filesystem read — and the default ``valkey.yml`` write /
+        config-dir ``mkdir`` it triggers — out of ``__init__`` to the first
+        connect, so construction is side-effect-free. Populates
+        ``_valkey_config`` and ``_client_config`` the same way ``__init__`` does
+        for an explicitly-provided config, then no-ops on later calls.
+
+        Returns:
+            The ``GlideClientConfiguration`` used to create the client.
+        """
+        if self._client_config is not None:
+            return self._client_config
+        valkey_config = read_valkey_config(self.conf_dir)
+        self._valkey_config = valkey_config
+        if isinstance(valkey_config, GlideClientConfiguration):
+            self._client_config = valkey_config
+        else:
+            self._client_config = generate_glide_config(
+                valkey_config,
+                service_name=self.service_name,
+                worker_id=self.instance_id,
+                listening=False,
+            )
+        return self._client_config
 
     def _ensure_logging_handler(self) -> AsyncValkeyHandler | None:
         """Build and register the logging handler once, then reuse it.
@@ -235,7 +273,9 @@ class ValkeyWorker(TaskProcessor):
         else:
             self._valkey_logger_handler = AsyncValkeyHandler(
                 stream_name=self._log_stream_name,
-                valkey_config=_logging_handler_config(self._valkey_config),
+                # _ensure_client_config() has run by now, so a typed ValkeyConfig
+                # is guaranteed here (the deferred None is resolved at connect).
+                valkey_config=_logging_handler_config(cast(ValkeyConfig, self._valkey_config)),
             )
         self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler)
         return self._valkey_logger_handler
@@ -275,8 +315,9 @@ class ValkeyWorker(TaskProcessor):
         """
         if self._client is not None:
             return True
+        client_config = self._ensure_client_config()
         try:
-            client = await GlideClient.create(self._client_config)
+            client = await GlideClient.create(client_config)
         except (GlideConnectionError, GlideTimeoutError):
             self.logger.error("Error connecting to Valkey")
             return False

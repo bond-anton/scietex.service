@@ -165,7 +165,9 @@ timeout (`logger_handler_timeout`, default 2 s).
 `utils/config.py:33`), i.e. `valkey.yml` in the chosen dir, or programmatic
 `ValkeyConfig`.
 
-**Path:** `ValkeyWorker.__init__`: if `config.valkey_config` is `None`,
+**Path:** when `config.valkey_config` is provided, `ValkeyWorker.__init__`
+builds the `GlideClientConfiguration` from it directly. When it is `None`, the
+read is deferred to `_ensure_client_config()` (called at first connect, AR-066):
 `read_valkey_config(self.conf_dir)` loads or creates `valkey.yml`
 (msgspec YAML, strict decode; a present-but-invalid file raises `RuntimeError`,
 only a missing file is created with defaults) →

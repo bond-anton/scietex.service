@@ -134,6 +134,38 @@ def test_default_config_stored_as_concrete_type(tmp_path, monkeypatch):
     assert isinstance(worker._config, ValkeyWorkerConfig)
 
 
+def test_construction_without_config_has_no_filesystem_side_effects(tmp_path, monkeypatch):
+    """Constructing ``ValkeyWorker()`` with no explicit config must not write
+    ``valkey.yml`` or create the config dir; the disk read is deferred to the
+    first connect (AR-066)."""
+    monkeypatch.setenv("SCIETEX_CONFIG_DIR", str(tmp_path))
+    worker = ValkeyWorker()
+    assert list(tmp_path.iterdir()) == [], "construction must not write valkey.yml or mkdir"
+    assert worker.valkey_config is None
+    assert worker._client_config is None
+
+
+@pytest.mark.asyncio
+async def test_connect_loads_config_from_disk(monkeypatch, tmp_path):
+    """With no explicit config, ``valkey.yml`` is read (and the default written)
+    at first connect, populating ``valkey_config``/``_client_config`` (AR-066)."""
+    monkeypatch.setenv("SCIETEX_CONFIG_DIR", str(tmp_path))
+
+    async def create_mock(cfg):
+        return DummyClient(ping_ok=True)
+
+    _patch_glide_and_handler(monkeypatch, create_mock)
+
+    worker = ValkeyWorker()
+    assert worker.valkey_config is None, "config must stay deferred before connect"
+
+    ok = await worker.connect()
+    assert ok is True
+    assert (tmp_path / "valkey.yml").exists(), "connect must write the default valkey.yml"
+    assert isinstance(worker.valkey_config, ValkeyConfig)
+    assert worker._client_config is not None
+
+
 @pytest.mark.asyncio
 async def test_connect_success(monkeypatch):
     # Mock GlideClient.create to return a DummyClient
