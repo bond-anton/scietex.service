@@ -254,6 +254,16 @@ class BasicWorker:
         return v if v is not None else DEFAULT_MANAGER_RESTART_BACKOFF
 
     @property
+    def failed_managers(self) -> list[str]:
+        """Names of managers that exhausted their retry budget and gave up (read-only).
+
+        Returns:
+            A list of manager names whose runtime status is
+            ``ManagerStatus.FAILED`` (``[]`` when no manager has failed).
+        """
+        return self._manager_runtime.failed_managers
+
+    @property
     def heartbeat_interval(self) -> float:
         """Interval in seconds between heartbeat calls (read-only).
 
@@ -609,9 +619,17 @@ class BasicWorker:
         dependencies. The default implementation logs a debug message.
 
         The Watchdog manager calls this method every ``watchdog_interval``
-        seconds.
+        seconds. By default it also surfaces any manager that exhausted its
+        retry budget and gave up (AR-063), logging CRITICAL but never
+        auto-shutting down so the degradation is observable.
         """
         self.logger.debug("[WATCHDOG] Watchdog")
+        failed = self.failed_managers
+        if failed:
+            self.logger.critical(
+                "Manager(s) %s gave up after exhausting retry budget; worker is degraded",
+                ", ".join(failed),
+            )
 
     async def cleanup(self):
         """

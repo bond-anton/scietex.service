@@ -177,6 +177,49 @@ async def test_manager_can_restart_after_giving_up():
 
 
 @pytest.mark.asyncio
+async def test_manager_exhausting_retries_ends_failed():
+    """A manager that exhausts its retry budget must end FAILED, not STOPPED (AR-063)."""
+    worker = AlwaysFailingWorker(WorkerConfig(manager_max_retries=2, manager_restart_backoff=0.01))
+    await worker.start()
+    try:
+        # Wait for the manager to give up (3 failures: initial + 2 retries) and
+        # reach its terminal FAILED state.
+        for _ in range(100):
+            if worker._manager_runtime.statuses.get("Doomed") == ManagerStatus.FAILED:
+                break
+            await asyncio.sleep(0.05)
+        assert worker._manager_runtime.statuses.get("Doomed") == ManagerStatus.FAILED
+        assert worker._manager_runtime.errors.get("Doomed") is not None
+        # The failure must be surfaced to the worker's public accessor.
+        assert "Doomed" in worker.failed_managers
+    finally:
+        await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_cleanly_stopped_manager_not_failed():
+    """A cleanly-stopped manager must end STOPPED, never FAILED (AR-063)."""
+    worker = RunLoopWorker()
+    await worker.start()
+    try:
+        for _ in range(50):
+            if "Loop" in worker._manager_runtime.tasks:
+                break
+            await asyncio.sleep(0.05)
+        assert "Loop" in worker._manager_runtime.tasks
+    finally:
+        await worker.stop()
+    # Poll until the task lands in its terminal state.
+    for _ in range(50):
+        status = worker._manager_runtime.statuses.get("Loop")
+        if status in (ManagerStatus.STOPPED, ManagerStatus.FAILED):
+            break
+        await asyncio.sleep(0.05)
+    assert worker._manager_runtime.statuses.get("Loop") == ManagerStatus.STOPPED
+    assert "Loop" not in worker.failed_managers
+
+
+@pytest.mark.asyncio
 async def test_subclass_manager_override_wins():
     """Most-derived manager definition must win over a base-class override."""
     worker = DerivedWorker()

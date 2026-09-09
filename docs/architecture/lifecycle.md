@@ -116,8 +116,9 @@ pattern `await worker.events["exit"].wait()` blocks until `_shutdown` sets the
 
 ## Manager lifecycle (per manager)
 
-States: `ManagerStatus` STARTING → RUNNING → STOPPING → STOPPED, tracked by
-`ManagerRuntime` (manager/runtime.py).
+States: `ManagerStatus` STARTING → RUNNING → STOPPING → STOPPED (terminal),
+with a give-up path to terminal FAILED (AR-063) when the retry budget is
+exhausted, tracked by `ManagerRuntime` (manager/runtime.py).
 
 1. `ManagerRuntime.start_manager` (130): if task exists → debug-return; set
    STARTING, clear error, `create_task(run_manager(name, manager))`.
@@ -131,8 +132,8 @@ States: `ManagerStatus` STARTING → RUNNING → STOPPING → STOPPED, tracked b
    retry budget counts **consecutive** failures only. The retry runs **inside
    the same task**; the manager never cancels itself.
 4. `CancelledError` → clean stop. `finally` (116–125): set STOPPING, run
-   optional `manager.cleanup(self.worker)`, set STOPPED, remove the task from
-   tracking.
+   optional `manager.cleanup(self.worker)`, set STOPPED (or FAILED, AR-063, if
+   the manager gave up in step 3), remove the task from tracking.
 
 ## Task handler lifecycle
 

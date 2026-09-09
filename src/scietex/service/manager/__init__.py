@@ -18,6 +18,7 @@ class ManagerStatus(Enum):
     RUNNING = "Running"
     STOPPING = "Stopping"
     STOPPED = "Stopped"
+    FAILED = "Failed"
 
 
 class Manager:

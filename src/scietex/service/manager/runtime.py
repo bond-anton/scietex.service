@@ -36,6 +36,16 @@ class ManagerRuntime:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.errors: dict[str, Exception | None] = {}
 
+    @property
+    def failed_managers(self) -> list[str]:
+        """Names of managers that exhausted their retry budget and gave up.
+
+        Returns:
+            List of manager names whose status is ``ManagerStatus.FAILED``.
+            The recorded exception for each is available in ``self.errors``.
+        """
+        return [name for name, status in self.statuses.items() if status is ManagerStatus.FAILED]
+
     def iter_manager_definitions(self) -> Generator[tuple[str, Manager]]:
         """
         Iterate over all registered managers from the worker's class MRO.
@@ -69,8 +79,8 @@ class ManagerRuntime:
         ``manager_max_retries`` consecutive failures, after which it gives
         up. The retry happens inside this same task, so the manager never
         cancels itself (which previously deadlocked the restart). The
-        finally block runs cleanup, marks the manager STOPPED, and removes
-        the task from internal tracking.
+        finally block runs cleanup, marks the manager STOPPED (or FAILED if
+        it gave up), and removes the task from internal tracking.
 
         Args:
             name: Human-readable name for the manager
@@ -83,6 +93,10 @@ class ManagerRuntime:
         self.statuses[name] = ManagerStatus.RUNNING
 
         consecutive_failures = 0
+        # Set when the retry budget is exhausted so the finally block (which
+        # normally lands the manager in STOPPED) can instead end it in FAILED.
+        # A clean shutdown must NOT be marked FAILED (AR-063).
+        gave_up = False
         try:
             while True:
                 try:
@@ -102,6 +116,7 @@ class ManagerRuntime:
                             consecutive_failures,
                             e,
                         )
+                        gave_up = True
                         break
                     self.worker.logger.error(
                         "[ERROR] Manager %s error %s. Restarting in %.1fs (attempt %d/%d)",
@@ -130,6 +145,10 @@ class ManagerRuntime:
                 # possible, even if cleanup raised.
                 if self.tasks.get(name) is asyncio.current_task():
                     self.tasks.pop(name, None)
+                # A manager that exhausted its retry budget is not cleanly
+                # stopped; report it as FAILED so the watchdog can observe it.
+                if gave_up:
+                    self.statuses[name] = ManagerStatus.FAILED
 
     async def start_manager(self, name: str, manager: Manager) -> None:
         """

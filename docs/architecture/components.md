@@ -84,7 +84,11 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
   counts consecutive failures only. `CancelledError` stops cleanly (89–90).
   The retry happens **inside the same task** — the manager never cancels
   itself. `finally` (116–125) runs `manager.cleanup`, marks STOPPED, and
-  removes the task from tracking.
+  removes the task from tracking. A manager that gave up (exhausted the retry
+  budget) is instead ended in the terminal `FAILED` state (AR-063) so the
+  death is observable rather than silent.
+- `failed_managers` (property) — names whose `statuses[name]` is
+  `ManagerStatus.FAILED` (the recorded exception for each is in `errors`).
 - `start_manager` (130), `stop_manager` (151), `start_managers` (178),
   `stop_managers` (188).
 
@@ -131,7 +135,9 @@ on error, and invokes an optional `cleanup` callable on stop.
 **Main symbols:** `ManagerStatus` (14), `Manager` (23). Attributes: `name`,
 `cleanup`, `method`. `Manager.__call__` (56) returns `self` (decorator
 identity); `Manager.__get__` (73) binds the wrapped method to the instance
-(descriptor protocol).
+(descriptor protocol). `ManagerStatus` values: `STARTING`, `RUNNING`,
+`STOPPING`, `STOPPED`, and terminal `FAILED` (AR-063) — set when a manager
+exhausts its retry budget instead of stopping cleanly.
 
 **Public interface:** `@Manager(name=..., cleanup=...)`.
 
