@@ -327,6 +327,35 @@ mid-processing redelivers the task on restart.
 If the queue is full when fetching (or during recovery), the entry is
 left pending and redelivered on a later poll rather than dropped.
 
+### Duplicate processing in scale-out
+
+Delivery is *at least once*, not *exactly once*: under specific conditions
+an entry can be processed by more than one worker. The only signal that
+separates an *abandoned* entry from one a live handler is still working on
+is the entry's idle time in the consumer-group pending list. Startup
+recovery (`_recover_pending_tasks`) uses `XAUTOCLAIM` to reclaim every
+pending entry idle for at least `claim_min_idle_ms` (default `1000` ms).
+
+A duplicate window opens only when **two or more live replicas share the
+same task stream** and one of them is processing an entry for longer than
+`claim_min_idle_ms`: the entry sits idle in that replica's pending list, so
+a second replica that starts (or restarts) reclaims and re-enqueues it, and
+both replicas process it. There is no per-entry lease or liveness renewal,
+so this window is inherent to the current design.
+
+Guidance:
+
+- **Single-consumer deployments are safe.** A lone `ValkeyWorker` never
+  reclaims its own in-flight entry — recovery runs once on the first
+  `fetch_tasks()`, before any task is in flight in that process.
+- **For multi-replica deployments**, size `claim_min_idle_ms` above the
+  maximum expected handler duration so a live handler's entry is never
+  reclaimed while it is still working. Handlers must tolerate occasional
+  duplicate execution (make them idempotent) regardless of this setting.
+- A per-entry lease / shared in-flight registry that would make recovery
+  cross-process safe is a deferred design (see the 2026-09-09 review,
+  AR-060); it is not implemented.
+
 ## Example
 
 ```python
