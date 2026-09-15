@@ -94,6 +94,37 @@ class TaskResult(msgspec.Struct, frozen=True):
     partial: bool = False
 
 
+class TaskProgress(msgspec.Struct, frozen=True):
+    """Granular progress reported by a task handler.
+
+    ``progress`` is False when the handler does not report granular progress;
+    ``value`` is only meaningful when ``progress`` is True.
+    """
+
+    progress: bool = False
+    value: float = 0.0
+
+
+class TaskTracking(msgspec.Struct, frozen=True):
+    """Per-task tracking record published to the transport.
+
+    Written by the submitter as ``queued``, overwritten by the worker as
+    ``running`` when the task starts and as ``completed``/``failed`` when it
+    finishes.
+    """
+
+    task_id: str
+    service: str
+    task: str
+    status: Literal["queued", "running", "completed", "failed"]
+    progress: TaskProgress = TaskProgress()
+    result: bytes | None = None
+    error: str = ""
+    error_code: str = ""
+    created_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class TaskTracker(msgspec.Struct, frozen=True):
     """Tracks a running task's asyncio.Task, data, and start time.
 

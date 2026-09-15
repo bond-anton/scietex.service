@@ -234,6 +234,9 @@ class ValkeyConfig(msgspec.Struct, frozen=True):
 MIN_CLAIM_MIN_IDLE_MS: int = 1
 MAX_CLAIM_MIN_IDLE_MS: int = 3_600_000
 DEFAULT_CLAIM_MIN_IDLE_MS: int = 1000
+MIN_TASK_TRACKING_TTL: int = 1
+MAX_TASK_TRACKING_TTL: int = 30 * 24 * 3600
+DEFAULT_TASK_TRACKING_TTL: int = 24 * 3600
 
 
 class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
@@ -260,6 +263,7 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     log_stream_name: str = "scietex:log"
     task_fetch_batch_size: int = 10
     claim_min_idle_ms: int | None = None
+    task_tracking_ttl: int | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -269,6 +273,12 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
             "claim_min_idle_ms",
             minimum=MIN_CLAIM_MIN_IDLE_MS,
             maximum=MAX_CLAIM_MIN_IDLE_MS,
+        )
+        _validate_range(
+            self.task_tracking_ttl,
+            "task_tracking_ttl",
+            minimum=MIN_TASK_TRACKING_TTL,
+            maximum=MAX_TASK_TRACKING_TTL,
         )
 
 

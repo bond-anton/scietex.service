@@ -4,10 +4,13 @@ import msgspec
 import pytest
 
 from scietex.service.valkey.config import (
+    MAX_TASK_TRACKING_TTL,
+    MIN_TASK_TRACKING_TTL,
     ValkeyBaseConfig,
     ValkeyConfig,
     ValkeyNode,
     ValkeyUserCredentials,
+    ValkeyWorkerConfig,
     generate_glide_config,
     read_valkey_config,
 )
@@ -164,3 +167,28 @@ def test_invalid_protocol_raises():
     cfg = ValkeyBaseConfig(protocol="NOPE")
     with pytest.raises(ValueError):
         generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")
+
+
+def test_worker_config_task_tracking_ttl_default_is_none():
+    """task_tracking_ttl is opt-in: the default config disables tracking TTL."""
+    assert ValkeyWorkerConfig().task_tracking_ttl is None
+
+
+def test_worker_config_task_tracking_ttl_accepts_explicit_value():
+    cfg = ValkeyWorkerConfig(task_tracking_ttl=3600)
+    assert cfg.task_tracking_ttl == 3600
+
+
+def test_worker_config_task_tracking_ttl_rejects_zero():
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(task_tracking_ttl=0)
+
+
+def test_worker_config_task_tracking_ttl_rejects_above_max():
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(task_tracking_ttl=MAX_TASK_TRACKING_TTL + 1)
+
+
+def test_worker_config_task_tracking_ttl_accepts_boundaries():
+    assert ValkeyWorkerConfig(task_tracking_ttl=MIN_TASK_TRACKING_TTL).task_tracking_ttl == MIN_TASK_TRACKING_TTL
+    assert ValkeyWorkerConfig(task_tracking_ttl=MAX_TASK_TRACKING_TTL).task_tracking_ttl == MAX_TASK_TRACKING_TTL

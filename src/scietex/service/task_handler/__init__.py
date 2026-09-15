@@ -9,7 +9,7 @@ service, and the versioned transport wire helpers
 
 from .basic import TaskHandler
 from .context import TaskHandlerContext
-from .schemas import TaskData, TaskEnvelope, TaskResult, TaskTimeout, TaskTracker
+from .schemas import TaskData, TaskEnvelope, TaskProgress, TaskResult, TaskTimeout, TaskTracker, TaskTracking
 from .wire import decode_task_envelope, encode_task_envelope
 
 __all__ = [
@@ -17,9 +17,11 @@ __all__ = [
     "TaskEnvelope",
     "TaskHandler",
     "TaskHandlerContext",
+    "TaskProgress",
     "TaskResult",
     "TaskTimeout",
     "TaskTracker",
+    "TaskTracking",
     "decode_task_envelope",
     "encode_task_envelope",
 ]

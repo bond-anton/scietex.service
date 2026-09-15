@@ -16,9 +16,10 @@ from typing import ClassVar, cast
 from uuid import UUID
 
 import msgspec
+import msgspec.structs
 from scietex.logging import AsyncValkeyHandler
 
-from ..task_handler import TaskData, TaskResult
+from ..task_handler import TaskData, TaskProgress, TaskResult, TaskTracking
 from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 from ..task_processor import TaskProcessor
 from ._glide import (
@@ -34,6 +35,7 @@ from ._glide import (
 )
 from .config import (
     DEFAULT_CLAIM_MIN_IDLE_MS,
+    DEFAULT_TASK_TRACKING_TTL,
     ValkeyConfig,
     ValkeyWorkerConfig,
     generate_glide_config,
@@ -169,6 +171,10 @@ class ValkeyWorker(TaskProcessor):
         self._task_group_name = f"scietex:{self.service_name}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.instance_id}"
         self._registry_key = f"scietex:{self.service_name}:workers"
+        self._task_key_prefix = f"scietex:{self.service_name}:task:"
+        self.__task_tracking_ttl = (
+            cfg.task_tracking_ttl if cfg.task_tracking_ttl is not None else DEFAULT_TASK_TRACKING_TTL
+        )
         self.__encoder = msgspec.msgpack.Encoder()
 
         # Maps a task UUID to the stream entry id it was read from, so the
@@ -217,6 +223,27 @@ class ValkeyWorker(TaskProcessor):
             The active Valkey client, or ``None`` if not connected.
         """
         return self._client
+
+    def _task_tracking_key(self, task_id: UUID) -> str:
+        """Valkey key holding a task's tracking record."""
+        return f"{self._task_key_prefix}{task_id}"
+
+    async def _write_task_tracking(self, tracking: TaskTracking) -> None:
+        """Write a task tracking record, swallowing transport errors.
+
+        Tracking is observability, not correctness: a failed write must never
+        fail or requeue the task itself.
+        """
+        if self.client is None:
+            return
+        try:
+            await self.client.set(
+                self._task_tracking_key(UUID(tracking.task_id)),
+                value=self.__encoder.encode(tracking),
+                expiry=ExpirySet(ExpiryType.SEC, self.__task_tracking_ttl),
+            )
+        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
+            self.logger.log(logging.WARNING, "Failed to write tracking for task %s: %s", tracking.task_id, exc)
 
     def _ensure_client_config(self) -> GlideClientConfiguration:
         """Load the Valkey config on first connect (AR-066).
@@ -679,6 +706,21 @@ class ValkeyWorker(TaskProcessor):
             await self.connect()
         return enqueued
 
+    async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
+        """Publish a ``running`` tracking record when a task begins."""
+        now = datetime.now(timezone.utc)
+        await self._write_task_tracking(
+            TaskTracking(
+                task_id=str(task_id),
+                service=self.service_name,
+                task=task_data.task,
+                status="running",
+                progress=TaskProgress(),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
     async def on_task_completed(
         self,
         task_id: UUID,
@@ -688,17 +730,48 @@ class ValkeyWorker(TaskProcessor):
         """Acknowledge and delete the stream entry for a completed task.
 
         Called by the base ``TaskProcessor.handle_task`` when a task's
-        processing terminates (success, error, or cancellation). Looks up the
-        stream entry id recorded at fetch time and ``XACK``s + ``XDEL``s it, so
-        the entry leaves the consumer group's pending list only after the
-        handler's work on it is done (at-least-once). ``task_result`` is
-        ``None`` when the task was cancelled before producing a result.
+        processing terminates (success, error, or cancellation). Publishes a
+        terminal tracking record, then looks up the stream entry id recorded at
+        fetch time and ``XACK``s + ``XDEL``s it, so the entry leaves the
+        consumer group's pending list only after the handler's work on it is
+        done (at-least-once). ``task_result`` is ``None`` when the task was
+        cancelled before producing a result.
 
         Args:
             task_id: The unique identifier of the task.
             task_data: The task data that was processed.
             task_result: The final ``TaskResult``, or ``None`` on cancellation.
         """
+        now = datetime.now(timezone.utc)
+        # Observability record; ``task_data`` is None only in unit tests that
+        # exercise the ack path in isolation, so fall back to an empty task name.
+        task_name = task_data.task if task_data is not None else ""
+        if task_result is None:
+            await self._write_task_tracking(
+                TaskTracking(
+                    task_id=str(task_id),
+                    service=self.service_name,
+                    task=task_name,
+                    status="failed",
+                    error="canceled",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        else:
+            await self._write_task_tracking(
+                TaskTracking(
+                    task_id=str(task_id),
+                    service=self.service_name,
+                    task=task_name,
+                    status="completed" if task_result.status == "success" else "failed",
+                    result=task_result.payload if task_result.status == "success" else None,
+                    error=task_result.error,
+                    error_code=task_result.error_code,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
         entry_id = self._task_entry_ids.pop(task_id, None)
         if entry_id is None or self.client is None:
             return
@@ -707,3 +780,35 @@ class ValkeyWorker(TaskProcessor):
             await self.client.xdel(self._task_stream_name, [entry_id])
         except Exception as exc:
             self.logger.log(logging.ERROR, "Failed to acknowledge task %s: %s", task_id, exc)
+
+    async def _write_task_progress(self, task_id: UUID, value: float) -> None:
+        """Update the tracking record's progress for a running task."""
+        if self.client is None:
+            return
+        key = self._task_tracking_key(task_id)
+        try:
+            raw = await self.client.get(key)
+        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
+            self.logger.log(logging.WARNING, "Failed to read tracking for task %s: %s", task_id, exc)
+            return
+        now = datetime.now(timezone.utc)
+        if raw is None:
+            current = TaskTracking(
+                task_id=str(task_id),
+                service=self.service_name,
+                task="",
+                status="running",
+                created_at=now,
+                updated_at=now,
+            )
+        else:
+            try:
+                current = msgspec.msgpack.decode(raw, type=TaskTracking)
+            except msgspec.DecodeError:
+                return
+        updated = msgspec.structs.replace(
+            current,
+            progress=TaskProgress(progress=True, value=value),
+            updated_at=now,
+        )
+        await self._write_task_tracking(updated)

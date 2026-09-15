@@ -11,6 +11,7 @@ import logging
 import os
 import time
 from collections.abc import Mapping
+from contextvars import ContextVar
 from types import MappingProxyType
 from typing import ClassVar, cast
 from uuid import UUID
@@ -80,6 +81,7 @@ class TaskProcessor(BasicWorker):
 
         self.__task_handlers_map: dict[str, tuple[type[TaskHandler], dict[str, object]]] = {}
         self.__task_handlers: dict[str, TaskHandler] = {}
+        self.__current_task_id: ContextVar[UUID | None] = ContextVar("scietex_task_id", default=None)
 
         # Initialize queues and tracking structures
         self.__running_tasks: dict[UUID, TaskTracker] = {}  # Track running tasks
@@ -407,6 +409,35 @@ class TaskProcessor(BasicWorker):
         it is done (at-least-once). The default is a no-op.
         """
 
+    async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
+        """Hook invoked when a task begins processing.
+
+        Default is a no-op. Transports override this to publish a ``running``
+        tracking record.
+        """
+
+    async def _write_task_progress(self, task_id: UUID, value: float) -> None:
+        """Hook invoked when a handler reports granular progress.
+
+        Default is a no-op. Transports override this to update the tracking
+        record.
+        """
+
+    async def report_progress(self, value: float) -> None:
+        """Report granular progress for the task currently being handled.
+
+        Reads the current task id from a context variable set by ``handle_task``,
+        clamps ``value`` to ``[0.0, 100.0]``, and delegates to
+        ``_write_task_progress``. Logs a warning and returns when called outside a
+        task context.
+        """
+        task_id = self.__current_task_id.get()
+        if task_id is None:
+            self.logger.log(logging.WARNING, "report_progress called outside a task context")
+            return
+        clamped = min(max(value, 0.0), 100.0)
+        await self._write_task_progress(task_id, clamped)
+
     async def initialize(self) -> bool:
         """Start all registered task handlers.
 
@@ -558,8 +589,10 @@ class TaskProcessor(BasicWorker):
         """
 
         async def handle_task(t_id: UUID, t_data: TaskData):
+            token = self.__current_task_id.set(t_id)
             result: TaskResult | None = None
             try:
+                await self.on_task_started(t_id, t_data)
                 result = await self.process_task(t_id, t_data)
                 self.logger.log(
                     logging.DEBUG,
@@ -581,6 +614,7 @@ class TaskProcessor(BasicWorker):
                     exc,
                 )
             finally:
+                self.__current_task_id.reset(token)
                 self.__running_tasks.pop(t_id, None)
                 self.__task_queue.task_done()
                 # Retry-once (AR-022 v4): requeue a retryable error BEFORE

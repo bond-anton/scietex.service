@@ -11,9 +11,12 @@ import asyncio
 import logging
 from uuid import UUID
 
+import msgspec
 import pytest
 
 from scietex.service import ValkeyWorker
+from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskTracking
+from scietex.service.valkey._glide import ExpirySet, ExpiryType
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
 
@@ -27,6 +30,8 @@ class DummyClient:
         xreadgroup_error=None,
         xautoclaim_result=None,
         xgroup_create_error=None,
+        get_value=None,
+        set_error=None,
     ):
         self._ping_ok = ping_ok
         self.closed = False
@@ -34,14 +39,23 @@ class DummyClient:
         self.xreadgroup_error = xreadgroup_error
         self.xautoclaim_result = xautoclaim_result
         self.xgroup_create_error = xgroup_create_error
+        self.get_value = get_value
+        self.set_error = set_error
         self.acked: list = []
         self.deleted: list = []
         self.xautoclaim_calls: list = []
         self.xreadgroup_calls: list = []
         self.sets: list = []
+        self.gets: list = []
 
     async def set(self, key, value=None, expiry=None, *args, **kwargs):
+        if self.set_error is not None:
+            raise self.set_error
         self.sets.append((key, value, expiry))
+
+    async def get(self, key, *args, **kwargs):
+        self.gets.append(key)
+        return self.get_value
 
     async def sadd(self, *args, **kwargs):
         pass
@@ -828,3 +842,128 @@ async def test_first_heartbeat_writes_status_key_promptly():
         )
     finally:
         await worker.stop()
+
+
+def _make_tracking_worker(client, *, ttl=3600, service="svc"):
+    """Build a ValkeyWorker with an injected client and a known tracking TTL."""
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name=service, task_tracking_ttl=ttl, valkey_config=ValkeyConfig()))
+    worker._client = client
+    return worker
+
+
+@pytest.mark.asyncio
+async def test_on_task_started_writes_running_tracking_record():
+    """on_task_started writes a `running` TaskTracking record to the
+    scietex:{service}:task:{task_id} key with the configured TTL."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
+
+    assert len(client.sets) == 1
+    key, value, expiry = client.sets[0]
+    assert key == f"scietex:svc:task:{t_id}"
+    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    assert tracking.task_id == str(t_id)
+    assert tracking.status == "running"
+    assert tracking.task == "dummy"
+    assert tracking.service == "svc"
+    assert expiry == ExpirySet(ExpiryType.SEC, 3600)
+
+
+@pytest.mark.asyncio
+async def test_on_task_completed_success_writes_completed_and_acks():
+    """A success TaskResult writes a `completed` record carrying the payload,
+    then still XACKs + XDELs the entry."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+    worker._task_entry_ids[t_id] = b"1-0"
+
+    await worker.on_task_completed(
+        t_id, TaskData(task="dummy", payload=b"{}"), TaskResult(status="success", payload=b"done")
+    )
+
+    assert len(client.sets) == 1
+    _key, value, _expiry = client.sets[0]
+    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    assert tracking.status == "completed"
+    assert tracking.result == b"done"
+    assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
+    assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
+
+
+@pytest.mark.asyncio
+async def test_on_task_completed_error_writes_failed_with_error():
+    """An error TaskResult writes a `failed` record carrying error/error_code."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    await worker.on_task_completed(
+        t_id,
+        TaskData(task="dummy", payload=b"{}"),
+        TaskResult(status="error", error="boom", error_code="PERMANENT"),
+    )
+
+    assert len(client.sets) == 1
+    _key, value, _expiry = client.sets[0]
+    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    assert tracking.status == "failed"
+    assert tracking.error == "boom"
+    assert tracking.error_code == "PERMANENT"
+    assert tracking.result is None
+
+
+@pytest.mark.asyncio
+async def test_on_task_completed_none_writes_failed_canceled():
+    """task_result=None (cancellation) writes a `failed` record with error
+    'canceled'."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    await worker.on_task_completed(t_id, TaskData(task="dummy", payload=b"{}"), None)
+
+    assert len(client.sets) == 1
+    _key, value, _expiry = client.sets[0]
+    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    assert tracking.status == "failed"
+    assert tracking.error == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_write_task_progress_updates_existing_record():
+    """_write_task_progress reads the existing record and writes it back with
+    progress={progress: True, value: <v>}, preserving the other fields."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    existing = TaskTracking(task_id=str(t_id), service="svc", task="dummy", status="running")
+    client = DummyClient(get_value=msgspec.msgpack.encode(existing))
+    worker = _make_tracking_worker(client)
+
+    await worker._write_task_progress(t_id, 42.5)
+
+    assert client.gets == [f"scietex:svc:task:{t_id}"]
+    assert len(client.sets) == 1
+    key, value, _expiry = client.sets[0]
+    assert key == f"scietex:svc:task:{t_id}"
+    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    assert tracking.status == "running"
+    assert tracking.task == "dummy"
+    assert tracking.progress == TaskProgress(progress=True, value=42.5)
+
+
+@pytest.mark.asyncio
+async def test_tracking_write_failure_does_not_raise():
+    """A tracking write failure (client raises) must not propagate out of
+    on_task_started/on_task_completed: tracking is observability, not
+    correctness."""
+    import scietex.service.valkey.worker as mod
+
+    client = DummyClient(set_error=mod.RequestError("write failed"))
+    worker = _make_tracking_worker(client)
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+
+    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
+    await worker.on_task_completed(t_id, TaskData(task="dummy", payload=b"{}"), None)
