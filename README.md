@@ -240,6 +240,10 @@ See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle
 6. **Timeout**: Tasks exceeding their `timeout` (default 3s) are
    canceled and either re-queued or discarded per
    `TaskTimeout.timeout_action`.
+7. **Cancel**: A built-in `cancel_task` handler cancels a running or
+   queued task by id. A deliberate cancel writes `status="cancelled"`
+   with the original `TaskData` embedded, so the caller can modify and
+   resubmit it under a new task id.
 
 ### Task Schemas
 
@@ -250,7 +254,8 @@ All schemas are frozen `msgspec.Struct` instances (immutable).
 | `TaskData` | Immutable task payload: `task` (type string), `payload` (bytes), `timeout` (`TaskTimeout`), `canceled_action` ("requeue"/"discard") |
 | `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes), plus error-taxonomy fields `error_code`, `retryable`, `partial` |
 | `TaskTimeout` | Timeout config: `timeout` (seconds, `None` for default 3s), `timeout_action` ("requeue"/"discard") |
-| `TaskTracker` | Internal: tracks running `asyncio.Task`, associated `TaskData`, and monotonic start time |
+| `TaskStatus` | Per-task tracking record: `task_id`, `service`, `task`, `status` ("queued"/"running"/"completed"/"failed"/"cancelled"), `progress`, `result`, `data` (original `TaskData` embedded on a deliberate cancel), `error`, `error_code`, timestamps |
+| `TaskTracker` | Internal runtime handle (in `task_handler/runtime.py`): tracks running `asyncio.Task`, associated `TaskData`, and monotonic start time |
 | `TaskEnvelope` | Versioned transport envelope: `version` (int, `1`) wrapping `data` (serialized `TaskData` bytes) — the durable on-the-wire format |
 
 ## Configuration
@@ -334,10 +339,17 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 |---|---|
 | `TaskHandler` | Abstract base class for task handlers |
 | `TaskHandlerContext` | Narrow read-only context passed to handlers (service name, instance id, logger) |
+| `CancelTaskHandler` | Built-in handler for the `cancel_task` task type |
+| `CancelTaskRequest` | Payload schema for a `cancel_task` task (`target_task_id`, `reason`) |
+| `CancelTaskResponse` | Success payload schema for a `cancel_task` task (`target_task_id`, `outcome`) |
+| `CancelOutcome` | Cancellation outcome literal (`cancelled`/`not_running`/`ignored`/`not_found`) |
+| `CancelReason` | Why a task was cancelled (`deliberate`/`timeout`/`shutdown`) |
+| `CANCEL_TASK_TYPE` | Task type string that selects the built-in cancel handler (`"cancel_task"`) |
 | `TaskData` | Task payload schema |
 | `TaskResult` | Task result schema |
 | `TaskTimeout` | Timeout configuration schema |
-| `TaskTracker` | Internal task tracker schema |
+| `TaskStatus` | Per-task tracking record schema |
+| `TaskTracker` | Internal runtime handle for running tasks (not a wire schema) |
 | `TaskEnvelope` | Versioned transport envelope (version + serialized payload bytes) |
 | `encode_task_envelope` | Wrap a `TaskData` in a versioned envelope and msgpack-encode it |
 | `decode_task_envelope` | Decode an envelope back to a `TaskData` (returns `None` on invalid/unknown version) |

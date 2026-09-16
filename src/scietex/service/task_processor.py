@@ -29,7 +29,16 @@ from .config import (
     TaskProcessorConfig,
 )
 from .manager import Manager
-from .task_handler import TaskData, TaskHandler, TaskHandlerContext, TaskResult, TaskTracker
+from .task_handler import (
+    CancelOutcome,
+    CancelReason,
+    CancelTaskHandler,
+    TaskData,
+    TaskHandler,
+    TaskHandlerContext,
+    TaskResult,
+    TaskTracker,
+)
 
 
 class TaskProcessor(BasicWorker):
@@ -118,6 +127,18 @@ class TaskProcessor(BasicWorker):
         )
 
         self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
+
+        # Why a running task was cancelled, keyed by task id. Set synchronously
+        # by the canceller immediately before ``worker_task.cancel()`` and
+        # popped by ``handle_task``'s finally, which forwards it to
+        # ``on_task_completed``. This is how a deliberate ``cancel_task`` is
+        # distinguished from a timeout/shutdown cancellation.
+        self.__cancel_reasons: dict[UUID, CancelReason] = {}
+
+        # Built-in cancellation handler. Registered here so every processor can
+        # cancel its own tasks; the callback is a bound method, so the handler
+        # stays transport-agnostic and never reaches into processor internals.
+        self.add_task_handler(CancelTaskHandler, cancel=self._cancel_task)
 
     @property
     def task_handlers(self) -> Mapping[str, TaskHandler]:
@@ -392,11 +413,100 @@ class TaskProcessor(BasicWorker):
             task_data: The task data to return to the external queue.
         """
 
+    def _remove_queued_task(self, task_id: UUID) -> TaskData | None:
+        """Remove a queued-but-undispatched task from the internal queue.
+
+        Drains the queue with the synchronous ``dequeue_task``/``enqueue_task``
+        pair and re-enqueues everything except the target. There is no ``await``
+        between the drain and the re-enqueue, so the operation is atomic with
+        respect to the event loop: no task can be dispatched mid-drain.
+
+        Args:
+            task_id: Identifier of the queued task to remove.
+
+        Returns:
+            The removed task's data, or ``None`` if it was not queued.
+        """
+        removed: TaskData | None = None
+        pending: list[tuple[UUID, TaskData]] = []
+        while (item := self.dequeue_task()) is not None:
+            if item[0] == task_id and removed is None:
+                removed = item[1]
+            else:
+                pending.append(item)
+        for item in pending:
+            self.enqueue_task(*item)
+        if removed is not None:
+            # The removed item was counted by the queue's unfinished-task
+            # counter when it was put; balance it here since handle_task will
+            # never run for it.
+            self.__task_queue.task_done()
+        return removed
+
+    async def _cancel_task(self, target_id: UUID) -> CancelOutcome:
+        """Cancel a running or queued task by id.
+
+        Injected into the built-in ``CancelTaskHandler``. A running target is
+        cancelled with the same pattern as the watchdog (``cancel()`` plus
+        ``asyncio.wait``, never ``wait_for``); a queued target is removed
+        before it starts. A deliberate cancel is never requeued automatically —
+        the external process decides whether to resubmit.
+
+        Args:
+            target_id: Identifier of the task to cancel.
+
+        Returns:
+            ``"cancelled"`` if the target stopped or was removed from the
+            queue, ``"ignored"`` if a running target did not stop within the
+            cancellation timeout, or ``"not_running"`` if the target is not
+            running or queued (including a self-cancel request).
+        """
+        tracker = self.__running_tasks.get(target_id)
+        if tracker is not None and not tracker.worker_task.done():
+            if tracker.worker_task is asyncio.current_task():
+                # A task cannot cancel itself: the cancel handler runs inside
+                # the target's own worker task.
+                return "not_running"
+            # Set the reason before cancel() with no intervening await, so
+            # handle_task's finally always observes it (no TOCTOU).
+            self.__cancel_reasons[target_id] = "deliberate"
+            tracker.worker_task.cancel()
+            # asyncio.wait, not wait_for (see watchdog for why): wait_for
+            # re-cancels on its timeout and blocks on a handler that swallows
+            # cancellation.
+            await asyncio.wait(
+                [tracker.worker_task],
+                timeout=self.__task_cancellation_timeout,
+            )
+            if tracker.worker_task.done():
+                return "cancelled"
+            # The handler ignored cancellation and is still running. It will
+            # acknowledge its entry when it eventually finishes; requeueing now
+            # would run the task twice. Leave the entry pending.
+            self.logger.log(
+                logging.ERROR,
+                "Task %s (%s) ignored cancellation; not requeueing to avoid duplicate work.",
+                tracker.data.task,
+                target_id,
+            )
+            return "ignored"
+
+        queued_data = self._remove_queued_task(target_id)
+        if queued_data is not None:
+            # The target never started, so no handle_task will run for it:
+            # write the terminal status directly.
+            await self.on_task_completed(target_id, queued_data, None, cancel_reason="deliberate")
+            return "cancelled"
+
+        return "not_running"
+
     async def on_task_completed(
         self,
         task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
+        *,
+        cancel_reason: CancelReason | None = None,
     ) -> None:
         """Notify the transport that a task's processing has terminated.
 
@@ -407,6 +517,15 @@ class TaskProcessor(BasicWorker):
         transport (e.g. ``ValkeyWorker``) override this to acknowledge the
         transport entry so it is removed only after the handler's work on
         it is done (at-least-once). The default is a no-op.
+
+        Args:
+            task_id: Identifier of the task.
+            task_data: The task data that was processed.
+            task_result: The handler's result, or ``None`` on cancellation.
+            cancel_reason: Why the task was cancelled, when it was. ``None``
+                for a normal completion. ``"deliberate"`` marks an explicit
+                ``cancel_task`` request; ``"timeout"``/``"shutdown"`` mark
+                framework-driven cancellation.
         """
 
     async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
@@ -506,6 +625,7 @@ class TaskProcessor(BasicWorker):
         for task_id, task_tracker in list(self.running_tasks.items()):
             if not task_tracker.worker_task.done():
                 task_tracker.worker_task.cancel()
+                self.__cancel_reasons[task_id] = "shutdown"
                 # asyncio.wait, not wait_for (see watchdog for why): wait_for
                 # re-cancels on its timeout and blocks on a handler that
                 # swallows cancellation, hanging shutdown.
@@ -639,7 +759,14 @@ class TaskProcessor(BasicWorker):
                     # Ack the transport entry exactly when the handler's work
                     # on it ends (success, error, or cancellation). On
                     # CancelledError, result is None and the hook still runs.
-                    await self.on_task_completed(t_id, t_data, result)
+                    # The cancel reason (if any) is popped here so the transport
+                    # can distinguish a deliberate cancel from a timeout.
+                    await self.on_task_completed(
+                        t_id,
+                        t_data,
+                        result,
+                        cancel_reason=self.__cancel_reasons.pop(t_id, None),
+                    )
                 except Exception as exc:
                     # A transport ack failure must never crash handle_task or
                     # leak into the unawaited task; the entry stays pending
@@ -741,6 +868,7 @@ class TaskProcessor(BasicWorker):
                 # swallows cancellation eventually finishes, hanging the
                 # watchdog. wait() returns after the timeout with the task
                 # still pending when the handler ignored the cancellation.
+                self.__cancel_reasons[task_id] = "timeout"
                 await asyncio.wait(
                     [task_tracker.worker_task],
                     timeout=self.__task_cancellation_timeout,

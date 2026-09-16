@@ -176,25 +176,37 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 
 | Schema | Fields |
 |---|---|
-| `TaskTimeout` (16) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
-| `TaskData` (30) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
-| `TaskEnvelope` (48) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
-| `TaskResult` (66) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
-| `TaskTracker` (97) | `worker_task: asyncio.Task`, `data: TaskData`, `started: int\|float` |
+| `TaskTimeout` (23) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
+| `TaskData` (37) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
+| `TaskEnvelope` (57) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
+| `TaskResult` (75) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
+| `TaskStatus` (117) | `task_id: str`, `service: str`, `task: str`, `status: "queued"\|"running"\|"completed"\|"failed"\|"cancelled"`, `progress: TaskProgress`, `result: bytes\|None`, `data: TaskData\|None`, `error: str`, `error_code: str`, `created_at: datetime`, `updated_at: datetime` |
 
 `TaskResult.processed_at` uses `msgspec.field(default_factory=lambda:
-datetime.now(timezone.utc))` (90) so each instance gets its own timestamp
+datetime.now(timezone.utc))` (99) so each instance gets its own timestamp
 (AR-012). The error-taxonomy fields (`error_code`/`retryable`/`partial`,
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
+
+`schemas.py` also defines `CANCEL_TASK_TYPE = "cancel_task"` (15) and
+`CancelReason` (20). The built-in handler for that task type lives in
+`task_handler/cancel.py`: `CancelTaskHandler` (58), `CancelTaskRequest` (34),
+`CancelTaskResponse` (46), `CancelOutcome` (28), and `CancelCallback` (31).
+`TaskProcessor` auto-registers the handler in `__init__` and injects its own
+`_cancel_task` callback.
 
 `TaskEnvelope` is the durable wire format (AR-064): the transport persists a
 versioned envelope, not a bare `TaskData`, so the handler contract and the
 on-the-wire format evolve independently. Encoding/decoding lives in
 `task_handler/wire.py` (`encode_task_envelope`/`decode_task_envelope`).
 
+`TaskTracker` is not a wire schema: it is the in-memory runtime handle
+(`worker_task`/`data`/`started`) that tracks a running task and now lives in
+`task_handler/runtime.py`.
+
 **Public interface:** constructors only (frozen). **Dependencies:** `msgspec`.
-**Depended on by:** `task_handler.basic`, `task_handler.wire`, `task_processor`,
+**Depended on by:** `task_handler.basic`, `task_handler.runtime`,
+`task_handler.wire`, `task_processor`,
 `valkey` (msgpack round-trip of `TaskData` via the envelope), examples, tests.
 
 ## 7. Task handler contract — `TaskHandler` / `TaskHandlerContext`

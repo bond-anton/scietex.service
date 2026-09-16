@@ -14,10 +14,12 @@ from scietex.service.task_handler import TaskHandler, TaskData, TaskResult
 The system consists of:
 
 - **`TaskHandler`** — Abstract base class that all handlers must extend
+- **`CancelTaskHandler`** — Built-in handler for the `cancel_task` task type (in `task_handler/cancel.py`)
 - **`TaskData`** — Immutable task payload passed to handlers
 - **`TaskResult`** — Standardized result returned by handlers
 - **`TaskTimeout`** — Configuration for task timeout behavior
-- **`TaskTracker`** — Internal structure for monitoring running tasks
+- **`TaskStatus`** — Per-task tracking record published to the transport
+- **`TaskTracker`** — In-memory runtime handle (in `task_handler/runtime.py`) for monitoring running tasks
 - **`TaskEnvelope`** — Versioned transport envelope for the durable wire format
 
 ## Handler Lifecycle
@@ -124,6 +126,89 @@ handler = processor._find_task_handler("send_email")
 # Returns the EmailHandler instance above
 ```
 
+## Task Cancellation
+
+`TaskProcessor` auto-registers a built-in `CancelTaskHandler` for the
+`cancel_task` task type. It is transport-agnostic: the processor injects an
+async callback (its own `_cancel_task`) at registration, so the handler never
+reaches into processor internals.
+
+A cancellation is submitted like any other task — a `cancel_task` `TaskData`
+wrapped in the usual `TaskEnvelope` via `encode_task_envelope`:
+
+```python
+import msgspec
+from scietex.service.task_handler import CancelTaskRequest, TaskData
+
+task_data = TaskData(
+    task="cancel_task",
+    payload=msgspec.msgpack.encode(
+        CancelTaskRequest(target_task_id="<uuid>", reason="operator request")
+    ),
+)
+```
+
+The worker cancels a running target using the same pattern as the watchdog
+(`cancel()` plus a bounded `asyncio.wait`), or removes a queued-but-not-yet-
+dispatched target. The outcome is one of `CancelOutcome`:
+
+| Outcome | Meaning |
+|---|---|
+| `cancelled` | The target was running and stopped, or was queued and removed before it started |
+| `not_running` | The target is not running or queued (already finished, never seen, or the request targeted the cancelling task itself) |
+| `ignored` | The target is running but did not stop within the cancellation timeout; it stays tracked and is not requeued |
+| `not_found` | Reserved for a target that cannot be resolved |
+
+The cancel task's own result is:
+
+- **Success** with a msgpack-encoded `CancelTaskResponse` payload when the
+  target was cancelled.
+- **Non-retryable error** (`retryable=False`) otherwise, with `error_code`
+  one of `TASK_NOT_RUNNING`, `CANCEL_IGNORED`, or `INVALID_CANCEL_PAYLOAD`.
+
+A deliberate cancel is never requeued automatically. The transport (e.g.
+`ValkeyWorker`) writes a terminal `TaskStatus` with `status="cancelled"` and the
+original `TaskData` embedded in `data`; an external process can read that
+record, modify the payload, and resubmit under a **new** task id. Timeout and
+shutdown cancellations keep the existing `failed`/`"canceled"` status.
+
+Two constraints apply:
+
+- Reliable cancellation needs `max_concurrent_tasks >= 2`: with a single slot
+  the cancel task queues behind its target and cannot run.
+- Tasks still unread in the stream are not cancellable and yield
+  `not_running`.
+
+### CancelTaskRequest
+
+Payload of a `cancel_task` task (in `task_handler/cancel.py`).
+
+```python
+class CancelTaskRequest(msgspec.Struct, frozen=True):
+    target_task_id: str  # UUID (as a string) of the task to cancel
+    reason: str = ""  # Optional operator note, for logging/audit only
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `target_task_id` | `str` | *(required)* | UUID (as a string) of the task to cancel |
+| `reason` | `str` | `""` | Optional operator note, for logging/audit only |
+
+### CancelTaskResponse
+
+Payload returned by a successful `cancel_task` task.
+
+```python
+class CancelTaskResponse(msgspec.Struct, frozen=True):
+    target_task_id: str  # UUID (as a string) of the cancelled task
+    outcome: str  # The CancelOutcome value
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `target_task_id` | `str` | *(required)* | UUID (as a string) of the task that was cancelled |
+| `outcome` | `str` | *(required)* | The `CancelOutcome` value |
+
 ## Schemas
 
 All schemas are frozen `msgspec.Struct` instances, making them immutable
@@ -177,6 +262,40 @@ The error-taxonomy fields (`error_code`, `retryable`, `partial`) all
 default to "no extra information", so handlers that only set `status`
 and `error` keep working unchanged.
 
+### TaskStatus
+
+Per-task tracking record published to the transport by transports that
+implement tracking (e.g. `ValkeyWorker`).
+
+```python
+class TaskStatus(msgspec.Struct, frozen=True):
+    task_id: str
+    service: str
+    task: str
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    progress: TaskProgress = TaskProgress()
+    result: bytes | None = None
+    data: TaskData | None = None
+    error: str = ""
+    error_code: str = ""
+    created_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `task_id` | `str` | *(required)* | Task identifier |
+| `service` | `str` | *(required)* | Service name that owns the task |
+| `task` | `str` | *(required)* | Task type string |
+| `status` | `"queued"`, `"running"`, `"completed"`, `"failed"`, or `"cancelled"` | *(required)* | Tracking state; `"cancelled"` is written only for a deliberate `cancel_task` |
+| `progress` | `TaskProgress` | `TaskProgress()` | Granular progress reported by the handler |
+| `result` | `bytes` or `None` | `None` | Handler result payload on success |
+| `data` | `TaskData` or `None` | `None` | Original task data, embedded only on a deliberate cancel so an external process can modify and resubmit it |
+| `error` | `str` | `""` | Error message; `"canceled"` on cancellation |
+| `error_code` | `str` | `""` | Structured error code |
+| `created_at` | `datetime` | current UTC | When the record was created |
+| `updated_at` | `datetime` | current UTC | When the record was last updated |
+
 ### TaskTimeout
 
 Configuration for task timeout behavior.
@@ -194,7 +313,9 @@ class TaskTimeout(msgspec.Struct, frozen=True):
 
 ### TaskTracker
 
-Internal structure used by `TaskProcessor` to monitor running tasks.
+Internal structure used by `TaskProcessor` to monitor running tasks. It is a
+runtime handle (defined in `task_handler/runtime.py`), not a wire schema — it
+holds a live `asyncio.Task` and is never serialized.
 
 ```python
 class TaskTracker(msgspec.Struct, frozen=True):

@@ -1,27 +1,53 @@
 """Task handler subsystem for ``scietex.service``.
 
 Provides the abstract ``TaskHandler`` base class, typed schemas
-(``TaskData``, ``TaskResult``, ``TaskTimeout``, ``TaskTracker``,
+(``TaskData``, ``TaskResult``, ``TaskTimeout``, ``TaskStatus``,
 ``TaskEnvelope``) that define the contract for processing async tasks in the
-service, and the versioned transport wire helpers
+service, an in-memory ``TaskTracker`` runtime handle, the built-in
+``CancelTaskHandler`` for the ``cancel_task`` task type, and the versioned
+transport wire helpers
 (``encode_task_envelope``/``decode_task_envelope``).
 """
 
 from .basic import TaskHandler
+from .cancel import (
+    CancelCallback,
+    CancelOutcome,
+    CancelTaskHandler,
+    CancelTaskRequest,
+    CancelTaskResponse,
+)
 from .context import TaskHandlerContext
-from .schemas import TaskData, TaskEnvelope, TaskProgress, TaskResult, TaskTimeout, TaskTracker, TaskTracking
+from .runtime import TaskTracker
+from .schemas import (
+    CANCEL_TASK_TYPE,
+    CancelReason,
+    TaskData,
+    TaskEnvelope,
+    TaskProgress,
+    TaskResult,
+    TaskStatus,
+    TaskTimeout,
+)
 from .wire import decode_task_envelope, encode_task_envelope
 
 __all__ = [
+    "CANCEL_TASK_TYPE",
+    "CancelCallback",
+    "CancelOutcome",
+    "CancelReason",
+    "CancelTaskHandler",
+    "CancelTaskRequest",
+    "CancelTaskResponse",
     "TaskData",
     "TaskEnvelope",
     "TaskHandler",
     "TaskHandlerContext",
     "TaskProgress",
     "TaskResult",
+    "TaskStatus",
     "TaskTimeout",
     "TaskTracker",
-    "TaskTracking",
     "decode_task_envelope",
     "encode_task_envelope",
 ]

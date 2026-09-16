@@ -271,6 +271,25 @@ handler = processor._find_task_handler("email")
 # Returns the EmailHandler instance, or None
 ```
 
+### Built-in Cancellation Handler
+
+`TaskProcessor.__init__` auto-registers `CancelTaskHandler` for the
+`cancel_task` task type and injects its own bound `_cancel_task` method as the
+cancellation callback:
+
+```python
+self.add_task_handler(CancelTaskHandler, cancel=self._cancel_task)
+```
+
+The handler is transport-agnostic: `_cancel_task(target_id)` cancels a running
+target (the same `cancel()` plus bounded `asyncio.wait` pattern as
+`watchdog()`) or removes a queued-but-undispatched target, and returns a
+`CancelOutcome` (`"cancelled"`, `"not_running"`, `"ignored"`, or
+`"not_found"`). A deliberate cancel is never requeued automatically. See the
+[Task Handler docs](task_handler.md#task-cancellation) for the submission
+format and result contract; reliable cancellation needs
+`max_concurrent_tasks >= 2`.
+
 ## Task Processing
 
 ### Flow

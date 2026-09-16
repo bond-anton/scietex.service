@@ -87,6 +87,7 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | Consumer group | `scietex:{service_name}:task_group` | service-scoped |
 | Worker registry | `scietex:{service_name}:workers` | service-scoped |
 | Consumer name | `scietex:{service_name}:{instance_id}` | worker-scoped |
+| Task tracking key | `scietex:{service_name}:task:{task_id}` | per task |
 | Heartbeat key | `scietex:{service_name}:{instance_id}:status` | worker-scoped |
 | Log stream | `scietex:log` (configurable via `log_stream_name`) | — |
 
@@ -282,16 +283,62 @@ reconnect to Valkey. Returns `True` if at least one task was enqueued,
 Acknowledge the stream entry for a completed task.
 
 ```python
-async def on_task_completed(self, task_id, task_data, task_result):
-    """XACK + XDEL the entry recorded in _task_entry_ids for task_id."""
+async def on_task_completed(
+    self, task_id, task_data, task_result, *, cancel_reason=None
+):
+    """Publish a terminal tracking record, then XACK + XDEL the entry."""
 ```
 
 Called by the base `TaskProcessor` when a task's processing
-terminates (success, error, or cancellation). Looks up the stream entry
-id recorded at fetch time and `XACK`s + `XDEL`s it, so the entry leaves
-the consumer group's pending list only after the handler's work on it is
+terminates (success, error, or cancellation). Publishes a terminal
+`TaskStatus` tracking record to the task tracking key, then looks up the
+stream entry id recorded at fetch time and `XACK`s + `XDEL`s it, so the entry
+leaves the consumer group's pending list only after the handler's work on it is
 done. `task_result` is `None` when the task was cancelled before
-producing a result.
+producing a result, and `cancel_reason` identifies why (`"deliberate"`,
+`"timeout"`, or `"shutdown"`, or `None` for a normal completion).
+
+When `task_result` is `None`:
+
+- A deliberate `cancel_task` (`cancel_reason == "deliberate"`) writes
+  `status="cancelled"` with the original `TaskData` embedded in the record's
+  `data` field and `error="canceled"`.
+- Timeout and shutdown cancellations keep the existing `status="failed"` /
+  `"canceled"` shape.
+
+When a `task_result` is present the record is `status="completed"` on success
+or `status="failed"` otherwise, with the result payload and error-code fields
+carried over. Tracking is observability only — a failed tracking write is
+logged as a WARNING and never fails or requeues the task itself.
+
+### Task cancellation and external requeue
+
+`ValkeyWorker` inherits the built-in `cancel_task` handler from
+`TaskProcessor` (auto-registered in `TaskProcessor.__init__`). A `cancel_task`
+entry is submitted on the same stream as any other task, carrying a
+msgpack-encoded `CancelTaskRequest(target_task_id="<uuid>", reason="...")` as
+its payload. The worker cancels a running target (same pattern as the
+watchdog) or removes a queued-but-undispatched target, and reports the
+outcome (`cancelled`, `not_running`, `ignored`, `not_found`) in its own result.
+
+A deliberate cancel never requeues automatically. Instead, the worker writes a
+`TaskStatus` tracking record with `status="cancelled"`, `error="canceled"`, and
+the original `TaskData` embedded in `data`, under the task tracking key
+`scietex:{service_name}:task:{task_id}`. An external process can then:
+
+1. `GET scietex:{service_name}:task:{task_id}`
+2. msgpack-decode it into a `TaskStatus` and read its `data` field (the
+   original `TaskData`)
+3. modify the payload/fields as needed
+4. resubmit the task under a **new** task id via
+   `encode_task_envelope` on the task stream
+
+Timeout and shutdown cancellations keep the existing `status="failed"` /
+`"canceled"` record and do not embed `data`.
+
+Reliable cancellation needs `max_concurrent_tasks >= 2`: with a single slot the
+cancel task queues behind its target and cannot run. Tasks still unread in the
+stream are not cancellable and yield `not_running`.
 
 ### purge_task_stream()
 

@@ -15,7 +15,8 @@ import msgspec
 import pytest
 
 from scietex.service import ValkeyWorker
-from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskTracking
+from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus
+from scietex.service.task_handler.wire import decode_task_envelope, encode_task_envelope
 from scietex.service.valkey._glide import ExpirySet, ExpiryType
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
@@ -853,7 +854,7 @@ def _make_tracking_worker(client, *, ttl=3600, service="svc"):
 
 @pytest.mark.asyncio
 async def test_on_task_started_writes_running_tracking_record():
-    """on_task_started writes a `running` TaskTracking record to the
+    """on_task_started writes a `running` TaskStatus record to the
     scietex:{service}:task:{task_id} key with the configured TTL."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     client = DummyClient()
@@ -864,7 +865,7 @@ async def test_on_task_started_writes_running_tracking_record():
     assert len(client.sets) == 1
     key, value, expiry = client.sets[0]
     assert key == f"scietex:svc:task:{t_id}"
-    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    tracking = msgspec.msgpack.decode(value, type=TaskStatus)
     assert tracking.task_id == str(t_id)
     assert tracking.status == "running"
     assert tracking.task == "dummy"
@@ -887,7 +888,7 @@ async def test_on_task_completed_success_writes_completed_and_acks():
 
     assert len(client.sets) == 1
     _key, value, _expiry = client.sets[0]
-    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    tracking = msgspec.msgpack.decode(value, type=TaskStatus)
     assert tracking.status == "completed"
     assert tracking.result == b"done"
     assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
@@ -909,7 +910,7 @@ async def test_on_task_completed_error_writes_failed_with_error():
 
     assert len(client.sets) == 1
     _key, value, _expiry = client.sets[0]
-    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    tracking = msgspec.msgpack.decode(value, type=TaskStatus)
     assert tracking.status == "failed"
     assert tracking.error == "boom"
     assert tracking.error_code == "PERMANENT"
@@ -928,9 +929,74 @@ async def test_on_task_completed_none_writes_failed_canceled():
 
     assert len(client.sets) == 1
     _key, value, _expiry = client.sets[0]
-    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    tracking = msgspec.msgpack.decode(value, type=TaskStatus)
     assert tracking.status == "failed"
     assert tracking.error == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_on_task_completed_deliberate_cancel_writes_cancelled_with_data():
+    """A deliberate cancel (cancel_reason='deliberate') writes a `cancelled`
+    record embedding the original TaskData, then XACKs + XDELs the entry."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+    worker._task_entry_ids[t_id] = b"1-0"
+    task_data = TaskData(task="dummy", payload=b"original", canceled_action="requeue")
+
+    await worker.on_task_completed(t_id, task_data, None, cancel_reason="deliberate")
+
+    assert len(client.sets) == 1
+    _key, value, _expiry = client.sets[0]
+    tracking = msgspec.msgpack.decode(value, type=TaskStatus)
+    assert tracking.status == "cancelled"
+    assert tracking.error == "canceled"
+    assert tracking.data == task_data
+    assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
+    assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
+
+
+@pytest.mark.asyncio
+async def test_on_task_completed_timeout_cancel_stays_failed():
+    """A timeout/shutdown cancellation keeps the existing `failed` status and
+    does not embed TaskData."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    await worker.on_task_completed(t_id, TaskData(task="dummy", payload=b"{}"), None, cancel_reason="timeout")
+
+    assert len(client.sets) == 1
+    _key, value, _expiry = client.sets[0]
+    tracking = msgspec.msgpack.decode(value, type=TaskStatus)
+    assert tracking.status == "failed"
+    assert tracking.error == "canceled"
+    assert tracking.data is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_status_round_trips_through_msgpack():
+    """A cancelled TaskStatus with embedded TaskData survives a msgpack
+    round-trip, so an external process can decode it and resubmit."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    task_data = TaskData(task="dummy", payload=b"original", canceled_action="requeue")
+    status = TaskStatus(
+        task_id=str(t_id),
+        service="svc",
+        task="dummy",
+        status="cancelled",
+        data=task_data,
+        error="canceled",
+    )
+
+    decoded = msgspec.msgpack.decode(msgspec.msgpack.encode(status), type=TaskStatus)
+
+    assert decoded.status == "cancelled"
+    assert decoded.data == task_data
+    # The decoded TaskData can be re-enveloped for resubmission under a new id.
+    assert decoded.data is not None
+    envelope = encode_task_envelope(decoded.data)
+    assert decode_task_envelope(envelope) == task_data
 
 
 @pytest.mark.asyncio
@@ -938,7 +1004,7 @@ async def test_write_task_progress_updates_existing_record():
     """_write_task_progress reads the existing record and writes it back with
     progress={progress: True, value: <v>}, preserving the other fields."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
-    existing = TaskTracking(task_id=str(t_id), service="svc", task="dummy", status="running")
+    existing = TaskStatus(task_id=str(t_id), service="svc", task="dummy", status="running")
     client = DummyClient(get_value=msgspec.msgpack.encode(existing))
     worker = _make_tracking_worker(client)
 
@@ -948,7 +1014,7 @@ async def test_write_task_progress_updates_existing_record():
     assert len(client.sets) == 1
     key, value, _expiry = client.sets[0]
     assert key == f"scietex:svc:task:{t_id}"
-    tracking = msgspec.msgpack.decode(value, type=TaskTracking)
+    tracking = msgspec.msgpack.decode(value, type=TaskStatus)
     assert tracking.status == "running"
     assert tracking.task == "dummy"
     assert tracking.progress == TaskProgress(progress=True, value=42.5)

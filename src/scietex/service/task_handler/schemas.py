@@ -1,16 +1,23 @@
 """Typed schemas for the task handler subsystem.
 
 Provides frozen :class:`msgspec.Struct` definitions for task data,
-results, timeout configuration, and task tracking so handlers and
+results, timeout configuration, and task status so handlers and
 processors can use consistent types for ``task_data`` and returned
 results.
 """
 
-from asyncio import Task
 from datetime import datetime, timezone
 from typing import Literal
 
 import msgspec
+
+#: Task type string that selects the built-in cancellation handler.
+CANCEL_TASK_TYPE: str = "cancel_task"
+
+#: Why a running task was cancelled. Only ``"deliberate"`` (an explicit
+#: ``cancel_task`` request) produces a ``cancelled`` status; ``"timeout"`` and
+#: ``"shutdown"`` keep the existing ``failed`` status.
+CancelReason = Literal["deliberate", "timeout", "shutdown"]
 
 
 class TaskTimeout(msgspec.Struct, frozen=True):
@@ -34,7 +41,9 @@ class TaskData(msgspec.Struct, frozen=True):
         task: Task type string used to select a handler.
         timeout: Timeout configuration for this task.
         canceled_action: Action when task is canceled: ``"requeue"``
-            or ``"discard"``.
+            or ``"discard"``. Applies to shutdown drain and running-task
+            cleanup only; a deliberate ``cancel_task`` is never requeued
+            automatically — the external process decides.
         payload: Raw bytes payload associated with the task.
     """
 
@@ -105,38 +114,24 @@ class TaskProgress(msgspec.Struct, frozen=True):
     value: float = 0.0
 
 
-class TaskTracking(msgspec.Struct, frozen=True):
+class TaskStatus(msgspec.Struct, frozen=True):
     """Per-task tracking record published to the transport.
 
     Written by the submitter as ``queued``, overwritten by the worker as
     ``running`` when the task starts and as ``completed``/``failed`` when it
-    finishes.
+    finishes. A deliberate ``cancel_task`` request produces ``cancelled`` and
+    embeds the original :class:`TaskData` in ``data`` so an external process
+    can read it, modify it, and resubmit under a new task id.
     """
 
     task_id: str
     service: str
     task: str
-    status: Literal["queued", "running", "completed", "failed"]
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
     progress: TaskProgress = TaskProgress()
     result: bytes | None = None
+    data: TaskData | None = None
     error: str = ""
     error_code: str = ""
     created_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class TaskTracker(msgspec.Struct, frozen=True):
-    """Tracks a running task's asyncio.Task, data, and start time.
-
-    Used by ``TaskProcessor`` to monitor task progress, enforce
-    timeouts, and manage cleanup on shutdown.
-
-    Args:
-        worker_task: The ``asyncio.Task`` executing this task.
-        data: The ``TaskData`` associated with the task.
-        started: Monotonic timestamp when the task was created.
-    """
-
-    worker_task: Task
-    data: TaskData
-    started: int | float

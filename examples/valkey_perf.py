@@ -26,7 +26,13 @@ from scietex.service import (
     ValkeyWorker,
     ValkeyWorkerConfig,
 )
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, encode_task_envelope
+from scietex.service.task_handler import (
+    CancelReason,
+    TaskData,
+    TaskHandler,
+    TaskResult,
+    encode_task_envelope,
+)
 from scietex.service.valkey.config import generate_glide_config
 
 
@@ -66,8 +72,10 @@ class PerfWorker(ValkeyWorker):
         task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
+        *,
+        cancel_reason: CancelReason | None = None,
     ) -> None:
-        await super().on_task_completed(task_id, task_data, task_result)
+        await super().on_task_completed(task_id, task_data, task_result, cancel_reason=cancel_reason)
         # Single event loop, no await between increment and check: the count is
         # always accurate when the completion event is inspected.
         self._completed += 1

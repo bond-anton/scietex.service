@@ -19,7 +19,7 @@ import msgspec
 import msgspec.structs
 from scietex.logging import AsyncValkeyHandler
 
-from ..task_handler import TaskData, TaskProgress, TaskResult, TaskTracking
+from ..task_handler import CancelReason, TaskData, TaskProgress, TaskResult, TaskStatus
 from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 from ..task_processor import TaskProcessor
 from ._glide import (
@@ -228,7 +228,7 @@ class ValkeyWorker(TaskProcessor):
         """Valkey key holding a task's tracking record."""
         return f"{self._task_key_prefix}{task_id}"
 
-    async def _write_task_tracking(self, tracking: TaskTracking) -> None:
+    async def _write_task_tracking(self, tracking: TaskStatus) -> None:
         """Write a task tracking record, swallowing transport errors.
 
         Tracking is observability, not correctness: a failed write must never
@@ -710,7 +710,7 @@ class ValkeyWorker(TaskProcessor):
         """Publish a ``running`` tracking record when a task begins."""
         now = datetime.now(timezone.utc)
         await self._write_task_tracking(
-            TaskTracking(
+            TaskStatus(
                 task_id=str(task_id),
                 service=self.service_name,
                 task=task_data.task,
@@ -726,6 +726,8 @@ class ValkeyWorker(TaskProcessor):
         task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
+        *,
+        cancel_reason: CancelReason | None = None,
     ) -> None:
         """Acknowledge and delete the stream entry for a completed task.
 
@@ -737,22 +739,31 @@ class ValkeyWorker(TaskProcessor):
         done (at-least-once). ``task_result`` is ``None`` when the task was
         cancelled before producing a result.
 
+        A deliberate ``cancel_task`` (``cancel_reason == "deliberate"``) writes
+        ``status="cancelled"`` and embeds the original ``TaskData`` in the
+        record, so an external process can read it, modify it, and resubmit
+        under a new task id. Timeout/shutdown cancellations keep the existing
+        ``failed``/``"canceled"`` status.
+
         Args:
             task_id: The unique identifier of the task.
             task_data: The task data that was processed.
             task_result: The final ``TaskResult``, or ``None`` on cancellation.
+            cancel_reason: Why the task was cancelled, when it was.
         """
         now = datetime.now(timezone.utc)
         # Observability record; ``task_data`` is None only in unit tests that
         # exercise the ack path in isolation, so fall back to an empty task name.
         task_name = task_data.task if task_data is not None else ""
         if task_result is None:
+            deliberate = cancel_reason == "deliberate"
             await self._write_task_tracking(
-                TaskTracking(
+                TaskStatus(
                     task_id=str(task_id),
                     service=self.service_name,
                     task=task_name,
-                    status="failed",
+                    status="cancelled" if deliberate else "failed",
+                    data=task_data if deliberate else None,
                     error="canceled",
                     created_at=now,
                     updated_at=now,
@@ -760,7 +771,7 @@ class ValkeyWorker(TaskProcessor):
             )
         else:
             await self._write_task_tracking(
-                TaskTracking(
+                TaskStatus(
                     task_id=str(task_id),
                     service=self.service_name,
                     task=task_name,
@@ -793,7 +804,7 @@ class ValkeyWorker(TaskProcessor):
             return
         now = datetime.now(timezone.utc)
         if raw is None:
-            current = TaskTracking(
+            current = TaskStatus(
                 task_id=str(task_id),
                 service=self.service_name,
                 task="",
@@ -803,7 +814,7 @@ class ValkeyWorker(TaskProcessor):
             )
         else:
             try:
-                current = msgspec.msgpack.decode(raw, type=TaskTracking)
+                current = msgspec.msgpack.decode(raw, type=TaskStatus)
             except msgspec.DecodeError:
                 return
         updated = msgspec.structs.replace(

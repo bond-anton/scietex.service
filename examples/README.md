@@ -22,6 +22,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | [`valkey_async_service.py`](#valkey_async_servicepy) | yes | `ValkeyWorker` consuming a task stream via a programmatic `ValkeyConfig` |
 | [`valkey_pubsub_worker.py`](#valkey_pubsub_workerpy) | yes | A `ValkeyWorker` subclass that also subscribes to PubSub control channels |
 | [`valkey_perf.py`](#valkey_perfpy) | yes | Single-process `ValkeyWorker` consumption-throughput benchmark |
+| [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `cancel_task` |
 
 ## basic_worker.py
 
@@ -148,3 +149,30 @@ Key knobs: `--tasks`/`-n` (total tasks preloaded then drained), `--host`/
 the whole backlog buffers without back-pressure), `--task-fetch-batch-size`,
 `--task-timeout`, `--heartbeat-interval`, and `--keep-stream` (skip the
 pre-load flush of the benchmark stream).
+
+## progress_and_cancel.py
+
+```bash
+python -m examples.progress_and_cancel
+```
+
+A `ValkeyWorker` runs a long `long_job` handler that reports granular progress,
+while a producer client submits the job and then cancels it. The producer
+`XADD`s the job, polls its tracking record
+(`scietex:{service_name}:task:{task_id}`) to watch `progress.value` climb, then
+submits a `cancel_task` task whose payload is a msgpack `CancelTaskRequest`
+naming the target id. The built-in `CancelTaskHandler` cancels the running
+target, whose terminal status becomes `cancelled` and embeds the original
+`TaskData` — the example decodes it and resubmits under a new id.
+
+`report_progress` lives on the processor, not the handler, so it is injected at
+registration time via `**handler_kwargs`:
+`worker.add_task_handler(LongJobHandler, report=worker.report_progress)`.
+Cancellation needs a free worker slot for the cancel task itself, so the
+example uses `max_concurrent_tasks=4`; with `1` the cancel request would queue
+behind its target and degrade to `not_running`. Requires a running Valkey/Redis
+server and the `valkey` extra:
+
+```bash
+pip install "scietex.service[valkey]"
+```
