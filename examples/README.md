@@ -20,7 +20,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | [`named_task_handlers.py`](#named_task_handlerspy) | no | Registering one handler class as multiple named instances (AR-053) |
 | [`stateful_handler.py`](#stateful_handlerpy) | no | A stateful handler that mutates shared state injected via `**handler_kwargs` |
 | [`valkey_async_service.py`](#valkey_async_servicepy) | yes | `ValkeyWorker` consuming a task stream via a programmatic `ValkeyConfig` |
-| [`valkey_pubsub_worker.py`](#valkey_pubsub_workerpy) | yes | A `ValkeyWorker` subclass that also subscribes to PubSub control channels |
+| [`valkey_pubsub_worker.py`](#valkey_pubsub_workerpy) | yes | A `ValkeyWorker` that also subscribes to PubSub control channels via `ValkeyPubSubConfig` |
 | [`valkey_perf.py`](#valkey_perfpy) | yes | Single-process `ValkeyWorker` consumption-throughput benchmark |
 | [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `cancel_task` |
 
@@ -122,12 +122,12 @@ pip install "scietex.service[valkey]"
 python -m examples.valkey_pubsub_worker
 ```
 
-A `ValkeyWorker` subclass that also subscribes to the PubSub control channels
-(`scietex:{service_name}:{instance_id}` and `scietex:broadcast`). It builds a
-`GlideClientConfiguration` with
-`generate_glide_config(..., listening=True)` and passes a
-`parse_control_message` callback, then injects it as the `valkey_config`.
-Requires a running Valkey server and the `valkey` extra.
+A `ValkeyWorker` that also subscribes to the PubSub control channels
+(`scietex:{service_name}:{instance_id}` and `scietex:broadcast`). Listening is
+expressed through the typed schema: `ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True, parse_control_message=...))`.
+The worker subscribes its own client and delivers each message to the
+`parse_control_message` callback; the directed channel uses the worker's own
+`instance_id`. Requires a running Valkey server and the `valkey` extra.
 
 ## valkey_perf.py
 
