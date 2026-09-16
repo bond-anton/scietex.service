@@ -72,16 +72,15 @@ async def test_fetch_tasks_reconnects_on_glide_error(monkeypatch):
     """A glide error during XREADGROUP tears down the dead client and
     reconnects; the reconnect is limited to glide errors only (AR-054/059)."""
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    # Patch only the client factory and handler; leave the real glide error
-    # classes intact so the narrowed except tuple is what actually runs.
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
+    # Patch only the handler; leave the real glide error classes intact so the
+    # narrowed except tuple is what actually runs.
     monkeypatch.setattr(mod, "AsyncValkeyHandler", FakeHandler)
 
     client = DummyClient(xreadgroup_error=mod.RequestError("connection dropped"))
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     worker._client = client
     worker._recovered = True  # skip recovery; exercise the XREADGROUP path only
 
@@ -127,7 +126,7 @@ async def test_fetch_tasks_writes_lease_on_enqueue_accept():
     assert worker._task_entry_ids[t_id] == b"1-0"
     assert len(client.sets) == 1
     lease_key, lease_value, lease_expiry = client.sets[0]
-    assert lease_key == worker._task_lease_key(t_id)
+    assert lease_key == worker._task_lease.key(t_id)
     assert lease_value == worker._consumer_name.encode("utf-8")
     assert lease_expiry == ExpirySet(ExpiryType.SEC, 20)
 

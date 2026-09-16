@@ -10,20 +10,18 @@ Requires the optional ``valkey-glide`` dependency.
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import ClassVar, cast
 from uuid import UUID
 
 import msgspec
-import msgspec.structs
 from scietex.logging import AsyncValkeyHandler
 
-from ..task_handler import CancelReason, TaskData, TaskProgress, TaskResult, TaskStatus
+from ..task_handler import CancelReason, TaskData, TaskResult
 from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 from ..task_processor import TaskProcessor
 from ._glide import (
-    ConditionalChange,
     ExpirySet,
     ExpiryType,
     GlideClient,
@@ -42,15 +40,14 @@ from .config import (
     generate_glide_config,
     read_valkey_config,
 )
+from .lease import TaskLeaseManager, derive_task_lease_ttl
 from .schemas import Heartbeat
+from .tracking import TaskStatusStore
 
-# Per-entry lease TTL derivation (AR-060): the lease must outlive its refresh
-# cadence (the watchdog tick) with margin, and must be at least as long as the
-# status-key TTL rationale (2 x heartbeat_interval) so a slow-but-alive worker
-# keeps its entry lease alive.
-LEASE_TTL_HEARTBEAT_MULTIPLIER: int = 2
-LEASE_TTL_WATCHDOG_MULTIPLIER: int = 3
-MIN_TASK_LEASE_TTL_SECONDS: int = 1
+# Client-construction injection seam (AR-003): connect() builds its client by
+# awaiting this callable with the resolved GlideClientConfiguration, so tests
+# and embedders can supply a fake or externally-built client.
+ClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]
 
 
 def _logging_handler_config(valkey_config: ValkeyConfig) -> dict:
@@ -100,6 +97,12 @@ class ValkeyWorker(TaskProcessor):
     falls back to ``client=`` injection only when the worker was given a raw
     ``GlideClientConfiguration``.
 
+    Client construction (AR-003): ``connect()`` builds its ``GlideClient`` by
+    awaiting the ``client_factory=`` callable with the resolved configuration
+    (defaulting to ``GlideClient.create``), so tests and embedders can inject a
+    fake or externally-built client. The worker owns the returned client for its
+    lifetime and calls ``close()`` on it during ``disconnect()``.
+
     Attributes:
         client (GlideClient | None): Valkey client instance, initialized
             during ``initialize()``.
@@ -110,7 +113,12 @@ class ValkeyWorker(TaskProcessor):
     # (AR-069) and no re-store / double-instantiation is needed.
     _config_type: ClassVar[type[ValkeyWorkerConfig]] = ValkeyWorkerConfig
 
-    def __init__(self, config: ValkeyWorkerConfig | None = None):
+    def __init__(
+        self,
+        config: ValkeyWorkerConfig | None = None,
+        *,
+        client_factory: ClientFactory | None = None,
+    ) -> None:
         """Initialize the ``ValkeyWorker``.
 
         Configures the Valkey client from ``config.valkey_config`` or, when
@@ -126,6 +134,11 @@ class ValkeyWorker(TaskProcessor):
             config: A :class:`~scietex.service.valkey.config.ValkeyWorkerConfig`
                 holding the worker's service identity, task-queue settings, and
                 Valkey-specific fields. ``None`` uses the struct defaults.
+            client_factory: Optional async callable taking a
+                :class:`~glide.GlideClientConfiguration` and returning a
+                :class:`~glide.GlideClient`. Defaults to ``GlideClient.create``.
+                Lets tests and embedders inject a fake or externally-built
+                client without a live Valkey server.
 
         Attributes:
             _client (GlideClient | None): Valkey client, initialized during
@@ -172,6 +185,9 @@ class ValkeyWorker(TaskProcessor):
         self._valkey_logger_handler: AsyncValkeyHandler | None = None
 
         self._client: GlideClient | None = None
+        # Client-construction seam (AR-003): connect() awaits this factory with
+        # the resolved client config; defaults to the real GlideClient.create.
+        self._client_factory: ClientFactory = client_factory if client_factory is not None else GlideClient.create
         # Serializes connect()/disconnect() so only one task mutates _client at
         # a time (AR-059): intake reconnect and shutdown cannot race each other.
         self._client_lock: asyncio.Lock = asyncio.Lock()
@@ -180,21 +196,23 @@ class ValkeyWorker(TaskProcessor):
         self._task_group_name = f"scietex:{self.service_name}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.instance_id}"
         self._registry_key = f"scietex:{self.service_name}:workers"
-        self._task_key_prefix = f"scietex:{self.service_name}:task:"
-        self.__task_tracking_ttl = (
-            cfg.task_tracking_ttl if cfg.task_tracking_ttl is not None else DEFAULT_TASK_TRACKING_TTL
+        # Extracted collaborators (AR-002): the lease manager and tracking store
+        # own the per-entry lease and status-record concerns this class used to
+        # inline. Both reach the operational client through a late-bound
+        # provider, so they see the client connect() assigns (or None before the
+        # first successful connect).
+        self._task_lease = TaskLeaseManager(
+            service_name=self.service_name,
+            consumer_name=self._consumer_name,
+            lease_ttl=derive_task_lease_ttl(self.heartbeat_interval, self.watchdog_interval),
+            client_provider=lambda: self._client,
+            logger=self.logger,
         )
-        # Per-entry lease TTL (AR-060): the heartbeat term prevents a too-tight
-        # TTL when watchdog_interval is tiny; the watchdog term prevents a
-        # degenerate TTL when watchdog_interval is large. Defaults yield 20s.
-        self.__task_lease_ttl: int = max(
-            MIN_TASK_LEASE_TTL_SECONDS,
-            int(
-                max(
-                    LEASE_TTL_HEARTBEAT_MULTIPLIER * self.heartbeat_interval,
-                    LEASE_TTL_WATCHDOG_MULTIPLIER * self.watchdog_interval,
-                )
-            ),
+        self._task_status = TaskStatusStore(
+            service_name=self.service_name,
+            tracking_ttl=cfg.task_tracking_ttl if cfg.task_tracking_ttl is not None else DEFAULT_TASK_TRACKING_TTL,
+            client_provider=lambda: self._client,
+            logger=self.logger,
         )
         self.__encoder = msgspec.msgpack.Encoder()
 
@@ -244,97 +262,6 @@ class ValkeyWorker(TaskProcessor):
             The active Valkey client, or ``None`` if not connected.
         """
         return self._client
-
-    def _task_tracking_key(self, task_id: UUID) -> str:
-        """Valkey key holding a task's tracking record."""
-        return f"{self._task_key_prefix}{task_id}"
-
-    async def _write_task_tracking(self, tracking: TaskStatus) -> None:
-        """Write a task tracking record, swallowing transport errors.
-
-        Tracking is observability, not correctness: a failed write must never
-        fail or requeue the task itself.
-        """
-        if self.client is None:
-            return
-        try:
-            await self.client.set(
-                self._task_tracking_key(UUID(tracking.task_id)),
-                value=self.__encoder.encode(tracking),
-                expiry=ExpirySet(ExpiryType.SEC, self.__task_tracking_ttl),
-            )
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.log(logging.WARNING, "Failed to write tracking for task %s: %s", tracking.task_id, exc)
-
-    def _task_lease_key(self, task_id: UUID) -> str:
-        """Return the Valkey key holding the per-entry lease for ``task_id``."""
-        return f"scietex:{self.service_name}:lease:{task_id}"
-
-    async def _write_task_lease(self, task_id: UUID) -> None:
-        """Write/refresh the per-entry lease for ``task_id``.
-
-        The lease is a server-side-TTL key whose presence means "a live worker
-        owns this entry". Recovery consults it before reclaiming a pending entry.
-        No-op when the client is not connected; glide errors are logged and
-        swallowed so a lease failure never breaks task processing.
-        """
-        if self.client is None:
-            return
-        try:
-            await self.client.set(
-                self._task_lease_key(task_id),
-                value=self._consumer_name.encode("utf-8"),
-                expiry=ExpirySet(ExpiryType.SEC, self.__task_lease_ttl),
-            )
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.log(logging.WARNING, "Failed to write lease for task %s: %s", task_id, exc)
-
-    async def _acquire_task_lease(self, task_id: UUID) -> bool:
-        """Atomically claim the lease for ``task_id``.
-
-        Uses ``SET ... NX`` so that when two replicas run startup recovery
-        concurrently, exactly one wins the claim and the other defers. Returns
-        ``True`` when this worker now holds the lease (including when it already
-        held it), ``False`` when another holder owns it.
-        """
-        if self.client is None:
-            return True
-        try:
-            result = await self.client.set(
-                self._task_lease_key(task_id),
-                value=self._consumer_name.encode("utf-8"),
-                expiry=ExpirySet(ExpiryType.SEC, self.__task_lease_ttl),
-                conditional_set=ConditionalChange.ONLY_IF_DOES_NOT_EXIST,
-            )
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.log(logging.WARNING, "Failed to acquire lease for task %s: %s", task_id, exc)
-            return True
-        return result is not None
-
-    async def _delete_task_lease(self, task_id: UUID) -> None:
-        """Delete the per-entry lease for ``task_id`` (no-op if absent)."""
-        if self.client is None:
-            return
-        try:
-            await self.client.delete([self._task_lease_key(task_id)])
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.log(logging.WARNING, "Failed to delete lease for task %s: %s", task_id, exc)
-
-    async def _task_lease_held(self, task_id: UUID) -> bool:
-        """Return True when a live holder's lease exists for ``task_id``.
-
-        Returns False when the client is not connected. On a glide read error the
-        result is uncertain, so this returns True (fail safe: skip the entry rather
-        than risk duplicate processing); the entry is retried on a later poll.
-        """
-        if self.client is None:
-            return False
-        try:
-            raw = await self.client.get(self._task_lease_key(task_id))
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.log(logging.WARNING, "Failed to read lease for task %s: %s", task_id, exc)
-            return True
-        return raw is not None
 
     def _ensure_client_config(self) -> GlideClientConfiguration:
         """Load the Valkey config on first connect (AR-066).
@@ -415,8 +342,9 @@ class ValkeyWorker(TaskProcessor):
     async def _connect_locked(self) -> bool:
         """Establish the connection; assumes ``_client_lock`` is held.
 
-        Creates a new :class:`~glide.GlideClient` using the configured
-        ``_client_config`` and verifies connectivity with ``PING``.
+        Creates a new :class:`~glide.GlideClient` by awaiting the configured
+        ``_client_factory`` with the resolved ``_client_config`` and verifies
+        connectivity with ``PING``.
 
         ``_client`` is assigned only after ``PING`` succeeds, so a failed
         create or ping leaves ``_client`` as ``None`` and ``connect()``
@@ -435,7 +363,7 @@ class ValkeyWorker(TaskProcessor):
             return True
         client_config = self._ensure_client_config()
         try:
-            client = await GlideClient.create(client_config)
+            client = await self._client_factory(client_config)
         except (GlideConnectionError, GlideTimeoutError):
             self.logger.error("Error connecting to Valkey")
             return False
@@ -567,15 +495,15 @@ class ValkeyWorker(TaskProcessor):
         entry is still pending and is redelivered on restart, so re-enqueueing
         here would duplicate it (AR-041); this override must not ``XADD``.
         It instead deletes the task's lease so a restart or peer can reclaim
-        the entry immediately instead of waiting up to ``__task_lease_ttl``
-        for expiry. The client is still connected at this point
+        the entry immediately instead of waiting for the lease to expire. The
+        client is still connected at this point
         (``disconnect()`` happens later in ``cleanup``).
 
         Args:
             task_id: Identifier of the queued task.
             task_data: The task data that was still queued at drain time.
         """
-        await self._delete_task_lease(task_id)
+        await self._task_lease.delete(task_id)
 
     async def cleanup(self):
         """Perform cleanup on shutdown.
@@ -724,7 +652,7 @@ class ValkeyWorker(TaskProcessor):
                         uuid = UUID(task_id)
                         if uuid in self._task_entry_ids:
                             continue
-                        if not await self._acquire_task_lease(uuid):
+                        if not await self._task_lease.acquire(uuid):
                             lease_skipped = True
                             self.logger.log(
                                 logging.DEBUG,
@@ -738,7 +666,7 @@ class ValkeyWorker(TaskProcessor):
                             # worker must not hold it) and stop claiming so the
                             # remaining pending entries stay pending and are
                             # redelivered on a later poll.
-                            await self._delete_task_lease(uuid)
+                            await self._task_lease.delete(uuid)
                             self.logger.log(
                                 logging.DEBUG,
                                 "Task queue full during recovery; deferring task %s",
@@ -830,7 +758,7 @@ class ValkeyWorker(TaskProcessor):
                             # the local ownership guard is active from the same
                             # synchronous moment and this worker's own recovery
                             # can never re-enqueue the entry during the await.
-                            await self._write_task_lease(UUID(task_id))
+                            await self._task_lease.write(UUID(task_id))
                             enqueued = True
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
@@ -859,28 +787,14 @@ class ValkeyWorker(TaskProcessor):
         queued task is not yet in ``running_tasks`` and would otherwise be left
         unrefreshed to expire while still waiting in the internal queue.
         """
-        if self.client is None:
-            return
-        for task_id in list(self._task_entry_ids):
-            await self._write_task_lease(task_id)
+        await self._task_lease.refresh(self._task_entry_ids)
 
     async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
         """Publish a ``running`` tracking record when a task begins."""
-        now = datetime.now(timezone.utc)
-        await self._write_task_tracking(
-            TaskStatus(
-                task_id=str(task_id),
-                service=self.service_name,
-                task=task_data.task,
-                status="running",
-                progress=TaskProgress(),
-                created_at=now,
-                updated_at=now,
-            )
-        )
+        await self._task_status.record_running(task_id, task_data)
         # The lease marks this entry as owned by a live worker, so recovery on
         # another replica skips it while processing is still in flight.
-        await self._write_task_lease(task_id)
+        await self._task_lease.write(task_id)
 
     async def on_task_completed(
         self,
@@ -912,38 +826,10 @@ class ValkeyWorker(TaskProcessor):
             task_result: The final ``TaskResult``, or ``None`` on cancellation.
             cancel_reason: Why the task was cancelled, when it was.
         """
-        now = datetime.now(timezone.utc)
-        # Observability record; ``task_data`` is None only in unit tests that
-        # exercise the ack path in isolation, so fall back to an empty task name.
-        task_name = task_data.task if task_data is not None else ""
-        if task_result is None:
-            deliberate = cancel_reason == "deliberate"
-            await self._write_task_tracking(
-                TaskStatus(
-                    task_id=str(task_id),
-                    service=self.service_name,
-                    task=task_name,
-                    status="cancelled" if deliberate else "failed",
-                    data=task_data if deliberate else None,
-                    error="canceled",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-        else:
-            await self._write_task_tracking(
-                TaskStatus(
-                    task_id=str(task_id),
-                    service=self.service_name,
-                    task=task_name,
-                    status="completed" if task_result.status == "success" else "failed",
-                    result=task_result.payload if task_result.status == "success" else None,
-                    error=task_result.error,
-                    error_code=task_result.error_code,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
+        # Publish the terminal tracking record, then look up the stream entry id
+        # recorded at fetch time and XACK + XDEL it. ``task_data`` is None only
+        # in unit tests that exercise the ack path in isolation.
+        await self._task_status.record_terminal(task_id, task_data, task_result, cancel_reason)
         entry_id = self._task_entry_ids.pop(task_id, None)
         if entry_id is not None and self.client is not None:
             try:
@@ -953,36 +839,8 @@ class ValkeyWorker(TaskProcessor):
                 self.logger.log(logging.ERROR, "Failed to acknowledge task %s: %s", task_id, exc)
         # Ack/delete first, then clear the lease, to minimise the "unleased but
         # still pending" window.
-        await self._delete_task_lease(task_id)
+        await self._task_lease.delete(task_id)
 
     async def _write_task_progress(self, task_id: UUID, value: float) -> None:
         """Update the tracking record's progress for a running task."""
-        if self.client is None:
-            return
-        key = self._task_tracking_key(task_id)
-        try:
-            raw = await self.client.get(key)
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.log(logging.WARNING, "Failed to read tracking for task %s: %s", task_id, exc)
-            return
-        now = datetime.now(timezone.utc)
-        if raw is None:
-            current = TaskStatus(
-                task_id=str(task_id),
-                service=self.service_name,
-                task="",
-                status="running",
-                created_at=now,
-                updated_at=now,
-            )
-        else:
-            try:
-                current = msgspec.msgpack.decode(raw, type=TaskStatus)
-            except msgspec.DecodeError:
-                return
-        updated = msgspec.structs.replace(
-            current,
-            progress=TaskProgress(progress=True, value=value),
-            updated_at=now,
-        )
-        await self._write_task_tracking(updated)
+        await self._task_status.update_progress(task_id, value)

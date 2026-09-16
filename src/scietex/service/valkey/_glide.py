@@ -6,6 +6,8 @@ one place (AR-048). Importing this module raises ``ImportError`` with an
 install hint when ``valkey-glide`` is absent.
 """
 
+from collections.abc import Callable
+
 try:
     from glide import (
         AdvancedGlideClientConfiguration,
@@ -38,9 +40,14 @@ except ImportError as e:
         "Please install it by running:\n\n    pip install scietex.service[valkey]\n"
     ) from e
 
+# Local alias, not a glide type: lets collaborators depend on a late-bound
+# client getter instead of the concrete ``GlideClient``.
+ClientProvider = Callable[[], GlideClient | None]
+
 __all__ = [
     "AdvancedGlideClientConfiguration",
     "BackoffStrategy",
+    "ClientProvider",
     "ConditionalChange",
     "ConfigurationError",
     "GlideConnectionError",

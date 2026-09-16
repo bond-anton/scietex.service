@@ -51,7 +51,7 @@ async def test_on_task_started_writes_running_tracking_record():
     assert expiry == ExpirySet(ExpiryType.SEC, 3600)
     # The per-entry lease is written alongside the tracking record (AR-060).
     lease_key, lease_value, lease_expiry = client.sets[1]
-    assert lease_key == worker._task_lease_key(t_id)
+    assert lease_key == worker._task_lease.key(t_id)
     assert lease_value == worker._consumer_name.encode("utf-8")
     assert lease_expiry == ExpirySet(ExpiryType.SEC, 20)
 

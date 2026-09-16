@@ -6,7 +6,6 @@ from uuid import UUID
 
 import pytest
 
-import scietex.service.valkey.worker as mod
 from scietex.service import ValkeyWorker
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
@@ -61,14 +60,10 @@ async def test_cleanup_stops_logging_before_disconnect(monkeypatch):
     the shared client, so the handler drains remaining records through the
     still-open client instead of reconnecting to a closed one (AR-022)."""
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     ok = await worker.connect()
     assert ok is True
     handler = worker._valkey_logger_handler
@@ -110,14 +105,10 @@ async def test_cleanup_clears_pending_task_entry_ids(monkeypatch):
     ignored cancellation do not leak across repeated stop/start cycles
     (AR-050)."""
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     ok = await worker.connect()
     assert ok is True
 
@@ -211,7 +202,7 @@ async def test_shutdown_drain_deletes_queued_lease():
 
     await worker.cleanup()
 
-    assert client.deleted_keys == [[worker._task_lease_key(t_id)]]
+    assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
     assert client.acked == []
     assert client.deleted == []
     assert worker._task_entry_ids == {}

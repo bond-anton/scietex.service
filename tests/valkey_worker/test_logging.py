@@ -2,7 +2,6 @@
 
 import pytest
 
-import scietex.service.valkey.worker as mod
 from scietex.service import ValkeyWorker
 from scietex.service.valkey._glide import GlideClientConfiguration, NodeAddress
 from scietex.service.valkey.config import (
@@ -23,12 +22,12 @@ async def test_logging_handler_owns_its_own_connection(monkeypatch):
     valkey_config= (owning its own connection); the worker no longer injects or
     re-points its client (AR-059/061)."""
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    _patch_glide_and_handler(monkeypatch, create_mock)
+    _patch_glide_and_handler(monkeypatch)
 
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     assert worker._valkey_logger_handler is None  # not built until connect
 
     ok = await worker.connect()
@@ -47,15 +46,11 @@ async def test_logging_handler_falls_back_to_client_injection_with_raw_config(mo
     """A raw GlideClientConfiguration has no typed ValkeyConfig to hand the
     handler, so it keeps the shared-client injection seam (AR-059/061)."""
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
     raw_config = GlideClientConfiguration(addresses=[NodeAddress("localhost", 6379)])
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=raw_config))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=raw_config), client_factory=factory)
     ok = await worker.connect()
     assert ok is True
     handler = worker._valkey_logger_handler

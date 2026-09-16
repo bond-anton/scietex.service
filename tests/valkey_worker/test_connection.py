@@ -8,7 +8,7 @@ import scietex.service.valkey.worker as mod
 from scietex.service import ValkeyWorker
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
-from ._helpers import DummyClient, _patch_glide_and_handler
+from ._helpers import DummyClient, _patch_glide, _patch_glide_and_handler
 
 
 @pytest.mark.asyncio
@@ -17,12 +17,12 @@ async def test_connect_loads_config_from_disk(monkeypatch, tmp_path):
     at first connect, populating ``valkey_config``/``_client_config`` (AR-066)."""
     monkeypatch.setenv("SCIETEX_CONFIG_DIR", str(tmp_path))
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    _patch_glide_and_handler(monkeypatch, create_mock)
+    _patch_glide_and_handler(monkeypatch)
 
-    worker = ValkeyWorker()
+    worker = ValkeyWorker(client_factory=factory)
     assert worker.valkey_config is None, "config must stay deferred before connect"
 
     ok = await worker.connect()
@@ -34,15 +34,11 @@ async def test_connect_loads_config_from_disk(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_connect_success(monkeypatch):
-    # Mock GlideClient.create to return a DummyClient
-    async def create_mock(cfg):
+    # Supply a DummyClient through the client_factory seam.
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     ok = await worker.connect()
     assert ok is True
     assert worker.client is not None
@@ -66,15 +62,15 @@ async def test_connect_is_serialized_by_lock(monkeypatch):
     asyncio.Lock serializes the create→ping→assign sequence (AR-059)."""
     creates = []
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         creates.append(cfg)
         # Yield so a concurrent connect() would interleave without the lock.
         await asyncio.sleep(0)
         return DummyClient(ping_ok=True)
 
-    _patch_glide_and_handler(monkeypatch, create_mock)
+    _patch_glide_and_handler(monkeypatch)
 
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     results = await asyncio.gather(worker.connect(), worker.connect(), worker.connect())
 
     assert results == [True, True, True]
@@ -86,14 +82,10 @@ async def test_connect_is_serialized_by_lock(monkeypatch):
 async def test_connect_ping_failure_clears_client(monkeypatch):
     # A failed PING must leave _client as None so initialize() does not
     # treat the worker as connected (AR-006).
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=False)
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     ok = await worker.connect()
     assert ok is False
     assert worker.client is None, "failed ping must clear _client"
@@ -101,15 +93,15 @@ async def test_connect_ping_failure_clears_client(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_connect_create_failure_leaves_client_none(monkeypatch):
-    # A GlideClient.create exception must leave _client as None (AR-006).
-    async def create_mock(cfg):
+    # A factory exception must leave _client as None (AR-006).
+    async def factory(cfg):
         raise RuntimeError("create failed")
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
+    # Map the glide connection errors to Exception so the raising factory is
+    # caught by connect()'s failure path.
+    _patch_glide(monkeypatch)
 
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     ok = await worker.connect()
     assert ok is False
     assert worker.client is None
@@ -120,17 +112,13 @@ async def test_initialize_group_already_exists_succeeds(monkeypatch):
     # A BUSYGROUP error means the consumer group already exists and must be
     # ignored; initialize still reports success (AR-021).
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(
             ping_ok=True,
             xgroup_create_error=mod.RequestError("BUSYGROUP Consumer Group name already exists"),
         )
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     ok = await worker.initialize()
     assert ok is True
 
@@ -140,14 +128,10 @@ async def test_initialize_group_create_failure_fails(monkeypatch):
     # A genuine xgroup_create failure must fail initialize so the worker
     # does not run with no consumer group (AR-021).
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True, xgroup_create_error=mod.RequestError("NOAUTH Authentication required"))
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
-    monkeypatch.setattr(mod, "GlideConnectionError", Exception)
-    monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
-
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     ok = await worker.initialize()
     assert ok is False
 
@@ -158,12 +142,12 @@ async def test_disconnect_closes_operational_client_but_not_owned_handler(monkey
     logging handler's connection is independent and left untouched
     (AR-059/061)."""
 
-    async def create_mock(cfg):
+    async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    _patch_glide_and_handler(monkeypatch, create_mock)
+    _patch_glide_and_handler(monkeypatch)
 
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     await worker.connect()
     client = worker.client
     handler = worker._valkey_logger_handler

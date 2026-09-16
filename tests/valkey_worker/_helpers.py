@@ -1,10 +1,10 @@
 """Valkey async task processor testing.
 
-This suite deliberately reaches into private ``ValkeyWorker`` internals
-(``_client``, ``_task_entry_ids``, ``_recovered``, ``_client_config``) to
-inject a fake client and seed in-flight state, because ``connect()`` builds
-its own ``GlideClient`` and there is no public injection seam. This is an
-accepted determinism trade-off per the 2026-09-09 review AR-071 carve-out.
+Connect-path tests exercise ``connect()``/``disconnect()`` through the
+``client_factory=`` injection seam (AR-003), supplying a fake client without a
+live Valkey server. Method-unit tests still seed transport/ack state
+(``_task_entry_ids``, ``_recovered``) by assigning ``worker._client`` directly,
+pending the Phase 3 transport extraction.
 """
 
 import asyncio
@@ -155,21 +155,24 @@ class FakeHandler(logging.Handler):
         pass
 
 
-def _patch_glide(monkeypatch, create_mock):
-    """Point the worker's ``GlideClient.create`` at ``create_mock`` and make the
-    glide connection errors plain ``Exception``s so connect() tests are serverless."""
+def _patch_glide(monkeypatch):
+    """Map the glide connection errors to plain ``Exception`` so a raising
+    ``client_factory`` is caught by connect()'s failure path.
+
+    Client creation itself goes through the ``client_factory=`` seam, so the
+    ``GlideClient.create`` monkeypatch is no longer needed here.
+    """
     import scietex.service.valkey.worker as mod
 
-    monkeypatch.setattr(mod, "GlideClient", type("C", (), {"create": staticmethod(create_mock)}))
     monkeypatch.setattr(mod, "GlideConnectionError", Exception)
     monkeypatch.setattr(mod, "GlideTimeoutError", Exception)
     return mod
 
 
-def _patch_glide_and_handler(monkeypatch, create_mock):
+def _patch_glide_and_handler(monkeypatch):
     """Like :func:`_patch_glide`, but also swap the real logging handler for a
     :class:`FakeHandler` so connect() never opens a second connection."""
-    mod = _patch_glide(monkeypatch, create_mock)
+    mod = _patch_glide(monkeypatch)
     monkeypatch.setattr(mod, "AsyncValkeyHandler", FakeHandler)
     return mod
 

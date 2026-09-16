@@ -91,5 +91,5 @@ async def test_cancel_queued_task_deletes_lease_and_acks_entry():
     assert outcome == "cancelled"
     assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
     assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
-    assert client.deleted_keys == [[worker._task_lease_key(t_id)]]
+    assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
     assert t_id not in worker._task_entry_ids

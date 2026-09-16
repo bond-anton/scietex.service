@@ -141,7 +141,7 @@ async def test_recover_pending_tasks_skips_entry_with_held_lease():
             {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
             [],
         ],
-        get_values={worker._task_lease_key(t_id): b"other"},
+        get_values={worker._task_lease.key(t_id): b"other"},
     )
     worker._client = client
 
@@ -220,7 +220,7 @@ async def test_recover_pending_tasks_incomplete_when_lease_held_leaves_recovered
             {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
             [],
         ],
-        get_values={worker._task_lease_key(t_id): b"other"},
+        get_values={worker._task_lease.key(t_id): b"other"},
     )
     worker._client = client
     assert worker._recovered is False
@@ -275,7 +275,7 @@ async def test_recover_pending_tasks_lease_skip_and_reclaim_mixed():
             },
             [],
         ],
-        get_values={worker._task_lease_key(leased_id): b"other"},
+        get_values={worker._task_lease.key(leased_id): b"other"},
     )
     worker._client = client
 
@@ -313,7 +313,7 @@ async def test_recover_pending_tasks_writes_lease_on_enqueue_accept():
     assert worker._task_entry_ids[t_id] == b"9-0"
     assert len(client.sets) == 1
     lease_key, lease_value, lease_expiry = client.sets[0]
-    assert lease_key == worker._task_lease_key(t_id)
+    assert lease_key == worker._task_lease.key(t_id)
     assert lease_value == worker._consumer_name.encode("utf-8")
     assert lease_expiry == ExpirySet(ExpiryType.SEC, 20)
 
@@ -341,5 +341,5 @@ async def test_recover_pending_tasks_queue_full_rolls_back_lease():
 
     assert recovery_complete is False
     assert enqueued is False
-    assert client.deleted_keys == [[worker._task_lease_key(t_id)]]
+    assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
     assert t_id not in worker._task_entry_ids

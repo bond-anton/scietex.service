@@ -12,6 +12,7 @@ from scietex.service.task_handler.runtime import TaskTracker
 from scietex.service.task_handler.schemas import TaskData, TaskResult
 from scietex.service.valkey._glide import ConditionalChange, ExpirySet, ExpiryType
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
+from scietex.service.valkey.lease import derive_task_lease_ttl
 
 from ._helpers import DummyClient, _make_tracking_worker
 
@@ -29,7 +30,7 @@ async def test_on_task_started_writes_lease_key():
 
     assert len(client.sets) == 2
     lease_key, lease_value, lease_expiry = client.sets[1]
-    assert lease_key == worker._task_lease_key(t_id)
+    assert lease_key == worker._task_lease.key(t_id)
     assert lease_value == worker._consumer_name.encode("utf-8")
     assert lease_expiry == ExpirySet(ExpiryType.SEC, 20)
 
@@ -47,7 +48,7 @@ async def test_on_task_completed_deletes_lease_key():
         t_id, TaskData(task="dummy", payload=b"{}"), TaskResult(status="success", payload=b"done")
     )
 
-    assert client.deleted_keys == [[worker._task_lease_key(t_id)]]
+    assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
     assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
     assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
 
@@ -84,7 +85,7 @@ async def test_watchdog_refreshes_leases_for_running_tasks():
 
         assert len(client.sets) == 2
         keys = {key for key, _value, _expiry in client.sets}
-        assert keys == {worker._task_lease_key(t1), worker._task_lease_key(t2)}
+        assert keys == {worker._task_lease.key(t1), worker._task_lease.key(t2)}
         assert all(expiry == ExpirySet(ExpiryType.SEC, 20) for _key, _value, expiry in client.sets)
     finally:
         task_a.cancel()
@@ -107,15 +108,15 @@ def test_lease_ttl_derivation_default_and_configured():
     (AR-060): 20s with defaults, floored at 1s for tiny intervals, and driven
     by the watchdog term when that interval is large."""
     default = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
-    assert default._ValkeyWorker__task_lease_ttl == 20
+    assert derive_task_lease_ttl(default.heartbeat_interval, default.watchdog_interval) == 20
 
     tiny = ValkeyWorker(
         ValkeyWorkerConfig(heartbeat_interval=0.1, watchdog_interval=0.01, valkey_config=ValkeyConfig())
     )
-    assert tiny._ValkeyWorker__task_lease_ttl == 1
+    assert derive_task_lease_ttl(tiny.heartbeat_interval, tiny.watchdog_interval) == 1
 
     large_watchdog = ValkeyWorker(ValkeyWorkerConfig(watchdog_interval=600, valkey_config=ValkeyConfig()))
-    assert large_watchdog._ValkeyWorker__task_lease_ttl == 1800
+    assert derive_task_lease_ttl(large_watchdog.heartbeat_interval, large_watchdog.watchdog_interval) == 1800
 
 
 @pytest.mark.asyncio
@@ -131,7 +132,7 @@ async def test_refresh_task_leases_covers_queued_tasks():
 
     assert len(client.sets) == 1
     lease_key, _value, _expiry = client.sets[0]
-    assert lease_key == worker._task_lease_key(t_id)
+    assert lease_key == worker._task_lease.key(t_id)
 
 
 @pytest.mark.asyncio
@@ -155,7 +156,7 @@ async def test_refresh_task_leases_covers_queued_and_running():
         await worker._refresh_task_leases()
 
         keys = {key for key, _value, _expiry in client.sets}
-        assert keys == {worker._task_lease_key(queued_id), worker._task_lease_key(running_id)}
+        assert keys == {worker._task_lease.key(queued_id), worker._task_lease.key(running_id)}
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -163,42 +164,42 @@ async def test_refresh_task_leases_covers_queued_and_running():
 
 @pytest.mark.asyncio
 async def test_acquire_task_lease_returns_false_when_held():
-    """_acquire_task_lease returns False when the lease key already exists
-    (a peer holds it), simulated by seeding get_values."""
+    """``TaskLeaseManager.acquire`` returns False when the lease key already
+    exists (a peer holds it), simulated by seeding get_values."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
-    client = DummyClient(get_values={worker._task_lease_key(t_id): b"other"})
+    client = DummyClient(get_values={worker._task_lease.key(t_id): b"other"})
     worker._client = client
 
-    acquired = await worker._acquire_task_lease(t_id)
+    acquired = await worker._task_lease.acquire(t_id)
 
     assert acquired is False
 
 
 @pytest.mark.asyncio
 async def test_acquire_task_lease_returns_true_when_absent():
-    """_acquire_task_lease returns True and issues a SET ... NX when the lease
-    key is absent."""
+    """``TaskLeaseManager.acquire`` returns True and issues a SET ... NX when
+    the lease key is absent."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     client = DummyClient()
     worker._client = client
 
-    acquired = await worker._acquire_task_lease(t_id)
+    acquired = await worker._task_lease.acquire(t_id)
 
     assert acquired is True
-    assert client.set_calls == [(worker._task_lease_key(t_id), ConditionalChange.ONLY_IF_DOES_NOT_EXIST)]
+    assert client.set_calls == [(worker._task_lease.key(t_id), ConditionalChange.ONLY_IF_DOES_NOT_EXIST)]
 
 
 @pytest.mark.asyncio
 async def test_acquire_task_lease_fail_safe_on_error():
-    """A glide error during SET ... NX is fail-safe: _acquire_task_lease returns
-    True (proceed) rather than raising."""
+    """A glide error during SET ... NX is fail-safe: ``TaskLeaseManager.acquire``
+    returns True (proceed) rather than raising."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     client = DummyClient(set_error=mod.RequestError("set failed"))
     worker._client = client
 
-    acquired = await worker._acquire_task_lease(t_id)
+    acquired = await worker._task_lease.acquire(t_id)
 
     assert acquired is True
