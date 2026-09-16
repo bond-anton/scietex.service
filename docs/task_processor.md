@@ -127,7 +127,9 @@ and an out-of-range value raises `msgspec.ValidationError` at construction
 
 `TaskProcessor` takes a single immutable configuration object
 (`TaskProcessorConfig`, from `scietex.service.config`, which extends
-`WorkerConfig`), or `None` to use the struct defaults:
+`WorkerConfig`), or `None` to use the struct defaults. It also accepts an
+optional keyword-only `transport` — a `TaskTransport` implementation that
+delivers tasks into the processor's queue:
 
 ```python
 import logging
@@ -155,6 +157,33 @@ processor = TaskProcessor(
     )
 )
 ```
+
+### Transport
+
+`TaskProcessor.__init__(config=None, *, transport: TaskTransport | None = None)`.
+When `transport` is omitted, the processor composes an `InMemoryTransport`
+(the default in-process backend). The transport is the delivery seam: the
+processor calls `transport.fetch(self)` to pull tasks and delegates the
+delivery hooks (`requeue`, `release`, `on_started`, `ack`, `on_progress`,
+`on_drain`) to it.
+
+```python
+from scietex.service import InMemoryTransport, TaskProcessor, TaskProcessorConfig
+
+transport = InMemoryTransport(logger=logging.getLogger("svc"))
+processor = TaskProcessor(TaskProcessorConfig(service_name="svc"), transport=transport)
+
+# Feed the in-memory transport directly:
+transport.submit(task_id, task_data)
+```
+
+`InMemoryTransport` is deque-backed and re-delivers a requeued task on the
+next `fetch`. `ValkeyWorker` injects a `ValkeyTransport` instead (see
+[valkey_worker.md](valkey_worker.md)). The six legacy delivery hooks
+(`fetch_tasks`, `return_task_to_queue`, `on_task_started`,
+`on_task_completed`, `_write_task_progress`, `_on_queue_drain_task_processing`)
+remain on `TaskProcessor` as thin delegators to the transport, so existing
+subclass overrides keep working.
 
 Fields added by `TaskProcessorConfig` (in addition to `WorkerConfig`):
 
@@ -401,6 +430,11 @@ The bound method resolves the correct task id through the `ContextVar`, so the
 same callable works for every concurrent task without per-task plumbing.
 
 ## Overriding Methods
+
+The delivery hooks below remain overridable for backwards compatibility, but
+they now delegate to the composed `TaskTransport`. For new code, prefer
+implementing a `TaskTransport` and passing it via `transport=` — that keeps the
+delivery contract explicit and testable without subclassing the processor.
 
 ### fetch_tasks()
 

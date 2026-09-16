@@ -19,9 +19,11 @@ Public exports:
     - :class:`ValkeyUserCredentials` — Authentication credentials.
     - :class:`ValkeyBackoffStrategy` — Reconnection backoff settings.
     - :class:`ValkeyTlsAdvancedConfiguration` — TLS settings.
-    - :func:`read_valkey_config` — YAML config loader.
-    - :func:`generate_glide_config` — Schema-to-glide converter.
     - :func:`purge_task_stream` — Standalone task-stream purge utility.
+
+The YAML loader (:func:`read_valkey_config`) and the schema-to-glide converter
+(:func:`generate_glide_config`) live in :mod:`scietex.service.valkey.config`
+and are not re-exported here.
 """
 
 from .config import (

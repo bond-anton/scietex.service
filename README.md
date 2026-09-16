@@ -179,6 +179,17 @@ Tasks are stored in a Valkey stream named
 `scietex:{service_name}:tasks` and consumed via a consumer
 group `scietex:{service_name}:task_group`.
 
+`ValkeyWorker` also exposes:
+
+- `client_factory=` (keyword-only) — an async callable
+  `(GlideClientConfiguration) -> Awaitable[GlideClient]` used by `connect()`;
+  defaults to `GlideClient.create`. Inject a fake to test without a server.
+- `transport_health` — a `TransportHealth` supervisor aggregating connection
+  failures, owning the single reconnect path, and logging one CRITICAL per
+  sustained outage.
+- `task_lease_ttl` (config field) — lease lifetime in seconds; `None` derives
+  `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`.
+
 ## Architecture
 
 ### Worker Hierarchy
@@ -195,6 +206,34 @@ BasicWorker          — Signal handling, async logging, heartbeat &
         └── ValkeyWorker  — Valkey stream integration, connection
                             management, stream-based task fetching
 ```
+
+### Transport Layer
+
+Task delivery is abstracted behind the `TaskTransport` protocol
+(`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`).
+`TaskProcessor` composes a transport rather than inheriting delivery hooks:
+
+- **`InMemoryTransport`** is the default: a deque-backed in-process transport.
+  Feed it with `transport.submit(task_id, task_data)`; `fetch` drains it into
+  the processor's queue. A bare `TaskProcessor` therefore works with no
+  external backend.
+- **`ValkeyTransport`** (in `scietex.service.valkey`) implements the same
+  protocol over a Valkey stream; `ValkeyWorker` injects it automatically.
+
+Pass a custom transport with the keyword-only `transport=` argument:
+
+```python
+from scietex.service import InMemoryTransport, TaskProcessor, TaskProcessorConfig
+
+transport = InMemoryTransport(logger=logging.getLogger("transport"))
+processor = TaskProcessor(TaskProcessorConfig(service_name="svc"), transport=transport)
+transport.submit(task_id, task_data)
+```
+
+The legacy template-method hooks (`fetch_tasks`, `return_task_to_queue`,
+`on_task_started`, `on_task_completed`, `_write_task_progress`,
+`_on_queue_drain_task_processing`) are retained on `TaskProcessor` as thin
+delegators to the transport, so existing subclasses keep working.
 
 ### Manager Lifecycle
 
@@ -320,6 +359,9 @@ explicit `valkey_config` does not touch the filesystem (AR-066).
 | `BasicWorker` | Base async daemon worker |
 | `TaskProcessor` | Concurrent task processor |
 | `Manager` | Decorator for creating managed async loop methods |
+| `TaskTransport` | Protocol for the task-delivery backend (`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`) |
+| `TaskSink` | Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`) |
+| `InMemoryTransport` | Default in-process transport (deque-backed; `submit()` feeds it) |
 | `ValkeyWorker` | Valkey-backed distributed worker |
 | `WorkerConfig` | Immutable `msgspec.Struct` configuration for `BasicWorker` |
 | `TaskProcessorConfig` | Immutable configuration for `TaskProcessor` (extends `WorkerConfig`) |
@@ -328,7 +370,8 @@ explicit `valkey_config` does not touch the filesystem (AR-066).
 
 The Valkey configuration classes (`ValkeyConfig`, `ValkeyNode`,
 `ValkeyUserCredentials`, `ValkeyBackoffStrategy`, `ValkeyBaseConfig`,
-`ValkeyAdvancedConfig`, `ValkeyTlsAdvancedConfiguration`, `ValkeyWorkerConfig`)
+`ValkeyAdvancedConfig`, `ValkeyPubSubConfig`, `ValkeyTlsAdvancedConfiguration`,
+`ValkeyWorkerConfig`)
 are top-level
 re-exports: they are importable directly from `scietex.service` (as in the
 Valkey quick-start above), not only from `scietex.service.valkey`.
@@ -362,6 +405,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `ValkeyConfig` | Top-level Valkey configuration |
 | `ValkeyBaseConfig` | Basic connection settings |
 | `ValkeyAdvancedConfig` | Advanced connection settings |
+| `ValkeyPubSubConfig` | PubSub control-channel settings (`listening`, `parse_control_message`) |
 | `ValkeyNode` | Server node address |
 | `ValkeyUserCredentials` | Authentication credentials |
 | `ValkeyBackoffStrategy` | Reconnection backoff config |

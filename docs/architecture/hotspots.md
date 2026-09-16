@@ -21,7 +21,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H9 | Resolved | AR-018 shared the client; AR-059/061 re-split with owned handler + `_client_lock` |
 | H10 | Resolved | AR-006 + AR-010 — truthful `connect()` |
 | H11 | Resolved | AR-023 — shared-queue topology (service-scoped stream/group) |
-| H12 | Open | usage docs still drift (out of scope here) |
+| H12 | Resolved | v4.2.0 — usage docs, README, AGENTS.md, and architecture map re-synced |
 | H13 | Resolved | AR-013 — single pytest config |
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
@@ -141,10 +141,10 @@ in a terminal state and the worker can be restarted.
   that point lost the task.
 - **Why significant:** the distributed contract was effectively at-most-once.
 
-**Resolved (AR-005):** delivery is now at-least-once. `fetch_tasks`
-(worker.py:758) records the entry id in `_task_entry_ids` without
-acking; `on_task_completed` (885) `XACK`+`XDEL`s the entry only after the
-handler's work terminates. `_recover_pending_tasks` (666) uses `XAUTOCLAIM` on
+**Resolved (AR-005):** delivery is now at-least-once. `ValkeyTransport.fetch`
+records the entry id in the transport's entry-id map without
+acking; `ValkeyTransport.ack` `XACK`+`XDEL`s the entry only after the
+handler's work terminates. `ValkeyTransport.recover_pending_tasks` uses `XAUTOCLAIM` on
 the first fetch to redeliver entries left pending by a crash. Enqueue is
 non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 (AR-016).
@@ -168,8 +168,7 @@ registry, intake, task completion) is serialized behind `_client_lock` (177)
 with a glide-error-only reconnect, and the logging `AsyncValkeyHandler` owns its
 own independent connection via `valkey_config=` (a scalar dict from
 `_logging_handler_config`, 56), so the worker no longer injects or re-points
-`handler.client`. Only a raw `GlideClientConfiguration` keeps the `client=`
-injection seam.
+`handler.client`.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
@@ -223,6 +222,14 @@ replica is still processing.
   between usage guides and the code marks where design intent and implementation
   have diverged. (The usage docs were re-synced against the v4.0.0 code in a
   follow-up pass.)
+
+**Resolved (v4.2.0):** the usage docs, `README.md`, `AGENTS.md`, and the
+architecture map were re-synced against the v4.2.0 code, covering the transport
+seam (`TaskTransport`/`TaskSink`/`InMemoryTransport`/`ValkeyTransport`), the
+`client_factory=` seam, `TransportHealth`, the `TaskLeaseManager`/
+`TaskStatusStore` collaborators, `ValkeyPubSubConfig`, and `task_lease_ttl`.
+The stale raw-`GlideClientConfiguration` fallback and "lease TTL not
+configurable" claims were removed.
 
 ## H13. Duplicated/inconsistent developer configuration
 

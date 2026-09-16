@@ -15,9 +15,10 @@ is a library whose entry point is the consumer's own `main()`.
 | Manager decorator | `src/scietex/service/manager/__init__.py` | `@Manager` class-decorator and `ManagerStatus`; wraps an async method into a managed loop |
 | Logging helpers | `src/scietex/service/log_handlers/__init__.py` | `LoggerStatus` enum and `parse_logging_level()` string/int normalization |
 | Configuration | `src/scietex/service/config.py` | `WorkerConfig` + `TaskProcessorConfig` (immutable `msgspec.Struct`s) and the MIN/MAX/DEFAULT constants they enforce at construction (`msgspec.ValidationError` on out-of-range values) |
-| Task processing | `src/scietex/service/task_processor.py` | `TaskProcessor`: in-process bounded task queue, concurrency limit, handler registry/dispatch, timeout watchdog, built-in `cancel_task` cancellation (auto-registered handler + `_cancel_task`), drain/requeue on shutdown |
+| Task processing | `src/scietex/service/task_processor.py` | `TaskProcessor`: in-process bounded task queue, concurrency limit, handler registry/dispatch, timeout watchdog, built-in `cancel_task` cancellation (auto-registered handler + `_cancel_task`), drain/requeue on shutdown. Composes a `TaskTransport` (keyword-only `transport=`, default `InMemoryTransport`) |
+| Transport seam | `src/scietex/service/transport.py` | `TaskSink` / `TaskTransport` Protocols (the delivery contract) + `InMemoryTransport` (deque-backed default; feed with `submit(task_id, task_data)`). Imports only `task_handler.schemas` — no glide |
 | Task handler contract | `src/scietex/service/task_handler/` | `TaskHandler` ABC + `TaskHandlerContext` + typed wire schemas `TaskData`, `TaskResult`, `TaskTimeout`, `TaskStatus` (`schemas.py`) + the built-in `CancelTaskHandler` for `cancel_task` (`cancel.py`) + the `TaskTracker` in-memory runtime handle (`runtime.py`) |
-| Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (stream transport over glide), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`), `Heartbeat` schema |
+| Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (composes `ValkeyTransport` + `TransportHealth`/`TaskLeaseManager`/`TaskStatusStore`), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`/`ValkeyPubSubConfig`), `Heartbeat` schema |
 | Utilities | `src/scietex/service/utils/` | `prepare_conf_dir()` config-dir resolution (`config.py`); ASCII logo printer (`logo.py`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional import of Valkey exports |
 | Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
@@ -41,7 +42,12 @@ is a library whose entry point is the consumer's own `main()`.
         TaskHandler  ◄──────────────────  task_handler.schemas
         (supports/handle/start/stop)     (TaskData/TaskResult/...)
                ▲
-               │ (fetch_tasks / return_task_to_queue overridden)
+               │ (delivery via composed TaskTransport)
+        TaskProcessor ──► TaskTransport (Protocol)
+               │              ▲
+               │              │ implements
+               │        InMemoryTransport (default)  /  ValkeyTransport
+               │
         ValkeyWorker — glide GlideClient — Valkey streams/groups
                │
                └── AsyncValkeyHandler (scietex.logging) — log stream
@@ -58,9 +64,11 @@ Interaction notes:
   type-based: first active handler whose `supports(task_type)` returns `True`
   wins.
 - **Valkey transport is isolated** in the `valkey` subpackage; `ValkeyWorker`
-  only *overrides* hooks (`fetch_tasks`, `return_task_to_queue`,
-  `heartbeat`, `initialize`, `cleanup`, `on_task_completed`) that the core
-  defines as no-ops.
+  composes a `ValkeyTransport` (implementing the core `TaskTransport` Protocol)
+  and injects it as `TaskProcessor._transport`. The six legacy delivery hooks
+  (`fetch_tasks`, `return_task_to_queue`, `on_task_started`,
+  `on_task_completed`, `_write_task_progress`, `_on_queue_drain_task_processing`)
+  remain on `TaskProcessor` as thin delegators for backwards compatibility.
 - **Async logging crosses the package boundary**: the worker attaches handlers
   from the external `scietex.logging` package and drives their
   `start_logging()`/`stop_logging()` lifecycle via `LoggingLifecycle`.
@@ -78,7 +86,7 @@ The package is a library. Each runnable artifact is a consumer:
 | `examples/named_task_handlers.py` | `TaskProcessor` + one handler class registered under two names (AR-053) | Splits one class's task types across named instances |
 | `examples/stateful_handler.py` | `TaskProcessor` + one handler injected with a shared `SharedCounter` via `**handler_kwargs` | Mutates shared state across tasks; the injected object survives handler re-instantiation |
 | `examples/valkey_async_service.py` | `ValkeyWorker` | Connects to Valkey, consumes a task stream |
-| `examples/valkey_pubsub_worker.py` | `ValkeyWorker` subclass + PubSub control channels | Subscribes to `scietex:{service}:{instance_id}` and `scietex:broadcast` |
+| `examples/valkey_pubsub_worker.py` | `ValkeyWorker` + PubSub control channels | Subscribes to `scietex:{service}:{instance_id}` and `scietex:broadcast` via `ValkeyPubSubConfig` |
 | `examples/valkey_perf.py` | `ValkeyWorker` + preloaded stream | Single-process consumption-throughput benchmark; times the drain only |
 | `examples/progress_and_cancel.py` | `ValkeyWorker` + `report_progress` + `cancel_task` | Reports granular progress and cancels a running task via the built-in handler |
 
@@ -129,8 +137,7 @@ Ownership summary: the **worker owns** manager tasks and the internal task
 queue / `running_tasks`, delegating manager bookkeeping to `ManagerRuntime` and
 logging-handler bookkeeping to `LoggingLifecycle`; the **logging handlers own**
 their internal queues/worker tasks, and the Valkey log handler owns its own
-independent `GlideClient` (built from `valkey_config=`, AR-059/061) — only a
-raw `GlideClientConfiguration` falls back to sharing the worker's client;
+independent `GlideClient` (built from `valkey_config=`, AR-059/061);
 **task handlers own** their initialization state (`is_ready`) but not their own
 tasks — they run inline inside processor-created tasks.
 

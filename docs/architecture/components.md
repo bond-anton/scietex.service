@@ -295,10 +295,41 @@ runtime setters. Properties (`task_handlers`, `running_tasks` — read-only
 and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
 `task_queue_full`.
 
-**Dependencies:** `.basic_worker`, `.manager`, `.task_handler`.
+**Dependencies:** `.basic_worker`, `.manager`, `.task_handler`, `.transport`
+(`TaskTransport`/`TaskSink`/`InMemoryTransport`).
 **Depended on by:** `ValkeyWorker`, examples, tests.
 
-## 9. Valkey worker — `ValkeyWorker`
+## 9. Transport seam — `transport.py`
+
+**File:** `src/scietex/service/transport.py`
+
+**Purpose:** The explicit task-delivery contract (AR-001). Replaces the former
+implicit set of ordering-sensitive template-method hooks with two Protocols and
+a working in-process default, so `TaskProcessor` depends on an interface rather
+than on subclass overrides.
+
+**Main symbols:** `TaskSink` Protocol (19) — the enqueue surface a transport
+delivers into: `task_queue_full() -> bool` and
+`enqueue_task(task_id, task_data) -> bool` (a `TaskProcessor` satisfies it
+structurally, no adapter). `TaskTransport` Protocol (32) — all async:
+`fetch(sink) -> bool`, `requeue(task_id, task_data)`, `release(task_id)`,
+`on_started(task_id, task_data)`,
+`ack(task_id, task_data, task_result, *, cancel_reason=None)`,
+`on_progress(task_id, value)`, `on_drain(task_id, task_data)`.
+`InMemoryTransport` (71) — the default, deque-backed implementation; public
+`submit(task_id, task_data)` feeds it (not part of the Protocol), `fetch` drains
+while the sink is not full, and `on_drain` requeues iff
+`canceled_action == "requeue"`.
+
+**Public interface:** the two Protocols (structural typing — no inheritance
+required) and `InMemoryTransport(*, logger)`.
+
+**Dependencies:** `.task_handler.schemas` only — no `glide`, no `valkey`.
+**Depended on by:** `TaskProcessor` (composes one via keyword-only `transport=`,
+default `InMemoryTransport`), `valkey/transport.py` (implements the Protocol),
+package `__init__.py`.
+
+## 10. Valkey worker — `ValkeyWorker`
 
 **File:** `src/scietex/service/valkey/worker.py`
 
@@ -310,37 +341,38 @@ stream through an `AsyncValkeyHandler`.
 Overrides `_config_type` (111) to `ValkeyWorkerConfig`, so the base instantiates
 the concrete config when `config=None` and `__init__` reads its fields from
 `self._config` rather than re-storing (AR-069).
-Constructor — `__init__(config: ValkeyWorkerConfig | None = None)` (accepts
-`config.valkey_config`; when `None`, defers the disk read to
-`_ensure_client_config()`, called at first connect — AR-066, so construction
-is side-effect-free),
-`connect` 401 (`GlideClient.create` + PING under `_client_lock`; `_client`
-assigned only after PING succeeds, 444; then ensures the logging handler and
-starts it), `disconnect` 460, `heartbeat` 486 (writes msgpack `Heartbeat` to
-`...:status` with TTL 2×interval), `initialize` 527 (start handlers, connect,
-`xgroup_create`), `cleanup` 580 (super + stop logging handler + disconnect),
-`return_task_to_queue` 646 (`xadd` re-queue via `encode_task_envelope`),
-`_recover_pending_tasks` 666
-(`XAUTOCLAIM` pending entries on first fetch; decodes via
-`decode_task_envelope`, skipping unknown-version/invalid entries with an ERROR
-log), `fetch_tasks` 758
-(`xreadgroup` → `decode_task_envelope` → `enqueue_task`; does **not** ack on
-enqueue; a glide
-error triggers disconnect+reconnect, other errors propagate),
-`on_task_completed` 885 (`xack`+`xdel` the entry after the handler finishes),
-`_register_instance` 602 (`SADD` `instance_id` into the registry set),
-`_unregister_instance` 625 (`SREM` it back out).
+Constructor — `__init__(config: ValkeyWorkerConfig | None = None, *,
+client_factory: ClientFactory | None = None)` (accepts `config.valkey_config`;
+when `None`, defers the disk read to `_ensure_client_config()`, called at first
+connect — AR-066, so construction is side-effect-free; `client_factory` is the
+AR-003 injection seam, defaulting to `GlideClient.create`),
+`connect` (`_client_factory` + PING under `_client_lock`; `_client`
+assigned only after PING succeeds; then ensures the logging handler and
+starts it), `disconnect`, `heartbeat` (writes msgpack `Heartbeat` to
+`...:status` with TTL 2×interval), `initialize` (start handlers, connect,
+`xgroup_create`), `cleanup` (super + stop logging handler + disconnect),
+`_register_instance` (`SADD` `instance_id` into the registry set),
+`_unregister_instance` (`SREM` it back out).
+
+Delivery is delegated to the injected `ValkeyTransport` (AR-001): the worker
+composes `self._valkey_transport` and assigns it to `self._transport`, so the
+six former hook overrides (`fetch_tasks`, `return_task_to_queue`,
+`on_task_started`, `on_task_completed`, `_write_task_progress`,
+`_on_queue_drain_task_processing`) are gone — the base `TaskProcessor` hooks
+remain as thin delegators to the composed transport. The worker also composes
+the `TransportHealth` (AR-004), `TaskLeaseManager` (AR-002), and
+`TaskStatusStore` (AR-002) collaborators and injects them into the transport.
 
 Connection ownership (AR-059/061): the worker runs one operational
 `GlideClient` for heartbeat, registry, intake, and task completion;
 `connect()`/`disconnect()` serialize the create→ping→assign and close→null
-sequences behind `_client_lock` (177), and intake reconnects only on glide
+sequences behind `_client_lock`, and intake reconnects only on glide
 errors. The logging handler is an independent owner: `_ensure_logging_handler`
-(366) constructs `AsyncValkeyHandler` with `valkey_config=` (a scalar dict
-translated from the typed config by `_logging_handler_config`, 56) when a typed
-`ValkeyConfig` is available, so the handler builds/closes/reconnects its own
-connection and the worker never touches `handler.client`; only a raw
-`GlideClientConfiguration` falls back to `client=` injection (see §14).
+constructs `AsyncValkeyHandler` with `valkey_config=` (a scalar dict
+translated from the typed config by `_logging_handler_config`) from the typed
+`ValkeyConfig`, so the handler builds/closes/reconnects its own
+connection and the worker never touches `handler.client` (AR-005/AR-014
+removed the raw-`GlideClientConfiguration` fallback).
 
 **Key names** (constructed in `__init__`): status key
 `scietex:{service}:{instance_id}:status`, task stream
@@ -349,29 +381,32 @@ connection and the worker never touches `handler.client`; only a raw
 `scietex:{service}:{instance_id}`, registry set
 `scietex:{service}:workers`. The stream and group are service-scoped so
 replicas share one queue; the consumer/status keys are worker-scoped per
-auto-generated `instance_id`. `_task_entry_ids` (203) maps task UUID → stream
-entry id for deferred acknowledgement; `_recovered` (207) guards one-time
-pending recovery.
+auto-generated `instance_id`. The entry-id map and `recovered` flag now live
+on `ValkeyTransport` (see §15).
 
-The registry set is the enumeration index: `_register_instance` (602) `SADD`s
-the `instance_id` on startup and `_unregister_instance` (625) `SREM`s it on
-shutdown — both best-effort (a failure logs a WARNING and continues). Liveness
+The registry set is the enumeration index: `_register_instance` `SADD`s
+the `instance_id` on startup and `_unregister_instance` `SREM`s it on
+shutdown — both best-effort (a failure logs a WARNING, reports into
+`TransportHealth`, and continues). Liveness
 is the status-key TTL refreshed by `heartbeat()`, so a stale member left by a
 crashed replica is tolerated (the operator probes each member's status key).
 
 **Public interface:** constructor takes a single immutable `ValkeyWorkerConfig`
-(`valkey/config.py`, extends `TaskProcessorConfig`) or `None`; properties
-`valkey_config`, `client`.
+(`valkey/config.py`, extends `TaskProcessorConfig`) or `None`, plus the
+keyword-only `client_factory`; properties `valkey_config` (`ValkeyConfig |
+None`), `client`, `transport_health` (`TransportHealth`).
 
 **Dependencies:** `..task_processor`, `..task_handler.TaskData`,
 `..task_handler.wire` (`encode_task_envelope`/`decode_task_envelope`, AR-064),
-`.schemas.Heartbeat`, `.config` (`ValkeyWorkerConfig`), external
+`.schemas.Heartbeat`, `.config` (`ValkeyWorkerConfig`), `.transport`
+(`ValkeyTransport`), `.health` (`TransportHealth`), `.lease`
+(`TaskLeaseManager`), `.tracking` (`TaskStatusStore`), external
 `scietex.logging.AsyncValkeyHandler`, `._glide` (guarded glide names, AR-048),
 `msgspec`.
 **Depended on by:** `valkey/__init__.py`, package `__init__.py` (guarded),
 example `examples/valkey_async_service.py`.
 
-## 10. Valkey configuration — `valkey/config.py`
+## 11. Valkey configuration — `valkey/config.py`
 
 **File:** `src/scietex/service/valkey/config.py`
 
@@ -382,24 +417,117 @@ always-imported core `config.py`.
 
 **Main symbols:** frozen structs `ValkeyNode` (31), `ValkeyUserCredentials`
 (43), `ValkeyBackoffStrategy` (55), `ValkeyTlsAdvancedConfiguration` (86),
-`ValkeyAdvancedConfig` (114), `ValkeyBaseConfig` (144), `ValkeyConfig` (222);
-`ValkeyWorkerConfig` (242, extends `TaskProcessorConfig` with `valkey_config`,
-`log_stream_name`, `task_fetch_batch_size`, `claim_min_idle_ms`); `read_valkey_config(conf_dir)`
-(285) — creates `valkey.yml` with defaults only if the file is missing; raises
-`RuntimeError` on a present-but-invalid file (339), never overwriting it;
-`generate_glide_config(...)` (344, converts to `GlideClientConfiguration`,
-validates `read_from`/`protocol`, optional PubSub subscriptions when
-`listening=True`).
+`ValkeyAdvancedConfig` (114), `ValkeyBaseConfig` (144), `ValkeyPubSubConfig`
+(145, `listening` + runtime-only `parse_control_message`), `ValkeyConfig`
+(241, `base_config` + `advanced_config` + `pubsub_config`);
+`ValkeyWorkerConfig` (265, extends `TaskProcessorConfig` with `valkey_config`
+(`ValkeyConfig | None`), `log_stream_name`, `task_fetch_batch_size`,
+`claim_min_idle_ms`, `task_tracking_ttl`, `task_lease_ttl`); `read_valkey_config(conf_dir)`
+— creates `valkey.yml` with defaults only if the file is missing; raises
+`RuntimeError` on a present-but-invalid file, never overwriting it;
+`generate_glide_config(valkey_config, service_name, worker_id)` (converts to
+`GlideClientConfiguration`, validates `read_from`/`protocol`, and builds PubSub
+subscriptions from `valkey_config.pubsub_config` when `listening` is set).
 
 **Public interface:** struct constructors; config conversion properties
 (`addresses`, `credentials`, `reconnect_strategy`, `to_advanced_config`, ...).
 
 **Dependencies:** `msgspec`; `._glide` (glide names via the single guarded
-import, AR-048); `..config` (`TaskProcessorConfig`,
-`_validate_range`). **Depended on by:** `ValkeyWorker`, `valkey/__init__.py`,
-tests.
+import, AR-048); `..config` (`TaskProcessorConfig`); `.._validation`
+(`validate_range`, AR-008). **Depended on by:** `ValkeyWorker`,
+`valkey/transport.py`, `valkey/__init__.py`, tests.
 
-## 11. Valkey heartbeat schema
+## 12. Valkey transport — `valkey/transport.py`
+
+**File:** `src/scietex/service/valkey/transport.py`
+
+**Purpose:** The Valkey implementation of the core `TaskTransport` Protocol
+(AR-001). Owns the stream operations that were formerly `ValkeyWorker` hook
+overrides, so the worker keeps only lifecycle concerns.
+
+**Main symbols:** `class ValkeyTransport` — receives all collaborators by
+injection (`config`, `service_name`, `consumer_name`, `stream_name`,
+`group_name`, `client_provider`, `health`, `lease`, `status`, `entry_ids`,
+`logger`). Methods: `fetch(sink)` (`xreadgroup` → `decode_task_envelope` →
+`enqueue_task`; does **not** ack on enqueue; a glide error reports into
+`TransportHealth` and triggers `recover()`), `recover_pending_tasks(sink)`
+(`XAUTOCLAIM` pending entries on first fetch; decodes via
+`decode_task_envelope`, skipping unknown-version/invalid entries with an ERROR
+log), `requeue(task_id, task_data)` (`xadd` re-queue via `encode_task_envelope`,
+then deletes the lease — AR-006b), `release(task_id)` (lease delete only),
+`on_started`, `ack(task_id, task_data, task_result, *, cancel_reason=None)`
+(`xack`+`xdel` the entry after the handler finishes; skips the lease delete for
+a retryable error result — AR-006b), `on_progress`, `on_drain` (durable drain:
+deletes the lease without re-enqueueing), and `refresh_leases()` (rewrites
+leases for every task in the entry-id map; called by the worker watchdog).
+
+**State owned:** the entry-id map (`task UUID → stream entry id`, for deferred
+acknowledgement) and the `recovered` flag (one-time pending recovery).
+
+**Dependencies:** `.config`, `.health`, `.lease`, `.tracking`, `._glide`,
+`..task_handler.wire`. **Depended on by:** `ValkeyWorker` (injected as
+`self._transport`).
+
+## 13. Valkey transport health — `valkey/health.py`
+
+**File:** `src/scietex/service/valkey/health.py`
+
+**Purpose:** Connection-health supervisor (AR-004). Aggregates every glide
+failure across the worker and its collaborators, owns the single reconnect
+path, and surfaces one CRITICAL per sustained outage.
+
+**Main symbols:** `DEFAULT_TRANSPORT_DOWN_THRESHOLD_SECONDS = 30.0`;
+`class TransportHealth(*, reconnect, is_connected, logger,
+down_threshold=30.0, reconnect_cooldown=1.0, clock=time.monotonic)`.
+Properties `connected`, `degraded`, `last_error`, `failure_count`,
+`down_duration`. Methods: `mark_connected()`, `mark_disconnected()`,
+`report_failure(exc)` (sync, non-blocking — records state and requests a
+reconnect), `async recover()` (the single reconnect owner: `asyncio.Lock` dedup
++ cooldown + supervised retry), `critical_report() -> str | None` (one message
+per down episode past the threshold).
+
+**Dependencies:** `asyncio`, `logging`, `time`, `collections.abc` only — **no
+glide import**. **Depended on by:** `ValkeyWorker` (exposed via
+`transport_health`), `ValkeyTransport`, `TaskLeaseManager`, `TaskStatusStore`.
+
+## 14. Valkey task lease — `valkey/lease.py`
+
+**File:** `src/scietex/service/valkey/lease.py`
+
+**Purpose:** Per-entry lease store (AR-002 extraction). Guards a task against
+concurrent processing by a peer replica.
+
+**Main symbols:** constants `LEASE_TTL_HEARTBEAT_MULTIPLIER = 2`,
+`LEASE_TTL_WATCHDOG_MULTIPLIER = 3`, `MIN_TASK_LEASE_TTL_SECONDS = 1`;
+`derive_task_lease_ttl(heartbeat_interval, watchdog_interval) -> int`
+(`max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`);
+`class TaskLeaseManager(*, service_name, consumer_name, lease_ttl,
+client_provider, logger, report_failure=None)` with `key(task_id)`
+(`scietex:{service}:lease:{id}`), `write(task_id)` (SET with consumer name +
+TTL), `acquire(task_id)` (SET NX; `True` on error, fail-safe), `delete(task_id)`
+(DEL), `refresh(task_ids)` (write per id over a snapshot).
+
+**Dependencies:** `._glide` (`ClientProvider`, glide error classes).
+**Depended on by:** `ValkeyWorker`, `ValkeyTransport`.
+
+## 15. Valkey task status — `valkey/tracking.py`
+
+**File:** `src/scietex/service/valkey/tracking.py`
+
+**Purpose:** Per-task status store (AR-002 extraction). Records the running and
+terminal status of each task for external observers.
+
+**Main symbols:** `class TaskStatusStore(*, service_name, tracking_ttl,
+client_provider, logger, report_failure=None)` with `key(task_id)`
+(`scietex:{service}:task:{id}`), `record_running(task_id, task_data)`,
+`record_terminal(task_id, task_data, task_result, cancel_reason=None)`, and
+`update_progress(task_id, value)` (read-modify-write; preserves other fields,
+synthesizes a default running record when absent, silent on `DecodeError`).
+
+**Dependencies:** `._glide`, `..task_handler` (schemas). **Depended on by:**
+`ValkeyWorker`, `ValkeyTransport`.
+
+## 16. Valkey heartbeat schema
 
 **File:** `src/scietex/service/valkey/schemas.py`
 **Purpose/content:** `Heartbeat` (16) (frozen Struct) with `service`,
@@ -407,7 +535,7 @@ tests.
 `timestamp` uses `msgspec.field(default_factory=...)` (38) for a per-instance
 value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 
-## 12. Valkey stream purge utility — `purge.py`
+## 17. Valkey stream purge utility — `purge.py`
 
 **File:** `src/scietex/service/valkey/purge.py`
 
@@ -425,7 +553,7 @@ consumer_name, logger=None)` (22) — orchestrates the purge; private helpers
 `TYPE_CHECKING`); the caller supplies an open client. **Depended on by:**
 `valkey/__init__.py`.
 
-## 13. Utilities
+## 18. Utilities
 
 - **`utils/config.py`** — `prepare_conf_dir()` (33): returns first existing dir
   in order `conf_dir` arg → `SCIETEX_CONFIG_DIR` env → `$XDG_CONFIG_HOME/scietex`
@@ -434,7 +562,7 @@ consumer_name, logger=None)` (22) — orchestrates the purge; private helpers
 - **`utils/logo.py`** — `print_scietex_logo(service_name, version)` (34) prints
   ASCII banner using `..version.__version__`.
 
-## 14. External async logging backend — `scietex.logging`
+## 19. External async logging backend — `scietex.logging`
 
 Installed dependency (>=2.0.0). The package embeds this framework's log sink.
 Consumed classes:
@@ -451,14 +579,12 @@ Consumed classes:
 - `AsyncValkeyHandler(AsyncBrokerHandler)` — `xadd` to a stream. `ValkeyWorker`
   constructs it with `valkey_config=` (a dict of scalar
   `GlideClientConfiguration` options translated from the typed `ValkeyConfig`)
-  on the first successful `connect()` (worker.py:366-399), so the handler owns
-  an independent connection and reconnects autonomously. Only when the worker
-  was given a raw `GlideClientConfiguration` does it fall back to `client=`
-  injection (worker.py:384-390).
+  on the first successful `connect()`, so the handler owns
+  an independent connection and reconnects autonomously.
 - `ScietexFormatter`.
 
 **Important:** a handler built from `valkey_config=` owns and closes its own
 client (autonomous reconnect/backoff); a handler built from the `client=` kwarg
 never closes it — the caller owns its lifetime and recovery. `ValkeyWorker` uses
-the former by default and the latter only for the raw-`GlideClientConfiguration`
-fallback.
+the former (the raw-`GlideClientConfiguration` fallback that used the latter was
+removed in AR-005/AR-014).

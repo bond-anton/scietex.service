@@ -38,6 +38,19 @@ Run all commands (linters, tests, examples) within this environment.
 - `TaskProcessor` — Extends worker with task queue, concurrent processing, watchdog timeout monitoring
 - `ValkeyWorker` — Extends processor with Valkey (Redis) integration via `glide` client
 
+**Transport layer:**
+- `TaskTransport` — Protocol for the task-delivery backend (`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`); `TaskProcessor` composes one via the keyword-only `transport=` argument
+- `TaskSink` — Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`)
+- `InMemoryTransport` — Default in-process transport (deque-backed; feed it with `submit(task_id, task_data)`)
+- `ValkeyTransport` (`scietex.service.valkey`) — Valkey-stream implementation, injected automatically by `ValkeyWorker`
+- The legacy hooks (`fetch_tasks`, `return_task_to_queue`, `on_task_started`, `on_task_completed`, `_write_task_progress`, `_on_queue_drain_task_processing`) remain on `TaskProcessor` as thin delegators to the transport
+
+**Valkey collaborators (internal, `scietex.service.valkey`):**
+- `TransportHealth` (`health.py`) — connection-health supervisor: aggregates failures, owns the single reconnect path, logs one CRITICAL per sustained outage; exposed via `ValkeyWorker.transport_health`
+- `TaskLeaseManager` (`lease.py`) — per-entry lease store (`key`/`write`/`acquire`/`delete`/`refresh`)
+- `TaskStatusStore` (`tracking.py`) — per-task status records (`record_running`/`record_terminal`/`update_progress`)
+- `ValkeyWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(GlideClientConfiguration) -> Awaitable[GlideClient]` used by `connect()`, defaulting to `GlideClient.create`
+
 ## Service Entry Points
 
 Run examples with:
@@ -79,6 +92,8 @@ is created.
 - Reads `valkey.yml` from config dir (YAML, uses `msgspec.yaml.decode`)
 - Raises RuntimeError if the file is present but invalid; creates defaults only if missing
 - Read deferred to first `connect()` (AR-066): constructing `ValkeyWorker()` with no explicit `valkey_config` does not touch the filesystem
+- `ValkeyWorkerConfig.valkey_config` is `ValkeyConfig | None` (the raw-`GlideClientConfiguration` fallback was removed); PubSub listening is expressed via `ValkeyConfig.pubsub_config` (`ValkeyPubSubConfig(listening=..., parse_control_message=...)`)
+- `ValkeyWorkerConfig.task_lease_ttl: int | None = None` — lease lifetime in seconds, bounds `[1, 86400]`; `None` derives `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`
 - Install extras: `uv sync --extra valkey` or `pip install "scietex.service[valkey]"`
 
 ## Task Handler System
@@ -118,5 +133,6 @@ is created.
 - **Logging is async** — uses `ConsoleHandler` and `AsyncValkeyHandler` (both subclass `AsyncLoggingHandler`); shutdown has timeout
 - **Manager restart** — fails restarts automatically on error (except `CancelledError`), up to `manager_max_retries` consecutive failures (default 5), after which it gives up
 - **Valkey stream names:** `scietex:{service_name}:tasks` with group `scietex:{service_name}:task_group`
+- **Transport seam:** `TaskProcessor` composes a `TaskTransport` (default `InMemoryTransport`); `ValkeyWorker` injects `ValkeyTransport`. The six legacy delivery hooks remain as thin delegators, so subclass overrides still work
 - **Timeout defaults:** `task_timeout` (config `TaskProcessorConfig.task_timeout`) = 3s, `heartbeat_interval` = 10s, `watchdog_interval` = 1s
 - **Python 3.10+ required** (per `requires-python = ">=3.10"`)

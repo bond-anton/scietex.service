@@ -13,9 +13,9 @@ scietex.service (public API)                 __init__.py
 valkey  (valkey/worker.py)
    │ extends │ imports
    ▼         ▼
-task_processor ──► task_handler (basic ─► schemas; wire)
-   │ extends
-   ▼
+task_processor ──► transport (TaskTransport / TaskSink / InMemoryTransport)
+   │ extends      │
+   ▼              └──► task_handler (basic ─► schemas; wire)
 basic_worker ──► manager
    │        │
    │        └──► utils (config, logo)
@@ -26,11 +26,15 @@ scietex.logging (ConsoleHandler / AsyncValkeyHandler)     [external]
 glide (valkey-glide, optional)                              [external]
 ```
 
+`valkey/transport.py` (`ValkeyTransport`) implements the core `transport`
+Protocol and composes the Valkey-specific collaborators `valkey/config`,
+`valkey/health`, `valkey/lease`, and `valkey/tracking`.
+
 ## Edge table
 
 | From | To | Kind | Notes |
 |---|---|---|---|
-| `scietex.service/__init__` | `task_processor`, `basic_worker`, `config`, `manager`, `version` | import | unconditional |
+| `scietex.service/__init__` | `task_processor`, `basic_worker`, `config`, `manager`, `transport`, `version` | import | unconditional |
 | `scietex.service/__init__` | `valkey` | import | inside `try/except ImportError` — optional feature |
 | `basic_worker` | `.config` | import | `WorkerConfig`, `DEFAULT_*` constants |
 | `basic_worker` | `.manager` | import | `Manager` |
@@ -44,16 +48,22 @@ glide (valkey-glide, optional)                              [external]
 | `task_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `task_processor` | `.manager` | import | for `@Manager` decorators |
 | `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskHandlerContext`, `TaskResult`, `TaskTracker` |
+| `task_processor` | `.transport` | import | `TaskTransport`, `InMemoryTransport` (default transport) |
+| `transport` | `.task_handler.schemas` | import | `TaskData`, `TaskResult`, `CancelReason` (no `glide` dependency) |
 | `task_handler.basic` | `.schemas` | import | runtime |
 | `task_handler.basic` | `.context` | import | `TaskHandlerContext` (narrow context; no worker reference) |
 | `valkey.worker` | `task_processor` | inheritance | `ValkeyWorker(TaskProcessor)` |
 | `valkey.worker` | `.task_handler`, `.task_handler.wire` | import | `TaskData`, `TaskResult`, `encode_task_envelope`/`decode_task_envelope` |
-| `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
+| `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` || `valkey.worker` | `.transport`, `.health`, `.lease`, `.tracking` | import | composes `ValkeyTransport` + the health/lease/status collaborators |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
 | `valkey.worker` | `glide` | import (external, optional extra) | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); errors surface to top-level guard |
+| `valkey.transport` | `.config`, `.health`, `.lease`, `.tracking`, `._glide` | import | implements the core `TaskTransport` Protocol; composes the Valkey collaborators |
+| `valkey.health` | `asyncio`, `logging`, `time` | import | no `glide` dependency — a generic connection-health supervisor |
+| `valkey.lease` | `._glide` | import | `ClientProvider`, glide error classes |
+| `valkey.tracking` | `._glide`, `..task_handler` | import | `ClientProvider`, glide error classes; `TaskData`/`TaskResult`/`CancelReason` |
 | `valkey._glide` | `glide` | import (external, optional extra) | single guarded `try/except ImportError` re-raise with install hint (AR-048); errors surface to top-level guard |
 | `valkey.config` | `glide`, `msgspec` | import | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); config cannot load without the extra |
-| `valkey.config` | `..config` | import | `TaskProcessorConfig`, `_validate_range` |
+| `valkey.config` | `..config`, `.._validation` | import | `TaskProcessorConfig`; `validate_range` (AR-008) |
 | `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; imports `GlideClient` from `._glide` (no runtime import — caller supplies an open client) |
 | `task_handler.schemas` | `msgspec` | import | struct + serialization |
 
@@ -79,9 +89,7 @@ glide (valkey-glide, optional)                              [external]
   external handlers. The logging `AsyncValkeyHandler` builds and owns its own
   `GlideClient` from `valkey_config=` (a scalar dict translated from the typed
   `ValkeyConfig`), so the handler opens and closes a client independently of the
-  worker's operational client (AR-059/061); only a raw
-  `GlideClientConfiguration` falls back to the `scietex.logging>=2.0.0`
-  client-injection seam.
+  worker's operational client (AR-059/061).
 - **Public API re-export guard**: the only place core code tolerates a missing
   optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
   `ImportError`, which is caught (`__init__.py:54`) and reported via a warning
@@ -110,7 +118,7 @@ glide (valkey-glide, optional)                              [external]
 ## Important dependency chains
 
 1. **Task path (wire)**:
-   `ValkeyWorker.return_task_to_queue/fetch_tasks`
+   `ValkeyTransport.requeue/fetch`
    → `encode_task_envelope`/`decode_task_envelope`
    (`task_handler/wire.py`, msgpack `TaskEnvelope` wrapping a `TaskData`)
    → `task_handler.schemas.TaskData` → `TaskProcessor.process_task` →

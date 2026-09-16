@@ -105,7 +105,9 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | `LEASE_TTL_HEARTBEAT_MULTIPLIER` | `2` | Heartbeat multiplier in the derived per-entry lease TTL |
 | `LEASE_TTL_WATCHDOG_MULTIPLIER` | `3` | Watchdog multiplier in the derived per-entry lease TTL |
 | `MIN_TASK_LEASE_TTL_SECONDS` | `1` | Floor of the derived per-entry lease TTL |
-| Task lease TTL (derived) | `20` | `max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))` seconds; not configurable |
+| `MIN_TASK_LEASE_TTL` (`ValkeyWorkerConfig`) | `1` | Lower bound (seconds) of the configurable `task_lease_ttl` |
+| `MAX_TASK_LEASE_TTL` (`ValkeyWorkerConfig`) | `86400` | Upper bound (seconds) of the configurable `task_lease_ttl` (24 hours) |
+| Task lease TTL | derived `20` | `task_lease_ttl` when set; otherwise `max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))` seconds |
 | `MIN_TASK_TRACKING_TTL` | `1` | Floor (seconds) of the task tracking TTL |
 | `MAX_TASK_TRACKING_TTL` | `2592000` | Ceiling (seconds) of the task tracking TTL (30 days) |
 | `DEFAULT_TASK_TRACKING_TTL` | `86400` | Default task tracking TTL in seconds (24 hours); applied when `task_tracking_ttl` is `None` |
@@ -135,8 +137,9 @@ to Valkey, and creates the consumer group for the task stream (with
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `valkey_config` | `ValkeyConfig \| GlideClientConfiguration \| None` | `None` | The Valkey configuration used by this worker. When no explicit config was given at construction, it is loaded lazily from disk at first connect, so it is `None` until then |
+| `valkey_config` | `ValkeyConfig \| None` | `None` | The Valkey configuration used by this worker. When no explicit config was given at construction, it is loaded lazily from disk at first connect, so it is `None` until then |
 | `client` | `GlideClient \| None` | `None` | The active Valkey client (``None`` until connected) |
+| `transport_health` | `TransportHealth` | — | Connection-health supervisor: aggregates transport failures, owns the single reconnect path, and surfaces `connected`/`degraded`/`last_error`/`failure_count`/`down_duration` |
 
 ### Inherited from TaskProcessor
 
@@ -151,7 +154,9 @@ to Valkey, and creates the consumer group for the task stream (with
 
 `ValkeyWorker` takes a single immutable configuration object
 (`ValkeyWorkerConfig`, from `scietex.service.valkey.config`, which extends
-`TaskProcessorConfig`), or `None` to use the struct defaults:
+`TaskProcessorConfig`), or `None` to use the struct defaults. It also accepts
+an optional keyword-only `client_factory` — an async callable used by
+`connect()` to build the `GlideClient`:
 
 ```python
 import logging
@@ -173,19 +178,38 @@ worker = ValkeyWorker(
         task_fetch_batch_size=10,
         claim_min_idle_ms=None,
         task_tracking_ttl=None,
+        task_lease_ttl=None,
     )
 )
 ```
+
+### Client factory
+
+`ValkeyWorker.__init__(config=None, *, client_factory: ClientFactory | None = None)`
+where `ClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]`.
+When omitted, the factory defaults to `GlideClient.create`. Supplying one lets
+embedders and tests inject a client without monkeypatching `GlideClient`:
+
+```python
+async def my_factory(client_config):
+    return await GlideClient.create(client_config)
+
+worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc"), client_factory=my_factory)
+```
+
+The factory runs inside `connect()`, so the full connect contract (PING,
+logging-handler construction, connectivity signal) is preserved.
 
 `ValkeyWorkerConfig` adds these fields on top of `TaskProcessorConfig`:
 
 | Field | Default | Description |
 |---|---|---|
-| `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig` or raw `GlideClientConfiguration`). If `None`, `valkey.yml` is read lazily from the config directory at first connect (not at construction) |
+| `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig`). If `None`, `valkey.yml` is read lazily from the config directory at first connect (not at construction). PubSub listening is expressed via `ValkeyConfig.pubsub_config` (a `ValkeyPubSubConfig`) |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
 | `claim_min_idle_ms` | `None` (default `1000`) | Outer idle floor (ms) before `XAUTOCLAIM` considers reclaiming a pending entry during startup recovery; the per-entry lease is the authoritative liveness check (see [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)) |
 | `task_tracking_ttl` | `None` (default `86400`) | Server-side TTL in seconds for task tracking records; `None` resolves to `DEFAULT_TASK_TRACKING_TTL` (`86400` s / 24 h). Valid range `[1, 2592000]` |
+| `task_lease_ttl` | `None` (derived) | Server-side TTL in seconds for per-entry leases; `None` derives `max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))`. Valid range `[1, 86400]` |
 
 All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
 Configuration is immutable: values are fixed at construction, and
@@ -281,15 +305,15 @@ On the first call, recovers entries left pending by a previous run (see
 decodes each versioned envelope payload into a `TaskData` struct (see
 [Wire Format](#wire-format)), and enqueues it via
 the non-blocking `enqueue_task()` as a `(UUID, TaskData)` tuple. Each
-accepted entry's id is recorded in `_task_entry_ids` and its per-entry lease
-is written at enqueue-accept (ownership begins when the entry is recorded),
-so a task is protected from a peer's recovery for its whole queue wait, not
-just while it runs. The stream entries are NOT acknowledged here — they stay
-in the consumer group's pending list until `on_task_completed()` acks them
-after the handler finishes. If the queue is full, an entry is left pending
-(deferred, and its lease not written) and is never blocking. On read errors,
-disconnects and attempts to reconnect to Valkey. Returns `True` if at least
-one task was enqueued, `False` otherwise.
+accepted entry's id is recorded in the transport's entry-id map and its
+per-entry lease is written at enqueue-accept (ownership begins when the entry
+is recorded), so a task is protected from a peer's recovery for its whole
+queue wait, not just while it runs. The stream entries are NOT acknowledged
+here — they stay in the consumer group's pending list until
+`on_task_completed()` acks them after the handler finishes. If the queue is
+full, an entry is left pending (deferred, and its lease not written) and is
+never blocking. On read errors, disconnects and attempts to reconnect to
+Valkey. Returns `True` if at least one task was enqueued, `False` otherwise.
 
 ### on_task_completed()
 
@@ -335,7 +359,8 @@ async def _write_task_progress(self, task_id: UUID, value: float) -> None:
 
 `ValkeyWorker` overrides the base `TaskProcessor._write_task_progress()`
 no-op hook (invoked via `report_progress()`, which clamps `value` to
-`[0.0, 100.0]`). It `GET`s the task tracking key, msgpack-decodes the stored
+`[0.0, 100.0]`) and delegates to `TaskStatusStore.update_progress()`. It `GET`s
+the task tracking key, msgpack-decodes the stored
 `TaskStatus`, replaces `progress` with
 `TaskProgress(progress=True, value=value)` and `updated_at` with the current
 UTC time, then rewrites the record. When the key is missing it synthesizes a
@@ -352,13 +377,14 @@ async def watchdog(self) -> None:
     """Refresh per-entry leases, then run the base watchdog."""
 ```
 
-Overrides `TaskProcessor.watchdog()` to call `_refresh_task_leases()` before
-`super().watchdog()`. `_refresh_task_leases()` rewrites the lease for every
-task in `_task_entry_ids` — the authoritative ownership map covering both
-queued and running tasks — so a live lease always outlives its refresh window
-even when the base watchdog blocks on a cancellation wait, and a queued task's
-lease stays alive indefinitely regardless of queue wait (as long as the event
-loop is healthy). In normal operation a task leaves `_task_entry_ids` only in
+Overrides `TaskProcessor.watchdog()` to refresh per-entry leases before
+`super().watchdog()`. The refresh is delegated to the injected
+`ValkeyTransport` (`refresh_leases()`), which rewrites the lease for every
+task in the transport's entry-id map — the authoritative ownership map covering
+both queued and running tasks — so a live lease always outlives its refresh
+window even when the base watchdog blocks on a cancellation wait, and a queued
+task's lease stays alive indefinitely regardless of queue wait (as long as the
+event loop is healthy). In normal operation a task leaves the map only in
 `on_task_completed()`, which also deletes the lease, so a cancelled or
 completed task stops being refreshed and its entry becomes reclaimable;
 `cleanup()` clears the map on shutdown (see
@@ -436,8 +462,8 @@ evolve independently of the in-process handler contract (AR-064).
 Encoding and decoding are centralized in the shared, transport-agnostic
 helpers `encode_task_envelope(task_data)` and
 `decode_task_envelope(payload)` from `scietex.service.task_handler.wire`.
-`return_task_to_queue()` encodes through `encode_task_envelope`, and
-`fetch_tasks()` / `_recover_pending_tasks()` decode through
+`ValkeyTransport.requeue()` encodes through `encode_task_envelope`, and
+`fetch()` / `recover_pending_tasks()` decode through
 `decode_task_envelope`. A payload that is not a valid envelope, or that
 carries an unknown version, decodes to `None` and the entry is skipped with
 an ERROR log — intake never crashes on an unrecognized wire payload.
@@ -448,7 +474,7 @@ an ERROR log — intake never crashes on an unrecognized wire payload.
 acknowledged and deleted only after its handler finishes, so a crash
 mid-processing redelivers the task on restart.
 
-- `_recover_pending_tasks()` — On the first `fetch_tasks()`, uses
+- `ValkeyTransport.recover_pending_tasks()` — On the first `fetch()`, uses
   `XAUTOCLAIM` to claim pending entries idle for at least `claim_min_idle_ms`
   and re-enqueue them, redelivering tasks that were read but never
   acknowledged before a crash. Each claimed entry's per-entry lease is
@@ -456,11 +482,12 @@ mid-processing redelivers the task on restart.
   recoveries on two replicas cannot both reclaim it; a claimed entry whose
   lease is held by another worker is skipped (see
   [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)).
-- `_task_entry_ids` — A `dict[UUID, str | bytes]` mapping each accepted
+- **Entry-id map** — A `dict[UUID, str | bytes]` mapping each accepted
   task's UUID to the stream entry id it was read from, recorded at
-  enqueue-accept time. It doubles as the lease-refresh ownership map, so it
-  stays authoritative until `on_task_completed()` pops it.
-- `on_task_completed()` — Called when a task's processing terminates.
+  enqueue-accept time. It lives on the `ValkeyTransport` and doubles as the
+  lease-refresh ownership map, so it stays authoritative until
+  `on_task_completed()` pops it.
+- `ValkeyTransport.ack()` — Called when a task's processing terminates.
   Looks up the recorded entry id and `XACK`s + `XDEL`s it, removing the
   entry from the pending list only after the handler's work is done, then
   deletes the lease.
@@ -487,57 +514,59 @@ entry can be processed by more than one worker. Two gates guard the
 The lease key is `scietex:{service_name}:lease:{task_id}` — a distinct prefix
 from the task tracking key `scietex:{service_name}:task:{task_id}`. Its value
 is the holder's consumer name (`scietex:{service_name}:{instance_id}`) and it
-carries a server-side TTL derived, not configured, from the worker's timing
-settings:
+carries a server-side TTL. The TTL is configurable via
+`ValkeyWorkerConfig.task_lease_ttl` (valid range `[1, 86400]` seconds); when
+`None`, it is derived from the worker's timing settings:
 
 ```
 max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval))) seconds
 ```
 
-With the defaults (heartbeat `10` s, watchdog `1` s) the TTL is **20 s**. The
-module constants `LEASE_TTL_HEARTBEAT_MULTIPLIER = 2`,
+With the defaults (heartbeat `10` s, watchdog `1` s) the derived TTL is
+**20 s**. The module constants `LEASE_TTL_HEARTBEAT_MULTIPLIER = 2`,
 `LEASE_TTL_WATCHDOG_MULTIPLIER = 3`, and `MIN_TASK_LEASE_TTL_SECONDS = 1`
-express the derivation; the TTL is not exposed as a config field.
+express the derivation; `MIN_TASK_LEASE_TTL`/`MAX_TASK_LEASE_TTL` bound the
+configurable field.
 
 Lifecycle:
 
-- **Acquired at enqueue-accept.** `fetch_tasks()` writes the lease right after
-  recording the entry id in `_task_entry_ids`; `_recover_pending_tasks()`
-  acquires it before enqueueing. Ownership therefore begins when the entry is
-  accepted, so a task sitting in the internal queue is leased for its whole
-  queue wait — the window where a starting replica could reclaim an unstarted
-  task is closed.
+- **Acquired at enqueue-accept.** `ValkeyTransport.fetch()` writes the lease
+  right after recording the entry id in its entry-id map;
+  `recover_pending_tasks()` acquires it before enqueueing. Ownership therefore
+  begins when the entry is accepted, so a task sitting in the internal queue is
+  leased for its whole queue wait — the window where a starting replica could
+  reclaim an unstarted task is closed.
 - **Refreshed** by the `ValkeyWorker.watchdog()` override, which calls
-  `_refresh_task_leases()` for every task in `_task_entry_ids` — the
+  `ValkeyTransport.refresh_leases()` for every task in the entry-id map — the
   authoritative map covering queued *and* running tasks — before running
-  `super().watchdog()`. `on_task_started()` also rewrites the lease alongside
-  the `running` tracking record.
-- **Deleted** in `on_task_completed()` on every terminal path, after the
+  `super().watchdog()`. `on_started()` also rewrites the lease alongside the
+  `running` tracking record.
+- **Deleted** in `ValkeyTransport.ack()` on every terminal path, after the
   `XACK`/`XDEL` of the stream entry. It is also released on two early-exit
-  paths: the queue-full rollback in `_recover_pending_tasks()` (the entry was
+  paths: the queue-full rollback in `recover_pending_tasks()` (the entry was
   never accepted, so this worker must not hold its lease) and
-  `_on_queue_drain_task_processing()` on shutdown drain (this worker will not
-  run the task, so a restart or peer can reclaim it immediately instead of
-  waiting up to the lease TTL).
-- **Acquired atomically in recovery.** `_recover_pending_tasks()` calls
-  `_acquire_task_lease(task_id)`, which uses `SET ... NX`
+  `on_drain()` on shutdown drain (this worker will not run the task, so a
+  restart or peer can reclaim it immediately instead of waiting up to the lease
+  TTL). `requeue()` also deletes the lease, since the requeued copy reuses the
+  same `task_id` and must not inherit a stale lease (AR-006b).
+- **Acquired atomically in recovery.** `recover_pending_tasks()` calls
+  `TaskLeaseManager.acquire(task_id)`, which uses `SET ... NX`
   (`ConditionalChange.ONLY_IF_DOES_NOT_EXIST`) so two replicas booting
   concurrently cannot both reclaim the same pending entry. It returns `True`
   when this worker holds (or already held) the lease and `False` when another
   holder owns it. On a glide error it returns `True` — fail-open, because an
-  uncertain state must not block reclaim. `fetch_tasks()` still uses the plain
-  `_write_task_lease()`, since `XREADGROUP ">"` delivers each new entry to
+  uncertain state must not block reclaim. `fetch()` still uses the plain
+  `TaskLeaseManager.write()`, since `XREADGROUP ">"` delivers each new entry to
   exactly one consumer, so there is no concurrent claimant to race.
-- **Consulted as an ownership guard** in `_recover_pending_tasks()`. A
+- **Consulted as an ownership guard** in `recover_pending_tasks()`. A
   reclaimed candidate whose atomic acquire fails (a live holder owns it) is
-  skipped — left pending, not enqueued, and not recorded in `_task_entry_ids`
-  — and marks recovery incomplete (`recovery_complete=False`) so `_recovered`
+  skipped — left pending, not enqueued, and not recorded in the entry-id map
+  — and marks recovery incomplete (`recovery_complete=False`) so `recovered`
   stays `False` and recovery retries on the next poll. A candidate already
-  owned by *this* worker (present in `_task_entry_ids`) is also skipped, but
-  does not mark recovery incomplete. `_task_lease_held()` remains as a helper
-  but is no longer used by the recovery path.
+  owned by *this* worker (present in the entry-id map) is also skipped, but
+  does not mark recovery incomplete.
 
-Reclaim is non-destructive: `_recover_pending_tasks()` only `XADD`s a copy of
+Reclaim is non-destructive: `recover_pending_tasks()` only `XADD`s a copy of
 a reclaimed entry, never `XACK`/`XDEL`s the original, so a false skip costs
 only recovery latency (bounded by the lease TTL) while a false reclaim costs a
 duplicate. Exactly-once is not claimed.
@@ -548,15 +577,15 @@ The lease narrows, but does not eliminate, duplicate processing. Handlers must
 remain idempotent.
 
 The previously documented **queued (pre-start) window is now closed**: the
-lease is acquired at enqueue-accept and refreshed over `_task_entry_ids`, so a
-task waiting in the internal queue is protected for its whole queue wait. The
-genuinely residual windows that remain are:
+lease is acquired at enqueue-accept and refreshed over the transport's entry-id
+map, so a task waiting in the internal queue is protected for its whole queue
+wait. The genuinely residual windows that remain are:
 
 - **Lease expiry races.** A lease expiring concurrently with a reclaim or a
   Valkey outage can still duplicate work: the entry's idle time exceeds
   `claim_min_idle_ms`, the lease lapses, and a starting replica reclaims it
   while the original worker is still running it.
-- **Lease-write failure.** `_write_task_lease()` swallows glide errors (a
+- **Lease-write failure.** `TaskLeaseManager.write()` swallows glide errors (a
   lease failure must never break task processing), so a failed accept-time
   write leaves the entry unprotected and a failed watchdog refresh lets a live
   lease expire. Either collapses the guard back to idle-time only.
@@ -572,7 +601,7 @@ genuinely residual windows that remain are:
   block lease refresh; the generous TTL is the only mitigation.
 - **Recovery churn while a queued lease is peer-held (accepted).** A peer's
   lease on a still-queued entry keeps `lease_skipped = True`, so
-  `recovery_complete` stays `False` and `_recovered` remains `False`: recovery
+  `recovery_complete` stays `False` and `recovered` remains `False`: recovery
   re-scans the pending list on every intake poll for the whole queue-wait
   duration. This is deliberate — recovery is the only reclaim path, so marking
   it complete would strand the entry if the holder died (AR-051). No backoff
@@ -689,8 +718,7 @@ full details on all configuration options.
 
 ### Programmatic Configuration
 
-You can also pass a `ValkeyConfig` or raw `GlideClientConfiguration`
-directly:
+You can also pass a `ValkeyConfig` directly:
 
 ```python
 from scietex.service.valkey import (
@@ -729,21 +757,29 @@ traffic, and the `AsyncValkeyHandler` used for async log entries owns its own
 independent connection (AR-059/061). The handler is constructed with
 `valkey_config=` (a scalar dict translated from the typed `ValkeyConfig`) on the
 first successful `connect()`, so it builds, closes, and reconnects its own
-client autonomously; the worker no longer injects or re-points `handler.client`.
-Only a raw `GlideClientConfiguration` falls back to sharing the worker's client
-via `client=` injection. The handler is registered once and reused across
-restarts.
+client autonomously; the worker never injects or re-points `handler.client`.
+The handler is registered once and reused across restarts.
 
 ## Configuration Reference
 
 ### ValkeyConfig
 
-Top-level configuration combining base and advanced settings.
+Top-level configuration combining base, advanced, and PubSub settings.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `base_config` | `ValkeyBaseConfig` | `ValkeyBaseConfig()` | Basic connection parameters |
 | `advanced_config` | `ValkeyAdvancedConfig` | `ValkeyAdvancedConfig()` | Advanced connection settings |
+| `pubsub_config` | `ValkeyPubSubConfig` | `ValkeyPubSubConfig()` | PubSub control-channel settings (`listening`, `parse_control_message`) |
+
+### ValkeyPubSubConfig
+
+PubSub control-channel settings.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `listening` | `bool` | `False` | Subscribe the worker's client to the control channels |
+| `parse_control_message` | `Callable[[PubSubMsg, Any], None] \| None` | `None` | Callback invoked for each incoming PubSub message; runtime-only (not YAML-encodable) |
 
 ### ValkeyBaseConfig
 
@@ -862,19 +898,31 @@ field of a `TaskStatus` tracking record and updated by
 
 ## PubSub Broadcasting
 
-> **Not implemented.** `ValkeyWorker` always creates its client with
-> `listening=False` (`generate_glide_config(..., listening=False)`), so the
-> PubSub path described below is not active. Inter-worker PubSub
-> communication is reserved for future work and is documented here only
-> as a design note.
+PubSub listening is opt-in through the typed schema. Set
+`ValkeyConfig.pubsub_config` to a `ValkeyPubSubConfig` with `listening=True`
+and a `parse_control_message` callback:
 
-The `generate_glide_config()` helper accepts a `listening` parameter.
-Were `listening=True` passed, the client would subscribe to:
+```python
+from scietex.service import ValkeyConfig, ValkeyPubSubConfig, ValkeyWorker, ValkeyWorkerConfig
+
+config = ValkeyConfig(
+    pubsub_config=ValkeyPubSubConfig(
+        listening=True,
+        parse_control_message=my_callback,  # (PubSubMsg, Any) -> None
+    ),
+)
+worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=config))
+```
+
+When `listening` is `True`, the worker's client subscribes to:
 
 | Channel | Pattern | Description |
 |---|---|---|
 | `scietex:{service_name}:{instance_id}` | Exact | Service-specific channel for this worker |
 | `scietex:broadcast` | Exact | Broadcast channel for all workers in the service |
 
-A `parse_control_message` callback could be provided to handle incoming
-PubSub messages.
+Each incoming message is delivered to `parse_control_message`. The callback is
+runtime-only: it cannot be expressed in `valkey.yml` (a callable is not
+YAML-encodable and serializes as `null`), so a `listening: true` loaded from
+YAML subscribes with no callback and drops messages. Configure PubSub
+programmatically when a callback is required.

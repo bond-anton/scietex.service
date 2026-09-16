@@ -169,9 +169,13 @@ RUNNING) / `remove_task_handler`.
 | Logger + async handlers | worker (via `LoggingLifecycle`) | `__init__` / startup | shutdown step 5 |
 | Manager asyncio tasks | worker (via `ManagerRuntime`) | `ManagerRuntime.start_managers` | `ManagerRuntime.stop_managers` |
 | Internal task queue, `running_tasks` | `TaskProcessor` | `__init__` | drained in `cleanup` |
+| Task transport (`TaskProcessor._transport`) | `TaskProcessor` (default `InMemoryTransport`) / `ValkeyWorker` (injects `ValkeyTransport`) | `__init__` | drained in `cleanup` |
 | Task handler instances | processor (created per handler name) | `initialize` | `cleanup` |
 | Handler `is_ready` state | each `TaskHandler` | `start()` | `stop()` |
 | GlideClient (`ValkeyWorker.client`) | worker | `initialize`→`connect` | `cleanup`→`disconnect` |
+| Transport health state (`TransportHealth`) | worker (via `ValkeyWorker.transport_health`) | `__init__` | `mark_disconnected` on `disconnect` |
+| Per-task leases (`TaskLeaseManager`) | worker (injected into `ValkeyTransport`) | `fetch`/`recover_pending_tasks` (enqueue-accept) | `ack`/`on_drain`/`requeue`, or TTL expiry |
+| Per-task status records (`TaskStatusStore`) | worker (injected into `ValkeyTransport`) | `on_started`/`on_progress` | TTL expiry (`task_tracking_ttl`) |
 | Worker registry-set membership (`SADD`/`SREM`) | worker (via `_register_instance`/`_unregister_instance`) | startup step 5 (`_register_instance`) | shutdown step 3 (`_unregister_instance`) |
 | Logging `AsyncValkeyHandler` worker loop | worker (via `LoggingLifecycle`) | `connect()` → `handler.start_logging()` | shutdown (`stop_logging`) |
 | Signal handlers (SIGINT/SIGTERM) | loop (per started worker) | `start()` (`_setup_signal_handlers`) | `stop()` (`_remove_signal_handlers`) |

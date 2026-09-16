@@ -57,11 +57,11 @@ intake and dispatch; per-task `asyncio.Task`; concurrency cap
 **Source:** external producer writes task entries into Valkey stream
 `scietex:{service}:tasks`. Entry shape: one field-value pair per
 message — **field = task UUID string, value = msgpack-encoded versioned
-`TaskEnvelope` wrapping a `TaskData`** (written by `return_task_to_queue`
-via `encode_task_envelope`, `worker.py`).
+`TaskEnvelope` wrapping a `TaskData`** (written by `ValkeyTransport.requeue`
+via `encode_task_envelope`, `valkey/transport.py`).
 
-**Processing chain (`fetch_tasks`, 758):**
-1. On the first call only, `_recover_pending_tasks` runs `XAUTOCLAIM` to
+**Processing chain (`ValkeyTransport.fetch`):**
+1. On the first call only, `recover_pending_tasks` runs `XAUTOCLAIM` to
    re-enqueue entries left pending by a previous crash (at-least-once).
 2. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
    `block_ms=1000`.
@@ -71,14 +71,14 @@ via `encode_task_envelope`, `worker.py`).
    `enqueue_task(UUID(task_id),
    task_data)` (non-blocking; a full queue leaves the entry pending — its id is
    not recorded — to be redelivered on a later poll) — now flows through F1. On
-   success the entry id is recorded in `_task_entry_ids[task_id]`.
+   success the entry id is recorded in the transport's entry-id map.
 4. Decode errors: logged, entry skipped. Read errors: `disconnect()` +
    `connect()` (reconnect).
 
 **Transformation:** msgpack envelope `bytes` → `TaskData` struct → typed
 in-memory queue
 items. The stream entry is **NOT acknowledged on enqueue**; it stays in the
-consumer group's pending list until `on_task_completed` acks it after the
+consumer group's pending list until `ValkeyTransport.ack` acks it after the
 handler's work terminates (see F1 destination note).
 
 **Destination:** internal `task_queue` of the worker → F1.
@@ -150,8 +150,7 @@ heartbeat never surfaces.
   `worker.py:366`) — owns its own `GlideClient`, built from a `valkey_config=`
   dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
   longer shares the worker's client; formats records to a dict and `xadd`s to
-  the log stream `scietex:log` (default). A raw `GlideClientConfiguration`
-  falls back to the `client=` injection seam.
+  the log stream `scietex:log` (default).
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
@@ -174,11 +173,14 @@ only a missing file is created with defaults) →
 `ValkeyConfig` → `generate_glide_config(...)` → `GlideClientConfiguration`
 → `GlideClient.create` in `connect()`.
 
-## F8. Control / PubSub (defined but unused in package)
+## F8. Control / PubSub
 
-`generate_glide_config` supports `listening=True` + `parse_control_message`
-callback → subscribes to channels `scietex:{service}:{instance_id}` and
-`scietex:broadcast` (valkey/config.py:378-388). **`ValkeyWorker` always
-passes `listening=False`**; nothing in the package consumes control messages.
-The PubSub path exists only in config/translation code (`UNKNOWN` consumers —
-likely future or external).
+PubSub listening is opt-in through the typed schema:
+`ValkeyConfig.pubsub_config = ValkeyPubSubConfig(listening=True, parse_control_message=...)`.
+When `listening` is set, `generate_glide_config` subscribes the worker's own
+client to channels `scietex:{service}:{instance_id}` and `scietex:broadcast`
+(valkey/config.py). Each received message is delivered to the
+`parse_control_message` callback. The callback is runtime-only (a callable
+cannot be expressed in `valkey.yml`), so a YAML `listening: true` subscribes
+with no callback and drops messages. `examples/valkey_pubsub_worker.py` is the
+reference consumer.
