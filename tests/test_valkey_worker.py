@@ -9,12 +9,14 @@ accepted determinism trade-off per the 2026-09-09 review AR-071 carve-out.
 
 import asyncio
 import logging
+import time
 from uuid import UUID
 
 import msgspec
 import pytest
 
 from scietex.service import ValkeyWorker
+from scietex.service.task_handler.runtime import TaskTracker
 from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus
 from scietex.service.task_handler.wire import decode_task_envelope, encode_task_envelope
 from scietex.service.valkey._glide import ExpirySet, ExpiryType
@@ -33,6 +35,9 @@ class DummyClient:
         xgroup_create_error=None,
         get_value=None,
         set_error=None,
+        get_values=None,
+        get_error=None,
+        delete_error=None,
     ):
         self._ping_ok = ping_ok
         self.closed = False
@@ -42,12 +47,16 @@ class DummyClient:
         self.xgroup_create_error = xgroup_create_error
         self.get_value = get_value
         self.set_error = set_error
+        self.get_values = get_values
+        self.get_error = get_error
+        self.delete_error = delete_error
         self.acked: list = []
         self.deleted: list = []
         self.xautoclaim_calls: list = []
         self.xreadgroup_calls: list = []
         self.sets: list = []
         self.gets: list = []
+        self.deleted_keys: list = []
 
     async def set(self, key, value=None, expiry=None, *args, **kwargs):
         if self.set_error is not None:
@@ -56,7 +65,17 @@ class DummyClient:
 
     async def get(self, key, *args, **kwargs):
         self.gets.append(key)
+        if self.get_error is not None:
+            raise self.get_error
+        if self.get_values is not None:
+            return self.get_values.get(key, self.get_value)
         return self.get_value
+
+    async def delete(self, keys, *args, **kwargs):
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.deleted_keys.append(keys)
+        return len(keys)
 
     async def sadd(self, *args, **kwargs):
         pass
@@ -648,7 +667,10 @@ async def test_recover_pending_tasks_complete_sets_recovered():
     # fetch_tasks marks recovery done only on completion.
     worker._recovered = False
     ok = await worker.fetch_tasks()
-    assert ok is True
+    # The second pass re-runs recovery: the entry is already owned locally
+    # (recorded in _task_entry_ids during the first pass), so it is skipped
+    # without a lease check and nothing is enqueued (AR-060).
+    assert ok is False
     assert worker._recovered is True
 
 
@@ -862,7 +884,7 @@ async def test_on_task_started_writes_running_tracking_record():
 
     await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
 
-    assert len(client.sets) == 1
+    assert len(client.sets) == 2
     key, value, expiry = client.sets[0]
     assert key == f"scietex:svc:task:{t_id}"
     tracking = msgspec.msgpack.decode(value, type=TaskStatus)
@@ -871,6 +893,11 @@ async def test_on_task_started_writes_running_tracking_record():
     assert tracking.task == "dummy"
     assert tracking.service == "svc"
     assert expiry == ExpirySet(ExpiryType.SEC, 3600)
+    # The per-entry lease is written alongside the tracking record (AR-060).
+    lease_key, lease_value, lease_expiry = client.sets[1]
+    assert lease_key == worker._task_lease_key(t_id)
+    assert lease_value == worker._consumer_name.encode("utf-8")
+    assert lease_expiry == ExpirySet(ExpiryType.SEC, 20)
 
 
 @pytest.mark.asyncio
@@ -1033,3 +1060,262 @@ async def test_tracking_write_failure_does_not_raise():
 
     await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
     await worker.on_task_completed(t_id, TaskData(task="dummy", payload=b"{}"), None)
+
+
+@pytest.mark.asyncio
+async def test_on_task_started_writes_lease_key():
+    """on_task_started writes the per-entry lease alongside the tracking record
+    (AR-060): the consumer-name bytes under a scietex:{service}:lease:{task_id}
+    key with the derived 20s TTL."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
+
+    assert len(client.sets) == 2
+    lease_key, lease_value, lease_expiry = client.sets[1]
+    assert lease_key == worker._task_lease_key(t_id)
+    assert lease_value == worker._consumer_name.encode("utf-8")
+    assert lease_expiry == ExpirySet(ExpiryType.SEC, 20)
+
+
+@pytest.mark.asyncio
+async def test_on_task_completed_deletes_lease_key():
+    """on_task_completed clears the per-entry lease in addition to the usual
+    XACK + XDEL (AR-060)."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+    worker._task_entry_ids[t_id] = b"1-0"
+
+    await worker.on_task_completed(
+        t_id, TaskData(task="dummy", payload=b"{}"), TaskResult(status="success", payload=b"done")
+    )
+
+    assert client.deleted_keys == [[worker._task_lease_key(t_id)]]
+    assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
+    assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_refreshes_leases_for_running_tasks():
+    """watchdog() renews the per-entry lease for every running task before
+    delegating to the base watchdog (AR-060)."""
+    t1 = UUID("11111111-1111-1111-1111-111111111111")
+    t2 = UUID("22222222-2222-2222-2222-222222222222")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    task_a = asyncio.create_task(asyncio.sleep(100))
+    task_b = asyncio.create_task(asyncio.sleep(100))
+    try:
+        worker._TaskProcessor__running_tasks[t1] = TaskTracker(
+            worker_task=task_a,
+            data=TaskData(task="dummy", payload=b"{}"),
+            started=time.monotonic(),
+        )
+        worker._TaskProcessor__running_tasks[t2] = TaskTracker(
+            worker_task=task_b,
+            data=TaskData(task="dummy", payload=b"{}"),
+            started=time.monotonic(),
+        )
+
+        await worker.watchdog()
+
+        assert len(client.sets) == 2
+        keys = {key for key, _value, _expiry in client.sets}
+        assert keys == {worker._task_lease_key(t1), worker._task_lease_key(t2)}
+        assert all(expiry == ExpirySet(ExpiryType.SEC, 20) for _key, _value, expiry in client.sets)
+    finally:
+        task_a.cancel()
+        task_b.cancel()
+        await asyncio.gather(task_a, task_b, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_lease_refresh_noop_without_client():
+    """watchdog() must not raise when no client is connected: the lease refresh
+    is a no-op and the base watchdog iterates an empty running set (AR-060)."""
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker._client = None
+
+    await worker.watchdog()
+
+
+def test_lease_ttl_derivation_default_and_configured():
+    """The per-entry lease TTL is max(1, int(max(2*heartbeat, 3*watchdog)))
+    (AR-060): 20s with defaults, floored at 1s for tiny intervals, and driven
+    by the watchdog term when that interval is large."""
+    default = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    assert default._ValkeyWorker__task_lease_ttl == 20
+
+    tiny = ValkeyWorker(
+        ValkeyWorkerConfig(heartbeat_interval=0.1, watchdog_interval=0.01, valkey_config=ValkeyConfig())
+    )
+    assert tiny._ValkeyWorker__task_lease_ttl == 1
+
+    large_watchdog = ValkeyWorker(ValkeyWorkerConfig(watchdog_interval=600, valkey_config=ValkeyConfig()))
+    assert large_watchdog._ValkeyWorker__task_lease_ttl == 1800
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_skips_entry_with_held_lease():
+    """A pending entry whose lease is held by a live worker is skipped: not
+    enqueued, not recorded, and recovery reports incomplete (AR-060)."""
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    t_id = UUID("22222222-2222-2222-2222-222222222222")
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ],
+        get_values={worker._task_lease_key(t_id): b"other"},
+    )
+    worker._client = client
+
+    recovery_complete, enqueued = await worker._recover_pending_tasks()
+
+    assert (recovery_complete, enqueued) == (False, False)
+    assert worker.task_queue_empty()
+    assert t_id not in worker._task_entry_ids
+    assert client.xautoclaim_calls[0][3] == 1000
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_reclaims_entry_when_lease_absent():
+    """With no lease present, recovery reclaims the entry: enqueued, recorded,
+    and recovery reports complete (AR-060)."""
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    t_id = UUID("22222222-2222-2222-2222-222222222222")
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ]
+    )
+    worker._client = client
+
+    recovery_complete, enqueued = await worker._recover_pending_tasks()
+
+    assert (recovery_complete, enqueued) == (True, True)
+    assert not worker.task_queue_empty()
+    dequeued_id, dequeued_data = worker.dequeue_task()
+    assert dequeued_id == t_id
+    assert dequeued_data.task == "dummy"
+    assert worker._task_entry_ids[t_id] == b"9-0"
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_skips_locally_inflight_entry():
+    """An entry already owned locally (in _task_entry_ids) is skipped without
+    marking recovery incomplete, and is not enqueued twice (AR-060)."""
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    t_id = UUID("22222222-2222-2222-2222-222222222222")
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ]
+    )
+    worker._client = client
+    worker._task_entry_ids[t_id] = b"9-0"
+
+    recovery_complete, enqueued = await worker._recover_pending_tasks()
+
+    assert recovery_complete is True
+    assert enqueued is False
+    assert worker.task_queue_empty()
+    assert worker._task_entry_ids[t_id] == b"9-0"
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_incomplete_when_lease_held_leaves_recovered_false():
+    """fetch_tasks must not mark _recovered done when recovery found a
+    held-lease entry and left it pending (AR-060)."""
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    t_id = UUID("22222222-2222-2222-2222-222222222222")
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ],
+        get_values={worker._task_lease_key(t_id): b"other"},
+    )
+    worker._client = client
+    assert worker._recovered is False
+
+    await worker.fetch_tasks()
+
+    assert worker._recovered is False
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_lease_read_error_skips_entry():
+    """A lease read error is fail-safe: the entry is skipped (not reclaimed)
+    and recovery reports incomplete, so it is retried later (AR-060)."""
+    import scietex.service.valkey.worker as mod
+
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ],
+        get_error=mod.GlideConnectionError("read failed"),
+    )
+    worker._client = client
+
+    recovery_complete, enqueued = await worker._recover_pending_tasks()
+
+    assert recovery_complete is False
+    assert enqueued is False
+    assert worker.task_queue_empty()
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_lease_skip_and_reclaim_mixed():
+    """In one batch, a held-lease entry is skipped while a free entry is
+    reclaimed; recovery reports incomplete (AR-060)."""
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    leased_id = UUID("22222222-2222-2222-2222-222222222222")
+    free_id = UUID("33333333-3333-3333-3333-333333333333")
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {
+                b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]],
+                b"9-1": [[b"33333333-3333-3333-3333-333333333333", payload]],
+            },
+            [],
+        ],
+        get_values={worker._task_lease_key(leased_id): b"other"},
+    )
+    worker._client = client
+
+    recovery_complete, enqueued = await worker._recover_pending_tasks()
+
+    assert recovery_complete is False
+    assert enqueued is True
+    assert leased_id not in worker._task_entry_ids
+    assert worker._task_entry_ids[free_id] == b"9-1"
+    dequeued_id, _data = worker.dequeue_task()
+    assert dequeued_id == free_id
+    assert worker.task_queue_empty()

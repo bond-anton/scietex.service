@@ -88,6 +88,7 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | Worker registry | `scietex:{service_name}:workers` | service-scoped |
 | Consumer name | `scietex:{service_name}:{instance_id}` | worker-scoped |
 | Task tracking key | `scietex:{service_name}:task:{task_id}` | per task |
+| Task lease key | `scietex:{service_name}:lease:{task_id}` | per task |
 | Heartbeat key | `scietex:{service_name}:{instance_id}:status` | worker-scoped |
 | Log stream | `scietex:log` (configurable via `log_stream_name`) | — |
 
@@ -100,7 +101,11 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | `task_timeout` (`TaskProcessorConfig`) | `3` | Default task timeout in seconds (inherited) |
 | `DEFAULT_HEARTBEAT_INTERVAL` | `10` | Default heartbeat interval in seconds |
 | `DEFAULT_WATCHDOG_INTERVAL` | `1` | Default watchdog check interval in seconds |
-| `claim_min_idle_ms` (`ValkeyWorkerConfig`) | `1000` | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry |
+| `claim_min_idle_ms` (`ValkeyWorkerConfig`) | `1000` | Outer idle floor (ms) for `XAUTOCLAIM`; the per-entry lease is the authoritative liveness check |
+| `LEASE_TTL_HEARTBEAT_MULTIPLIER` | `2` | Heartbeat multiplier in the derived per-entry lease TTL |
+| `LEASE_TTL_WATCHDOG_MULTIPLIER` | `3` | Watchdog multiplier in the derived per-entry lease TTL |
+| `MIN_TASK_LEASE_TTL_SECONDS` | `1` | Floor of the derived per-entry lease TTL |
+| Task lease TTL (derived) | `20` | `max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))` seconds; not configurable |
 
 ## Lifecycle
 
@@ -175,7 +180,7 @@ worker = ValkeyWorker(
 | `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig` or raw `GlideClientConfiguration`). If `None`, `valkey.yml` is read lazily from the config directory at first connect (not at construction) |
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
-| `claim_min_idle_ms` | `None` (default `1000`) | Idle floor (ms) before `XAUTOCLAIM` reclaims a pending entry during startup recovery |
+| `claim_min_idle_ms` | `None` (default `1000`) | Outer idle floor (ms) before `XAUTOCLAIM` considers reclaiming a pending entry during startup recovery; the per-entry lease is the authoritative liveness check (see [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)) |
 
 All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
 Configuration is immutable: values are fixed at construction, and
@@ -311,6 +316,23 @@ or `status="failed"` otherwise, with the result payload and error-code fields
 carried over. Tracking is observability only — a failed tracking write is
 logged as a WARNING and never fails or requeues the task itself.
 
+### watchdog()
+
+Refresh per-entry leases, then run the inherited watchdog.
+
+```python
+async def watchdog(self) -> None:
+    """Refresh per-entry leases, then run the base watchdog."""
+```
+
+Overrides `TaskProcessor.watchdog()` to call `_refresh_task_leases()` before
+`super().watchdog()`. `_refresh_task_leases()` rewrites the lease for every
+task in `running_tasks`, so a live lease always outlives its refresh window
+even when the base watchdog blocks on a cancellation wait. Tasks the base
+watchdog cancels leave `running_tasks`, so their leases stop being refreshed
+and expire, making the entries reclaimable (see
+[Duplicate processing in scale-out](#duplicate-processing-in-scale-out)).
+
 ### Task cancellation and external requeue
 
 `ValkeyWorker` inherits the built-in `cancel_task` handler from
@@ -396,9 +418,11 @@ acknowledged and deleted only after its handler finishes, so a crash
 mid-processing redelivers the task on restart.
 
 - `_recover_pending_tasks()` — On the first `fetch_tasks()`, uses
-  `XAUTOCLAIM` to claim every entry in the consumer group's pending list
-  and re-enqueue it, redelivering tasks that were read but never
-  acknowledged before a crash.
+  `XAUTOCLAIM` to claim pending entries idle for at least `claim_min_idle_ms`
+  and re-enqueue them, redelivering tasks that were read but never
+  acknowledged before a crash. A claimed entry whose per-entry lease is still
+  held by a live worker is skipped (see
+  [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)).
 - `_task_entry_ids` — A `dict[UUID, str | bytes]` mapping each enqueued
   task's UUID to the stream entry id it was read from, recorded at fetch
   time so it can be acknowledged later.
@@ -411,32 +435,96 @@ left pending and redelivered on a later poll rather than dropped.
 
 ### Duplicate processing in scale-out
 
-Delivery is *at least once*, not *exactly once*: under specific conditions
-an entry can be processed by more than one worker. The only signal that
-separates an *abandoned* entry from one a live handler is still working on
-is the entry's idle time in the consumer-group pending list. Startup
-recovery (`_recover_pending_tasks`) uses `XAUTOCLAIM` to reclaim every
-pending entry idle for at least `claim_min_idle_ms` (default `1000` ms).
+Delivery is *at least once*, not *exactly once*: under specific conditions an
+entry can be processed by more than one worker. Two gates guard the
+`XAUTOCLAIM` pending-recovery path:
 
-A duplicate window opens only when **two or more live replicas share the
-same task stream** and one of them is processing an entry for longer than
-`claim_min_idle_ms`: the entry sits idle in that replica's pending list, so
-a second replica that starts (or restarts) reclaims and re-enqueues it, and
-both replicas process it. There is no per-entry lease or liveness renewal,
-so this window is inherent to the current design.
+- `claim_min_idle_ms` (default `1000` ms) is the outer, server-side gate:
+  recovery only considers entries whose pending-list idle time exceeds it.
+- a **per-entry lease** is the inner, authoritative liveness check: recovery
+  consults it before re-enqueuing a reclaimed candidate and skips candidates
+  held by a live worker.
+
+#### Per-entry lease
+
+The lease key is `scietex:{service_name}:lease:{task_id}` — a distinct prefix
+from the task tracking key `scietex:{service_name}:task:{task_id}`. Its value
+is the holder's consumer name (`scietex:{service_name}:{instance_id}`) and it
+carries a server-side TTL derived, not configured, from the worker's timing
+settings:
+
+```
+max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval))) seconds
+```
+
+With the defaults (heartbeat `10` s, watchdog `1` s) the TTL is **20 s**. The
+module constants `LEASE_TTL_HEARTBEAT_MULTIPLIER = 2`,
+`LEASE_TTL_WATCHDOG_MULTIPLIER = 3`, and `MIN_TASK_LEASE_TTL_SECONDS = 1`
+express the derivation; the TTL is not exposed as a config field.
+
+Lifecycle:
+
+- **Written** in `on_task_started()`, alongside the `running` tracking record.
+- **Refreshed** by the `ValkeyWorker.watchdog()` override, which calls
+  `_refresh_task_leases()` for every task in `running_tasks` before running
+  `super().watchdog()`.
+- **Deleted** in `on_task_completed()` on every terminal path, after the
+  `XACK`/`XDEL` of the stream entry.
+- **Consulted** in `_recover_pending_tasks()`. A reclaimed candidate whose
+  lease exists is skipped — left pending, not enqueued, and not recorded in
+  `_task_entry_ids` — and marks recovery incomplete (`recovery_complete=False`)
+  so `_recovered` stays `False` and recovery retries on the next poll. A
+  candidate already owned by *this* worker (present in `_task_entry_ids`) is
+  also skipped, but does not mark recovery incomplete. On a glide read error
+  the lease check is fail-safe: it reports the lease as held and the entry is
+  retried after reconnect.
+
+Reclaim is non-destructive: `_recover_pending_tasks()` only `XADD`s a copy of
+a reclaimed entry, never `XACK`/`XDEL`s the original, so a false skip costs
+only recovery latency (bounded by the lease TTL) while a false reclaim costs a
+duplicate. Exactly-once is not claimed.
+
+#### Residual windows
+
+The lease narrows, but does not eliminate, duplicate processing. Handlers must
+remain idempotent.
+
+- **Queued (pre-start) window — not closed.** The lease is written only in
+  `on_task_started()`, after `task_manager` dequeues the task. A task sitting
+  in the internal queue has no lease, so a starting replica can `XAUTOCLAIM` it
+  and enqueue a second copy. The original copy is **not** removed from the
+  first worker's queue — the two queues live in different processes and there
+  is no cross-process queue-removal primitive; reclaim only adds a copy — so
+  both copies can run. The window is bounded by queue wait time (normally
+  milliseconds to seconds) and bites only when the queue is saturated
+  (`max_concurrent_tasks` reached) at the moment a replica starts. Closing it
+  would require leasing at entry-accept time (in `fetch_tasks()` /
+  `_recover_pending_tasks()`, right after `enqueue_task()`) and refreshing over
+  `_task_entry_ids`, with the lease cleared on every queue-exit path
+  (dequeue→start, cancel-while-queued, shutdown drain, queue-full deferral);
+  this is deferred future work.
+- **Lease expiry races.** A lease expiring concurrently with a reclaim, a
+  Valkey outage, or the queued window above can still duplicate work.
+- **Watchdog blocking.** `super().watchdog()` can block up to
+  `task_cancellation_timeout` (default `5` s) waiting on a cancellation; the
+  `20` s TTL tolerates roughly four such blocks. Setting
+  `task_cancellation_timeout` near or above the lease TTL could let a live
+  lease expire mid-block.
+- **Unbounded-timeout tasks.** Tasks with `timeout <= 0` are never cancelled by
+  the watchdog, so their lease renews indefinitely and they are never
+  recovered. This is accepted: the operator opted into unbounded execution.
+- **Event-loop stalls.** CPU-bound handlers block the event loop and therefore
+  block lease refresh; the generous TTL is the only mitigation.
 
 Guidance:
 
 - **Single-consumer deployments are safe.** A lone `ValkeyWorker` never
   reclaims its own in-flight entry — recovery runs once on the first
   `fetch_tasks()`, before any task is in flight in that process.
-- **For multi-replica deployments**, size `claim_min_idle_ms` above the
-  maximum expected handler duration so a live handler's entry is never
-  reclaimed while it is still working. Handlers must tolerate occasional
-  duplicate execution (make them idempotent) regardless of this setting.
-- A per-entry lease / shared in-flight registry that would make recovery
-  cross-process safe is a deferred design (see the 2026-09-09 review,
-  AR-060); it is not implemented.
+- **For multi-replica deployments**, `claim_min_idle_ms` is now only an outer
+  gate and no longer needs to exceed the maximum handler duration; the lease
+  is the authoritative liveness check. Keep handlers idempotent regardless —
+  duplicates are reduced, not eliminated.
 
 ## Example
 
