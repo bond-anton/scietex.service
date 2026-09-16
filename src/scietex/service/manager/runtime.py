@@ -56,6 +56,13 @@ class ManagerRuntime:
         the same ``name=``, a WARNING is logged and the first (most-derived)
         definition wins; the later one is skipped, never silently dropped.
 
+        Discovery is by MRO ``__dict__`` reflection, so a manager's identity is
+        its decorated attribute name (or the explicit ``name=``). Renaming a
+        decorated method renames the manager; overriding a method without
+        re-decorating does not shadow it. This stringly-named coupling is an
+        accepted trade-off (AR-013); an explicit registration API is the
+        planned long-term replacement.
+
         Yields:
             Tuple of (manager_name, manager) for each Manager decorator found
             in the class hierarchy, processed from most-derived to base classes.

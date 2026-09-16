@@ -234,12 +234,19 @@ class ValkeyTransport:
 
         Encodes ``task_data`` into a versioned transport envelope (msgpack)
         and appends a new entry keyed by the string form of ``task_id``.
+
+        The lease is deleted as part of the requeue: the requeued copy reuses
+        the same ``task_id``, so leaving this worker's lease in place would
+        either block a peer from claiming the copy or be clobbered by the
+        peer's fresh lease (AR-006b). Releasing it here means the copy is
+        immediately claimable by any worker.
         """
         client = self._client_provider()
         if client:
             t_id: bytes = str(task_id).encode("utf-8")
             packed = encode_task_envelope(task_data)
             await client.xadd(self._stream_name, [(t_id, packed)])
+        await self._lease.delete(task_id)
 
     async def release(self, task_id: UUID) -> None:
         """Release this task's transport-side ownership claim (its lease).
@@ -285,7 +292,11 @@ class ValkeyTransport:
             except Exception as exc:
                 self._logger.log(logging.ERROR, "Failed to acknowledge task %s: %s", task_id, exc)
         # Ack/delete first, then clear the lease, to minimise the "unleased but
-        # still pending" window.
+        # still pending" window. A retryable error was already requeued (and its
+        # lease released) by ``requeue`` before this ack, so deleting again here
+        # would clobber a peer's fresh lease for the requeued copy (AR-006b).
+        if task_result is not None and task_result.status == "error" and task_result.retryable:
+            return
         await self._lease.delete(task_id)
 
     async def on_progress(self, task_id: UUID, value: float) -> None:

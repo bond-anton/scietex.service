@@ -163,6 +163,7 @@ def test_valkey_worker_config_defaults():
     assert cfg.log_stream_name == "scietex:log"
     assert cfg.task_fetch_batch_size == 10
     assert cfg.claim_min_idle_ms is None
+    assert cfg.task_lease_ttl is None
 
 
 def test_valkey_worker_config_claim_min_idle_ms_in_range_accepted():
@@ -174,3 +175,14 @@ def test_valkey_worker_config_claim_min_idle_ms_in_range_accepted():
 def test_valkey_worker_config_claim_min_idle_ms_out_of_range_raises(value):
     with pytest.raises(msgspec.ValidationError):
         ValkeyWorkerConfig(valkey_config=ValkeyConfig(), claim_min_idle_ms=value)
+
+
+def test_valkey_worker_config_task_lease_ttl_in_range_accepted():
+    cfg = ValkeyWorkerConfig(valkey_config=ValkeyConfig(), task_lease_ttl=30)
+    assert cfg.task_lease_ttl == 30
+
+
+@pytest.mark.parametrize("value", [0, 86_401])
+def test_valkey_worker_config_task_lease_ttl_out_of_range_raises(value):
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(valkey_config=ValkeyConfig(), task_lease_ttl=value)

@@ -295,6 +295,12 @@ class TaskProcessor(BasicWorker):
                 kwarg raises a loud ``TypeError`` at construction, because
                 ``TaskHandler`` subclasses do not accept arbitrary kwargs.
 
+                This is also the informal capability-injection channel (e.g.
+                ``cancel=``, ``report=``). It is an accepted trade-off for now
+                (AR-011): the convention is documented rather than typed, and a
+                misspelled capability fails loudly. Introduce an explicit
+                ``TaskCapabilities`` object when a third capability appears.
+
         Raises:
             ValueError: If the resolved handler name is already registered.
         """

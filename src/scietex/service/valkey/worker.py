@@ -210,7 +210,11 @@ class ValkeyWorker(TaskProcessor):
         self._task_lease = TaskLeaseManager(
             service_name=self.service_name,
             consumer_name=self._consumer_name,
-            lease_ttl=derive_task_lease_ttl(self.heartbeat_interval, self.watchdog_interval),
+            lease_ttl=(
+                cfg.task_lease_ttl
+                if cfg.task_lease_ttl is not None
+                else derive_task_lease_ttl(self.heartbeat_interval, self.watchdog_interval)
+            ),
             client_provider=lambda: self._client,
             logger=self.logger,
             report_failure=self._health.report_failure,
@@ -435,6 +439,10 @@ class ValkeyWorker(TaskProcessor):
         """
 
         if self.client and self.start_time:
+            # Capture the client once: a concurrent _disconnect_locked may close
+            # it mid-await, but glide errors are swallowed and reported to
+            # TransportHealth, which drives the reconnect (AR-012).
+            client = self.client
             heartbeat_data = Heartbeat(
                 service=self.service_name,
                 instance_id=self.instance_id,
@@ -446,7 +454,7 @@ class ValkeyWorker(TaskProcessor):
             self.logger.log(logging.DEBUG, "Sending heartbeat to Valkey: %s", heartbeat_data)
             start_time = time.monotonic()
             try:
-                await self.client.set(
+                await client.set(
                     self._heartbeat_key,
                     value=self.__encoder.encode(heartbeat_data),
                     expiry=ExpirySet(ExpiryType.SEC, int(self.heartbeat_interval * 2)),
@@ -482,11 +490,12 @@ class ValkeyWorker(TaskProcessor):
         if not await super().initialize():
             return False
         await self.connect()
-        if not self.client:
+        client = self.client
+        if not client:
             return False
 
         try:
-            await self.client.xgroup_create(
+            await client.xgroup_create(
                 self._task_stream_name,
                 self._task_group_name,
                 "0-0",  # Use "$" to start from new messages, "0-0" to process existing ones
@@ -530,10 +539,11 @@ class ValkeyWorker(TaskProcessor):
         status key). Only glide connection errors are swallowed; other
         exceptions propagate.
         """
-        if self.client is None:
+        client = self.client
+        if client is None:
             return
         try:
-            await self.client.sadd(self._registry_key, [self.instance_id])
+            await client.sadd(self._registry_key, [self.instance_id])
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.log(
                 logging.WARNING,
@@ -552,10 +562,11 @@ class ValkeyWorker(TaskProcessor):
         client, so the client is still open here. Only glide connection
         errors are swallowed; other exceptions propagate.
         """
-        if self.client is None:
+        client = self.client
+        if client is None:
             return
         try:
-            await self.client.srem(self._registry_key, [self.instance_id])
+            await client.srem(self._registry_key, [self.instance_id])
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.log(
                 logging.WARNING,

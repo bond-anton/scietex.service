@@ -23,6 +23,8 @@ from pathlib import Path
 
 import msgspec
 
+from ._validation import validate_range
+
 DEFAULT_HEARTBEAT_INTERVAL: float = 10
 MIN_HEARTBEAT_INTERVAL: float = 0.1
 MAX_HEARTBEAT_INTERVAL: float = 600
@@ -75,43 +77,6 @@ MAX_TASK_CANCELLATION_TIMEOUT: float = 60
 DEFAULT_TASK_CANCELLATION_TIMEOUT: float = 5
 
 
-def _validate_range(
-    value: float | int | None,
-    name: str,
-    *,
-    minimum: float | int,
-    maximum: float | int | None = None,
-    unbounded_ok: bool = False,
-) -> None:
-    """Raise ``msgspec.ValidationError`` if ``value`` is outside the bounds.
-
-    ``None`` is always allowed (it means "use the default"). ``maximum`` may be
-    ``None`` to enforce only a lower bound. When ``unbounded_ok`` is ``True``, a
-    non-positive value is also allowed: it is the "unbounded" sentinel (e.g. the
-    task timeout watchdog treats ``<= 0`` as "no timeout").
-
-    Args:
-        value: The value to validate.
-        name: Field name used in the error message.
-        minimum: Inclusive lower bound.
-        maximum: Inclusive upper bound, or ``None`` for no upper bound.
-        unbounded_ok: If ``True``, allow ``value <= 0`` as the unbounded
-            sentinel, bypassing the lower-bound check.
-
-    Raises:
-        msgspec.ValidationError: If ``value`` is below ``minimum`` or above
-            ``maximum``.
-    """
-    if value is None:
-        return
-    if unbounded_ok and value <= 0:
-        return
-    if value < minimum:
-        raise msgspec.ValidationError(f"{name} must be >= {minimum}, got {value!r}")
-    if maximum is not None and value > maximum:
-        raise msgspec.ValidationError(f"{name} must be <= {maximum}, got {value!r}")
-
-
 class WorkerConfig(msgspec.Struct, frozen=True):
     """Immutable configuration for a :class:`~scietex.service.basic_worker.BasicWorker`.
 
@@ -153,37 +118,37 @@ class WorkerConfig(msgspec.Struct, frozen=True):
     manager_restart_backoff: float | None = None
 
     def __post_init__(self) -> None:
-        _validate_range(
+        validate_range(
             self.heartbeat_interval,
             "heartbeat_interval",
             minimum=MIN_HEARTBEAT_INTERVAL,
             maximum=MAX_HEARTBEAT_INTERVAL,
         )
-        _validate_range(
+        validate_range(
             self.watchdog_interval,
             "watchdog_interval",
             minimum=MIN_WATCHDOG_INTERVAL,
             maximum=MAX_WATCHDOG_INTERVAL,
         )
-        _validate_range(
+        validate_range(
             self.logger_handler_timeout,
             "logger_handler_timeout",
             minimum=MIN_LOGGER_HANDLER_TIMEOUT,
             maximum=MAX_LOGGER_HANDLER_TIMEOUT,
         )
-        _validate_range(
+        validate_range(
             self.manager_shutdown_timeout,
             "manager_shutdown_timeout",
             minimum=MIN_MANAGER_SHUTDOWN_TIMEOUT,
             maximum=MAX_MANAGER_SHUTDOWN_TIMEOUT,
         )
-        _validate_range(
+        validate_range(
             self.manager_max_retries,
             "manager_max_retries",
             minimum=MIN_MANAGER_MAX_RETRIES,
             maximum=MAX_MANAGER_MAX_RETRIES,
         )
-        _validate_range(
+        validate_range(
             self.manager_restart_backoff,
             "manager_restart_backoff",
             minimum=MIN_MANAGER_RESTART_BACKOFF,
@@ -238,45 +203,45 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _validate_range(self.max_concurrent_tasks, "max_concurrent_tasks", minimum=1)
-        _validate_range(
+        validate_range(self.max_concurrent_tasks, "max_concurrent_tasks", minimum=1)
+        validate_range(
             self.task_manager_sleep_time,
             "task_manager_sleep_time",
             minimum=MIN_MANAGER_SLEEP_TIME,
             maximum=MAX_MANAGER_SLEEP_TIME,
         )
-        _validate_range(
+        validate_range(
             self.task_queue_manager_sleep_time,
             "task_queue_manager_sleep_time",
             minimum=MIN_MANAGER_SLEEP_TIME,
             maximum=MAX_MANAGER_SLEEP_TIME,
         )
-        _validate_range(
+        validate_range(
             self.task_handler_start_timeout,
             "task_handler_start_timeout",
             minimum=MIN_TASK_HANDLER_START_TIMEOUT,
             maximum=MAX_TASK_HANDLER_START_TIMEOUT,
         )
-        _validate_range(
+        validate_range(
             self.task_handler_stop_timeout,
             "task_handler_stop_timeout",
             minimum=MIN_TASK_HANDLER_STOP_TIMEOUT,
             maximum=MAX_TASK_HANDLER_STOP_TIMEOUT,
         )
-        _validate_range(
+        validate_range(
             self.task_timeout,
             "task_timeout",
             minimum=MIN_TASK_TIMEOUT,
             maximum=MAX_TASK_TIMEOUT,
             unbounded_ok=True,
         )
-        _validate_range(
+        validate_range(
             self.task_queue_fetch_timeout,
             "task_queue_fetch_timeout",
             minimum=MIN_TASK_QUEUE_FETCH_TIMEOUT,
             maximum=MAX_TASK_QUEUE_FETCH_TIMEOUT,
         )
-        _validate_range(
+        validate_range(
             self.task_cancellation_timeout,
             "task_cancellation_timeout",
             minimum=MIN_TASK_CANCELLATION_TIMEOUT,

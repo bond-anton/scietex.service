@@ -49,6 +49,7 @@ class DummyClient:
         self.srem_error = srem_error
         self.acked: list = []
         self.deleted: list = []
+        self.added: list = []
         self.xautoclaim_calls: list = []
         self.xreadgroup_calls: list = []
         self.sets: list = []
@@ -105,7 +106,7 @@ class DummyClient:
             raise self.xgroup_create_error
 
     async def xadd(self, *args, **kwargs):
-        pass
+        self.added.append(args)
 
     async def xack(self, *args, **kwargs):
         self.acked.append(args)
@@ -189,8 +190,15 @@ def _entry(entry_id: bytes, task_id: str, payload: bytes):
     return {b"stream": {entry_id: [[task_id.encode("utf-8"), payload]]}}
 
 
-def _make_tracking_worker(client, *, ttl=3600, service="svc"):
+def _make_tracking_worker(client, *, ttl=3600, service="svc", task_lease_ttl=None):
     """Build a ValkeyWorker with an injected client and a known tracking TTL."""
-    worker = ValkeyWorker(ValkeyWorkerConfig(service_name=service, task_tracking_ttl=ttl, valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(
+        ValkeyWorkerConfig(
+            service_name=service,
+            task_tracking_ttl=ttl,
+            task_lease_ttl=task_lease_ttl,
+            valkey_config=ValkeyConfig(),
+        )
+    )
     worker._client = client
     return worker

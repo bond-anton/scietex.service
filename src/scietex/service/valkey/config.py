@@ -13,7 +13,8 @@ from typing import Any
 import msgspec
 from msgspec import field
 
-from ..config import TaskProcessorConfig, _validate_range
+from .._validation import validate_range
+from ..config import TaskProcessorConfig
 from ._glide import (
     AdvancedGlideClientConfiguration,
     BackoffStrategy,
@@ -257,6 +258,8 @@ DEFAULT_CLAIM_MIN_IDLE_MS: int = 1000
 MIN_TASK_TRACKING_TTL: int = 1
 MAX_TASK_TRACKING_TTL: int = 30 * 24 * 3600
 DEFAULT_TASK_TRACKING_TTL: int = 24 * 3600
+MIN_TASK_LEASE_TTL: int = 1
+MAX_TASK_LEASE_TTL: int = 24 * 3600
 
 
 class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
@@ -275,6 +278,11 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
             ``XREADGROUP`` call (``>= 1``).
         claim_min_idle_ms: Idle floor in milliseconds before ``XAUTOCLAIM``
             reclaims a pending entry during startup recovery (``[1, 3600000]``).
+        task_tracking_ttl: TTL in seconds for per-task tracking records
+            (``[1, 2592000]``). ``None`` uses ``DEFAULT_TASK_TRACKING_TTL``.
+        task_lease_ttl: TTL in seconds for per-entry leases (``[1, 86400]``).
+            ``None`` derives it from the heartbeat/watchdog cadence as
+            ``max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))``.
     """
 
     valkey_config: "ValkeyConfig | None" = None
@@ -282,21 +290,28 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     task_fetch_batch_size: int = 10
     claim_min_idle_ms: int | None = None
     task_tracking_ttl: int | None = None
+    task_lease_ttl: int | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _validate_range(self.task_fetch_batch_size, "task_fetch_batch_size", minimum=1)
-        _validate_range(
+        validate_range(self.task_fetch_batch_size, "task_fetch_batch_size", minimum=1)
+        validate_range(
             self.claim_min_idle_ms,
             "claim_min_idle_ms",
             minimum=MIN_CLAIM_MIN_IDLE_MS,
             maximum=MAX_CLAIM_MIN_IDLE_MS,
         )
-        _validate_range(
+        validate_range(
             self.task_tracking_ttl,
             "task_tracking_ttl",
             minimum=MIN_TASK_TRACKING_TTL,
             maximum=MAX_TASK_TRACKING_TTL,
+        )
+        validate_range(
+            self.task_lease_ttl,
+            "task_lease_ttl",
+            minimum=MIN_TASK_LEASE_TTL,
+            maximum=MAX_TASK_LEASE_TTL,
         )
 
 

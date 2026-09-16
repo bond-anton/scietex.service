@@ -54,6 +54,42 @@ async def test_on_task_completed_deletes_lease_key():
 
 
 @pytest.mark.asyncio
+async def test_on_task_completed_retryable_does_not_delete_lease():
+    """A retryable-error ack must not delete the lease (AR-006b): the task was
+    already requeued (and its lease released) before the ack, so deleting again
+    would clobber a peer's fresh lease for the requeued copy."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+    worker._task_entry_ids[t_id] = b"1-0"
+
+    await worker.on_task_completed(
+        t_id,
+        TaskData(task="dummy", payload=b"{}"),
+        TaskResult(status="error", error="transient", retryable=True),
+    )
+
+    assert client.deleted_keys == []
+    assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
+    assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
+
+
+@pytest.mark.asyncio
+async def test_requeue_deletes_lease():
+    """requeue() releases the lease as part of re-queueing (AR-006b): the
+    requeued copy reuses the same task_id, so the lease must be cleared for a
+    peer to claim it."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    await worker._transport.requeue(t_id, TaskData(task="dummy", payload=b"{}"))
+
+    assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
+    assert len(client.added) == 1
+
+
+@pytest.mark.asyncio
 async def test_watchdog_refreshes_leases_for_running_tasks():
     """watchdog() renews the per-entry lease for every owned task before
     delegating to the base watchdog. ``_task_entry_ids`` is the authoritative
@@ -117,6 +153,18 @@ def test_lease_ttl_derivation_default_and_configured():
 
     large_watchdog = ValkeyWorker(ValkeyWorkerConfig(watchdog_interval=600, valkey_config=ValkeyConfig()))
     assert derive_task_lease_ttl(large_watchdog.heartbeat_interval, large_watchdog.watchdog_interval) == 1800
+
+
+@pytest.mark.asyncio
+async def test_on_task_started_honours_configured_lease_ttl():
+    """An explicit ``task_lease_ttl`` overrides the derived default (AR-006a)."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client, task_lease_ttl=5)
+
+    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
+
+    assert client.sets[1][2] == ExpirySet(ExpiryType.SEC, 5)
 
 
 @pytest.mark.asyncio

@@ -2,9 +2,9 @@
 
 Extracts the lease subsystem that ``ValkeyWorker`` previously inlined: the
 server-side-TTL key marking "a live worker owns this entry", its atomic
-``SET ... NX`` acquisition, refresh, delete, and held checks, and the derived
-TTL (AR-060). All glide errors are logged and swallowed so a lease failure
-never breaks task processing.
+``SET ... NX`` acquisition, refresh, delete, and the derived TTL (AR-060). All
+glide errors are logged and swallowed so a lease failure never breaks task
+processing.
 """
 
 import logging
@@ -131,25 +131,6 @@ class TaskLeaseManager:
             self._logger.log(logging.WARNING, "Failed to delete lease for task %s: %s", task_id, exc)
             if self._report_failure is not None:
                 self._report_failure(exc)
-
-    async def held(self, task_id: UUID) -> bool:
-        """Return True when a live holder's lease exists for ``task_id``.
-
-        Returns False when the client is not connected. On a glide read error the
-        result is uncertain, so this returns True (fail safe: skip the entry rather
-        than risk duplicate processing); the entry is retried on a later poll.
-        """
-        client = self._client_provider()
-        if client is None:
-            return False
-        try:
-            raw = await client.get(self.key(task_id))
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self._logger.log(logging.WARNING, "Failed to read lease for task %s: %s", task_id, exc)
-            if self._report_failure is not None:
-                self._report_failure(exc)
-            return True
-        return raw is not None
 
     async def refresh(self, task_ids: Iterable[UUID]) -> None:
         """Renew the lease for every task id, over a snapshot of the iterable."""

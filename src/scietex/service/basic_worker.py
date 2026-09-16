@@ -108,6 +108,30 @@ class BasicWorker:
         self.__logging_level: int = parse_logging_level(cfg.logging_level)
         self.__conf_dir: Path = prepare_conf_dir(cfg.conf_dir)
 
+        # Resolve the None-means-default timing fields eagerly, matching
+        # TaskProcessor's hot-loop fields (AR-009). ``is not None`` (never
+        # ``or``) preserves the ``<= 0`` unbounded sentinel.
+        self.__logger_handler_timeout: float = (
+            cfg.logger_handler_timeout if cfg.logger_handler_timeout is not None else DEFAULT_LOGGER_HANDLER_TIMEOUT
+        )
+        self.__manager_shutdown_timeout: float = (
+            cfg.manager_shutdown_timeout
+            if cfg.manager_shutdown_timeout is not None
+            else DEFAULT_MANAGER_SHUTDOWN_TIMEOUT
+        )
+        self.__manager_max_retries: int = (
+            cfg.manager_max_retries if cfg.manager_max_retries is not None else DEFAULT_MANAGER_MAX_RETRIES
+        )
+        self.__manager_restart_backoff: float = (
+            cfg.manager_restart_backoff if cfg.manager_restart_backoff is not None else DEFAULT_MANAGER_RESTART_BACKOFF
+        )
+        self.__heartbeat_interval: float = (
+            cfg.heartbeat_interval if cfg.heartbeat_interval is not None else DEFAULT_HEARTBEAT_INTERVAL
+        )
+        self.__watchdog_interval: float = (
+            cfg.watchdog_interval if cfg.watchdog_interval is not None else DEFAULT_WATCHDOG_INTERVAL
+        )
+
         # Extracted components own their respective bookkeeping; the worker
         # keeps only identity/config and the lifecycle state machine. They are
         # constructed before the logger handler registration below.
@@ -208,13 +232,12 @@ class BasicWorker:
         A ``None`` configuration value resolves to
         ``DEFAULT_LOGGER_HANDLER_TIMEOUT``; a non-``None`` value is validated
         against ``[MIN_LOGGER_HANDLER_TIMEOUT, MAX_LOGGER_HANDLER_TIMEOUT]`` at
-        construction.
+        construction. Resolution happens eagerly in ``__init__`` (AR-009).
 
         Returns:
             The current timeout value in seconds.
         """
-        v = self._config.logger_handler_timeout
-        return v if v is not None else DEFAULT_LOGGER_HANDLER_TIMEOUT
+        return self.__logger_handler_timeout
 
     @property
     def manager_shutdown_timeout(self) -> float:
@@ -223,13 +246,12 @@ class BasicWorker:
         A ``None`` configuration value resolves to
         ``DEFAULT_MANAGER_SHUTDOWN_TIMEOUT``; a non-``None`` value is validated
         against ``[MIN_MANAGER_SHUTDOWN_TIMEOUT, MAX_MANAGER_SHUTDOWN_TIMEOUT]``
-        at construction.
+        at construction. Resolution happens eagerly in ``__init__`` (AR-009).
 
         Returns:
             The current timeout value in seconds.
         """
-        v = self._config.manager_shutdown_timeout
-        return v if v is not None else DEFAULT_MANAGER_SHUTDOWN_TIMEOUT
+        return self.__manager_shutdown_timeout
 
     @property
     def manager_max_retries(self) -> int:
@@ -238,12 +260,12 @@ class BasicWorker:
         A ``None`` configuration value resolves to ``DEFAULT_MANAGER_MAX_RETRIES``;
         a non-``None`` value is validated against
         ``[MIN_MANAGER_MAX_RETRIES, MAX_MANAGER_MAX_RETRIES]`` at construction.
+        Resolution happens eagerly in ``__init__`` (AR-009).
 
         Returns:
             The current maximum retry count.
         """
-        v = self._config.manager_max_retries
-        return v if v is not None else DEFAULT_MANAGER_MAX_RETRIES
+        return self.__manager_max_retries
 
     @property
     def manager_restart_backoff(self) -> float:
@@ -252,13 +274,12 @@ class BasicWorker:
         A ``None`` configuration value resolves to
         ``DEFAULT_MANAGER_RESTART_BACKOFF``; a non-``None`` value is validated
         against ``[MIN_MANAGER_RESTART_BACKOFF, MAX_MANAGER_RESTART_BACKOFF]`` at
-        construction.
+        construction. Resolution happens eagerly in ``__init__`` (AR-009).
 
         Returns:
             The current backoff delay in seconds.
         """
-        v = self._config.manager_restart_backoff
-        return v if v is not None else DEFAULT_MANAGER_RESTART_BACKOFF
+        return self.__manager_restart_backoff
 
     @property
     def failed_managers(self) -> list[str]:
@@ -291,12 +312,12 @@ class BasicWorker:
         A ``None`` configuration value resolves to ``DEFAULT_HEARTBEAT_INTERVAL``;
         a non-``None`` value is validated against
         ``[MIN_HEARTBEAT_INTERVAL, MAX_HEARTBEAT_INTERVAL]`` at construction.
+        Resolution happens eagerly in ``__init__`` (AR-009).
 
         Returns:
             The current heartbeat interval in seconds.
         """
-        v = self._config.heartbeat_interval
-        return v if v is not None else DEFAULT_HEARTBEAT_INTERVAL
+        return self.__heartbeat_interval
 
     @property
     def watchdog_interval(self) -> float:
@@ -305,12 +326,12 @@ class BasicWorker:
         A ``None`` configuration value resolves to ``DEFAULT_WATCHDOG_INTERVAL``;
         a non-``None`` value is validated against
         ``[MIN_WATCHDOG_INTERVAL, MAX_WATCHDOG_INTERVAL]`` at construction.
+        Resolution happens eagerly in ``__init__`` (AR-009).
 
         Returns:
             The current watchdog interval in seconds.
         """
-        v = self._config.watchdog_interval
-        return v if v is not None else DEFAULT_WATCHDOG_INTERVAL
+        return self.__watchdog_interval
 
     @property
     def start_time(self) -> datetime | None:
