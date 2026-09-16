@@ -197,7 +197,14 @@ async def main() -> None:
     task_source.add_task(TaskData(task="process_data", payload=b'{"name": "sensor_readings", "value": 42}'))
     task_source.add_task(TaskData(task="validate_data", payload=b'{"name": "user", "value": 100}'))
     task_source.add_task(TaskData(task="generate_report", payload=b'{"entries": 5}', timeout=TaskTimeout(timeout=5)))
-    task_source.add_task(TaskData(task="resize_image", payload=b"", timeout=TaskTimeout(timeout=1)))  # Will timeout!
+    # Discard on timeout so the example drains instead of requeueing forever.
+    task_source.add_task(
+        TaskData(
+            task="resize_image",
+            payload=b"",
+            timeout=TaskTimeout(timeout=1, timeout_action="discard"),
+        )
+    )
 
     # Create processor and register handlers
     processor = TaskProcessorService(

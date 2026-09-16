@@ -73,8 +73,9 @@ A concurrent task processor. Defines three handlers —
 `InMemoryTaskSource` that simulates an external queue. `TaskProcessorService`
 overrides `fetch_tasks()` (returns `bool`) to drain the source and
 `return_task_to_queue()` to re-queue timed-out tasks. The example also shows
-per-task timeouts via `TaskTimeout` (the `resize_image` task is configured to
-time out).
+per-task timeouts via `TaskTimeout`: the `resize_image` task is configured to
+time out after 1s with `timeout_action="discard"`, so it is dropped rather than
+requeued and the example drains cleanly.
 
 ## named_task_handlers.py
 

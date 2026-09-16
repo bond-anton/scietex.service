@@ -10,6 +10,7 @@ try:
     from glide import (
         AdvancedGlideClientConfiguration,
         BackoffStrategy,
+        ConditionalChange,
         ConfigurationError,
         ExpirySet,
         ExpiryType,
@@ -40,6 +41,7 @@ except ImportError as e:
 __all__ = [
     "AdvancedGlideClientConfiguration",
     "BackoffStrategy",
+    "ConditionalChange",
     "ConfigurationError",
     "GlideConnectionError",
     "ExpirySet",

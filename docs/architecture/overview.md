@@ -79,6 +79,8 @@ The package is a library. Each runnable artifact is a consumer:
 | `examples/stateful_handler.py` | `TaskProcessor` + one handler injected with a shared `SharedCounter` via `**handler_kwargs` | Mutates shared state across tasks; the injected object survives handler re-instantiation |
 | `examples/valkey_async_service.py` | `ValkeyWorker` | Connects to Valkey, consumes a task stream |
 | `examples/valkey_pubsub_worker.py` | `ValkeyWorker` subclass + PubSub control channels | Subscribes to `scietex:{service}:{instance_id}` and `scietex:broadcast` |
+| `examples/valkey_perf.py` | `ValkeyWorker` + preloaded stream | Single-process consumption-throughput benchmark; times the drain only |
+| `examples/progress_and_cancel.py` | `ValkeyWorker` + `report_progress` + `cancel_task` | Reports granular progress and cancels a running task via the built-in handler |
 
 Pattern (all examples and README follow it):
 

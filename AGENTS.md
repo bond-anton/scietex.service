@@ -50,6 +50,8 @@ python -m examples.named_task_handlers    # TaskProcessor with named handler ins
 python -m examples.stateful_handler       # TaskProcessor with a stateful handler (shared state via **handler_kwargs)
 python -m examples.valkey_async_service   # ValkeyWorker (requires valkey-glide)
 python -m examples.valkey_pubsub_worker   # ValkeyWorker + PubSub control channels (requires valkey-glide)
+python -m examples.valkey_perf            # ValkeyWorker throughput benchmark (requires valkey-glide)
+python -m examples.progress_and_cancel    # TaskProcessor + progress reporting and cancellation (requires valkey-glide)
 ```
 
 **Worker lifecycle:**
@@ -92,17 +94,23 @@ is created.
 - `TaskResult`: `status: "success"|"error"`, `error: str`, `payload: bytes`, `processed_at: datetime`, `error_code: str`, `retryable: bool`, `partial: bool`
 - `TaskTimeout`: `timeout: float | None`, `timeout_action: "requeue"|"discard"`
 - `TaskEnvelope`: `version: int = 1`, `data: bytes` — versioned transport envelope; encode/decode via `task_handler.wire` (`encode_task_envelope`/`decode_task_envelope`)
+- `TaskStatus`: per-task tracking record — `task_id`, `service`, `task`, `status: "queued"|"running"|"completed"|"failed"|"cancelled"`, `progress: TaskProgress`, `result`, `data`, `error`, `error_code`, `created_at`/`updated_at`
+- `TaskProgress`: `progress: bool = False`, `value: float = 0.0` — granular progress; `value` is meaningful only when `progress` is True
+- `CancelReason`: `Literal["deliberate", "timeout", "shutdown"]` — why a task was cancelled
+- `CANCEL_TASK_TYPE`: built-in `cancel_task` task-type string, served by `CancelTaskHandler`
+- `CancelTaskRequest`: `target_task_id: str`, `reason: str = ""` — payload of a `cancel_task` task
+- `CancelTaskResponse`: `target_task_id: str`, `outcome: str` — payload returned by a successful `cancel_task`
 
 ## Testing
 
 **Run tests:**
 - All tests: `pytest tests/`
-- Specific test file: `pytest tests/test_<name>.py`
+- Specific test file: `pytest tests/test_<name>.py`, or a package module: `pytest tests/valkey_worker/test_lease.py`, `pytest tests/task_processor/test_cancellation.py`
 - With coverage: `tox` (runs pytest with coverage reporting)
 
 **Test helpers:**
 - `pytest-asyncio` enabled
-- `test_valkey_worker.py` mocks `GlideClient` — no Valkey server required for unit tests
+- Valkey worker tests live in `tests/valkey_worker/` and mock `GlideClient` via a shared `DummyClient` in `tests/valkey_worker/_helpers.py` — no Valkey server required for unit tests
 
 ## Quirks & Gotchas
 

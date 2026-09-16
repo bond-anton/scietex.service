@@ -25,9 +25,9 @@ Public: `worker.start()` (459). It:
 3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
    running, with `logger_handler_timeout`.
 4. `initialize()` (394) — subclass hook; must return truthy.
-   - `TaskProcessor.initialize` (410) starts every registered task handler
+   - `TaskProcessor.initialize` (560) starts every registered task handler
      (`_start_task_handler`, awaited per handler).
-   - `ValkeyWorker.initialize` (409) calls super then `connect()` and creates
+   - `ValkeyWorker.initialize` (527) calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows
      "already exists" errors).
 5. `_register_instance()` (664) — subclass hook, runs only after
@@ -89,13 +89,13 @@ already-set `exit_requested` short-circuits so only one shutdown runs
    overrides it to `SREM` its `instance_id` from the worker registry set
    (best-effort: a failure logs a WARNING and does not fail shutdown).
 4. `cleanup()` — subclass hook. Chain:
-   - `TaskProcessor.cleanup` (448): drain `task_queue` (items fetched from
+   - `TaskProcessor.cleanup` (598): drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
      cancel running per-task workers (wait up to the configured
      `task_cancellation_timeout`, default 5 s); requeue only if the handler
      actually stopped and `canceled_action=="requeue"`; stop all task handlers
      (`_stop_task_handler`, per-handler 5 s timeout).
-   - `ValkeyWorker.cleanup` (459): super then `disconnect()` (close glide
+   - `ValkeyWorker.cleanup` (580): super then `disconnect()` (close glide
      client).
 5. `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
    with per-handler timeout; overall `loggers_timeout =

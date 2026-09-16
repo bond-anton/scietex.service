@@ -7,8 +7,8 @@ Layout of the repository and the Python package.
 | Path | Contents |
 |---|---|
 | `src/scietex/service/` | The package (see below). Marked PEP 561 via `py.typed` |
-| `examples/` | Runnable blueprints: `basic_worker.py`, `manager_cleanup.py`, `manager_collision.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py` |
-| `tests/` | Pytest suite, one file per component plus `test_version.py`; Valkey tests mock `GlideClient` (no server needed) |
+| `examples/` | Runnable blueprints: `basic_worker.py`, `manager_cleanup.py`, `manager_collision.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py`, `valkey_perf.py`, `progress_and_cancel.py` |
+| `tests/` | Pytest suite: two test packages (`valkey_worker/`, `task_processor/`), each with a shared `_helpers.py`, plus top-level `test_*.py` modules; Valkey tests mock `GlideClient` (no server needed) |
 | `docs/` | Usage docs (`index.md`, per-component guides); `docs/architecture/` is this map |
 | `pyproject.toml` | Package metadata, deps, extras (`valkey`, `dev`, `test`, `lint`), setuptools build config, and pytest config (`[tool.pytest.ini_options]`) |
 | `tox.ini` | Tox environments: `format`, `lint`, `type`, `py{314}` (coverage) |
@@ -24,7 +24,7 @@ Layout of the repository and the Python package.
 | Module | Responsibility |
 |---|---|
 | `__init__.py` | Public API. Always exports `__version__`, `BasicWorker`, `TaskProcessor`, `Manager`, `WorkerConfig`, `TaskProcessorConfig`. In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types including `ValkeyWorkerConfig`) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
-| `version.py` | Single source `__version__ = "4.0.0"` (also read by setuptools dynamic version) |
+| `version.py` | Single source `__version__ = "4.1.0"` (also read by setuptools dynamic version) |
 | `config.py` | `WorkerConfig` + `TaskProcessorConfig` — immutable `msgspec.Struct`s (`frozen=True`) replacing the old per-worker constructor kwargs. Also holds the MIN/MAX/DEFAULT constants (single source of truth for timing/retry bounds, the task-queue defaults `DEFAULT_MAX_TASKS_QUEUE_SIZE=100` / `DEFAULT_MAX_CONCURRENT_TASKS=10`, and the task-level timing fields `task_timeout`/`task_queue_fetch_timeout`/`task_cancellation_timeout`, AR-062). `__post_init__` validates ranges and raises `msgspec.ValidationError` on an out-of-range value; a `None` field resolves to its `DEFAULT_*` constant at read time |
 | `manager/__init__.py` | `Manager` class-decorator (name + optional cleanup callable, stores `method`) and `ManagerStatus` enum |
 | `manager/runtime.py` | `ManagerRuntime(worker)`: manager discovery across the class MRO (`iter_manager_definitions`, logging a WARNING on a `name=` collision so the first/most-derived definition wins — AR-068), start/stop bookkeeping (`statuses`/`tasks`/`errors`), and the bounded restart-on-error loop (`run_manager`), which ends a give-up manager in terminal `FAILED` (AR-063) and exposes `failed_managers`. Extracted from `BasicWorker` (AR-003) |

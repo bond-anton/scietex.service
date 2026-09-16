@@ -19,6 +19,7 @@ The system consists of:
 - **`TaskResult`** — Standardized result returned by handlers
 - **`TaskTimeout`** — Configuration for task timeout behavior
 - **`TaskStatus`** — Per-task tracking record published to the transport
+- **`TaskProgress`** — Granular progress payload embedded in `TaskStatus.progress`
 - **`TaskTracker`** — In-memory runtime handle (in `task_handler/runtime.py`) for monitoring running tasks
 - **`TaskEnvelope`** — Versioned transport envelope for the durable wire format
 
@@ -295,6 +296,26 @@ class TaskStatus(msgspec.Struct, frozen=True):
 | `error_code` | `str` | `""` | Structured error code |
 | `created_at` | `datetime` | current UTC | When the record was created |
 | `updated_at` | `datetime` | current UTC | When the record was last updated |
+
+> **Not implemented.** `"queued"` is a reserved literal that no current code
+> path writes; the submitter-side write is not implemented. Only the worker
+> writes `"running"`, `"completed"`, `"failed"`, or `"cancelled"`.
+
+### TaskProgress
+
+Granular progress reported by a task handler, embedded in
+`TaskStatus.progress`. `value` is only meaningful when `progress` is `True`.
+
+```python
+class TaskProgress(msgspec.Struct, frozen=True):
+    progress: bool = False
+    value: float = 0.0
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `progress` | `bool` | `False` | Whether the handler reports granular progress |
+| `value` | `float` | `0.0` | Progress value; only meaningful when `progress` is `True` |
 
 ### TaskTimeout
 

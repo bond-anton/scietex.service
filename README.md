@@ -349,6 +349,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `TaskResult` | Task result schema |
 | `TaskTimeout` | Timeout configuration schema |
 | `TaskStatus` | Per-task tracking record schema |
+| `TaskProgress` | Granular progress payload embedded in `TaskStatus.progress` (`progress`, `value`) |
 | `TaskTracker` | Internal runtime handle for running tasks (not a wire schema) |
 | `TaskEnvelope` | Versioned transport envelope (version + serialized payload bytes) |
 | `encode_task_envelope` | Wrap a `TaskData` in a versioned envelope and msgpack-encode it |
@@ -404,6 +405,8 @@ python -m examples.named_task_handlers
 python -m examples.stateful_handler
 python -m examples.valkey_async_service      # requires valkey-glide
 python -m examples.valkey_pubsub_worker      # requires valkey-glide
+python -m examples.valkey_perf               # requires valkey-glide
+python -m examples.progress_and_cancel       # requires valkey-glide
 ```
 
 ## License

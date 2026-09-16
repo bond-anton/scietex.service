@@ -331,13 +331,13 @@ async def watchdog(self) -> None:
     for task_id, tracker in list(self.running_tasks.items()):
         timeout = tracker.data.timeout.timeout
         if timeout is None:
-            timeout = self._task_timeout  # resolved from config task_timeout (default 3 s)
+            timeout = self.__task_timeout  # resolved from config task_timeout (default 3 s)
         if 0 < timeout < (now - tracker.started) and not tracker.worker_task.done():
             # Task exceeded its timeout and is still running
             tracker.worker_task.cancel()
             await asyncio.wait(
                 [tracker.worker_task],
-                timeout=self._task_cancellation_timeout,  # config task_cancellation_timeout (default 5 s)
+                timeout=self.__task_cancellation_timeout,  # config task_cancellation_timeout (default 5 s)
             )
             if tracker.worker_task.done():
                 # Handler actually stopped; requeue a fresh delivery only now
@@ -354,6 +354,51 @@ Timeout behavior is controlled by `TaskTimeout`:
 | `> 0` | `"requeue"` | Cancel task and return to external queue |
 | `> 0` | `"discard"` | Cancel task, do not requeue |
 | `<= 0` | — | No timeout (unbounded) — the watchdog never cancels the task |
+
+### Progress Reporting
+
+`TaskProcessor` exposes a transport-agnostic progress channel for handlers that
+report granular progress while a task is running.
+
+`report_progress(value)` is a public coroutine on `TaskProcessor`. It reads the
+current task id from a `ContextVar` set by `handle_task`, so it must be called
+from inside a handler's `handle()` or any coroutine running in that task's
+context. It clamps `value` to `[0.0, 100.0]` and delegates to
+`_write_task_progress`. Called outside a task context it logs a warning and
+returns without doing anything.
+
+`_write_task_progress(task_id, value)` is the transport hook. The base
+implementation is a no-op; `ValkeyWorker` overrides it to write a `TaskProgress`
+payload (`progress=True`, `value`) into the task's `TaskStatus` tracking record.
+
+| Method | Returns | Description |
+|---|---|---|
+| `report_progress(value)` | `None` | Report progress (clamped to `[0.0, 100.0]`) for the current task; warns and no-ops outside a task context |
+| `_write_task_progress(task_id, value)` | `None` | Transport hook that persists progress; base is a no-op, `ValkeyWorker` writes `TaskStatus.progress` |
+
+`report_progress` is not reachable from `TaskHandlerContext`; the established
+pattern is to inject the bound method through `**handler_kwargs` at
+registration:
+
+```python
+processor.add_task_handler(MyHandler, report=processor.report_progress)
+```
+
+The handler stores it and calls it inside `handle()`:
+
+```python
+class MyHandler(TaskHandler):
+    def __init__(self, name, context, *, report):
+        super().__init__(name, context)
+        self._report = report
+
+    async def handle(self, task_data: TaskData) -> TaskResult:
+        await self._report(25.0)
+        return TaskResult(status="success")
+```
+
+The bound method resolves the correct task id through the `ContextVar`, so the
+same callable works for every concurrent task without per-task plumbing.
 
 ## Overriding Methods
 

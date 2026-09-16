@@ -69,8 +69,8 @@ delay (default 1 s) between attempts; the error record lives in
   restarting.
 
 **Resolved (AR-003):** `run_manager` retries inside its own `while True` loop
-(83–111) — the manager task never cancels itself; `CancelledError` stops it
-cleanly and the `finally` block (116–125) runs cleanup and removes the task from
+(111–142) — the manager task never cancels itself; `CancelledError` stops it
+cleanly and the `finally` block (145–161) runs cleanup and removes the task from
 tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
@@ -112,8 +112,8 @@ restarts the same handler instances. See
 (`_setup_signal_handlers`, basic_worker.py:350, Windows-safe no-op) and
 removed in `stop()` (`_remove_signal_handlers`, 380); `__init__` no longer
 touches the loop, so workers may be constructed outside a running loop.
-`events` (basic_worker.py:150), `task_handlers` (task_processor.py:121)
-and `running_tasks` (133) now return read-only `MappingProxyType` views.
+`events` (basic_worker.py:150), `task_handlers` (task_processor.py:144)
+and `running_tasks` (156) now return read-only `MappingProxyType` views.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 
@@ -142,9 +142,9 @@ in a terminal state and the worker can be restarted.
 - **Why significant:** the distributed contract was effectively at-most-once.
 
 **Resolved (AR-005):** delivery is now at-least-once. `fetch_tasks`
-(worker.py:489) records the entry id in `_task_entry_ids` without
-acking; `on_task_completed` (565) `XACK`+`XDEL`s the entry only after the
-handler's work terminates. `_recover_pending_tasks` (426) uses `XAUTOCLAIM` on
+(worker.py:758) records the entry id in `_task_entry_ids` without
+acking; `on_task_completed` (885) `XACK`+`XDEL`s the entry only after the
+handler's work terminates. `_recover_pending_tasks` (666) uses `XAUTOCLAIM` on
 the first fetch to redeliver entries left pending by a crash. Enqueue is
 non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 (AR-016).
@@ -164,16 +164,16 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 **Resolved (AR-018, superseded by AR-059/061):** `ValkeyWorker` originally ran
 a single `GlideClient` shared with the logging handler. AR-059/061 re-split the
 two domains with proper ownership: the worker's operational client (heartbeat,
-registry, intake, task completion) is serialized behind `_client_lock` (163)
+registry, intake, task completion) is serialized behind `_client_lock` (177)
 with a glide-error-only reconnect, and the logging `AsyncValkeyHandler` owns its
 own independent connection via `valkey_config=` (a scalar dict from
-`_logging_handler_config`, 53), so the worker no longer injects or re-points
+`_logging_handler_config`, 56), so the worker no longer injects or re-points
 `handler.client`. Only a raw `GlideClientConfiguration` keeps the `client=`
 injection seam.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
-- **Location:** `worker.py:190-233` (`connect`), 290-323
+- **Location:** `worker.py:401` (`connect`), 527
   (`initialize`).
 - **What:** on `GlideClient.create` exception, `connect` returned False and left
   `_client=None`; on a **failed PING**, it previously left `_client` set, so
@@ -182,13 +182,13 @@ injection seam.
 - **Why significant:** connectivity success was not consistently propagated.
 
 **Resolved (AR-006 + AR-010):** `connect()` assigns `_client` only after PING
-succeeds (219) and closes a client that failed its ping (229-232), so
+succeeds (444) and closes a client that failed its ping (454-457), so
 `self.client` truthiness is a reliable connectivity signal and a half-connected
 worker is never observable.
 
 ## H11. Task stream and group are namespaced per `worker_id`
 
-- **Location:** `worker.py` key construction (now ~129-133).
+- **Location:** `worker.py` key construction (now ~178-183).
 - **What:** in v3, stream, group, and consumer names embed `service_name` **and**
   `worker_id`. Two `ValkeyWorker`s with different `worker_id`s read **different
   streams**; horizontal scale-out required replicas that share the same
@@ -255,12 +255,12 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 46-48).
 
 **Resolved (AR-012):** both fields now use
 `msgspec.field(default_factory=lambda: datetime.now(timezone.utc))`
-(`task_handler/schemas.py:90`, `valkey/schemas.py:38`), producing a per-instance
+(`task_handler/schemas.py:99`, `valkey/schemas.py:38`), producing a per-instance
 value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `task_processor.py:495-545` (`process_task`), 234-379
+- **Location:** `task_processor.py:646-696` (`process_task`), 257-401
   (handler registry).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no
@@ -273,7 +273,7 @@ value.
   is delegated to `return_task_to_queue` at the processor level.
 
 **Resolved (AR-022, v4):** `TaskResult` carries the error-taxonomy fields
-`error_code`, `retryable`, `partial` (task_handler/schemas.py:92-94) — all
+`error_code`, `retryable`, `partial` (task_handler/schemas.py:101-103) — all
 defaulting to "no extra information" so existing handlers keep working; the
 redundant `retry_count`/`requeue` fields are dropped. `process_task` treats a
 handler that *raises* as permanent (`retryable=False`) and passes a

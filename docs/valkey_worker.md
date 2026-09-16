@@ -106,6 +106,9 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | `LEASE_TTL_WATCHDOG_MULTIPLIER` | `3` | Watchdog multiplier in the derived per-entry lease TTL |
 | `MIN_TASK_LEASE_TTL_SECONDS` | `1` | Floor of the derived per-entry lease TTL |
 | Task lease TTL (derived) | `20` | `max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))` seconds; not configurable |
+| `MIN_TASK_TRACKING_TTL` | `1` | Floor (seconds) of the task tracking TTL |
+| `MAX_TASK_TRACKING_TTL` | `2592000` | Ceiling (seconds) of the task tracking TTL (30 days) |
+| `DEFAULT_TASK_TRACKING_TTL` | `86400` | Default task tracking TTL in seconds (24 hours); applied when `task_tracking_ttl` is `None` |
 
 ## Lifecycle
 
@@ -169,6 +172,7 @@ worker = ValkeyWorker(
         log_stream_name="scietex:log",
         task_fetch_batch_size=10,
         claim_min_idle_ms=None,
+        task_tracking_ttl=None,
     )
 )
 ```
@@ -181,6 +185,7 @@ worker = ValkeyWorker(
 | `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
 | `claim_min_idle_ms` | `None` (default `1000`) | Outer idle floor (ms) before `XAUTOCLAIM` considers reclaiming a pending entry during startup recovery; the per-entry lease is the authoritative liveness check (see [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)) |
+| `task_tracking_ttl` | `None` (default `86400`) | Server-side TTL in seconds for task tracking records; `None` resolves to `DEFAULT_TASK_TRACKING_TTL` (`86400` s / 24 h). Valid range `[1, 2592000]` |
 
 All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
 Configuration is immutable: values are fixed at construction, and
@@ -275,13 +280,16 @@ On the first call, recovers entries left pending by a previous run (see
 `XREADGROUP` with `block_ms=1000` and the configured consumer group,
 decodes each versioned envelope payload into a `TaskData` struct (see
 [Wire Format](#wire-format)), and enqueues it via
-the non-blocking `enqueue_task()` as a `(UUID, TaskData)` tuple. The
-stream entries are NOT acknowledged here — they stay in the consumer
-group's pending list until `on_task_completed()` acks them after the
-handler finishes. If the queue is full, an entry is left pending (deferred)
-and is never blocking. On read errors, disconnects and attempts to
-reconnect to Valkey. Returns `True` if at least one task was enqueued,
-`False` otherwise.
+the non-blocking `enqueue_task()` as a `(UUID, TaskData)` tuple. Each
+accepted entry's id is recorded in `_task_entry_ids` and its per-entry lease
+is written at enqueue-accept (ownership begins when the entry is recorded),
+so a task is protected from a peer's recovery for its whole queue wait, not
+just while it runs. The stream entries are NOT acknowledged here — they stay
+in the consumer group's pending list until `on_task_completed()` acks them
+after the handler finishes. If the queue is full, an entry is left pending
+(deferred, and its lease not written) and is never blocking. On read errors,
+disconnects and attempts to reconnect to Valkey. Returns `True` if at least
+one task was enqueued, `False` otherwise.
 
 ### on_task_completed()
 
@@ -316,6 +324,25 @@ or `status="failed"` otherwise, with the result payload and error-code fields
 carried over. Tracking is observability only — a failed tracking write is
 logged as a WARNING and never fails or requeues the task itself.
 
+### _write_task_progress()
+
+Update the progress of the `running` tracking record for a task.
+
+```python
+async def _write_task_progress(self, task_id: UUID, value: float) -> None:
+    """Update the tracking record's progress for a running task."""
+```
+
+`ValkeyWorker` overrides the base `TaskProcessor._write_task_progress()`
+no-op hook (invoked via `report_progress()`, which clamps `value` to
+`[0.0, 100.0]`). It `GET`s the task tracking key, msgpack-decodes the stored
+`TaskStatus`, replaces `progress` with
+`TaskProgress(progress=True, value=value)` and `updated_at` with the current
+UTC time, then rewrites the record. When the key is missing it synthesizes a
+new `running` record; when the stored payload fails to decode it returns
+without writing. A failed read is logged as a WARNING and never fails or
+requeues the task.
+
 ### watchdog()
 
 Refresh per-entry leases, then run the inherited watchdog.
@@ -327,10 +354,14 @@ async def watchdog(self) -> None:
 
 Overrides `TaskProcessor.watchdog()` to call `_refresh_task_leases()` before
 `super().watchdog()`. `_refresh_task_leases()` rewrites the lease for every
-task in `running_tasks`, so a live lease always outlives its refresh window
-even when the base watchdog blocks on a cancellation wait. Tasks the base
-watchdog cancels leave `running_tasks`, so their leases stop being refreshed
-and expire, making the entries reclaimable (see
+task in `_task_entry_ids` — the authoritative ownership map covering both
+queued and running tasks — so a live lease always outlives its refresh window
+even when the base watchdog blocks on a cancellation wait, and a queued task's
+lease stays alive indefinitely regardless of queue wait (as long as the event
+loop is healthy). In normal operation a task leaves `_task_entry_ids` only in
+`on_task_completed()`, which also deletes the lease, so a cancelled or
+completed task stops being refreshed and its entry becomes reclaimable;
+`cleanup()` clears the map on shutdown (see
 [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)).
 
 ### Task cancellation and external requeue
@@ -420,18 +451,24 @@ mid-processing redelivers the task on restart.
 - `_recover_pending_tasks()` — On the first `fetch_tasks()`, uses
   `XAUTOCLAIM` to claim pending entries idle for at least `claim_min_idle_ms`
   and re-enqueue them, redelivering tasks that were read but never
-  acknowledged before a crash. A claimed entry whose per-entry lease is still
-  held by a live worker is skipped (see
+  acknowledged before a crash. Each claimed entry's per-entry lease is
+  acquired atomically (`SET ... NX`) before enqueueing, so concurrent
+  recoveries on two replicas cannot both reclaim it; a claimed entry whose
+  lease is held by another worker is skipped (see
   [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)).
-- `_task_entry_ids` — A `dict[UUID, str | bytes]` mapping each enqueued
-  task's UUID to the stream entry id it was read from, recorded at fetch
-  time so it can be acknowledged later.
+- `_task_entry_ids` — A `dict[UUID, str | bytes]` mapping each accepted
+  task's UUID to the stream entry id it was read from, recorded at
+  enqueue-accept time. It doubles as the lease-refresh ownership map, so it
+  stays authoritative until `on_task_completed()` pops it.
 - `on_task_completed()` — Called when a task's processing terminates.
   Looks up the recorded entry id and `XACK`s + `XDEL`s it, removing the
-  entry from the pending list only after the handler's work is done.
+  entry from the pending list only after the handler's work is done, then
+  deletes the lease.
 
 If the queue is full when fetching (or during recovery), the entry is
-left pending and redelivered on a later poll rather than dropped.
+left pending and redelivered on a later poll rather than dropped; during
+recovery the lease acquired for it is rolled back first, so this worker does
+not hold a lease on an entry it never accepted.
 
 ### Duplicate processing in scale-out
 
@@ -442,8 +479,8 @@ entry can be processed by more than one worker. Two gates guard the
 - `claim_min_idle_ms` (default `1000` ms) is the outer, server-side gate:
   recovery only considers entries whose pending-list idle time exceeds it.
 - a **per-entry lease** is the inner, authoritative liveness check: recovery
-  consults it before re-enqueuing a reclaimed candidate and skips candidates
-  held by a live worker.
+  acquires it atomically before re-enqueuing a reclaimed candidate and skips
+  candidates already held by another worker.
 
 #### Per-entry lease
 
@@ -464,20 +501,41 @@ express the derivation; the TTL is not exposed as a config field.
 
 Lifecycle:
 
-- **Written** in `on_task_started()`, alongside the `running` tracking record.
+- **Acquired at enqueue-accept.** `fetch_tasks()` writes the lease right after
+  recording the entry id in `_task_entry_ids`; `_recover_pending_tasks()`
+  acquires it before enqueueing. Ownership therefore begins when the entry is
+  accepted, so a task sitting in the internal queue is leased for its whole
+  queue wait — the window where a starting replica could reclaim an unstarted
+  task is closed.
 - **Refreshed** by the `ValkeyWorker.watchdog()` override, which calls
-  `_refresh_task_leases()` for every task in `running_tasks` before running
-  `super().watchdog()`.
+  `_refresh_task_leases()` for every task in `_task_entry_ids` — the
+  authoritative map covering queued *and* running tasks — before running
+  `super().watchdog()`. `on_task_started()` also rewrites the lease alongside
+  the `running` tracking record.
 - **Deleted** in `on_task_completed()` on every terminal path, after the
-  `XACK`/`XDEL` of the stream entry.
-- **Consulted** in `_recover_pending_tasks()`. A reclaimed candidate whose
-  lease exists is skipped — left pending, not enqueued, and not recorded in
-  `_task_entry_ids` — and marks recovery incomplete (`recovery_complete=False`)
-  so `_recovered` stays `False` and recovery retries on the next poll. A
-  candidate already owned by *this* worker (present in `_task_entry_ids`) is
-  also skipped, but does not mark recovery incomplete. On a glide read error
-  the lease check is fail-safe: it reports the lease as held and the entry is
-  retried after reconnect.
+  `XACK`/`XDEL` of the stream entry. It is also released on two early-exit
+  paths: the queue-full rollback in `_recover_pending_tasks()` (the entry was
+  never accepted, so this worker must not hold its lease) and
+  `_on_queue_drain_task_processing()` on shutdown drain (this worker will not
+  run the task, so a restart or peer can reclaim it immediately instead of
+  waiting up to the lease TTL).
+- **Acquired atomically in recovery.** `_recover_pending_tasks()` calls
+  `_acquire_task_lease(task_id)`, which uses `SET ... NX`
+  (`ConditionalChange.ONLY_IF_DOES_NOT_EXIST`) so two replicas booting
+  concurrently cannot both reclaim the same pending entry. It returns `True`
+  when this worker holds (or already held) the lease and `False` when another
+  holder owns it. On a glide error it returns `True` — fail-open, because an
+  uncertain state must not block reclaim. `fetch_tasks()` still uses the plain
+  `_write_task_lease()`, since `XREADGROUP ">"` delivers each new entry to
+  exactly one consumer, so there is no concurrent claimant to race.
+- **Consulted as an ownership guard** in `_recover_pending_tasks()`. A
+  reclaimed candidate whose atomic acquire fails (a live holder owns it) is
+  skipped — left pending, not enqueued, and not recorded in `_task_entry_ids`
+  — and marks recovery incomplete (`recovery_complete=False`) so `_recovered`
+  stays `False` and recovery retries on the next poll. A candidate already
+  owned by *this* worker (present in `_task_entry_ids`) is also skipped, but
+  does not mark recovery incomplete. `_task_lease_held()` remains as a helper
+  but is no longer used by the recovery path.
 
 Reclaim is non-destructive: `_recover_pending_tasks()` only `XADD`s a copy of
 a reclaimed entry, never `XACK`/`XDEL`s the original, so a false skip costs
@@ -489,22 +547,19 @@ duplicate. Exactly-once is not claimed.
 The lease narrows, but does not eliminate, duplicate processing. Handlers must
 remain idempotent.
 
-- **Queued (pre-start) window — not closed.** The lease is written only in
-  `on_task_started()`, after `task_manager` dequeues the task. A task sitting
-  in the internal queue has no lease, so a starting replica can `XAUTOCLAIM` it
-  and enqueue a second copy. The original copy is **not** removed from the
-  first worker's queue — the two queues live in different processes and there
-  is no cross-process queue-removal primitive; reclaim only adds a copy — so
-  both copies can run. The window is bounded by queue wait time (normally
-  milliseconds to seconds) and bites only when the queue is saturated
-  (`max_concurrent_tasks` reached) at the moment a replica starts. Closing it
-  would require leasing at entry-accept time (in `fetch_tasks()` /
-  `_recover_pending_tasks()`, right after `enqueue_task()`) and refreshing over
-  `_task_entry_ids`, with the lease cleared on every queue-exit path
-  (dequeue→start, cancel-while-queued, shutdown drain, queue-full deferral);
-  this is deferred future work.
-- **Lease expiry races.** A lease expiring concurrently with a reclaim, a
-  Valkey outage, or the queued window above can still duplicate work.
+The previously documented **queued (pre-start) window is now closed**: the
+lease is acquired at enqueue-accept and refreshed over `_task_entry_ids`, so a
+task waiting in the internal queue is protected for its whole queue wait. The
+genuinely residual windows that remain are:
+
+- **Lease expiry races.** A lease expiring concurrently with a reclaim or a
+  Valkey outage can still duplicate work: the entry's idle time exceeds
+  `claim_min_idle_ms`, the lease lapses, and a starting replica reclaims it
+  while the original worker is still running it.
+- **Lease-write failure.** `_write_task_lease()` swallows glide errors (a
+  lease failure must never break task processing), so a failed accept-time
+  write leaves the entry unprotected and a failed watchdog refresh lets a live
+  lease expire. Either collapses the guard back to idle-time only.
 - **Watchdog blocking.** `super().watchdog()` can block up to
   `task_cancellation_timeout` (default `5` s) waiting on a cancellation; the
   `20` s TTL tolerates roughly four such blocks. Setting
@@ -515,6 +570,13 @@ remain idempotent.
   recovered. This is accepted: the operator opted into unbounded execution.
 - **Event-loop stalls.** CPU-bound handlers block the event loop and therefore
   block lease refresh; the generous TTL is the only mitigation.
+- **Recovery churn while a queued lease is peer-held (accepted).** A peer's
+  lease on a still-queued entry keeps `lease_skipped = True`, so
+  `recovery_complete` stays `False` and `_recovered` remains `False`: recovery
+  re-scans the pending list on every intake poll for the whole queue-wait
+  duration. This is deliberate — recovery is the only reclaim path, so marking
+  it complete would strand the entry if the holder died (AR-051). No backoff
+  was added; it is possible future work.
 
 Guidance:
 
@@ -786,6 +848,17 @@ heartbeat interval.
 | `heartbeat_interval` | `float` | *(required)* | Interval in seconds between heartbeats |
 | `start_time` | `datetime` | *(required)* | UTC timestamp when the worker started |
 | `timestamp` | `datetime` | `datetime.now(timezone.utc)` | UTC timestamp of this heartbeat entry |
+
+### TaskProgress
+
+Granular progress reported by a task handler. Embedded in the `progress`
+field of a `TaskStatus` tracking record and updated by
+`ValkeyWorker._write_task_progress()` via `report_progress()`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `progress` | `bool` | `False` | Whether the handler reports granular progress |
+| `value` | `float` | `0.0` | Progress value, only meaningful when `progress` is `True` |
 
 ## PubSub Broadcasting
 

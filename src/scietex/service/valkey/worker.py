@@ -23,6 +23,7 @@ from ..task_handler import CancelReason, TaskData, TaskProgress, TaskResult, Tas
 from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 from ..task_processor import TaskProcessor
 from ._glide import (
+    ConditionalChange,
     ExpirySet,
     ExpiryType,
     GlideClient,
@@ -288,6 +289,28 @@ class ValkeyWorker(TaskProcessor):
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.log(logging.WARNING, "Failed to write lease for task %s: %s", task_id, exc)
 
+    async def _acquire_task_lease(self, task_id: UUID) -> bool:
+        """Atomically claim the lease for ``task_id``.
+
+        Uses ``SET ... NX`` so that when two replicas run startup recovery
+        concurrently, exactly one wins the claim and the other defers. Returns
+        ``True`` when this worker now holds the lease (including when it already
+        held it), ``False`` when another holder owns it.
+        """
+        if self.client is None:
+            return True
+        try:
+            result = await self.client.set(
+                self._task_lease_key(task_id),
+                value=self._consumer_name.encode("utf-8"),
+                expiry=ExpirySet(ExpiryType.SEC, self.__task_lease_ttl),
+                conditional_set=ConditionalChange.ONLY_IF_DOES_NOT_EXIST,
+            )
+        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
+            self.logger.log(logging.WARNING, "Failed to acquire lease for task %s: %s", task_id, exc)
+            return True
+        return result is not None
+
     async def _delete_task_lease(self, task_id: UUID) -> None:
         """Delete the per-entry lease for ``task_id`` (no-op if absent)."""
         if self.client is None:
@@ -537,19 +560,22 @@ class ValkeyWorker(TaskProcessor):
         return True
 
     async def _on_queue_drain_task_processing(self, task_id: UUID, task_data: TaskData) -> None:
-        """No-op override: drained tasks must not be re-enqueued.
+        """Release the lease for a drained task without re-enqueueing it.
 
         The base ``TaskProcessor`` default requeues a drained task when
         ``canceled_action == "requeue"``. For a durable transport the stream
         entry is still pending and is redelivered on restart, so re-enqueueing
-        here would duplicate it (AR-041). Overriding to a no-op lets the
-        pending entry redeliver instead.
+        here would duplicate it (AR-041); this override must not ``XADD``.
+        It instead deletes the task's lease so a restart or peer can reclaim
+        the entry immediately instead of waiting up to ``__task_lease_ttl``
+        for expiry. The client is still connected at this point
+        (``disconnect()`` happens later in ``cleanup``).
 
         Args:
             task_id: Identifier of the queued task.
             task_data: The task data that was still queued at drain time.
         """
-        pass
+        await self._delete_task_lease(task_id)
 
     async def cleanup(self):
         """Perform cleanup on shutdown.
@@ -647,14 +673,19 @@ class ValkeyWorker(TaskProcessor):
         ``fetch_tasks``, before any ``'>'`` read, when no tasks are in flight.
 
         Each claimed entry is checked against its per-entry lease before
-        enqueueing (AR-060). An entry whose lease is held by a live worker is
-        skipped — left pending, not enqueued, not recorded — and marks recovery
-        incomplete so a later poll reclaims it if that holder dies (AR-051). A
-        locally-owned entry (already in ``_task_entry_ids``) is skipped without
-        marking recovery incomplete: it needs no recovery because
+        enqueueing (AR-060). The lease is claimed atomically via ``SET ... NX``
+        before enqueue, so when two replicas run startup recovery concurrently
+        over the same pending entry exactly one wins the claim and the other
+        defers (no duplicate execution). An entry whose claim is lost (a live
+        holder owns it) is skipped — left pending, not enqueued, not recorded —
+        and marks recovery incomplete so a later poll reclaims it if that holder
+        dies (AR-051). A locally-owned entry (already in ``_task_entry_ids``) is
+        skipped without marking recovery incomplete: it needs no recovery because
         ``on_task_completed`` will ``XACK``+``XDEL`` it, and flagging it would
         report incomplete recovery for the entire lifetime of every local task
-        (churn with no correctness benefit).
+        (churn with no correctness benefit). When the queue is full the lease
+        claimed above is rolled back before the early return, because the entry
+        was never accepted and this worker must not hold a lease on it.
 
         Returns:
             A ``(recovery_complete, enqueued)`` tuple. ``recovery_complete`` is
@@ -693,7 +724,7 @@ class ValkeyWorker(TaskProcessor):
                         uuid = UUID(task_id)
                         if uuid in self._task_entry_ids:
                             continue
-                        if await self._task_lease_held(uuid):
+                        if not await self._acquire_task_lease(uuid):
                             lease_skipped = True
                             self.logger.log(
                                 logging.DEBUG,
@@ -702,9 +733,12 @@ class ValkeyWorker(TaskProcessor):
                             )
                             continue
                         if not self.enqueue_task(uuid, task_data):
-                            # Queue full mid-recovery; stop claiming so the
+                            # Queue full mid-recovery: roll back the lease we just
+                            # acquired (the entry was never accepted, so this
+                            # worker must not hold it) and stop claiming so the
                             # remaining pending entries stay pending and are
                             # redelivered on a later poll.
+                            await self._delete_task_lease(uuid)
                             self.logger.log(
                                 logging.DEBUG,
                                 "Task queue full during recovery; deferring task %s",
@@ -732,7 +766,10 @@ class ValkeyWorker(TaskProcessor):
         here: they stay in the consumer group's pending list until each
         handler completes (see :meth:`on_task_completed`), so a crash after
         enqueue redelivers the task (at-least-once). Each entry id is
-        recorded in ``_task_entry_ids`` for the later acknowledgement.
+        recorded in ``_task_entry_ids`` for the later acknowledgement, and its
+        lease is acquired at enqueue-accept (ownership begins when the entry
+        is recorded), so a queued task is protected from a peer's recovery
+        for its whole queue wait.
 
         Batching (AR-042): reading several entries per call lets the internal
         queue fill up to ``max_concurrent_tasks`` instead of being starved to
@@ -789,6 +826,11 @@ class ValkeyWorker(TaskProcessor):
                                 )
                                 continue
                             self._task_entry_ids[UUID(task_id)] = entry_id
+                            # The entry id is recorded before the lease write so
+                            # the local ownership guard is active from the same
+                            # synchronous moment and this worker's own recovery
+                            # can never re-enqueue the entry during the await.
+                            await self._write_task_lease(UUID(task_id))
                             enqueued = True
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
@@ -808,10 +850,18 @@ class ValkeyWorker(TaskProcessor):
         await super().watchdog()
 
     async def _refresh_task_leases(self) -> None:
-        """Renew the lease for every task currently running on this worker."""
+        """Renew the lease for every task this worker owns.
+
+        ``_task_entry_ids`` is the authoritative ownership map: an entry is
+        recorded the moment this worker accepts it (enqueue-accept) and is only
+        popped in ``on_task_completed``. Iterating it (rather than
+        ``running_tasks``) refreshes both queued and running tasks, since a
+        queued task is not yet in ``running_tasks`` and would otherwise be left
+        unrefreshed to expire while still waiting in the internal queue.
+        """
         if self.client is None:
             return
-        for task_id in list(self.running_tasks):
+        for task_id in list(self._task_entry_ids):
             await self._write_task_lease(task_id)
 
     async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
