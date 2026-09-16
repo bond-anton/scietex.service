@@ -11,3 +11,6 @@ __pycache__
 htmlcov
 /.ruff_cache
 docs/_build/
+
+# Local opencode configuration
+/opencode.json
