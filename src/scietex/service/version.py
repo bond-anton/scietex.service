@@ -3,4 +3,4 @@
 Exposed as ``scietex.service.__version__``.
 """
 
-__version__ = "4.1.0"
+__version__ = "4.2.0"
