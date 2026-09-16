@@ -31,6 +31,8 @@ class DummyClient:
         get_values=None,
         get_error=None,
         delete_error=None,
+        sadd_error=None,
+        srem_error=None,
     ):
         self._ping_ok = ping_ok
         self.closed = False
@@ -43,6 +45,8 @@ class DummyClient:
         self.get_values = get_values
         self.get_error = get_error
         self.delete_error = delete_error
+        self.sadd_error = sadd_error
+        self.srem_error = srem_error
         self.acked: list = []
         self.deleted: list = []
         self.xautoclaim_calls: list = []
@@ -89,10 +93,12 @@ class DummyClient:
         return len(keys)
 
     async def sadd(self, *args, **kwargs):
-        pass
+        if self.sadd_error is not None:
+            raise self.sadd_error
 
     async def srem(self, *args, **kwargs):
-        pass
+        if self.srem_error is not None:
+            raise self.srem_error
 
     async def xgroup_create(self, *args, **kwargs):
         if self.xgroup_create_error is not None:

@@ -182,7 +182,6 @@ async def run(host: str, port: int) -> None:
             valkey_config,
             service_name=SERVICE_NAME,
             worker_id="progress-cancel-producer",
-            listening=False,
         )
     )
 

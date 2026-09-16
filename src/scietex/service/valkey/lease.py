@@ -8,7 +8,7 @@ never breaks task processing.
 """
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from uuid import UUID
 
 from ._glide import (
@@ -60,12 +60,14 @@ class TaskLeaseManager:
         lease_ttl: int,
         client_provider: ClientProvider,
         logger: logging.Logger,
+        report_failure: Callable[[BaseException], None] | None = None,
     ) -> None:
         self._service_name = service_name
         self._consumer_name = consumer_name
         self._lease_ttl = lease_ttl
         self._client_provider = client_provider
         self._logger = logger
+        self._report_failure = report_failure
 
     def key(self, task_id: UUID) -> str:
         """Return the Valkey key holding the per-entry lease for ``task_id``."""
@@ -90,6 +92,8 @@ class TaskLeaseManager:
             )
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.log(logging.WARNING, "Failed to write lease for task %s: %s", task_id, exc)
+            if self._report_failure is not None:
+                self._report_failure(exc)
 
     async def acquire(self, task_id: UUID) -> bool:
         """Atomically claim the lease for ``task_id``.
@@ -111,6 +115,8 @@ class TaskLeaseManager:
             )
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.log(logging.WARNING, "Failed to acquire lease for task %s: %s", task_id, exc)
+            if self._report_failure is not None:
+                self._report_failure(exc)
             return True
         return result is not None
 
@@ -123,6 +129,8 @@ class TaskLeaseManager:
             await client.delete([self.key(task_id)])
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.log(logging.WARNING, "Failed to delete lease for task %s: %s", task_id, exc)
+            if self._report_failure is not None:
+                self._report_failure(exc)
 
     async def held(self, task_id: UUID) -> bool:
         """Return True when a live holder's lease exists for ``task_id``.
@@ -138,6 +146,8 @@ class TaskLeaseManager:
             raw = await client.get(self.key(task_id))
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.log(logging.WARNING, "Failed to read lease for task %s: %s", task_id, exc)
+            if self._report_failure is not None:
+                self._report_failure(exc)
             return True
         return raw is not None
 

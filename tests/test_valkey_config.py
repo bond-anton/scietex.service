@@ -9,8 +9,10 @@ from scietex.service.valkey.config import (
     ValkeyBaseConfig,
     ValkeyConfig,
     ValkeyNode,
+    ValkeyPubSubConfig,
     ValkeyUserCredentials,
     ValkeyWorkerConfig,
+    _encode_valkey_config_value,
     generate_glide_config,
     read_valkey_config,
 )
@@ -122,20 +124,14 @@ def test_credentials_property():
 
 
 def test_generate_glide_config_pubsub_listening_true():
-    """listening=True wires the PubSub subscriptions into the client config."""
+    """A listening ValkeyPubSubConfig wires the PubSub subscriptions into the client config."""
     received = []
 
     def parse_control_message(msg, context):
         received.append((msg, context))
 
-    cfg = ValkeyConfig()
-    client_cfg = generate_glide_config(
-        cfg,
-        service_name="svc",
-        worker_id="abc",
-        listening=True,
-        parse_control_message=parse_control_message,
-    )
+    cfg = ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True, parse_control_message=parse_control_message))
+    client_cfg = generate_glide_config(cfg, service_name="svc", worker_id="abc")
 
     ps = client_cfg.pubsub_subscriptions
     assert ps is not None
@@ -153,6 +149,35 @@ def test_generate_glide_config_pubsub_listening_false_default():
     cfg = ValkeyConfig()
     client_cfg = generate_glide_config(cfg, service_name="svc", worker_id="abc")
     assert client_cfg.pubsub_subscriptions is None
+
+
+def test_pubsub_callback_encodes_as_null_and_roundtrips(tmp_path: Path):
+    """A populated parse_control_message encodes as null and round-trips via
+    read_valkey_config, so a listening config never breaks YAML writes."""
+
+    def parse_control_message(msg, context):
+        pass
+
+    cfg = ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True, parse_control_message=parse_control_message))
+
+    encoded = msgspec.yaml.encode(cfg, enc_hook=_encode_valkey_config_value)
+    assert b"parse_control_message: null" in encoded
+    assert b"listening: true" in encoded
+
+    # Default-write/decode round-trip: read_valkey_config writes defaults with
+    # the hook, and a listening config serialized without a callback decodes back.
+    conf_dir = tmp_path
+    cfg = read_valkey_config(conf_dir)
+    assert isinstance(cfg, ValkeyConfig)
+    assert cfg.pubsub_config.listening is False
+    assert cfg.pubsub_config.parse_control_message is None
+
+    # A YAML file describing listening without a callback decodes cleanly.
+    valkey_yml = conf_dir / "valkey.yml"
+    valkey_yml.write_bytes(b"pubsub_config:\n  listening: true\n")
+    loaded = read_valkey_config(conf_dir, create_default=False)
+    assert loaded.pubsub_config.listening is True
+    assert loaded.pubsub_config.parse_control_message is None
 
 
 def test_invalid_read_from_raises():

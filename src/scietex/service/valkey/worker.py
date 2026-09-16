@@ -36,6 +36,7 @@ from .config import (
     generate_glide_config,
     read_valkey_config,
 )
+from .health import TransportHealth
 from .lease import TaskLeaseManager, derive_task_lease_ttl
 from .schemas import Heartbeat
 from .tracking import TaskStatusStore
@@ -56,6 +57,11 @@ def _logging_handler_config(valkey_config: ValkeyConfig) -> dict:
     ``read_from``, ``protocol``, or ``backoff_strategy`` (the handler applies
     its own autonomous reconnect/backoff), so only the scalar address,
     credential, TLS, and timeout fields are translated.
+
+    This and :func:`generate_glide_config` are the two translations of the same
+    single input form: both derive from one ``ValkeyConfig`` — this produces a
+    reduced scalar view for the logging handler, the other the full
+    ``GlideClientConfiguration`` for the operational client.
     """
     base = valkey_config.base_config
     credentials = base.user_credentials
@@ -89,10 +95,8 @@ class ValkeyWorker(TaskProcessor):
     only one task mutates ``_client`` at a time, and intake's reconnect trigger
     is narrowed to glide errors only. The logging handler
     (:class:`~scietex.logging.AsyncValkeyHandler`) owns its own independent
-    connection when a typed ``ValkeyConfig`` is available (``valkey_config=``
-    mode), so the worker neither shares nor tears down the logging client; it
-    falls back to ``client=`` injection only when the worker was given a raw
-    ``GlideClientConfiguration``.
+    connection (``valkey_config=`` mode), so the worker neither shares nor
+    tears down the logging client.
 
     Client construction (AR-003): ``connect()`` builds its ``GlideClient`` by
     awaiting the ``client_factory=`` callable with the resolved configuration
@@ -123,9 +127,8 @@ class ValkeyWorker(TaskProcessor):
         directory to the first :meth:`connect` (AR-066), so construction is
         side-effect-free. Sets up stream names for tasks, heartbeat status, and
         logging. The :class:`~scietex.logging.AsyncValkeyHandler` for async log
-        entries owns its own connection (``valkey_config=`` mode) when a typed
-        ``ValkeyConfig`` is available, and is built and registered on the first
-        successful :meth:`connect`.
+        entries owns its own connection (``valkey_config=`` mode) and is built
+        and registered on the first successful :meth:`connect`.
 
         Args:
             config: A :class:`~scietex.service.valkey.config.ValkeyWorkerConfig`
@@ -142,9 +145,8 @@ class ValkeyWorker(TaskProcessor):
                 :meth:`initialize`.
             _valkey_logger_handler (AsyncValkeyHandler | None): The logging
                 handler, built lazily on the first successful :meth:`connect`
-                and reused across restarts. Owns its own connection in
-                ``valkey_config=`` mode; only the raw-config fallback shares
-                the worker's client.
+                and reused across restarts. Owns its own connection
+                (``valkey_config=`` mode); the worker never shares its client.
             _heartbeat_key (str): Key for the worker status heartbeat entry.
             _task_stream_name (str): Valkey stream name for task entries.
             _task_group_name (str): Consumer group name for task fetching.
@@ -163,22 +165,18 @@ class ValkeyWorker(TaskProcessor):
         # the first connect, so construction is side-effect-free. Both
         # attributes stay None until _ensure_client_config() loads them.
         if cfg.valkey_config is None:
-            self._valkey_config: ValkeyConfig | GlideClientConfiguration | None = None
+            self._valkey_config: ValkeyConfig | None = None
             self._client_config: GlideClientConfiguration | None = None
         else:
             self._valkey_config = cfg.valkey_config
-            if isinstance(cfg.valkey_config, GlideClientConfiguration):
-                self._client_config = cfg.valkey_config
-            else:
-                self._client_config = generate_glide_config(
-                    cfg.valkey_config,
-                    service_name=self.service_name,
-                    worker_id=self.instance_id,
-                    listening=False,
-                )
-        # The logging handler owns its own connection when a typed ValkeyConfig
-        # is available (AR-059/061); it is built lazily on the first successful
-        # connect() and reused across restarts (see _ensure_logging_handler).
+            self._client_config = generate_glide_config(
+                cfg.valkey_config,
+                service_name=self.service_name,
+                worker_id=self.instance_id,
+            )
+        # The logging handler owns its own connection (AR-059/061); it is built
+        # lazily on the first successful connect() and reused across restarts
+        # (see _ensure_logging_handler).
         self._valkey_logger_handler: AsyncValkeyHandler | None = None
 
         self._client: GlideClient | None = None
@@ -188,6 +186,17 @@ class ValkeyWorker(TaskProcessor):
         # Serializes connect()/disconnect() so only one task mutates _client at
         # a time (AR-059): intake reconnect and shutdown cannot race each other.
         self._client_lock: asyncio.Lock = asyncio.Lock()
+        # Connection-health supervisor (AR-004): the single reconnect owner that
+        # every glide-failure site reports into. Built before the collaborators
+        # so lease/status/transport can all receive it by injection. The down
+        # threshold and cooldown are derived from the intervals, not configured.
+        self._health = TransportHealth(
+            reconnect=self._reconnect,
+            is_connected=lambda: self._client is not None,
+            logger=self.logger,
+            down_threshold=max(3 * self.watchdog_interval, self.heartbeat_interval),
+            reconnect_cooldown=self.watchdog_interval,
+        )
         self._heartbeat_key = f"scietex:{self.service_name}:{self.instance_id}:status"
         self._task_stream_name = f"scietex:{self.service_name}:tasks"
         self._task_group_name = f"scietex:{self.service_name}:task_group"
@@ -204,12 +213,14 @@ class ValkeyWorker(TaskProcessor):
             lease_ttl=derive_task_lease_ttl(self.heartbeat_interval, self.watchdog_interval),
             client_provider=lambda: self._client,
             logger=self.logger,
+            report_failure=self._health.report_failure,
         )
         self._task_status = TaskStatusStore(
             service_name=self.service_name,
             tracking_ttl=cfg.task_tracking_ttl if cfg.task_tracking_ttl is not None else DEFAULT_TASK_TRACKING_TTL,
             client_provider=lambda: self._client,
             logger=self.logger,
+            report_failure=self._health.report_failure,
         )
         self.__encoder = msgspec.msgpack.Encoder()
 
@@ -229,7 +240,7 @@ class ValkeyWorker(TaskProcessor):
             stream_name=self._task_stream_name,
             group_name=self._task_group_name,
             client_provider=lambda: self._client,
-            reconnect=self._reconnect,
+            health=self._health,
             lease=self._task_lease,
             status=self._task_status,
             entry_ids=self._task_entry_ids,
@@ -238,15 +249,13 @@ class ValkeyWorker(TaskProcessor):
         self._transport = self._valkey_transport
 
     @property
-    def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration | None:
+    def valkey_config(self) -> ValkeyConfig | None:
         """The Valkey configuration used by this worker.
 
-        Returns either a :class:`ValkeyConfig` schema or a raw
-        :class:`~glide.GlideClientConfiguration`, depending on how the
-        worker was constructed. When no explicit config was given at
-        construction, the config is loaded lazily from disk at first connect,
-        so this is ``None`` until :meth:`connect`/:meth:`initialize` has run
-        (AR-066).
+        Returns the :class:`ValkeyConfig` schema the worker was constructed
+        with. When no explicit config was given at construction, the config is
+        loaded lazily from disk at first connect, so this is ``None`` until
+        :meth:`connect`/:meth:`initialize` has run (AR-066).
 
         Returns:
             The Valkey configuration instance, or ``None`` before the first
@@ -265,6 +274,16 @@ class ValkeyWorker(TaskProcessor):
         """
         return self._client
 
+    @property
+    def transport_health(self) -> TransportHealth:
+        """The connection-health supervisor for this worker (read-only, AR-004).
+
+        Exposes the :class:`~scietex.service.valkey.health.TransportHealth`
+        aggregating every glide failure and owning the single reconnect path, so
+        callers can observe degraded state without reaching into internals.
+        """
+        return self._health
+
     def _ensure_client_config(self) -> GlideClientConfiguration:
         """Load the Valkey config on first connect (AR-066).
 
@@ -281,49 +300,34 @@ class ValkeyWorker(TaskProcessor):
             return self._client_config
         valkey_config = read_valkey_config(self.conf_dir)
         self._valkey_config = valkey_config
-        if isinstance(valkey_config, GlideClientConfiguration):
-            self._client_config = valkey_config
-        else:
-            self._client_config = generate_glide_config(
-                valkey_config,
-                service_name=self.service_name,
-                worker_id=self.instance_id,
-                listening=False,
-            )
+        self._client_config = generate_glide_config(
+            valkey_config,
+            service_name=self.service_name,
+            worker_id=self.instance_id,
+        )
         return self._client_config
 
     def _ensure_logging_handler(self) -> AsyncValkeyHandler | None:
         """Build and register the logging handler once, then reuse it.
 
-        When a typed ``ValkeyConfig`` is available the handler is constructed
-        with ``valkey_config=`` so it builds, closes, and reconnects its own
-        ``GlideClient`` autonomously (``_owns_client`` is True); the worker
-        never touches ``handler.client`` (AR-059/061). When the worker was
-        given a raw ``GlideClientConfiguration`` there is no typed config to
-        hand the handler, so it falls back to ``client=`` injection and the
-        worker keeps the shared-client re-point seam.
+        The handler is constructed with ``valkey_config=`` so it builds,
+        closes, and reconnects its own ``GlideClient`` autonomously
+        (``_owns_client`` is True); the worker never touches ``handler.client``
+        (AR-059/061). ``self._valkey_config`` is set by ``_ensure_client_config``
+        (or ``__init__``) before this runs, but ``ty`` cannot narrow that
+        cross-method guarantee, so a local ``None`` guard documents that the
+        handler is simply unavailable until the config is resolved.
         """
         if self._valkey_logger_handler is not None:
-            # Only the raw-config fallback shares the worker's client, so only
-            # it needs re-pointing across reconnects/restarts.
-            if isinstance(self._valkey_config, GlideClientConfiguration) and self._client is not None:
-                self._valkey_logger_handler.client = self._client
             return self._valkey_logger_handler
 
-        if isinstance(self._valkey_config, GlideClientConfiguration):
-            if self._client is None:
-                return None
-            self._valkey_logger_handler = AsyncValkeyHandler(
-                stream_name=self._log_stream_name,
-                client=self._client,
-            )
-        else:
-            self._valkey_logger_handler = AsyncValkeyHandler(
-                stream_name=self._log_stream_name,
-                # _ensure_client_config() has run by now, so a typed ValkeyConfig
-                # is guaranteed here (the deferred None is resolved at connect).
-                valkey_config=_logging_handler_config(cast(ValkeyConfig, self._valkey_config)),
-            )
+        config = self._valkey_config
+        if config is None:
+            return None
+        self._valkey_logger_handler = AsyncValkeyHandler(
+            stream_name=self._log_stream_name,
+            valkey_config=_logging_handler_config(config),
+        )
         self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler)
         return self._valkey_logger_handler
 
@@ -372,6 +376,7 @@ class ValkeyWorker(TaskProcessor):
         try:
             if await client.ping():
                 self._client = client
+                self._health.mark_connected()
                 self.logger.log(logging.INFO, "Connected to Valkey")
                 handler = self._ensure_logging_handler()
                 if handler is not None and not handler.logging_running_event.is_set():
@@ -400,18 +405,16 @@ class ValkeyWorker(TaskProcessor):
     async def _disconnect_locked(self):
         """Close the connection; assumes ``_client_lock`` is held.
 
-        For the raw-config fallback the logging handler shares the worker's
-        client, so its reference is cleared before the close; the
-        ``valkey_config=`` handler owns its own client and is left untouched.
-        Then invokes :meth:`~glide.GlideClient.close` on the active client, logs
-        the disconnection, and sets ``_client`` to ``None``.
+        The logging handler owns its own client, so it is left untouched here;
+        only the worker's operational client is closed. Invokes
+        :meth:`~glide.GlideClient.close` on the active client, logs the
+        disconnection, and sets ``_client`` to ``None``.
         """
         if self._client is not None:
-            if self._valkey_logger_handler is not None and isinstance(self._valkey_config, GlideClientConfiguration):
-                self._valkey_logger_handler.client = None
             await self._client.close()
             self.logger.info("Valkey client disconnected")
             self._client = None
+            self._health.mark_disconnected()
 
     async def _reconnect(self) -> None:
         """Tear down and re-establish the connection (intake error recovery)."""
@@ -458,6 +461,7 @@ class ValkeyWorker(TaskProcessor):
                     exc,
                     duration,
                 )
+                self._health.report_failure(exc)
 
     async def initialize(self) -> bool:
         """Initialize the worker and prepare the Valkey task stream.
@@ -538,6 +542,7 @@ class ValkeyWorker(TaskProcessor):
                 self._registry_key,
                 exc,
             )
+            self._health.report_failure(exc)
 
     async def _unregister_instance(self) -> None:
         """Remove this instance id from the service-scoped worker registry set.
@@ -559,16 +564,25 @@ class ValkeyWorker(TaskProcessor):
                 self._registry_key,
                 exc,
             )
+            self._health.report_failure(exc)
 
     async def watchdog(self) -> None:
-        """Refresh per-entry leases, then run the base watchdog.
+        """Refresh per-entry leases, supervise the connection, then run the base watchdog.
 
         Refreshing before ``super().watchdog()`` keeps leases fresh even when the
         base implementation blocks on a cancellation wait. Tasks the base watchdog
         cancels are removed from ``running_tasks``, so their leases stop being
         refreshed and expire, making the entries reclaimable.
+
+        After the base watchdog runs, a degraded connection past its down
+        threshold surfaces one CRITICAL message per down episode (AR-004); when
+        healthy this emits nothing.
         """
         # refresh_leases is valkey-specific (not part of the core TaskTransport
         # protocol), so it is reached through the concrete transport.
         await self._valkey_transport.refresh_leases()
+        await self._health.recover()
         await super().watchdog()
+        msg = self._health.critical_report()
+        if msg:
+            self.logger.critical(msg)

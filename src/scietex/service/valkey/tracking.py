@@ -8,6 +8,7 @@ requeue the task itself.
 """
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -42,11 +43,13 @@ class TaskStatusStore:
         tracking_ttl: int,
         client_provider: ClientProvider,
         logger: logging.Logger,
+        report_failure: Callable[[BaseException], None] | None = None,
     ) -> None:
         self._service_name = service_name
         self._tracking_ttl = tracking_ttl
         self._client_provider = client_provider
         self._logger = logger
+        self._report_failure = report_failure
         self._encoder = msgspec.msgpack.Encoder()
 
     def key(self, task_id: UUID) -> str:
@@ -70,6 +73,8 @@ class TaskStatusStore:
             )
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.log(logging.WARNING, "Failed to write tracking for task %s: %s", tracking.task_id, exc)
+            if self._report_failure is not None:
+                self._report_failure(exc)
 
     async def record_running(self, task_id: UUID, task_data: TaskData) -> None:
         """Publish a ``running`` tracking record when a task begins."""
@@ -143,6 +148,8 @@ class TaskStatusStore:
             raw = await client.get(key)
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.log(logging.WARNING, "Failed to read tracking for task %s: %s", task_id, exc)
+            if self._report_failure is not None:
+                self._report_failure(exc)
             return
         now = datetime.now(timezone.utc)
         if raw is None:

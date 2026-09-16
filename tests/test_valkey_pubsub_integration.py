@@ -1,17 +1,18 @@
 """End-to-end PubSub integration tests against a live Valkey/Redis server.
 
-These tests exercise the real ``generate_glide_config(..., listening=True)``
-PubSub capability (AR-044) against a running server. They are skipped when no
-server is reachable on ``localhost:6379``, so the suite stays green in
-environments without one (plain local dev). CI provides a ``redis`` service
-container on port 6379, so they run there.
+These tests exercise the real PubSub capability (AR-044) via
+``ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True))`` against a
+running server. They are skipped when no server is reachable on
+``localhost:6379``, so the suite stays green in environments without one (plain
+local dev). CI provides a ``redis`` service container on port 6379, so they run
+there.
 """
 
 import asyncio
 
 import pytest
 
-from scietex.service.valkey.config import ValkeyConfig, generate_glide_config
+from scietex.service.valkey.config import ValkeyConfig, ValkeyPubSubConfig, generate_glide_config
 
 
 def _server_reachable() -> bool:
@@ -58,11 +59,14 @@ async def test_pubsub_directed_and_broadcast_delivery():
     worker_id = "worker-1"
     client = await GlideClient.create(
         generate_glide_config(
-            ValkeyConfig(),
+            ValkeyConfig(
+                pubsub_config=ValkeyPubSubConfig(
+                    listening=True,
+                    parse_control_message=parse_control_message,
+                )
+            ),
             service_name=service_name,
             worker_id=worker_id,
-            listening=True,
-            parse_control_message=parse_control_message,
         )
     )
     try:

@@ -11,7 +11,7 @@ remain the worker's and are only reached through here.
 """
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from uuid import UUID
 
 from ..task_handler.schemas import CancelReason, TaskData, TaskResult
@@ -25,6 +25,7 @@ from ._glide import (
     StreamReadGroupOptions,
 )
 from .config import DEFAULT_CLAIM_MIN_IDLE_MS, ValkeyWorkerConfig
+from .health import TransportHealth
 from .lease import TaskLeaseManager
 from .tracking import TaskStatusStore
 
@@ -46,7 +47,7 @@ class ValkeyTransport:
         stream_name: str,
         group_name: str,
         client_provider: ClientProvider,
-        reconnect: Callable[[], Awaitable[None]],
+        health: TransportHealth,
         lease: TaskLeaseManager,
         status: TaskStatusStore,
         entry_ids: dict[UUID, str | bytes],
@@ -58,7 +59,7 @@ class ValkeyTransport:
         self._stream_name = stream_name
         self._group_name = group_name
         self._client_provider = client_provider
-        self._reconnect = reconnect
+        self._health = health
         self._lease = lease
         self._status = status
         self._entry_ids = entry_ids
@@ -140,7 +141,8 @@ class ValkeyTransport:
                             enqueued = True
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
-            await self._reconnect()
+            self._health.report_failure(exc)
+            await self._health.recover()
         return enqueued
 
     async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:

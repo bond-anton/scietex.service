@@ -46,6 +46,7 @@ try:
         ValkeyBaseConfig,
         ValkeyConfig,
         ValkeyNode,
+        ValkeyPubSubConfig,
         ValkeyTlsAdvancedConfiguration,
         ValkeyUserCredentials,
         ValkeyWorker,
@@ -62,6 +63,7 @@ try:
         "ValkeyBaseConfig",
         "ValkeyConfig",
         "ValkeyAdvancedConfig",
+        "ValkeyPubSubConfig",
         "ValkeyTlsAdvancedConfiguration",
         "ValkeyWorkerConfig",
     ]

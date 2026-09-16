@@ -141,6 +141,24 @@ class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
         )
 
 
+class ValkeyPubSubConfig(msgspec.Struct, frozen=True):
+    """PubSub control-message subscription settings.
+
+    Args:
+        listening: If ``True``, subscribe to the service-specific
+            (``scietex:{service_name}:{worker_id}``) and broadcast
+            (``scietex:broadcast``) channels.
+        parse_control_message: Optional callback invoked for each message
+            received on a subscribed channel. Runtime-only: it cannot be
+            expressed in ``valkey.yml`` and serializes as ``null``. A
+            ``listening: true`` loaded from YAML subscribes with
+            ``callback=None`` and drops messages.
+    """
+
+    listening: bool = False
+    parse_control_message: Callable[[PubSubMsg, Any], None] | None = None
+
+
 class ValkeyBaseConfig(msgspec.Struct, frozen=True):
     """Basic Valkey connection configuration.
 
@@ -220,15 +238,17 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
 
 
 class ValkeyConfig(msgspec.Struct, frozen=True):
-    """Top-level Valkey configuration combining base and advanced settings.
+    """Top-level Valkey configuration combining base, advanced, and PubSub settings.
 
     Args:
         base_config: Basic connection parameters.
         advanced_config: Advanced connection settings.
+        pubsub_config: PubSub control-message subscription settings.
     """
 
     base_config: ValkeyBaseConfig = ValkeyBaseConfig()
     advanced_config: ValkeyAdvancedConfig = ValkeyAdvancedConfig()
+    pubsub_config: ValkeyPubSubConfig = ValkeyPubSubConfig()
 
 
 MIN_CLAIM_MIN_IDLE_MS: int = 1
@@ -244,14 +264,12 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
 
     Extends :class:`~scietex.service.config.TaskProcessorConfig` with the
     Valkey-specific fields. Its ``valkey_config`` field references the optional
-    ``glide.GlideClientConfiguration`` type, which is why this struct lives here
-    (alongside :class:`ValkeyConfig`) rather than in the always-imported core
-    :mod:`scietex.service.config` module.
+    :class:`ValkeyConfig` type, which is why this struct lives here rather than
+    in the always-imported core :mod:`scietex.service.config` module.
 
     Args:
-        valkey_config: A :class:`ValkeyConfig` schema or a raw
-            :class:`~glide.GlideClientConfiguration`. ``None`` means the worker
-            reads ``valkey.yml`` from its config directory.
+        valkey_config: A :class:`ValkeyConfig` schema. ``None`` means the
+            worker reads ``valkey.yml`` from its config directory.
         log_stream_name: Name of the Valkey stream used for log entries.
         task_fetch_batch_size: Maximum number of stream entries read per
             ``XREADGROUP`` call (``>= 1``).
@@ -259,7 +277,7 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
             reclaims a pending entry during startup recovery (``[1, 3600000]``).
     """
 
-    valkey_config: "ValkeyConfig | GlideClientConfiguration | None" = None
+    valkey_config: "ValkeyConfig | None" = None
     log_stream_name: str = "scietex:log"
     task_fetch_batch_size: int = 10
     claim_min_idle_ms: int | None = None
@@ -280,6 +298,19 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
             minimum=MIN_TASK_TRACKING_TTL,
             maximum=MAX_TASK_TRACKING_TTL,
         )
+
+
+def _encode_valkey_config_value(obj: object) -> object:
+    """``msgspec.yaml.encode`` hook: map runtime-only callbacks to ``null``.
+
+    ``ValkeyPubSubConfig.parse_control_message`` is a Python callable that has
+    no ``valkey.yml`` representation, so encoding it would raise ``TypeError``.
+    This hook drops any callable so a config with a populated callback still
+    round-trips through YAML (the callback is expected to be lost on decode).
+    """
+    if callable(obj):
+        return None
+    raise TypeError(f"Cannot encode {type(obj).__name__} to YAML")
 
 
 def read_valkey_config(conf_dir: Path | None, *, create_default: bool = True) -> ValkeyConfig:
@@ -326,7 +357,7 @@ def read_valkey_config(conf_dir: Path | None, *, create_default: bool = True) ->
         if create_default:
             valkey_config = ValkeyConfig()
             with open(valkey_yml, "wb") as f:
-                f.write(msgspec.yaml.encode(valkey_config))
+                f.write(msgspec.yaml.encode(valkey_config, enc_hook=_encode_valkey_config_value))
             return valkey_config
         raise RuntimeError(
             f"Valkey configuration file {valkey_yml} does not exist and create_default=False "
@@ -345,26 +376,20 @@ def generate_glide_config(
     valkey_config: ValkeyConfig,
     service_name: str,
     worker_id: str,
-    listening: bool = False,
-    parse_control_message: Callable[[PubSubMsg, Any], None] | None = None,
 ) -> GlideClientConfiguration:
     """Convert a ``ValkeyConfig`` schema into a ``GlideClientConfiguration``.
 
     Maps the typed configuration to ``glide`` client settings including
     addresses, credentials, TLS, read preferences, and optional PubSub
-    subscriptions for broadcast messages.
+    subscriptions for broadcast messages. PubSub listening is driven by
+    ``valkey_config.pubsub_config``: when ``listening`` is ``True`` the client
+    subscribes to the service-specific and broadcast channels and invokes
+    ``parse_control_message`` for each received message.
 
     Args:
         valkey_config: The typed configuration schema.
         service_name: Service name used for PubSub channel names.
         worker_id: Instance identifier used for PubSub channel names.
-        listening: If ``True``, subscribes to the service-specific and
-            broadcast channels. ``ValkeyWorker`` passes ``False``; custom
-            workers that want PubSub control messages pass ``True`` and
-            supply ``parse_control_message``.
-        parse_control_message: Optional callback invoked for each PubSub
-            message received on a subscribed channel. Only used when
-            ``listening`` is ``True``.
 
     Returns:
         A fully configured ``GlideClientConfiguration`` instance.
@@ -372,10 +397,8 @@ def generate_glide_config(
     Raises:
         ValueError: If ``read_from`` or ``protocol`` contain invalid values.
     """
-    # ``ValkeyWorker`` always passes ``listening=False``; the PubSub branch
-    # is exercised by custom workers that build their own client config.
     pubsub_subscriptions = None
-    if listening:
+    if valkey_config.pubsub_config.listening:
         pubsub_subscriptions = GlideClientConfiguration.PubSubSubscriptions(
             channels_and_patterns={
                 GlideClientConfiguration.PubSubChannelModes.Exact: {
@@ -383,7 +406,7 @@ def generate_glide_config(
                     "scietex:broadcast",
                 },
             },
-            callback=parse_control_message,
+            callback=valkey_config.pubsub_config.parse_control_message,
             context=None,
         )
     try:

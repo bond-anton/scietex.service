@@ -14,6 +14,7 @@ Public exports:
     - :class:`ValkeyConfig` — Top-level configuration schema.
     - :class:`ValkeyBaseConfig` — Basic connection settings.
     - :class:`ValkeyAdvancedConfig` — Advanced connection settings.
+    - :class:`ValkeyPubSubConfig` — PubSub control-message subscription settings.
     - :class:`ValkeyNode` — Single server node definition.
     - :class:`ValkeyUserCredentials` — Authentication credentials.
     - :class:`ValkeyBackoffStrategy` — Reconnection backoff settings.
@@ -29,6 +30,7 @@ from .config import (
     ValkeyBaseConfig,
     ValkeyConfig,
     ValkeyNode,
+    ValkeyPubSubConfig,
     ValkeyTlsAdvancedConfiguration,
     ValkeyUserCredentials,
     ValkeyWorkerConfig,
@@ -42,6 +44,7 @@ __all__ = [
     "ValkeyBackoffStrategy",
     "ValkeyTlsAdvancedConfiguration",
     "ValkeyAdvancedConfig",
+    "ValkeyPubSubConfig",
     "ValkeyBaseConfig",
     "ValkeyConfig",
     "ValkeyWorkerConfig",

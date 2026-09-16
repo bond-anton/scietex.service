@@ -14,8 +14,8 @@ corresponding ``DEFAULT_*`` value when it reads the field.
 
 The ``ValkeyWorkerConfig`` struct lives in :mod:`scietex.service.valkey.config`
 (alongside ``ValkeyConfig``), not here, because its ``valkey_config`` field
-references the optional ``glide.GlideClientConfiguration`` type and must not
-force a glide dependency on the always-imported core package.
+references the optional ``ValkeyConfig`` type (whose module imports ``glide``)
+and must not force a glide dependency on the always-imported core package.
 """
 
 import logging

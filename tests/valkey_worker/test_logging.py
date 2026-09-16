@@ -3,11 +3,11 @@
 import pytest
 
 from scietex.service import ValkeyWorker
-from scietex.service.valkey._glide import GlideClientConfiguration, NodeAddress
 from scietex.service.valkey.config import (
     ValkeyBaseConfig,
     ValkeyConfig,
     ValkeyNode,
+    ValkeyPubSubConfig,
     ValkeyUserCredentials,
     ValkeyWorkerConfig,
 )
@@ -42,21 +42,29 @@ async def test_logging_handler_owns_its_own_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_logging_handler_falls_back_to_client_injection_with_raw_config(monkeypatch):
-    """A raw GlideClientConfiguration has no typed ValkeyConfig to hand the
-    handler, so it keeps the shared-client injection seam (AR-059/061)."""
+async def test_logging_handler_ignores_pubsub_listening(monkeypatch):
+    """A pubsub-listening ValkeyConfig still yields a handler built by
+    _logging_handler_config; listening does not leak into the logging handler."""
 
     async def factory(cfg):
         return DummyClient(ping_ok=True)
 
-    raw_config = GlideClientConfiguration(addresses=[NodeAddress("localhost", 6379)])
-    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=raw_config), client_factory=factory)
+    def parse_control_message(msg, context):
+        pass
+
+    _patch_glide_and_handler(monkeypatch)
+
+    cfg = ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True, parse_control_message=parse_control_message))
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=cfg), client_factory=factory)
     ok = await worker.connect()
     assert ok is True
     handler = worker._valkey_logger_handler
     assert handler is not None
-    assert handler._owns_client is False, "raw config -> handler shares the worker's client"
-    assert handler.client is worker.client
+    assert isinstance(handler, FakeHandler)
+    assert handler._owns_client is True
+    assert handler.client is None
+    assert handler.valkey_config is not None
+    assert handler.valkey_config["addresses"] == [("localhost", 6379)]
 
 
 def test_logging_handler_config_translates_typed_config():

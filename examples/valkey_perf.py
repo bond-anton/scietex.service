@@ -174,7 +174,6 @@ async def run(args: argparse.Namespace) -> None:
             valkey_config,
             service_name=args.service_name,
             worker_id="perf-producer",
-            listening=False,
         )
     )
     if not args.keep_stream:
