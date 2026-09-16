@@ -105,12 +105,12 @@ is created.
 
 **Run tests:**
 - All tests: `pytest tests/`
-- Specific test file: `pytest tests/test_<name>.py`, or a package module: `pytest tests/valkey_worker/test_lease.py`, `pytest tests/task_processor/test_cancellation.py`
+- Specific test file: `pytest tests/test_<name>.py`, or a package module: `pytest tests/valkey/test_lease.py`, `pytest tests/task_processor/test_cancellation.py`
 - With coverage: `tox` (runs pytest with coverage reporting)
 
 **Test helpers:**
 - `pytest-asyncio` enabled
-- Valkey worker tests live in `tests/valkey_worker/` and mock `GlideClient` via a shared `DummyClient` in `tests/valkey_worker/_helpers.py` — no Valkey server required for unit tests
+- Valkey worker tests live in `tests/valkey/` and mock `GlideClient` via a shared `DummyClient` in `tests/valkey/_helpers.py` — no Valkey server required for unit tests
 
 ## Quirks & Gotchas
 
