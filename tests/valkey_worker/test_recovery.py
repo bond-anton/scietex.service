@@ -31,7 +31,7 @@ async def test_recover_pending_tasks_enqueues_pending_entries():
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
 
-    await worker._recover_pending_tasks()
+    await worker._transport.recover_pending_tasks(worker)
 
     assert client.xautoclaim_calls[0][3] == 1000  # min_idle_time_ms
     assert not worker.task_queue_empty()
@@ -56,7 +56,7 @@ async def test_recover_pending_tasks_uses_configured_claim_min_idle_ms():
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig(), claim_min_idle_ms=5000))
     worker._client = client
 
-    await worker._recover_pending_tasks()
+    await worker._transport.recover_pending_tasks(worker)
 
     assert client.xautoclaim_calls[0][3] == 5000  # min_idle_time_ms
     assert not worker.task_queue_empty()
@@ -82,17 +82,17 @@ async def test_recover_pending_tasks_incomplete_when_queue_full_leaves_recovered
     )
     worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
     worker._client = client
-    assert worker._recovered is False
+    assert worker._transport.recovered is False
 
     # First entry is enqueued; the second finds the queue full -> incomplete.
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
     assert recovery_complete is False
     assert enqueued is True
 
     # fetch_tasks retries recovery instead of skipping it: incomplete recovery
     # must not set _recovered=True.
     await worker.fetch_tasks()
-    assert worker._recovered is False
+    assert worker._transport.recovered is False
 
 
 @pytest.mark.asyncio
@@ -111,20 +111,20 @@ async def test_recover_pending_tasks_complete_sets_recovered():
     )
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
-    assert worker._recovered is False
+    assert worker._transport.recovered is False
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
     assert recovery_complete is True
     assert enqueued is True
 
     # fetch_tasks marks recovery done only on completion.
-    worker._recovered = False
+    worker._transport.recovered = False
     ok = await worker.fetch_tasks()
     # The second pass re-runs recovery: the entry is already owned locally
     # (recorded in _task_entry_ids during the first pass), so it is skipped
     # without a lease check and nothing is enqueued (AR-060).
     assert ok is False
-    assert worker._recovered is True
+    assert worker._transport.recovered is True
 
 
 @pytest.mark.asyncio
@@ -145,7 +145,7 @@ async def test_recover_pending_tasks_skips_entry_with_held_lease():
     )
     worker._client = client
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
     assert (recovery_complete, enqueued) == (False, False)
     assert worker.task_queue_empty()
@@ -170,7 +170,7 @@ async def test_recover_pending_tasks_reclaims_entry_when_lease_absent():
     )
     worker._client = client
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
     assert (recovery_complete, enqueued) == (True, True)
     assert not worker.task_queue_empty()
@@ -198,7 +198,7 @@ async def test_recover_pending_tasks_skips_locally_inflight_entry():
     worker._client = client
     worker._task_entry_ids[t_id] = b"9-0"
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
     assert recovery_complete is True
     assert enqueued is False
@@ -223,11 +223,11 @@ async def test_recover_pending_tasks_incomplete_when_lease_held_leaves_recovered
         get_values={worker._task_lease.key(t_id): b"other"},
     )
     worker._client = client
-    assert worker._recovered is False
+    assert worker._transport.recovered is False
 
     await worker.fetch_tasks()
 
-    assert worker._recovered is False
+    assert worker._transport.recovered is False
 
 
 @pytest.mark.asyncio
@@ -249,7 +249,7 @@ async def test_recover_pending_tasks_lease_acquire_error_fails_safe():
     )
     worker._client = client
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
     assert recovery_complete is True
     assert enqueued is True
@@ -279,7 +279,7 @@ async def test_recover_pending_tasks_lease_skip_and_reclaim_mixed():
     )
     worker._client = client
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
     assert recovery_complete is False
     assert enqueued is True
@@ -307,7 +307,7 @@ async def test_recover_pending_tasks_writes_lease_on_enqueue_accept():
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
     assert (recovery_complete, enqueued) == (True, True)
     assert worker._task_entry_ids[t_id] == b"9-0"
@@ -337,7 +337,7 @@ async def test_recover_pending_tasks_queue_full_rolls_back_lease():
     filler = UUID("99999999-9999-9999-9999-999999999999")
     assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
 
-    recovery_complete, enqueued = await worker._recover_pending_tasks()
+    recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
     assert recovery_complete is False
     assert enqueued is False

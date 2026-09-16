@@ -128,7 +128,7 @@ async def test_refresh_task_leases_covers_queued_tasks():
     worker = _make_tracking_worker(client)
     worker._task_entry_ids[t_id] = b"1-0"  # queued: no running tracker
 
-    await worker._refresh_task_leases()
+    await worker._transport.refresh_leases()
 
     assert len(client.sets) == 1
     lease_key, _value, _expiry = client.sets[0]
@@ -153,7 +153,7 @@ async def test_refresh_task_leases_covers_queued_and_running():
             started=time.monotonic(),
         )
 
-        await worker._refresh_task_leases()
+        await worker._transport.refresh_leases()
 
         keys = {key for key, _value, _expiry in client.sets}
         assert keys == {worker._task_lease.key(queued_id), worker._task_lease.key(running_id)}

@@ -82,7 +82,7 @@ async def test_fetch_tasks_reconnects_on_glide_error(monkeypatch):
     client = DummyClient(xreadgroup_error=mod.RequestError("connection dropped"))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     worker._client = client
-    worker._recovered = True  # skip recovery; exercise the XREADGROUP path only
+    worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
 
     enqueued = await worker.fetch_tasks()
 
@@ -99,7 +99,7 @@ async def test_fetch_tasks_propagates_non_glide_error():
     client = DummyClient(xreadgroup_error=ValueError("msgpack encode bug"))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
-    worker._recovered = True
+    worker._transport.recovered = True
 
     with pytest.raises(ValueError, match="msgpack encode bug"):
         await worker.fetch_tasks()
@@ -119,7 +119,7 @@ async def test_fetch_tasks_writes_lease_on_enqueue_accept():
     client = DummyClient(xreadgroup_result=_entry(b"1-0", str(t_id), payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
-    worker._recovered = True  # skip recovery; exercise the XREADGROUP path only
+    worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
 
     await worker.fetch_tasks()
 
@@ -141,7 +141,7 @@ async def test_fetch_tasks_queue_full_does_not_write_lease():
     client = DummyClient(xreadgroup_result=_entry(b"1-0", str(t_id), payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
     worker._client = client
-    worker._recovered = True  # skip recovery; exercise the XREADGROUP path only
+    worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
     filler = UUID("99999999-9999-9999-9999-999999999999")
     assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
 

@@ -10,7 +10,7 @@ Requires the optional ``valkey-glide`` dependency.
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import ClassVar, cast
 from uuid import UUID
@@ -18,8 +18,6 @@ from uuid import UUID
 import msgspec
 from scietex.logging import AsyncValkeyHandler
 
-from ..task_handler import CancelReason, TaskData, TaskResult
-from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 from ..task_processor import TaskProcessor
 from ._glide import (
     ExpirySet,
@@ -30,10 +28,8 @@ from ._glide import (
     GlideTimeoutError,
     RequestError,
     StreamGroupOptions,
-    StreamReadGroupOptions,
 )
 from .config import (
-    DEFAULT_CLAIM_MIN_IDLE_MS,
     DEFAULT_TASK_TRACKING_TTL,
     ValkeyConfig,
     ValkeyWorkerConfig,
@@ -43,6 +39,7 @@ from .config import (
 from .lease import TaskLeaseManager, derive_task_lease_ttl
 from .schemas import Heartbeat
 from .tracking import TaskStatusStore
+from .transport import ValkeyTransport
 
 # Client-construction injection seam (AR-003): connect() builds its client by
 # awaiting this callable with the resolved GlideClientConfiguration, so tests
@@ -220,20 +217,25 @@ class ValkeyWorker(TaskProcessor):
         # entry can be acknowledged when the handler completes (at-least-once).
         self._task_entry_ids: dict[UUID, str | bytes] = {}
 
-        # True once pending-entry recovery has run (start of the first
-        # fetch_tasks), so a crash's unacked entries are redelivered once.
-        self._recovered: bool = False
-
-        # Idle floor (ms) before XAUTOCLAIM reclaims a pending entry. With 0, a
-        # replica's startup recovery can claim an entry a slow-but-alive handler
-        # on another replica is still processing, causing double-processing. A
-        # positive floor means only entries idle >= the floor (genuinely
-        # abandoned) are claimed. Must be well under the status-key TTL
-        # (2 x heartbeat_interval) so a dead replica's entries are reclaimed
-        # promptly.
-        self.__claim_min_idle_ms: int = (
-            cfg.claim_min_idle_ms if cfg.claim_min_idle_ms is not None else DEFAULT_CLAIM_MIN_IDLE_MS
+        # Transport extension seam (AR-001): the stream operations this worker
+        # used to override as TaskProcessor hooks now live on ValkeyTransport,
+        # which receives the collaborators above by injection (ownership of the
+        # lease manager, tracking store, and entry-id map stays here). The
+        # InMemoryTransport built by super().__init__ is empty and discarded.
+        self._valkey_transport = ValkeyTransport(
+            config=cfg,
+            service_name=self.service_name,
+            consumer_name=self._consumer_name,
+            stream_name=self._task_stream_name,
+            group_name=self._task_group_name,
+            client_provider=lambda: self._client,
+            reconnect=self._reconnect,
+            lease=self._task_lease,
+            status=self._task_status,
+            entry_ids=self._task_entry_ids,
+            logger=self.logger,
         )
+        self._transport = self._valkey_transport
 
     @property
     def valkey_config(self) -> ValkeyConfig | GlideClientConfiguration | None:
@@ -411,6 +413,11 @@ class ValkeyWorker(TaskProcessor):
             self.logger.info("Valkey client disconnected")
             self._client = None
 
+    async def _reconnect(self) -> None:
+        """Tear down and re-establish the connection (intake error recovery)."""
+        await self.disconnect()
+        await self.connect()
+
     async def heartbeat(self) -> None:
         """Publish a heartbeat entry to the Valkey status key.
 
@@ -487,24 +494,6 @@ class ValkeyWorker(TaskProcessor):
                 return False
         return True
 
-    async def _on_queue_drain_task_processing(self, task_id: UUID, task_data: TaskData) -> None:
-        """Release the lease for a drained task without re-enqueueing it.
-
-        The base ``TaskProcessor`` default requeues a drained task when
-        ``canceled_action == "requeue"``. For a durable transport the stream
-        entry is still pending and is redelivered on restart, so re-enqueueing
-        here would duplicate it (AR-041); this override must not ``XADD``.
-        It instead deletes the task's lease so a restart or peer can reclaim
-        the entry immediately instead of waiting for the lease to expire. The
-        client is still connected at this point
-        (``disconnect()`` happens later in ``cleanup``).
-
-        Args:
-            task_id: Identifier of the queued task.
-            task_data: The task data that was still queued at drain time.
-        """
-        await self._task_lease.delete(task_id)
-
     async def cleanup(self):
         """Perform cleanup on shutdown.
 
@@ -571,201 +560,6 @@ class ValkeyWorker(TaskProcessor):
                 exc,
             )
 
-    async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
-        """Re-queue a task by appending it to the Valkey task stream.
-
-        Encodes ``task_data`` into a versioned transport envelope (msgpack)
-        and appends a new entry to the stream identified by
-        ``self._task_stream_name``. The entry key is the string
-        representation of ``task_id``.
-
-        Args:
-            task_id: The unique identifier of the task.
-            task_data: The :class:`TaskData` to return to the Valkey stream.
-
-        Returns:
-            None. No-op if the Valkey client is ``None``.
-        """
-        if self.client:
-            t_id: bytes = str(task_id).encode("utf-8")
-            packed = encode_task_envelope(task_data)
-            await self.client.xadd(self._task_stream_name, [(t_id, packed)])
-
-    async def _recover_pending_tasks(self) -> tuple[bool, bool]:
-        """Re-enqueue stream entries left pending by a previous run.
-
-        Uses ``XAUTOCLAIM`` to claim every entry in the consumer group's
-        pending list that is idle for at least ``claim_min_idle_ms``
-        and enqueue it, so tasks that were read but never acknowledged before
-        a crash are redelivered (at-least-once). Called once from the first
-        ``fetch_tasks``, before any ``'>'`` read, when no tasks are in flight.
-
-        Each claimed entry is checked against its per-entry lease before
-        enqueueing (AR-060). The lease is claimed atomically via ``SET ... NX``
-        before enqueue, so when two replicas run startup recovery concurrently
-        over the same pending entry exactly one wins the claim and the other
-        defers (no duplicate execution). An entry whose claim is lost (a live
-        holder owns it) is skipped — left pending, not enqueued, not recorded —
-        and marks recovery incomplete so a later poll reclaims it if that holder
-        dies (AR-051). A locally-owned entry (already in ``_task_entry_ids``) is
-        skipped without marking recovery incomplete: it needs no recovery because
-        ``on_task_completed`` will ``XACK``+``XDEL`` it, and flagging it would
-        report incomplete recovery for the entire lifetime of every local task
-        (churn with no correctness benefit). When the queue is full the lease
-        claimed above is rolled back before the early return, because the entry
-        was never accepted and this worker must not hold a lease on it.
-
-        Returns:
-            A ``(recovery_complete, enqueued)`` tuple. ``recovery_complete`` is
-            ``True`` only when the pending list was fully drained (or there was
-            nothing to recover); ``enqueued`` is ``True`` if at least one
-            pending entry was enqueued.
-        """
-        if self.client is None:
-            return True, False
-        enqueued = False
-        lease_skipped = False
-        try:
-            start: str | bytes = "0-0"
-            while True:
-                res = await self.client.xautoclaim(
-                    self._task_stream_name,
-                    self._task_group_name,
-                    self._consumer_name,
-                    self.__claim_min_idle_ms,
-                    start,
-                    count=10,
-                )
-                # glide types xautoclaim's return as a heterogeneous list;
-                # narrow the positions we read (next_start, entries) first.
-                next_start = res[0]
-                entries = res[1]
-                if not isinstance(next_start, (str, bytes)) or not isinstance(entries, Mapping):
-                    break
-                for entry_id, pairs in entries.items():
-                    for field, payload_bytes in pairs:
-                        task_id = field.decode("utf-8") if isinstance(field, bytes) else field
-                        task_data = decode_task_envelope(payload_bytes)
-                        if task_data is None:
-                            self.logger.error("Failed to decode recovered task envelope for %s", task_id)
-                            continue
-                        uuid = UUID(task_id)
-                        if uuid in self._task_entry_ids:
-                            continue
-                        if not await self._task_lease.acquire(uuid):
-                            lease_skipped = True
-                            self.logger.log(
-                                logging.DEBUG,
-                                "Task %s is leased by a live holder; deferring recovery",
-                                task_id,
-                            )
-                            continue
-                        if not self.enqueue_task(uuid, task_data):
-                            # Queue full mid-recovery: roll back the lease we just
-                            # acquired (the entry was never accepted, so this
-                            # worker must not hold it) and stop claiming so the
-                            # remaining pending entries stay pending and are
-                            # redelivered on a later poll.
-                            await self._task_lease.delete(uuid)
-                            self.logger.log(
-                                logging.DEBUG,
-                                "Task queue full during recovery; deferring task %s",
-                                task_id,
-                            )
-                            return False, enqueued
-                        self._task_entry_ids[uuid] = entry_id
-                        enqueued = True
-                if next_start == b"0-0" or next_start == "0-0":
-                    break
-                start = next_start
-        except Exception as exc:
-            self.logger.log(logging.ERROR, "Failed to recover pending tasks: %s", exc)
-            return False, enqueued
-        return (not lease_skipped), enqueued
-
-    async def fetch_tasks(self) -> bool:
-        """Fetch new tasks from the Valkey task stream and enqueue them.
-
-        Reads up to ``task_fetch_batch_size`` entries from the task stream
-        using ``XREADGROUP`` with ``block_ms=1000`` and the configured
-        consumer group. Decodes each versioned envelope payload into a
-        :class:`TaskData` struct and enqueues it via ``enqueue_task()`` as a
-        ``(UUID, TaskData)`` tuple. The stream entries are NOT acknowledged
-        here: they stay in the consumer group's pending list until each
-        handler completes (see :meth:`on_task_completed`), so a crash after
-        enqueue redelivers the task (at-least-once). Each entry id is
-        recorded in ``_task_entry_ids`` for the later acknowledgement, and its
-        lease is acquired at enqueue-accept (ownership begins when the entry
-        is recorded), so a queued task is protected from a peer's recovery
-        for its whole queue wait.
-
-        Batching (AR-042): reading several entries per call lets the internal
-        queue fill up to ``max_concurrent_tasks`` instead of being starved to
-        one task per round-trip.
-
-        On read errors, disconnects and attempts to reconnect to Valkey.
-
-        Returns:
-            ``True`` if at least one task was enqueued (from pending-entry
-            recovery or this read), ``False`` otherwise. The caller uses this
-            to skip its idle backoff after a productive fetch so a backlog
-            drains back-to-back.
-        """
-        if self.client is None:
-            return False
-        enqueued = False
-        if not self._recovered:
-            # Only mark recovery done when the pending list was fully drained;
-            # a queue-full/error interruption is retried on the next poll (AR-051).
-            recovery_complete, recovered_enqueued = await self._recover_pending_tasks()
-            if recovery_complete:
-                self._recovered = True
-            enqueued = recovered_enqueued
-        try:
-            res = await self.client.xreadgroup(
-                {self._task_stream_name: ">"},
-                self._task_group_name,
-                self._consumer_name,
-                StreamReadGroupOptions(
-                    count=cast(ValkeyWorkerConfig, self._config).task_fetch_batch_size, block_ms=1000
-                ),
-            )
-            if res:
-                for stream, entries in res.items():
-                    for entry_id, pairs in entries.items():
-                        if pairs is None:
-                            continue
-                        for field, payload_bytes in pairs:
-                            task_id = field.decode("utf-8") if isinstance(field, bytes) else field
-                            if payload_bytes is None:
-                                continue
-                            task_data = decode_task_envelope(payload_bytes)
-                            if task_data is None:
-                                self.logger.error("Failed to decode task envelope for %s", task_id)
-                                continue
-                            if not self.enqueue_task(UUID(task_id), task_data):
-                                # Queue is full; leave the stream entry pending
-                                # (do not record its id) so the next poll
-                                # redelivers it. Never block the intake manager.
-                                self.logger.log(
-                                    logging.DEBUG,
-                                    "Task queue full; deferring task %s",
-                                    task_id,
-                                )
-                                continue
-                            self._task_entry_ids[UUID(task_id)] = entry_id
-                            # The entry id is recorded before the lease write so
-                            # the local ownership guard is active from the same
-                            # synchronous moment and this worker's own recovery
-                            # can never re-enqueue the entry during the await.
-                            await self._task_lease.write(UUID(task_id))
-                            enqueued = True
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
-            await self.disconnect()
-            await self.connect()
-        return enqueued
-
     async def watchdog(self) -> None:
         """Refresh per-entry leases, then run the base watchdog.
 
@@ -774,73 +568,7 @@ class ValkeyWorker(TaskProcessor):
         cancels are removed from ``running_tasks``, so their leases stop being
         refreshed and expire, making the entries reclaimable.
         """
-        await self._refresh_task_leases()
+        # refresh_leases is valkey-specific (not part of the core TaskTransport
+        # protocol), so it is reached through the concrete transport.
+        await self._valkey_transport.refresh_leases()
         await super().watchdog()
-
-    async def _refresh_task_leases(self) -> None:
-        """Renew the lease for every task this worker owns.
-
-        ``_task_entry_ids`` is the authoritative ownership map: an entry is
-        recorded the moment this worker accepts it (enqueue-accept) and is only
-        popped in ``on_task_completed``. Iterating it (rather than
-        ``running_tasks``) refreshes both queued and running tasks, since a
-        queued task is not yet in ``running_tasks`` and would otherwise be left
-        unrefreshed to expire while still waiting in the internal queue.
-        """
-        await self._task_lease.refresh(self._task_entry_ids)
-
-    async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
-        """Publish a ``running`` tracking record when a task begins."""
-        await self._task_status.record_running(task_id, task_data)
-        # The lease marks this entry as owned by a live worker, so recovery on
-        # another replica skips it while processing is still in flight.
-        await self._task_lease.write(task_id)
-
-    async def on_task_completed(
-        self,
-        task_id: UUID,
-        task_data: TaskData,
-        task_result: TaskResult | None,
-        *,
-        cancel_reason: CancelReason | None = None,
-    ) -> None:
-        """Acknowledge and delete the stream entry for a completed task.
-
-        Called by the base ``TaskProcessor.handle_task`` when a task's
-        processing terminates (success, error, or cancellation). Publishes a
-        terminal tracking record, then looks up the stream entry id recorded at
-        fetch time and ``XACK``s + ``XDEL``s it, so the entry leaves the
-        consumer group's pending list only after the handler's work on it is
-        done (at-least-once). ``task_result`` is ``None`` when the task was
-        cancelled before producing a result.
-
-        A deliberate ``cancel_task`` (``cancel_reason == "deliberate"``) writes
-        ``status="cancelled"`` and embeds the original ``TaskData`` in the
-        record, so an external process can read it, modify it, and resubmit
-        under a new task id. Timeout/shutdown cancellations keep the existing
-        ``failed``/``"canceled"`` status.
-
-        Args:
-            task_id: The unique identifier of the task.
-            task_data: The task data that was processed.
-            task_result: The final ``TaskResult``, or ``None`` on cancellation.
-            cancel_reason: Why the task was cancelled, when it was.
-        """
-        # Publish the terminal tracking record, then look up the stream entry id
-        # recorded at fetch time and XACK + XDEL it. ``task_data`` is None only
-        # in unit tests that exercise the ack path in isolation.
-        await self._task_status.record_terminal(task_id, task_data, task_result, cancel_reason)
-        entry_id = self._task_entry_ids.pop(task_id, None)
-        if entry_id is not None and self.client is not None:
-            try:
-                await self.client.xack(self._task_stream_name, self._task_group_name, [entry_id])
-                await self.client.xdel(self._task_stream_name, [entry_id])
-            except Exception as exc:
-                self.logger.log(logging.ERROR, "Failed to acknowledge task %s: %s", task_id, exc)
-        # Ack/delete first, then clear the lease, to minimise the "unleased but
-        # still pending" window.
-        await self._task_lease.delete(task_id)
-
-    async def _write_task_progress(self, task_id: UUID, value: float) -> None:
-        """Update the tracking record's progress for a running task."""
-        await self._task_status.update_progress(task_id, value)

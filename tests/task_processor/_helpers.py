@@ -1,6 +1,7 @@
 """Shared handlers and processor subclasses for TaskProcessor tests."""
 
 import asyncio
+import logging
 from uuid import uuid4
 
 import msgspec
@@ -11,6 +12,29 @@ from scietex.service.task_handler.cancel import CancelTaskRequest
 from scietex.service.task_handler.context import TaskHandlerContext
 from scietex.service.task_handler.schemas import TaskData, TaskResult
 from scietex.service.task_processor import TaskProcessor
+from scietex.service.transport import InMemoryTransport
+
+
+class RecordingInMemoryTransport(InMemoryTransport):
+    """In-memory transport that records every requeue into a shared list, so
+    tests can assert on requeue behaviour at the transport seam (AR-001)."""
+
+    def __init__(self, *, requeued: list, logger: logging.Logger) -> None:
+        super().__init__(logger=logger)
+        self._requeued = requeued
+
+    async def requeue(self, task_id, task_data) -> None:
+        self._requeued.append((task_id, task_data))
+        await super().requeue(task_id, task_data)
+
+
+class DurableInMemoryTransport(InMemoryTransport):
+    """In-memory transport with durable drain semantics: a still-queued task is
+    not re-enqueued on shutdown (its entry stays pending and redelivers on
+    restart), mirroring a Valkey stream (AR-041)."""
+
+    async def on_drain(self, task_id, task_data) -> None:
+        pass
 
 
 class DummyHandler(TaskHandler):
@@ -220,15 +244,14 @@ class SelfCancelHandler(TaskHandler):
 
 class DemoProcessor(TaskProcessor):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
         self.requeued: list = []
+        super().__init__(*args, **kwargs)
+        # Record requeues at the transport seam so tests assert on self.requeued
+        # without overriding return_task_to_queue (AR-001).
+        self._transport = RecordingInMemoryTransport(requeued=self.requeued, logger=self.logger)
 
     async def fetch_tasks(self) -> bool:  # pragma: no cover - stub
         return False
-
-    async def return_task_to_queue(self, task_id, task_data):
-        # record requeued tasks for assertions
-        self.requeued.append((task_id, task_data))
 
 
 class RecordingProcessor(DemoProcessor):
@@ -253,6 +276,9 @@ class DurableProcessor(TaskProcessor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.requeued: list = []
+        # The durable transport's on_drain is a no-op, so a drained task is not
+        # re-enqueued (AR-001).
+        self._transport = DurableInMemoryTransport(logger=self.logger)
 
     async def fetch_tasks(self) -> bool:  # pragma: no cover - stub
         return False
@@ -260,11 +286,6 @@ class DurableProcessor(TaskProcessor):
     async def return_task_to_queue(self, task_id, task_data):
         # record requeued tasks for assertions
         self.requeued.append((task_id, task_data))
-
-    async def _on_queue_drain_task_processing(self, task_id, task_data):
-        # Durable transport: the entry stays pending in the stream and is
-        # redelivered on restart, so re-enqueueing here would duplicate it.
-        pass
 
 
 class ReportingProcessor(TaskProcessor):

@@ -39,6 +39,7 @@ from .task_handler import (
     TaskResult,
     TaskTracker,
 )
+from .transport import InMemoryTransport, TaskTransport
 
 
 class TaskProcessor(BasicWorker):
@@ -70,7 +71,7 @@ class TaskProcessor(BasicWorker):
     # (AR-069) and no re-store / double-instantiation is needed.
     _config_type: ClassVar[type[TaskProcessorConfig]] = TaskProcessorConfig
 
-    def __init__(self, config: TaskProcessorConfig | None = None):
+    def __init__(self, config: TaskProcessorConfig | None = None, *, transport: TaskTransport | None = None):
         """
         Initialize the TaskProcessor.
 
@@ -81,8 +82,17 @@ class TaskProcessor(BasicWorker):
                 A ``None`` timing/count field resolves to its ``DEFAULT_*``
                 constant at read time; an out-of-range value is rejected at
                 construction.
+            transport: The :class:`~scietex.service.transport.TaskTransport`
+                owning the delivery/acknowledgement/drain hooks. ``None`` uses
+                a working :class:`~scietex.service.transport.InMemoryTransport`
+                that re-delivers requeued tasks on the next fetch. Subclasses
+                (e.g. ``ValkeyWorker``) inject their own transport.
         """
         super().__init__(config)
+        # Transport extension seam (AR-001): the ordering-sensitive hooks below
+        # delegate here. A bare processor gets a working in-memory transport;
+        # subclasses swap it for their own at construction.
+        self._transport: TaskTransport = transport if transport is not None else InMemoryTransport(logger=self.logger)
         # The base already stored the concrete config into ``self._config``
         # (AR-069); keep a typed local reference for the synchronous setup reads
         # below.
@@ -412,6 +422,7 @@ class TaskProcessor(BasicWorker):
             task_id: The unique identifier of the task.
             task_data: The task data to return to the external queue.
         """
+        await self._transport.requeue(task_id, task_data)
 
     def _remove_queued_task(self, task_id: UUID) -> TaskData | None:
         """Remove a queued-but-undispatched task from the internal queue.
@@ -527,6 +538,7 @@ class TaskProcessor(BasicWorker):
                 ``cancel_task`` request; ``"timeout"``/``"shutdown"`` mark
                 framework-driven cancellation.
         """
+        await self._transport.ack(task_id, task_data, task_result, cancel_reason=cancel_reason)
 
     async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
         """Hook invoked when a task begins processing.
@@ -534,6 +546,7 @@ class TaskProcessor(BasicWorker):
         Default is a no-op. Transports override this to publish a ``running``
         tracking record.
         """
+        await self._transport.on_started(task_id, task_data)
 
     async def _write_task_progress(self, task_id: UUID, value: float) -> None:
         """Hook invoked when a handler reports granular progress.
@@ -541,6 +554,7 @@ class TaskProcessor(BasicWorker):
         Default is a no-op. Transports override this to update the tracking
         record.
         """
+        await self._transport.on_progress(task_id, value)
 
     async def report_progress(self, value: float) -> None:
         """Report granular progress for the task currently being handled.
@@ -591,9 +605,7 @@ class TaskProcessor(BasicWorker):
             task_id: Identifier of the queued task.
             task_data: The task data that was still queued at drain time.
         """
-        if task_data.canceled_action == "requeue":
-            self.logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
-            await self.return_task_to_queue(task_id, task_data)
+        await self._transport.on_drain(task_id, task_data)
 
     async def cleanup(self) -> None:
         """Release resources and stop processing before exit.
@@ -807,7 +819,7 @@ class TaskProcessor(BasicWorker):
             does not report this (returns ``None``) is treated as ``False`` and
             always backs off, preserving the previous behavior.
         """
-        return False
+        return await self._transport.fetch(self)
 
     @Manager("TaskQueueManager")
     async def task_queue_manager(self):
