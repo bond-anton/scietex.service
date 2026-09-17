@@ -19,7 +19,6 @@ from pathlib import Path
 _DEFAULT_XDG_DIR = Path.home() / ".config" / "scietex"
 _ETC_DIR = Path("/etc") / "scietex"
 _LOCAL_ETC_DIR = Path("/usr/local/etc") / "scietex"
-_CWD_DIR = Path().cwd() / "config"
 
 
 def _resolve_xdg_path() -> Path:
@@ -65,7 +64,13 @@ def prepare_conf_dir(conf_dir: str | Path | None) -> Path:
 
     # 3–7. Built-in search paths (XDG-aware)
     xdg_path = _resolve_xdg_path()
-    for candidate in (xdg_path, _DEFAULT_XDG_DIR, _ETC_DIR, _LOCAL_ETC_DIR, _CWD_DIR):
+    for candidate in (
+        xdg_path,
+        _DEFAULT_XDG_DIR,
+        _ETC_DIR,
+        _LOCAL_ETC_DIR,
+        Path.cwd() / "config",
+    ):
         if candidate.is_dir():
             return candidate
 
