@@ -15,8 +15,9 @@ The worker manages three core subsystems:
 
 - **Signal Handling** — Captures `SIGINT` and `SIGTERM` for graceful shutdown
 - **Async Logging** — Uses `ConsoleHandler` for non-blocking log output
-- **Manager Loops** — `@Manager`-decorated methods run as infinite loops
-  with automatic restart on error
+- **Manager Loops** — managers (both `@Manager`-decorated methods and
+  `register_manager()`-registered functions) run as infinite loops with
+  automatic restart on error
 
 Subclasses should override:
 
@@ -65,7 +66,7 @@ The `start()` method creates a task that runs `_startup()`, which:
 3. Starts async logging handlers
 4. Calls `initialize()` (subclass override point)
 5. Registers the instance via `_register_instance()`
-6. Starts all `@Manager`-decorated methods as asyncio tasks
+6. Starts all registered managers as asyncio tasks
 7. Sets `start_time` and transitions to `RUNNING`
 
 If `initialize()` returns `False`, a `RuntimeError` is raised and the
@@ -213,15 +214,19 @@ append, letting the discovery-time collision warning report a duplicate
 
 ### Built-in Managers
 
-`BasicWorker` provides two built-in managers:
+`BasicWorker` provides two built-in managers. They are module-level async
+functions registered via `register_manager(BasicWorker, ...)` (AR-087) — not
+`@Manager`-decorated methods — with the optional `attribute_name` binding them
+as `_heartbeat_manager`/`_watchdog_manager`:
 
 | Manager | Method | Interval | Description |
 |---|---|---|---|
-| `Heartbeat` | `_heartbeat_manager` | `heartbeat_interval` | Periodically calls `heartbeat()` |
-| `Watchdog` | `_watchdog_manager` | `watchdog_interval` | Periodically calls `watchdog()` |
+| `Heartbeat` | `_heartbeat_manager` (module function) | `heartbeat_interval` | Periodically calls `heartbeat()` |
+| `Watchdog` | `_watchdog_manager` (module function) | `watchdog_interval` | Periodically calls `watchdog()` |
 
-Subclasses can override `heartbeat()` and `watchdog()` to define custom
-behavior.
+Discovery order is unchanged: `TaskManager → TaskQueueManager → Heartbeat →
+Watchdog`. Subclasses can override `heartbeat()` and `watchdog()` to define
+custom behavior.
 
 ### Manager Status Lifecycle
 

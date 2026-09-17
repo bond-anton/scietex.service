@@ -210,7 +210,7 @@ async def test_watchdog_logs_critical_once_then_recovers(caplog, monkeypatch):
 
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     worker._client = DummyClient(set_error=mod.RequestError("down"))
-    worker._BasicWorker__start_time = datetime.now(timezone.utc)
+    worker._lifecycle.start_time = datetime.now(timezone.utc)
     # Near-zero threshold/cooldown so the test stays deterministic with no sleeps.
     worker._health._down_threshold = 0.0
     worker._health._reconnect_cooldown = 0.0
@@ -246,7 +246,7 @@ async def test_heartbeat_failure_marks_degraded_and_watchdog_reconnects(monkeypa
     client = DummyClient(set_error=mod.RequestError("heartbeat failed"))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()), client_factory=factory)
     worker._client = client
-    worker._BasicWorker__start_time = datetime.now(timezone.utc)
+    worker._lifecycle.start_time = datetime.now(timezone.utc)
 
     await worker.heartbeat()
 

@@ -8,39 +8,50 @@ dependencies, dependents. Line numbers refer to the module given.
 **File:** `src/scietex/service/basic_worker.py`
 
 **Purpose:** Foundation for daemon workers: identity (`service_name`,
-`instance_id`, `version`), lifecycle state machine, signal-driven graceful
+`instance_id`, `version`), lifecycle orchestration, signal-driven graceful
 shutdown, async logging handler management, and subclass hooks for
-heartbeat/watchdog/initialize/cleanup. Manager discovery/runtime and
-logging-handler lifecycle are delegated to `ManagerRuntime` and
-`LoggingLifecycle` (constructed in `__init__`); the worker keeps only identity,
-config, and the state machine.
+heartbeat/watchdog/initialize/cleanup. The worker composes four components —
+`ManagerRuntime` (manager discovery/runtime), `LoggingLifecycle`
+(logging-handler lifecycle), `WorkerLifecycle` (state machine, events, stop-task
+guard, `start_time`), and `SignalHandler` (SIGINT/SIGTERM registration) — the
+latter two extracted in AR-087; `BasicWorker` keeps only identity, config, and
+the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 
 **Main symbols:**
-- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 40
-- `class BasicWorker` — line 56
+- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 38
+- `class BasicWorker` — line 54
 - Constructor — `__init__(config: WorkerConfig | None = None)`; stores the
   immutable `WorkerConfig` (from `config.py`), resolves identity/conf_dir/
-  logging_level, and constructs `ManagerRuntime` + `LoggingLifecycle`.
+  logging_level, and constructs all four components: `ManagerRuntime` +
+  `LoggingLifecycle` + `WorkerLifecycle` + `SignalHandler`.
   Timing/retry fields are validated at construction — an out-of-range value
   raises `msgspec.ValidationError`, and `None` resolves to the matching
   `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
 - Config type mechanism (AR-069): class attribute `_config_type: ClassVar
-  [type[WorkerConfig]]` (84) tells the base which concrete config struct to
+  [type[WorkerConfig]]` (82) tells the base which concrete config struct to
   instantiate when `config=None`. Subclasses override it to their own config
   type (e.g. `TaskProcessor`→`TaskProcessorConfig`, `ValkeyWorker`→
   `ValkeyWorkerConfig`) so the base stores the concrete type and subclass
   constructors no longer re-store / double-instantiate
-- Signals: `_setup_signal_handlers` 350 (Windows-safe no-op),
-  `_remove_signal_handlers` 380
-- Lifecycle: `_startup` 404, `start` 459, `_shutdown` 501, `stop` 548, `exit` 591
-- Cancellation terminal-state helper: `_force_stopped` 487 (AR-017 — forces
-  STOPPED + `exit` event on startup/shutdown cancellation)
-- Hooks: `initialize` 394, `heartbeat` 623, `watchdog` 635, `cleanup` 655,
-  `_register_instance` 664, `_unregister_instance` 674
-- Built-in managers: `@Manager(name="Heartbeat") _heartbeat_manager` 601,
-  `@Manager(name="Watchdog") _watchdog_manager` 612
-- `_setup_signal_handlers` called from `start()` (484), not `__init__`;
-  `_remove_signal_handlers` called from `stop()` (569)
+- Delegators (thin, to the composed components): `_setup_signal_handlers` 357
+  → `SignalHandler.setup()` (Windows-safe no-op), `_remove_signal_handlers` 378
+  → `SignalHandler.remove()`, `_request_exit` 369 → `WorkerLifecycle.request_exit()`,
+  `_force_stopped` 479 → `WorkerLifecycle.force_stopped()`; properties `state`,
+  `events`, `start_time` read from `WorkerLifecycle`
+- Lifecycle orchestrators: `_startup` 397, `start` 451, `_shutdown` 489,
+  `stop` 536, `exit` 579
+- Cancellation terminal-state helper: `_force_stopped` 479 (AR-017 — forces
+  STOPPED + `exit` event on startup/shutdown cancellation; delegated to
+  `WorkerLifecycle.force_stopped()`)
+- Hooks: `initialize` 387, `heartbeat` 589, `watchdog` 601, `cleanup` 621,
+  `_register_instance` 630, `_unregister_instance` 640
+- Built-in managers: module-level `_heartbeat_manager` 651 and
+  `_watchdog_manager` 661, registered via `register_manager(BasicWorker, ...)`
+  (671, 677) with `name="Heartbeat"`/`"Watchdog"` and
+  `attribute_name="_heartbeat_manager"`/`"_watchdog_manager"` — no longer
+  `@Manager`-decorated methods (AR-087)
+- `_setup_signal_handlers` called from `start()` (476), not `__init__`;
+  `_remove_signal_handlers` called from `stop()` (557)
 
 **Public interface:** constructor takes a single immutable `WorkerConfig`
 (`config.py`) or `None`; all properties are read-only (no runtime setters):
@@ -53,21 +64,22 @@ config, and the state machine.
 `FAILED` manager names, AR-063).
 Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
-subclass hooks govern registry-set membership: `_register_instance` (664) —
+subclass hooks govern registry-set membership: `_register_instance` (630) —
 called by `_startup()` after `initialize()` succeeds and before managers
-start — and `_unregister_instance` (674) — called by `_shutdown()` after
+start — and `_unregister_instance` (640) — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
 `ValkeyWorker` overrides them (worker.py:602, 625) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
-(`LoggingLifecycle`), `.manager` (`Manager`), `.log_handlers`
+(`LoggingLifecycle`), `.lifecycle` (`WorkerLifecycle`), `.signal_handler`
+(`SignalHandler`), `.manager` (`register_manager`), `.log_handlers`
 (`parse_logging_level`), `.utils` (`prepare_conf_dir`, `print_scietex_logo`);
 external `scietex.logging.ConsoleHandler`.
 
-**Depended on by:** `TaskProcessor` (extends); `ManagerRuntime` and
-`LoggingLifecycle` (back-reference to the owning worker); `task_handler`
-(indirectly, via `TaskHandlerContext`).
+**Depended on by:** `TaskProcessor` (extends); `ManagerRuntime`,
+`LoggingLifecycle`, `WorkerLifecycle`, and `SignalHandler` (back-reference to
+the owning worker); `task_handler` (indirectly, via `TaskHandlerContext`).
 
 ## 2. Manager runtime — `ManagerRuntime`
 

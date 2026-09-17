@@ -8,13 +8,11 @@ watchdog managers, and graceful shutdown support.
 
 import asyncio
 import logging
-import signal
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from types import MappingProxyType
 from typing import ClassVar
 
 from scietex.logging import ConsoleHandler
@@ -28,13 +26,13 @@ from .config import (
     DEFAULT_WATCHDOG_INTERVAL,
     WorkerConfig,
 )
+from .lifecycle import WorkerLifecycle
 from .log_handlers import parse_logging_level
 from .log_handlers.lifecycle import LoggingLifecycle
-from .manager import Manager
+from .manager import register_manager
 from .manager.runtime import ManagerRuntime
+from .signal_handler import SignalHandler
 from .utils import prepare_conf_dir, print_scietex_logo
-
-WAIT_FOR_SERVICE_STOPPED_DELAY: float = 0.1
 
 
 class ServiceStatus(Enum):
@@ -58,7 +56,7 @@ class BasicWorker:
     Base async worker framework for daemon services.
 
     Provides signal handling, async logging with custom handlers,
-    heartbeat and watchdog managers (decorated with ``@Manager``),
+    heartbeat and watchdog managers (registered through the manager registry),
     automatic manager restart on error, and graceful shutdown.
 
     Subclasses should override:
@@ -133,10 +131,12 @@ class BasicWorker:
         )
 
         # Extracted components own their respective bookkeeping; the worker
-        # keeps only identity/config and the lifecycle state machine. They are
-        # constructed before the logger handler registration below.
+        # keeps only identity/config. They are constructed before the logger
+        # handler registration below.
         self._manager_runtime = ManagerRuntime(self)
         self._logging_lifecycle = LoggingLifecycle(self)
+        self._lifecycle = WorkerLifecycle(self)
+        self._signal_handler = SignalHandler(self)
 
         # Set up logger with async handler
         self._logger: logging.Logger = logging.getLogger(f"{self.__service_name}:{self.__instance_id}")
@@ -146,20 +146,6 @@ class BasicWorker:
         # The console handler derives its identity from the logger name above.
         self._logging_lifecycle.register_logger_handler(ConsoleHandler())
 
-        # State tracking
-
-        self.__state: ServiceStatus = ServiceStatus.STOPPED
-        self.__start_time: datetime | None = None
-
-        self.__events: dict[str, asyncio.Event] = {
-            "exit_requested": asyncio.Event(),
-            "exit": asyncio.Event(),
-        }
-
-        # Reference to the pending signal-triggered stop task, used to guard
-        # against spawning a new exit() per signal (AR-033).
-        self.__stop_task: asyncio.Task | None = None
-
     @property
     def state(self) -> ServiceStatus:
         """Current lifecycle state of the service (read-only).
@@ -168,7 +154,7 @@ class BasicWorker:
             The current ``ServiceStatus`` enum value indicating whether
             the service is stopped, starting, running, or stopping.
         """
-        return self.__state
+        return self._lifecycle.state
 
     @property
     def events(self) -> Mapping[str, asyncio.Event]:
@@ -183,7 +169,7 @@ class BasicWorker:
             ``asyncio.Event`` values remain mutable and may be awaited or
             inspected, but the mapping itself cannot be modified.
         """
-        return MappingProxyType(self.__events)
+        return self._lifecycle.events
 
     @property
     def service_name(self) -> str:
@@ -342,7 +328,7 @@ class BasicWorker:
             ``RUNNING`` state, or ``None`` if the service has not
             started or has been stopped.
         """
-        return self.__start_time
+        return self._lifecycle.start_time
 
     @property
     def logger(self) -> logging.Logger:
@@ -378,12 +364,7 @@ class BasicWorker:
         No-ops on platforms without ``loop.add_signal_handler`` support
         (e.g. Windows).
         """
-        loop = asyncio.get_running_loop()
-        if not hasattr(loop, "add_signal_handler"):
-            return
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, self._request_exit)
-        self.logger.log(logging.DEBUG, "Signal handlers are all setup")
+        self._signal_handler.setup()
 
     def _request_exit(self) -> None:
         """Spawn a single exit task, guarding against re-entry.
@@ -392,11 +373,7 @@ class BasicWorker:
         stop task or an already-requested exit short-circuits so only one
         shutdown runs.
         """
-        if self.__stop_task is not None and not self.__stop_task.done():
-            return
-        if self.events["exit_requested"].is_set():
-            return
-        self.__stop_task = asyncio.create_task(self.exit(), name="StopTask")
+        self._lifecycle.request_exit()
 
     def _remove_signal_handlers(self) -> None:
         """
@@ -405,12 +382,7 @@ class BasicWorker:
         Mirrors ``_setup_signal_handlers`` and no-ops on platforms without
         ``loop.remove_signal_handler`` support (e.g. Windows).
         """
-        loop = asyncio.get_running_loop()
-        if not hasattr(loop, "remove_signal_handler"):
-            return
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.remove_signal_handler(sig)
-        self.logger.log(logging.DEBUG, "Signal handlers removed")
+        self._signal_handler.remove()
 
     async def initialize(self) -> bool:
         """
@@ -437,13 +409,12 @@ class BasicWorker:
             RuntimeError: If initialization fails
         """
         try:
-            if self.__state != ServiceStatus.STOPPED:
+            if self._lifecycle.state != ServiceStatus.STOPPED:
                 self.logger.log(logging.INFO, "Waiting for service shutdown complete.")
             self.logger.log(logging.INFO, "Service is starting up.")
-            while not self.__state == ServiceStatus.STOPPED:
-                await asyncio.sleep(WAIT_FOR_SERVICE_STOPPED_DELAY)
+            await self._lifecycle._wait_until_stopped()
             self.logger.log(logging.INFO, "Service is starting up.")
-            self.__state = ServiceStatus.STARTING
+            self._lifecycle.state = ServiceStatus.STARTING
             print_scietex_logo(service_name=self.service_name, version=self.version)
             # Init Logging Handlers
             await self._logging_lifecycle.start_handlers()
@@ -462,13 +433,13 @@ class BasicWorker:
             # Set the start time before managers start: the heartbeat manager
             # fires its first beat immediately, and the heartbeat is guarded by
             # start_time, so a late set would skip the first beat (AR-049).
-            self.__start_time = datetime.now(timezone.utc)
+            self._lifecycle.start_time = datetime.now(timezone.utc)
 
             # Start managers
             await self._manager_runtime.start_managers()
 
             self.logger.log(logging.DEBUG, "Worker %s:%s started", self.service_name, self.instance_id)
-            self.__state = ServiceStatus.RUNNING
+            self._lifecycle.state = ServiceStatus.RUNNING
         except asyncio.CancelledError:
             self.logger.log(logging.INFO, "Startup task canceled.")
             self._force_stopped()
@@ -485,7 +456,7 @@ class BasicWorker:
         If the worker is stopping or stopped, creates a task to execute the
         full startup sequence.
         """
-        if self.__state == ServiceStatus.RUNNING:
+        if self._lifecycle.state == ServiceStatus.RUNNING:
             self.logger.log(
                 logging.WARNING,
                 "Worker %s:%s is already running",
@@ -493,7 +464,7 @@ class BasicWorker:
                 self.instance_id,
             )
             return
-        if self.__state == ServiceStatus.STARTING:
+        if self._lifecycle.state == ServiceStatus.STARTING:
             self.logger.log(
                 logging.WARNING,
                 "Worker %s:%s is already starting up",
@@ -501,7 +472,7 @@ class BasicWorker:
                 self.instance_id,
             )
             return
-        if self.__state in (ServiceStatus.STOPPING, ServiceStatus.STOPPED):
+        if self._lifecycle.state in (ServiceStatus.STOPPING, ServiceStatus.STOPPED):
             self._setup_signal_handlers()
             asyncio.create_task(self._startup(), name="Start")
 
@@ -513,11 +484,7 @@ class BasicWorker:
         later start() (AR-017). If an exit was requested, surface it as a
         completed exit instead of leaving the exit event dangling.
         """
-        self.__state = ServiceStatus.STOPPED
-        self.__start_time = None
-        if self.events["exit_requested"].is_set():
-            self.__events["exit_requested"].clear()
-            self.__events["exit"].set()
+        self._lifecycle.force_stopped()
 
     async def _shutdown(self) -> None:
         """
@@ -533,7 +500,7 @@ class BasicWorker:
         """
         try:
             self.logger.debug("Stopping worker gracefully...")
-            self.__state = ServiceStatus.STOPPING
+            self._lifecycle.state = ServiceStatus.STOPPING
             self.logger.log(logging.DEBUG, "Worker stopped.")
             await self._manager_runtime.stop_managers()
             # Unregister while the transport is still open (cleanup() may
@@ -554,13 +521,13 @@ class BasicWorker:
                     self.logger.exception("Error shutting down logging handlers: %s", e)
                 except Exception:
                     print("Error shutting down logging handlers:", e)
-            self.__start_time = None
+            self._lifecycle.start_time = None
 
-            self.__state = ServiceStatus.STOPPED
+            self._lifecycle.state = ServiceStatus.STOPPED
 
-            if self.events["exit_requested"].is_set():
-                self.__events["exit_requested"].clear()
-                self.__events["exit"].set()
+            if self._lifecycle.events["exit_requested"].is_set():
+                self._lifecycle.events["exit_requested"].clear()
+                self._lifecycle.events["exit"].set()
         except asyncio.CancelledError:
             self.logger.log(logging.ERROR, "Shutdown task cancelled")
             self._force_stopped()
@@ -577,30 +544,30 @@ class BasicWorker:
         Note:
             This method is automatically called when SIGINT or SIGTERM is received.
         """
-        if self.__state == ServiceStatus.STOPPED:
+        if self._lifecycle.state == ServiceStatus.STOPPED:
             self.logger.log(
                 logging.DEBUG,
                 "Worker %s:%s is not running",
                 self.service_name,
                 self.instance_id,
             )
-            if self.events["exit_requested"].is_set() and not self.events["exit"].is_set():
-                self.__events["exit_requested"].clear()
-                self.__events["exit"].set()
+            if self._lifecycle.events["exit_requested"].is_set() and not self._lifecycle.events["exit"].is_set():
+                self._lifecycle.events["exit_requested"].clear()
+                self._lifecycle.events["exit"].set()
             self._remove_signal_handlers()
             return
-        if self.__state == ServiceStatus.STOPPING:
+        if self._lifecycle.state == ServiceStatus.STOPPING:
             self.logger.log(
                 logging.DEBUG,
                 "Worker %s:%s is already shutting down",
                 self.service_name,
                 self.instance_id,
             )
-            if self.events["exit_requested"].is_set() and not self.events["exit"].is_set():
-                self.__events["exit_requested"].clear()
-                self.__events["exit"].set()
+            if self._lifecycle.events["exit_requested"].is_set() and not self._lifecycle.events["exit"].is_set():
+                self._lifecycle.events["exit_requested"].clear()
+                self._lifecycle.events["exit"].set()
             return
-        if self.__state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):
+        if self._lifecycle.state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):
             self.logger.log(
                 logging.DEBUG,
                 "Worker %s:%s is going to SHUT DOWN",
@@ -616,30 +583,8 @@ class BasicWorker:
         via ``stop()``. The caller should await ``events["exit"].wait()``
         to confirm the worker has fully stopped.
         """
-        self.__events["exit_requested"].set()
+        self._lifecycle.events["exit_requested"].set()
         await self.stop()
-
-    @Manager(name="Heartbeat")
-    async def _heartbeat_manager(self) -> None:
-        """
-        Manager that periodically invokes the heartbeat() method.
-
-        Calls heartbeat() immediately, then sleeps for heartbeat_interval
-        seconds. Repeats indefinitely until cancelled.
-        """
-        await self.heartbeat()
-        await asyncio.sleep(self.heartbeat_interval)
-
-    @Manager(name="Watchdog")
-    async def _watchdog_manager(self) -> None:
-        """
-        Manager that periodically invokes the watchdog() method.
-
-        Calls watchdog() immediately, then sleeps for watchdog_interval
-        seconds. Repeats indefinitely until cancelled.
-        """
-        await self.watchdog()
-        await asyncio.sleep(self.watchdog_interval)
 
     async def heartbeat(self) -> None:
         """Periodic heartbeat callback invoked by the Heartbeat manager.
@@ -701,3 +646,37 @@ class BasicWorker:
         override to remove their instance id. Best-effort: a failure must
         not fail shutdown (log and continue).
         """
+
+
+async def _heartbeat_manager(worker: BasicWorker) -> None:
+    """Manager loop that periodically invokes ``worker.heartbeat()``.
+
+    Calls ``heartbeat()`` immediately, then sleeps for ``heartbeat_interval``
+    seconds. Repeats indefinitely until cancelled.
+    """
+    await worker.heartbeat()
+    await asyncio.sleep(worker.heartbeat_interval)
+
+
+async def _watchdog_manager(worker: BasicWorker) -> None:
+    """Manager loop that periodically invokes ``worker.watchdog()``.
+
+    Calls ``watchdog()`` immediately, then sleeps for ``watchdog_interval``
+    seconds. Repeats indefinitely until cancelled.
+    """
+    await worker.watchdog()
+    await asyncio.sleep(worker.watchdog_interval)
+
+
+register_manager(
+    BasicWorker,
+    _heartbeat_manager,
+    name="Heartbeat",
+    attribute_name="_heartbeat_manager",
+)
+register_manager(
+    BasicWorker,
+    _watchdog_manager,
+    name="Watchdog",
+    attribute_name="_watchdog_manager",
+)

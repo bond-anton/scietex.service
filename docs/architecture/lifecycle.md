@@ -6,11 +6,25 @@ workers, and resource ownership. Facts unless marked *analysis* or `UNKNOWN`.
 ## Worker lifecycle state machine
 
 States: `ServiceStatus` (STOPPED → STARTING → RUNNING → STOPPING → STOPPED).
-Transitions are driven by `BasicWorker` (`basic_worker.py`).
+The state, `start_time`, both lifecycle events, and the pending stop-task guard
+are owned by `WorkerLifecycle` (`lifecycle.py`, extracted in AR-087); the
+transitions are driven by `BasicWorker`'s `_startup`/`_shutdown` orchestrators
+(`basic_worker.py`), which write `self._lifecycle.state` and delegate
+`request_exit()`/`force_stopped()`.
 
 Two coordination events exist per worker in `self.events` (a read-only
-`MappingProxyType` view of two `asyncio.Event`s): `"exit_requested"` (set by
-`exit()`) and `"exit"` (set when fully stopped).
+`MappingProxyType` view of two `asyncio.Event`s owned by `WorkerLifecycle`):
+`"exit_requested"` (set by `exit()`) and `"exit"` (set when fully stopped).
+
+Signal handling (SIGINT/SIGTERM) is owned by `SignalHandler`
+(`signal_handler.py`, extracted in AR-087). Registration/removal is
+coordinated through a module-level `weakref.WeakKeyDictionary` keyed by the
+running event loop with a **last-worker-wins** rule: when two workers share one
+loop, the second worker's `setup()` becomes the new owner of the loop's
+SIGINT/SIGTERM handlers, and the first worker's later `remove()` is a no-op —
+so one worker's shutdown cannot silently unregister another worker's
+graceful-shutdown handlers. Weak keys mean a garbage-collected loop drops its
+entry with no explicit cleanup.
 
 ### Startup
 
@@ -68,17 +82,19 @@ re-raises — no stranded STARTING state (AR-017).
 
 ### Shutdown
 
-Signal (`SIGINT`/`SIGTERM`) → `_request_exit` (367), which spawns a single
-`"StopTask"` running `exit()` (591); `exit()` sets `exit_requested` and calls
-`stop()`. Repeat signals are deduplicated: a pending stop task or an
-already-set `exit_requested` short-circuits so only one shutdown runs
-(AR-033).
+Signal (`SIGINT`/`SIGTERM`) → `SignalHandler`, which invokes the worker's
+`_request_exit` (369) delegator → `WorkerLifecycle.request_exit()`, which
+spawns a single `"StopTask"` running `exit()` (579); `exit()` sets
+`exit_requested` and calls `stop()`. Repeat signals are deduplicated: a pending
+stop task or an already-set `exit_requested` short-circuits so only one
+shutdown runs (AR-033). The dedup guard lives in
+`WorkerLifecycle.request_exit()`.
 
-`stop()` (548):
+`stop()` (536):
 - STOPPED → clear/set exit events, remove signal handlers
-  (`_remove_signal_handlers`, 569), return.
+  (`_remove_signal_handlers`, 557 → `SignalHandler.remove()`), return.
 - STOPPING → set exit event if `exit_requested`, return.
-- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (501).
+- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (489).
 
 `_shutdown()`:
 1. State = STOPPING.
@@ -179,7 +195,7 @@ RUNNING) / `remove_task_handler`.
 | Per-task status records (`TaskStatusStore`) | worker (injected into `ValkeyTransport`) | `on_started`/`on_progress` | TTL expiry (`task_tracking_ttl`) |
 | Worker registry-set membership (`SADD`/`SREM`) | worker (via `_register_instance`/`_unregister_instance`) | startup step 5 (`_register_instance`) | shutdown step 3 (`_unregister_instance`) |
 | Logging `AsyncValkeyHandler` worker loop | worker (via `LoggingLifecycle`) | `connect()` → `handler.start_logging()` | shutdown (`stop_logging`) |
-| Signal handlers (SIGINT/SIGTERM) | loop (per started worker) | `start()` (`_setup_signal_handlers`) | `stop()` (`_remove_signal_handlers`) |
+| Signal handlers (SIGINT/SIGTERM) | loop, owned by the last worker to call `setup()` (via `SignalHandler`'s weak-key registry) | `start()` (`_setup_signal_handlers` → `SignalHandler.setup()`) | `stop()` (`_remove_signal_handlers` → `SignalHandler.remove()`, no-op unless owner) |
 
 `UNKNOWN` — explicit process-exit path when a worker stops without a signal
 (e.g. plain `stop()` from user code): the loop is not closed by the library;
