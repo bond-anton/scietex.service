@@ -14,6 +14,7 @@ import logging
 from collections.abc import Mapping
 from uuid import UUID
 
+from ..health import TransportHealth
 from ..task_handler.schemas import CancelReason, TaskData, TaskResult
 from ..task_handler.wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
 from ..transport import TaskSink
@@ -25,7 +26,6 @@ from ._glide import (
     StreamReadGroupOptions,
 )
 from .config import DEFAULT_CLAIM_MIN_IDLE_MS, ValkeyWorkerConfig
-from .health import TransportHealth
 from .lease import TaskLeaseManager
 from .tracking import TaskStatusStore
 

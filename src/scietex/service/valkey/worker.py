@@ -18,6 +18,7 @@ from uuid import UUID
 import msgspec
 from scietex.logging import AsyncValkeyHandler
 
+from ..health import TransportHealth
 from ..task_processor import TaskProcessor
 from ._glide import (
     ExpirySet,
@@ -37,7 +38,6 @@ from .config import (
     logging_handler_config,
     read_valkey_config,
 )
-from .health import TransportHealth
 from .lease import TaskLeaseManager, derive_task_lease_ttl
 from .schemas import Heartbeat
 from .tracking import TaskStatusStore
@@ -252,7 +252,7 @@ class ValkeyWorker(TaskProcessor):
     def transport_health(self) -> TransportHealth:
         """The connection-health supervisor for this worker (read-only, AR-075).
 
-        Exposes the :class:`~scietex.service.valkey.health.TransportHealth`
+        Exposes the :class:`~scietex.service.health.TransportHealth`
         aggregating every glide failure and owning the single reconnect path, so
         callers can observe degraded state without reaching into internals.
         """
