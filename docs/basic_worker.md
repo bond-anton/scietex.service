@@ -139,7 +139,7 @@ second, distinct manager instead of overriding the base one. Redefining the
 manager's attribute without re-applying `@Manager` (or calling
 `register_manager`) logs a WARNING, because the plain attribute produces no
 registry entry — the base manager still runs and the override never executes
-(AR-015).
+(AR-086).
 
 ### Creating a Manager
 

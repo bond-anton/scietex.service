@@ -2,7 +2,7 @@
 
 Kept in its own module so both the core :mod:`scietex.service.config` and the
 optional :mod:`scietex.service.valkey.config` can import it without the valkey
-package reaching into a private name of the core config module (AR-008).
+package reaching into a private name of the core config module (AR-079).
 """
 
 import msgspec

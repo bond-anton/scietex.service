@@ -17,7 +17,7 @@ from scietex.service.transport import InMemoryTransport
 
 class RecordingInMemoryTransport(InMemoryTransport):
     """In-memory transport that records every requeue into a shared list, so
-    tests can assert on requeue behaviour at the transport seam (AR-001)."""
+    tests can assert on requeue behaviour at the transport seam (AR-072)."""
 
     def __init__(self, *, requeued: list, logger: logging.Logger) -> None:
         super().__init__(logger=logger)
@@ -247,7 +247,7 @@ class DemoProcessor(TaskProcessor):
         self.requeued: list = []
         super().__init__(*args, **kwargs)
         # Record requeues at the transport seam so tests assert on self.requeued
-        # without overriding return_task_to_queue (AR-001).
+        # without overriding return_task_to_queue (AR-072).
         self._transport = RecordingInMemoryTransport(requeued=self.requeued, logger=self.logger)
 
     async def fetch_tasks(self) -> bool:  # pragma: no cover - stub
@@ -277,7 +277,7 @@ class DurableProcessor(TaskProcessor):
         super().__init__(*args, **kwargs)
         self.requeued: list = []
         # The durable transport's on_drain is a no-op, so a drained task is not
-        # re-enqueued (AR-001).
+        # re-enqueued (AR-072).
         self._transport = DurableInMemoryTransport(logger=self.logger)
 
     async def fetch_tasks(self) -> bool:  # pragma: no cover - stub

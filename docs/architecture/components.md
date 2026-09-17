@@ -89,7 +89,7 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
   colliding manager and the class it was found on (AR-068); the first
   (most-derived) definition still wins, so the collision is surfaced rather
   than silently dropped. A class that redefines a base manager's attribute
-  name without re-decorating it also logs an advisory WARNING (AR-015
+  name without re-decorating it also logs an advisory WARNING (AR-086
   failure mode 2), because the plain attribute produces no registry entry and
   discovery falls through to the base manager.
 - `run_manager(name, manager)` (82) — runs `manager.method(self.worker)` in a
@@ -309,7 +309,7 @@ and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
 
 **File:** `src/scietex/service/transport.py`
 
-**Purpose:** The explicit task-delivery contract (AR-001). Replaces the former
+**Purpose:** The explicit task-delivery contract (AR-072). Replaces the former
 implicit set of ordering-sensitive template-method hooks with two Protocols and
 a working in-process default, so `TaskProcessor` depends on an interface rather
 than on subclass overrides.
@@ -351,7 +351,7 @@ Constructor — `__init__(config: ValkeyWorkerConfig | None = None, *,
 client_factory: ClientFactory | None = None)` (accepts `config.valkey_config`;
 when `None`, defers the disk read to `_ensure_client_config()`, called at first
 connect — AR-066, so construction is side-effect-free; `client_factory` is the
-AR-003 injection seam, defaulting to `GlideClient.create`),
+AR-074 injection seam, defaulting to `GlideClient.create`),
 `connect` (`_client_factory` + PING under `_client_lock`; `_client`
 assigned only after PING succeeds; then ensures the logging handler and
 starts it), `disconnect`, `heartbeat` (writes msgpack `Heartbeat` to
@@ -360,14 +360,14 @@ starts it), `disconnect`, `heartbeat` (writes msgpack `Heartbeat` to
 `_register_instance` (`SADD` `instance_id` into the registry set),
 `_unregister_instance` (`SREM` it back out).
 
-Delivery is delegated to the injected `ValkeyTransport` (AR-001): the worker
+Delivery is delegated to the injected `ValkeyTransport` (AR-072): the worker
 composes `self._valkey_transport` and assigns it to `self._transport`, so the
 six former hook overrides (`fetch_tasks`, `return_task_to_queue`,
 `on_task_started`, `on_task_completed`, `_write_task_progress`,
 `_on_queue_drain_task_processing`) are gone — the base `TaskProcessor` hooks
 remain as thin delegators to the composed transport. The worker also composes
-the `TransportHealth` (AR-004), `TaskLeaseManager` (AR-002), and
-`TaskStatusStore` (AR-002) collaborators and injects them into the transport.
+the `TransportHealth` (AR-075), `TaskLeaseManager` (AR-073), and
+`TaskStatusStore` (AR-073) collaborators and injects them into the transport.
 
 Connection ownership (AR-059/061): the worker runs one operational
 `GlideClient` for heartbeat, registry, intake, and task completion;
@@ -377,7 +377,7 @@ errors. The logging handler is an independent owner: `_ensure_logging_handler`
 constructs `AsyncValkeyHandler` with `valkey_config=` (a scalar dict
 translated from the typed config by `_logging_handler_config`) from the typed
 `ValkeyConfig`, so the handler builds/closes/reconnects its own
-connection and the worker never touches `handler.client` (AR-005/AR-014
+connection and the worker never touches `handler.client` (AR-076/AR-085
 removed the raw-`GlideClientConfiguration` fallback).
 
 **Key names** (constructed in `__init__`): status key
@@ -440,7 +440,7 @@ subscriptions from `valkey_config.pubsub_config` when `listening` is set).
 
 **Dependencies:** `msgspec`; `._glide` (glide names via the single guarded
 import, AR-048); `..config` (`TaskProcessorConfig`); `.._validation`
-(`validate_range`, AR-008). **Depended on by:** `ValkeyWorker`,
+(`validate_range`, AR-079). **Depended on by:** `ValkeyWorker`,
 `valkey/transport.py`, `valkey/__init__.py`, tests.
 
 ## 12. Valkey transport — `valkey/transport.py`
@@ -448,7 +448,7 @@ import, AR-048); `..config` (`TaskProcessorConfig`); `.._validation`
 **File:** `src/scietex/service/valkey/transport.py`
 
 **Purpose:** The Valkey implementation of the core `TaskTransport` Protocol
-(AR-001). Owns the stream operations that were formerly `ValkeyWorker` hook
+(AR-072). Owns the stream operations that were formerly `ValkeyWorker` hook
 overrides, so the worker keeps only lifecycle concerns.
 
 **Main symbols:** `class ValkeyTransport` — receives all collaborators by
@@ -460,10 +460,10 @@ injection (`config`, `service_name`, `consumer_name`, `stream_name`,
 (`XAUTOCLAIM` pending entries on first fetch; decodes via
 `decode_task_envelope`, skipping unknown-version/invalid entries with an ERROR
 log), `requeue(task_id, task_data)` (`xadd` re-queue via `encode_task_envelope`,
-then deletes the lease — AR-006b), `release(task_id)` (lease delete only),
+then deletes the lease — AR-077b), `release(task_id)` (lease delete only),
 `on_started`, `ack(task_id, task_data, task_result, *, cancel_reason=None)`
 (`xack`+`xdel` the entry after the handler finishes; skips the lease delete for
-a retryable error result — AR-006b), `on_progress`, `on_drain` (durable drain:
+a retryable error result — AR-077b), `on_progress`, `on_drain` (durable drain:
 deletes the lease without re-enqueueing), and `refresh_leases()` (rewrites
 leases for every task in the entry-id map; called by the worker watchdog).
 
@@ -478,7 +478,7 @@ acknowledgement) and the `recovered` flag (one-time pending recovery).
 
 **File:** `src/scietex/service/valkey/health.py`
 
-**Purpose:** Connection-health supervisor (AR-004). Aggregates every glide
+**Purpose:** Connection-health supervisor (AR-075). Aggregates every glide
 failure across the worker and its collaborators, owns the single reconnect
 path, and surfaces one CRITICAL per sustained outage.
 
@@ -500,7 +500,7 @@ glide import**. **Depended on by:** `ValkeyWorker` (exposed via
 
 **File:** `src/scietex/service/valkey/lease.py`
 
-**Purpose:** Per-entry lease store (AR-002 extraction). Guards a task against
+**Purpose:** Per-entry lease store (AR-073 extraction). Guards a task against
 concurrent processing by a peer replica.
 
 **Main symbols:** constants `LEASE_TTL_HEARTBEAT_MULTIPLIER = 2`,
@@ -520,7 +520,7 @@ TTL), `acquire(task_id)` (SET NX; `True` on error, fail-safe), `delete(task_id)`
 
 **File:** `src/scietex/service/valkey/tracking.py`
 
-**Purpose:** Per-task status store (AR-002 extraction). Records the running and
+**Purpose:** Per-task status store (AR-073 extraction). Records the running and
 terminal status of each task for external observers.
 
 **Main symbols:** `class TaskStatusStore(*, service_name, tracking_ttl,
@@ -593,4 +593,4 @@ Consumed classes:
 client (autonomous reconnect/backoff); a handler built from the `client=` kwarg
 never closes it — the caller owns its lifetime and recovery. `ValkeyWorker` uses
 the former (the raw-`GlideClientConfiguration` fallback that used the latter was
-removed in AR-005/AR-014).
+removed in AR-076/AR-085).

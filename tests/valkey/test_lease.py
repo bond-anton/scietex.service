@@ -55,7 +55,7 @@ async def test_on_task_completed_deletes_lease_key():
 
 @pytest.mark.asyncio
 async def test_on_task_completed_retryable_does_not_delete_lease():
-    """A retryable-error ack must not delete the lease (AR-006b): the task was
+    """A retryable-error ack must not delete the lease (AR-077b): the task was
     already requeued (and its lease released) before the ack, so deleting again
     would clobber a peer's fresh lease for the requeued copy."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
@@ -76,7 +76,7 @@ async def test_on_task_completed_retryable_does_not_delete_lease():
 
 @pytest.mark.asyncio
 async def test_requeue_deletes_lease():
-    """requeue() releases the lease as part of re-queueing (AR-006b): the
+    """requeue() releases the lease as part of re-queueing (AR-077b): the
     requeued copy reuses the same task_id, so the lease must be cleared for a
     peer to claim it."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
@@ -157,7 +157,7 @@ def test_lease_ttl_derivation_default_and_configured():
 
 @pytest.mark.asyncio
 async def test_on_task_started_honours_configured_lease_ttl():
-    """An explicit ``task_lease_ttl`` overrides the derived default (AR-006a)."""
+    """An explicit ``task_lease_ttl`` overrides the derived default (AR-077a)."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     client = DummyClient()
     worker = _make_tracking_worker(client, task_lease_ttl=5)

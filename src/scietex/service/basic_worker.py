@@ -109,7 +109,7 @@ class BasicWorker:
         self.__conf_dir: Path = prepare_conf_dir(cfg.conf_dir)
 
         # Resolve the None-means-default timing fields eagerly, matching
-        # TaskProcessor's hot-loop fields (AR-009). ``is not None`` (never
+        # TaskProcessor's hot-loop fields (AR-080). ``is not None`` (never
         # ``or``) preserves the ``<= 0`` unbounded sentinel.
         self.__logger_handler_timeout: float = (
             cfg.logger_handler_timeout if cfg.logger_handler_timeout is not None else DEFAULT_LOGGER_HANDLER_TIMEOUT
@@ -232,7 +232,7 @@ class BasicWorker:
         A ``None`` configuration value resolves to
         ``DEFAULT_LOGGER_HANDLER_TIMEOUT``; a non-``None`` value is validated
         against ``[MIN_LOGGER_HANDLER_TIMEOUT, MAX_LOGGER_HANDLER_TIMEOUT]`` at
-        construction. Resolution happens eagerly in ``__init__`` (AR-009).
+        construction. Resolution happens eagerly in ``__init__`` (AR-080).
 
         Returns:
             The current timeout value in seconds.
@@ -246,7 +246,7 @@ class BasicWorker:
         A ``None`` configuration value resolves to
         ``DEFAULT_MANAGER_SHUTDOWN_TIMEOUT``; a non-``None`` value is validated
         against ``[MIN_MANAGER_SHUTDOWN_TIMEOUT, MAX_MANAGER_SHUTDOWN_TIMEOUT]``
-        at construction. Resolution happens eagerly in ``__init__`` (AR-009).
+        at construction. Resolution happens eagerly in ``__init__`` (AR-080).
 
         Returns:
             The current timeout value in seconds.
@@ -260,7 +260,7 @@ class BasicWorker:
         A ``None`` configuration value resolves to ``DEFAULT_MANAGER_MAX_RETRIES``;
         a non-``None`` value is validated against
         ``[MIN_MANAGER_MAX_RETRIES, MAX_MANAGER_MAX_RETRIES]`` at construction.
-        Resolution happens eagerly in ``__init__`` (AR-009).
+        Resolution happens eagerly in ``__init__`` (AR-080).
 
         Returns:
             The current maximum retry count.
@@ -273,8 +273,8 @@ class BasicWorker:
 
         A ``None`` configuration value resolves to
         ``DEFAULT_MANAGER_RESTART_BACKOFF``; a non-``None`` value is validated
-        against ``[MIN_MANAGER_RESTART_BACKOFF, MAX_MANAGER_RESTART_BACKOFF]`` at
-        construction. Resolution happens eagerly in ``__init__`` (AR-009).
+        against         ``[MIN_MANAGER_RESTART_BACKOFF, MAX_MANAGER_RESTART_BACKOFF]`` at
+        construction. Resolution happens eagerly in ``__init__`` (AR-080).
 
         Returns:
             The current backoff delay in seconds.
@@ -312,7 +312,7 @@ class BasicWorker:
         A ``None`` configuration value resolves to ``DEFAULT_HEARTBEAT_INTERVAL``;
         a non-``None`` value is validated against
         ``[MIN_HEARTBEAT_INTERVAL, MAX_HEARTBEAT_INTERVAL]`` at construction.
-        Resolution happens eagerly in ``__init__`` (AR-009).
+        Resolution happens eagerly in ``__init__`` (AR-080).
 
         Returns:
             The current heartbeat interval in seconds.
@@ -326,7 +326,7 @@ class BasicWorker:
         A ``None`` configuration value resolves to ``DEFAULT_WATCHDOG_INTERVAL``;
         a non-``None`` value is validated against
         ``[MIN_WATCHDOG_INTERVAL, MAX_WATCHDOG_INTERVAL]`` at construction.
-        Resolution happens eagerly in ``__init__`` (AR-009).
+        Resolution happens eagerly in ``__init__`` (AR-080).
 
         Returns:
             The current watchdog interval in seconds.

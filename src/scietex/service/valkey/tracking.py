@@ -1,4 +1,4 @@
-"""Task tracking-record store for the Valkey transport (AR-002).
+"""Task tracking-record store for the Valkey transport (AR-073).
 
 Extracts the tracking/status subsystem that ``ValkeyWorker`` previously
 inlined: writing ``running``/terminal ``TaskStatus`` records and updating

@@ -1,11 +1,11 @@
 """Valkey async task processor testing.
 
 Connect-path tests exercise ``connect()``/``disconnect()`` through the
-``client_factory=`` injection seam (AR-003), supplying a fake client without a
+``client_factory=`` injection seam (AR-074), supplying a fake client without a
 live Valkey server. Method-unit tests still seed transport/ack state
 (``_task_entry_ids``) by assigning ``worker._client`` directly; recovery and
 lease-refresh state lives on ``worker._transport`` (Phase 3 transport
-extraction, AR-001).
+extraction, AR-072).
 """
 
 import asyncio

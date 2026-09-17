@@ -42,7 +42,7 @@ from .schemas import Heartbeat
 from .tracking import TaskStatusStore
 from .transport import ValkeyTransport
 
-# Client-construction injection seam (AR-003): connect() builds its client by
+# Client-construction injection seam (AR-074): connect() builds its client by
 # awaiting this callable with the resolved GlideClientConfiguration, so tests
 # and embedders can supply a fake or externally-built client.
 ClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]
@@ -98,7 +98,7 @@ class ValkeyWorker(TaskProcessor):
     connection (``valkey_config=`` mode), so the worker neither shares nor
     tears down the logging client.
 
-    Client construction (AR-003): ``connect()`` builds its ``GlideClient`` by
+    Client construction (AR-074): ``connect()`` builds its ``GlideClient`` by
     awaiting the ``client_factory=`` callable with the resolved configuration
     (defaulting to ``GlideClient.create``), so tests and embedders can inject a
     fake or externally-built client. The worker owns the returned client for its
@@ -180,13 +180,13 @@ class ValkeyWorker(TaskProcessor):
         self._valkey_logger_handler: AsyncValkeyHandler | None = None
 
         self._client: GlideClient | None = None
-        # Client-construction seam (AR-003): connect() awaits this factory with
+        # Client-construction seam (AR-074): connect() awaits this factory with
         # the resolved client config; defaults to the real GlideClient.create.
         self._client_factory: ClientFactory = client_factory if client_factory is not None else GlideClient.create
         # Serializes connect()/disconnect() so only one task mutates _client at
         # a time (AR-059): intake reconnect and shutdown cannot race each other.
         self._client_lock: asyncio.Lock = asyncio.Lock()
-        # Connection-health supervisor (AR-004): the single reconnect owner that
+        # Connection-health supervisor (AR-075): the single reconnect owner that
         # every glide-failure site reports into. Built before the collaborators
         # so lease/status/transport can all receive it by injection. The down
         # threshold and cooldown are derived from the intervals, not configured.
@@ -202,7 +202,7 @@ class ValkeyWorker(TaskProcessor):
         self._task_group_name = f"scietex:{self.service_name}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.instance_id}"
         self._registry_key = f"scietex:{self.service_name}:workers"
-        # Extracted collaborators (AR-002): the lease manager and tracking store
+        # Extracted collaborators (AR-073): the lease manager and tracking store
         # own the per-entry lease and status-record concerns this class used to
         # inline. Both reach the operational client through a late-bound
         # provider, so they see the client connect() assigns (or None before the
@@ -232,7 +232,7 @@ class ValkeyWorker(TaskProcessor):
         # entry can be acknowledged when the handler completes (at-least-once).
         self._task_entry_ids: dict[UUID, str | bytes] = {}
 
-        # Transport extension seam (AR-001): the stream operations this worker
+        # Transport extension seam (AR-072): the stream operations this worker
         # used to override as TaskProcessor hooks now live on ValkeyTransport,
         # which receives the collaborators above by injection (ownership of the
         # lease manager, tracking store, and entry-id map stays here). The
@@ -280,7 +280,7 @@ class ValkeyWorker(TaskProcessor):
 
     @property
     def transport_health(self) -> TransportHealth:
-        """The connection-health supervisor for this worker (read-only, AR-004).
+        """The connection-health supervisor for this worker (read-only, AR-075).
 
         Exposes the :class:`~scietex.service.valkey.health.TransportHealth`
         aggregating every glide failure and owning the single reconnect path, so
@@ -441,7 +441,7 @@ class ValkeyWorker(TaskProcessor):
         if self.client and self.start_time:
             # Capture the client once: a concurrent _disconnect_locked may close
             # it mid-await, but glide errors are swallowed and reported to
-            # TransportHealth, which drives the reconnect (AR-012).
+            # TransportHealth, which drives the reconnect (AR-083).
             client = self.client
             heartbeat_data = Heartbeat(
                 service=self.service_name,
@@ -586,7 +586,7 @@ class ValkeyWorker(TaskProcessor):
         refreshed and expire, making the entries reclaimable.
 
         After the base watchdog runs, a degraded connection past its down
-        threshold surfaces one CRITICAL message per down episode (AR-004); when
+        threshold surfaces one CRITICAL message per down episode (AR-075); when
         healthy this emits nothing.
         """
         # refresh_leases is valkey-specific (not part of the core TaskTransport

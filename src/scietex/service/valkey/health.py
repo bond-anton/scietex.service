@@ -1,4 +1,4 @@
-"""Connection-health supervision for the Valkey transport (AR-004).
+"""Connection-health supervision for the Valkey transport (AR-075).
 
 Every glide failure site reports through :meth:`TransportHealth.report_failure`
 (synchronous, non-blocking), which marks the connection degraded and requests a

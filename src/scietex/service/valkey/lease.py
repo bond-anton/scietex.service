@@ -1,4 +1,4 @@
-"""Per-entry lease management for the Valkey transport (AR-002).
+"""Per-entry lease management for the Valkey transport (AR-073).
 
 Extracts the lease subsystem that ``ValkeyWorker`` previously inlined: the
 server-side-TTL key marking "a live worker owns this entry", its atomic

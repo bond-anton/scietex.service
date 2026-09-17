@@ -89,7 +89,7 @@ class TaskProcessor(BasicWorker):
                 (e.g. ``ValkeyWorker``) inject their own transport.
         """
         super().__init__(config)
-        # Transport extension seam (AR-001): the ordering-sensitive hooks below
+        # Transport extension seam (AR-072): the ordering-sensitive hooks below
         # delegate here. A bare processor gets a working in-memory transport;
         # subclasses swap it for their own at construction.
         self._transport: TaskTransport = transport if transport is not None else InMemoryTransport(logger=self.logger)
@@ -297,7 +297,7 @@ class TaskProcessor(BasicWorker):
 
                 This is also the informal capability-injection channel (e.g.
                 ``cancel=``, ``report=``). It is an accepted trade-off for now
-                (AR-011): the convention is documented rather than typed, and a
+                (AR-082): the convention is documented rather than typed, and a
                 misspelled capability fails loudly. Introduce an explicit
                 ``TaskCapabilities`` object when a third capability appears.
 

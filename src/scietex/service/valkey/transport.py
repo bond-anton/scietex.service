@@ -1,4 +1,4 @@
-"""Stream-backed transport for ``ValkeyWorker`` (AR-001).
+"""Stream-backed transport for ``ValkeyWorker`` (AR-072).
 
 Extracts the ordering-sensitive Valkey stream operations that ``ValkeyWorker``
 previously inlined as ``TaskProcessor`` hook overrides — intake, pending-entry
@@ -238,7 +238,7 @@ class ValkeyTransport:
         The lease is deleted as part of the requeue: the requeued copy reuses
         the same ``task_id``, so leaving this worker's lease in place would
         either block a peer from claiming the copy or be clobbered by the
-        peer's fresh lease (AR-006b). Releasing it here means the copy is
+        peer's fresh lease (AR-077b). Releasing it here means the copy is
         immediately claimable by any worker.
         """
         client = self._client_provider()
@@ -294,7 +294,7 @@ class ValkeyTransport:
         # Ack/delete first, then clear the lease, to minimise the "unleased but
         # still pending" window. A retryable error was already requeued (and its
         # lease released) by ``requeue`` before this ack, so deleting again here
-        # would clobber a peer's fresh lease for the requeued copy (AR-006b).
+        # would clobber a peer's fresh lease for the requeued copy (AR-077b).
         if task_result is not None and task_result.status == "error" and task_result.retryable:
             return
         await self._lease.delete(task_id)

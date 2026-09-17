@@ -548,7 +548,7 @@ Lifecycle:
   `on_drain()` on shutdown drain (this worker will not run the task, so a
   restart or peer can reclaim it immediately instead of waiting up to the lease
   TTL). `requeue()` also deletes the lease, since the requeued copy reuses the
-  same `task_id` and must not inherit a stale lease (AR-006b).
+  same `task_id` and must not inherit a stale lease (AR-077b).
 - **Acquired atomically in recovery.** `recover_pending_tasks()` calls
   `TaskLeaseManager.acquire(task_id)`, which uses `SET ... NX`
   (`ConditionalChange.ONLY_IF_DOES_NOT_EXIST`) so two replicas booting

@@ -1,6 +1,6 @@
 """Transport contract and in-memory implementation for ``TaskProcessor``.
 
-Defines the extension seam a transport must implement (AR-001): a
+Defines the extension seam a transport must implement (AR-072): a
 :class:`TaskSink` receives enqueued tasks, and a :class:`TaskTransport`
 owns every ordering-sensitive hook the processor used to expose as
 template-method overrides. :class:`InMemoryTransport` is the default

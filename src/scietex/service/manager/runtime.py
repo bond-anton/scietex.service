@@ -63,7 +63,7 @@ class ManagerRuntime:
         class's registry list.
 
         A WARNING is also logged when a class redefines a name that a base
-        class bound as a manager attribute without re-decorating it (AR-015
+        class bound as a manager attribute without re-decorating it (AR-086
         failure mode 2). Such a plain attribute produces no registry entry, so
         discovery falls through to the base manager and the override never
         runs. The shadow is reported only when the shadowing value is neither
@@ -78,7 +78,7 @@ class ManagerRuntime:
         """
         mro = type(self.worker).__mro__
 
-        # AR-015 failure mode 2: a class in the MRO may redefine a name that
+        # AR-086 failure mode 2: a class in the MRO may redefine a name that
         # a base class bound as a manager attribute, without re-decorating.
         # That leaves a plain function/attribute in the class __dict__, no
         # registry entry on the subclass, and discovery silently runs the

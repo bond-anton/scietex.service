@@ -63,7 +63,7 @@ Protocol and composes the Valkey-specific collaborators `valkey/config`,
 | `valkey.tracking` | `._glide`, `..task_handler` | import | `ClientProvider`, glide error classes; `TaskData`/`TaskResult`/`CancelReason` |
 | `valkey._glide` | `glide` | import (external, optional extra) | single guarded `try/except ImportError` re-raise with install hint (AR-048); errors surface to top-level guard |
 | `valkey.config` | `glide`, `msgspec` | import | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); config cannot load without the extra |
-| `valkey.config` | `..config`, `.._validation` | import | `TaskProcessorConfig`; `validate_range` (AR-008) |
+| `valkey.config` | `..config`, `.._validation` | import | `TaskProcessorConfig`; `validate_range` (AR-079) |
 | `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; imports `GlideClient` from `._glide` (no runtime import — caller supplies an open client) |
 | `task_handler.schemas` | `msgspec` | import | struct + serialization |
 
