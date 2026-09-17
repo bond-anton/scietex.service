@@ -43,8 +43,9 @@ Each handler goes through a well-defined lifecycle managed by
    `is_ready` to the value `initialize()` returns. An `initialize()`
    returning `False` leaves `is_ready == False`, and the processor then
    fails the handler (removes it from active handlers)
-3. **Processing** — Tasks are dispatched to `handler.handle(task_data)`
-   only when `handler.is_ready` is `True`
+3. **Processing** — Tasks are dispatched to
+   `handler.handle(task_data, capabilities=...)` only when `handler.is_ready`
+   is `True`
 4. **Stop** — `handler.stop()` calls `handler.cleanup()` and sets
    `is_ready = False`
 
@@ -83,7 +84,7 @@ The `worker` attribute no longer exists — handlers receive only the narrow
 
 ```python
 import json
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
+from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskResult
 
 
 class EmailHandler(TaskHandler):
@@ -99,7 +100,7 @@ class EmailHandler(TaskHandler):
         # self.email_client = EmailClient(...)
         return True
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Process an email task."""
         try:
             payload = json.loads(task_data.payload)
@@ -485,7 +486,7 @@ The processor distinguishes failure outcomes via `process_task()`:
   permanent and leave `retryable=False`.
 
 ```python
-async def handle(self, task_data: TaskData) -> TaskResult:
+async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
     try:
         result = await self._do_work(task_data)
         return TaskResult(status="success", payload=result)

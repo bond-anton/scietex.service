@@ -78,7 +78,7 @@ Register handlers for different task types and process them concurrently. See th
 import asyncio
 import logging
 from scietex.service import TaskProcessor, TaskProcessorConfig
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
+from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskResult
 
 
 class EmailHandler(TaskHandler):
@@ -91,7 +91,7 @@ class EmailHandler(TaskHandler):
         self.logger.info("Email handler initialized")
         return True
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         try:
             # Process task_data.payload
             self.logger.info("Sending email…")
@@ -275,9 +275,9 @@ See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle
 4. **Initialize**: `handler.start()` calls `handler.initialize()` and
    sets `handler.is_ready` to the returned value, so it is `True` only
    if `initialize()` returned `True`.
-5. **Handle**: `await handler.handle(task_data)` returns a `TaskResult`
-   with `status` ("success"/"error"), optional `error` message, and
-   optional `payload`.
+5. **Handle**: `await handler.handle(task_data, capabilities=...)` returns a
+   `TaskResult` with `status` ("success"/"error"), optional `error` message,
+   and optional `payload`.
 6. **Timeout**: Tasks exceeding their `timeout` (default 3s) are
    canceled and either re-queued or discarded per
    `TaskTimeout.timeout_action`.

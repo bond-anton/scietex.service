@@ -9,6 +9,7 @@ from scietex.service.config import TaskProcessorConfig
 from scietex.service.task_handler.schemas import TaskData, TaskTimeout
 
 from ._helpers import (
+    CancelRecordingProcessor,
     DemoProcessor,
     NeverFinishesHandler,
     SlowHandler,
@@ -99,6 +100,40 @@ async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation():
         assert not any(tid == t_id for tid, _ in proc.requeued)
         # Let the stubborn handler finish so no dangling task remains.
         await asyncio.sleep(0.5)
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_ignored_cancellation_preserves_timeout_reason():
+    """When a handler ignores watchdog cancellation, the tracker is removed but
+    the 'timeout' reason survives to the eventual ack (AR-088): the handler's
+    terminal on_task_completed must receive cancel_reason='timeout' even though
+    the watchdog already stopped tracking the task."""
+    proc = CancelRecordingProcessor(TaskProcessorConfig(task_cancellation_timeout=0.1))
+    proc.add_task_handler(StubbornHandler)
+    await proc._start_task_handler("StubbornHandler")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(
+            t_id,
+            TaskData(
+                task="stubborn",
+                payload=b"{}",
+                timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
+            ),
+        )
+        # StubbornHandler: cancel at t~1s -> swallow + 0.3s -> finish ~1.4s.
+        for _ in range(300):
+            if any(tid == t_id for tid, *_ in proc.completed):
+                break
+            await asyncio.sleep(0.01)
+        calls = [c for c in proc.completed if c[0] == t_id]
+        assert len(calls) == 1
+        assert calls[0][3] == "timeout"
+        assert not any(tid == t_id for tid, _ in proc.requeued)
     finally:
         await proc.exit()
         await proc.events["exit"].wait()

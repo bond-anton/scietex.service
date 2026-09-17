@@ -230,7 +230,8 @@ on-the-wire format evolve independently. Encoding/decoding lives in
 ## 7. Task handler contract — `TaskHandler` / `TaskHandlerContext`
 
 **File:** `src/scietex/service/task_handler/basic.py`,
-`src/scietex/service/task_handler/context.py`
+`src/scietex/service/task_handler/context.py`,
+`src/scietex/service/task_handler/capabilities.py`
 
 **Purpose:** ABC for pluggable task handlers with lifecycle and dispatch
 contract; a narrow context decouples handlers from the worker.
@@ -238,16 +239,19 @@ contract; a narrow context decouples handlers from the worker.
 **Main symbols / interface:**
 - `TaskHandlerContext` (context.py:7) — frozen dataclass with `service_name`,
   `instance_id`, `logger`; replaces the full worker reference.
-- `__init__(name, context)` (21) — stores `name`, `context`, `logger =
+- `TaskCapabilities` (capabilities.py:8) — frozen dataclass holding the task id
+  and a progress writer; `report_progress(value)` clamps to `[0.0, 100.0]` and
+  forwards to the transport hook. Passed per call to `handle`.
+- `__init__(name, context)` (22) — stores `name`, `context`, `logger =
   context.logger`, `_is_initialized=False` (no `self.worker`)
-- abstract `supported_tasks -> list[str]` (34), abstract `handle(task_data) ->
-  TaskResult` (44)
-- `supports(task_type) -> bool` (60) — membership in `supported_tasks`
-- `initialize() -> bool` (72, default True), `cleanup()` (83)
-- `start()` (91) sets `_is_initialized = await initialize()`; `stop()` (105)
-  runs `cleanup()`, resets flag; `is_ready` (115)
+- abstract `supported_tasks -> list[str]` (37), abstract
+  `handle(task_data, *, capabilities) -> TaskResult` (46)
+- `supports(task_type) -> bool` (64) — membership in `supported_tasks`
+- `initialize() -> bool` (76, default True), `cleanup()` (87)
+- `start()` (95) sets `_is_initialized = await initialize()`; `stop()` (109)
+  runs `cleanup()`, resets flag; `is_ready` (120)
 
-**Dependencies:** `.context`, `.schemas`. **Depended on by:**
+**Dependencies:** `.context`, `.capabilities`, `.schemas`. **Depended on by:**
 `TaskProcessor` (registry + dispatch), examples, tests.
 
 ## 8. Task processor — `TaskProcessor`
@@ -257,36 +261,38 @@ contract; a narrow context decouples handlers from the worker.
 **Purpose:** Adds concurrent in-process task execution on top of the worker:
 external tasks are enqueued (override `fetch_tasks`), a `TaskManager` dequeues
 and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
-drains/cancels in-flight work.
+drains/cancels in-flight work. Per-task lifecycle state (the running tracker
+and its cancel reason) is owned by a composed `TaskLifecycle` (AR-088).
 
-**Main symbols:** `class TaskProcessor(BasicWorker)` (44).
-Overrides `_config_type` (71) to `TaskProcessorConfig`, so the base
+**Main symbols:** `class TaskProcessor(BasicWorker)` (46).
+Overrides `_config_type` (73) to `TaskProcessorConfig`, so the base
 instantiates the concrete config when `config=None` and `__init__` reads its
 fields from `self._config` rather than re-storing (AR-069).
-Properties: `task_handlers` 144, `running_tasks` 156 (read-only
-`MappingProxyType` views), `queue_size` 161, `max_concurrent_tasks` 166.
-Registry/dispatch: `add_task_handler` 257 (takes the handler class plus an
+Properties: `task_handlers` 147, `running_tasks` 159 (a snapshot `Mapping`
+delegated to `TaskLifecycle`), `queue_size` 169, `max_concurrent_tasks` 174.
+Registry/dispatch: `add_task_handler` 265 (takes the handler class plus an
 optional keyword-only `name` and arbitrary `**handler_kwargs`; the lifecycle
 key is the resolved name — `name` if given, otherwise `handler_class.__name__`
 — so multiple instances of one class can coexist under distinct keys, a
 duplicate resolved key raises; the map stores a `(class, handler_kwargs)`
 tuple and the kwargs are forwarded to the handler constructor on every
-instantiation), `_start_task_handler` 299
-(unpacks the tuple, builds a `TaskHandlerContext` at 320–324, and calls
-`handler_class(handler_name, context, **handler_kwargs)` at 325),
-`_stop_task_handler` 343, `remove_task_handler` 369, `_find_task_handler` 385,
-`process_task` 646.
-Queue access: `enqueue_task` 170, `dequeue_task` 191, `task_queue_empty` 183,
-`task_queue_full` 187 (the raw `task_queue` attribute is no longer exposed;
+instantiation), `_start_task_handler` 315
+(unpacks the tuple, builds a `TaskHandlerContext` at 336–340, and calls
+`handler_class(handler_name, context, **handler_kwargs)` at 341),
+`_stop_task_handler` 359, `remove_task_handler` 385, `_find_task_handler` 401,
+`process_task` 649.
+Queue access: `enqueue_task` 178, `dequeue_task` 199, `task_queue_empty` 191,
+`task_queue_full` 195 (the raw `task_queue` attribute is no longer exposed;
 non-blocking `put_nowait`/`get_nowait` underneath). State:
-`__task_handlers_map`/`__task_handlers` (91–92; the map holds
-`(class, handler_kwargs)` tuples keyed by resolved name), `__running_tasks`
-(96), `__task_queue` (129, bounded `asyncio.Queue[(UUID, TaskData)]`).
-Managers: `@Manager("TaskManager") task_manager` 699 (inner `handle_task`
-wrapper at 711), `@Manager("TaskQueueManager") task_queue_manager` 813.
-Hooks: `fetch_tasks` 794, `return_task_to_queue` 403, `on_task_completed` 503
-(transport ack seam), `initialize` 560 (starts handlers), `cleanup` 598
-(drains queue, cancels running tasks, stops handlers), `watchdog` 832.
+`__task_handlers_map`/`__task_handlers` (103–104; the map holds
+`(class, handler_kwargs)` tuples keyed by resolved name), `_task_lifecycle`
+(93, the composed per-task lifecycle state), `__task_queue` (139, bounded
+`asyncio.Queue[(UUID, TaskData)]`).
+Managers: `@Manager("TaskManager") task_manager` 703 (inner `handle_task`
+wrapper at 715), `@Manager("TaskQueueManager") task_queue_manager` 817.
+Hooks: `fetch_tasks` 798, `return_task_to_queue` 419, `on_task_completed` 520
+(transport ack seam), `initialize` 565 (starts handlers), `cleanup` 601
+(drains queue, cancels running tasks, stops handlers), `watchdog` 836.
 
 **Config constants:** timing/retry MIN/MAX/DEFAULT bounds live in `config.py`
 (single source of truth); the task-queue defaults are
@@ -306,14 +312,16 @@ task_manager hot loops; no processor-local timing constants remain.
 
 **Public interface:** constructor takes a single immutable
 `TaskProcessorConfig` (`config.py`, extends `WorkerConfig`) or `None`; no
-runtime setters. Properties (`task_handlers`, `running_tasks` — read-only
-`MappingProxyType` views; `queue_size`, `max_concurrent_tasks`,
-`task_manager_sleep_time`, `task_queue_manager_sleep_time`,
-`task_handler_start_timeout`, `task_handler_stop_timeout` — all read-only),
-and queue methods `enqueue_task`/`dequeue_task`/`task_queue_empty`/
-`task_queue_full`.
+runtime setters. Properties (`task_handlers` — a read-only `MappingProxyType`
+view; `running_tasks` — a snapshot `Mapping` delegated to `TaskLifecycle`, so
+callers may iterate it while tasks are added or removed; `queue_size`,
+`max_concurrent_tasks`, `task_manager_sleep_time`,
+`task_queue_manager_sleep_time`, `task_handler_start_timeout`,
+`task_handler_stop_timeout` — all read-only), and queue methods
+`enqueue_task`/`dequeue_task`/`task_queue_empty`/`task_queue_full`.
 
-**Dependencies:** `.basic_worker`, `.manager`, `.task_handler`, `.transport`
+**Dependencies:** `.basic_worker`, `.manager`, `.task_handler`,
+`.task_lifecycle` (`TaskLifecycle`), `.transport`
 (`TaskTransport`/`TaskSink`/`InMemoryTransport`).
 **Depended on by:** `ValkeyWorker`, examples, tests.
 

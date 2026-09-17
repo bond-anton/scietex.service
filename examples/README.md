@@ -166,9 +166,10 @@ naming the target id. The built-in `CancelTaskHandler` cancels the running
 target, whose terminal status becomes `cancelled` and embeds the original
 `TaskData` — the example decodes it and resubmits under a new id.
 
-`report_progress` lives on the processor, not the handler, so it is injected at
-registration time via `**handler_kwargs`:
-`worker.add_task_handler(LongJobHandler, report=worker.report_progress)`.
+The handler reports progress through the per-call `TaskCapabilities` object the
+processor passes to `handle` — `capabilities.report_progress(value)` — so no
+registration-time injection is needed:
+`worker.add_task_handler(LongJobHandler)`.
 Cancellation needs a free worker slot for the cancel task itself, so the
 example uses `max_concurrent_tasks=4`; with `1` the cancel request would queue
 behind its target and degrade to `not_running`. Requires a running Valkey/Redis

@@ -148,7 +148,7 @@ to Valkey, and creates the consumer group for the task stream (with
 | `queue_size` | `int` | `100` | Maximum size of the internal task queue |
 | `max_concurrent_tasks` | `int` | `10` | Maximum tasks processed in parallel |
 | `task_handlers` | `Mapping[str, TaskHandler]` | — | Currently active (started) handlers, as a read-only `MappingProxyType` view |
-| `running_tasks` | `Mapping[UUID, TaskTracker]` | — | Currently running tasks and their trackers, as a read-only `MappingProxyType` view |
+| `running_tasks` | `Mapping[UUID, TaskTracker]` | — | Snapshot of currently running tasks and their trackers, delegated to the composed `TaskLifecycle`; a copy, not a live view |
 
 ## Constructor
 
@@ -358,8 +358,9 @@ async def _write_task_progress(self, task_id: UUID, value: float) -> None:
 ```
 
 `ValkeyWorker` overrides the base `TaskProcessor._write_task_progress()`
-no-op hook (invoked via `report_progress()`, which clamps `value` to
-`[0.0, 100.0]`) and delegates to `TaskStatusStore.update_progress()`. It `GET`s
+no-op hook (invoked via `TaskCapabilities.report_progress()`, which clamps
+`value` to `[0.0, 100.0]`) and delegates to
+`TaskStatusStore.update_progress()`. It `GET`s
 the task tracking key, msgpack-decodes the stored
 `TaskStatus`, replaces `progress` with
 `TaskProgress(progress=True, value=value)` and `updated_at` with the current
@@ -626,7 +627,12 @@ import uuid
 from uuid import uuid4
 
 from scietex.service.valkey import ValkeyWorker, ValkeyWorkerConfig
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
+from scietex.service.task_handler import (
+    TaskCapabilities,
+    TaskData,
+    TaskHandler,
+    TaskResult,
+)
 from scietex.service.task_handler import TaskTimeout
 
 
@@ -637,7 +643,7 @@ class EmailHandler(TaskHandler):
     def supported_tasks(self) -> list[str]:
         return ["send_email"]
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         payload = json.loads(task_data.payload)
         # await self.smtp_client.send(payload["to"], payload["subject"], payload["body"])
         return TaskResult(
@@ -889,7 +895,7 @@ heartbeat interval.
 
 Granular progress reported by a task handler. Embedded in the `progress`
 field of a `TaskStatus` tracking record and updated by
-`ValkeyWorker._write_task_progress()` via `report_progress()`.
+`ValkeyWorker._write_task_progress()` via `TaskCapabilities.report_progress()`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|

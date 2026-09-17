@@ -1,13 +1,23 @@
 """Tests for TaskHandler base class and a simple concrete implementation."""
 
 import logging
+from uuid import uuid4
 
 import msgspec
 import pytest
 
 from scietex.service.task_handler.basic import TaskHandler
+from scietex.service.task_handler.capabilities import TaskCapabilities
 from scietex.service.task_handler.context import TaskHandlerContext
 from scietex.service.task_handler.schemas import TaskData, TaskResult
+
+
+async def _noop_progress(_task_id, _value: float) -> None:
+    pass
+
+
+def _capabilities() -> TaskCapabilities:
+    return TaskCapabilities(task_id=uuid4(), _write_progress=_noop_progress)
 
 
 class DummyHandler(TaskHandler):
@@ -15,7 +25,7 @@ class DummyHandler(TaskHandler):
         super().__init__(name, context)
         self.cleaned = False
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         # echo back a computed result
         return TaskResult(
             status="success",
@@ -64,7 +74,7 @@ async def test_dummyhandler_lifecycle():
     assert not handler.supports("other")
 
     # handle should return expected result
-    res = await handler.handle(TaskData(task="dummy", payload=b'{"value": 123}'))
+    res = await handler.handle(TaskData(task="dummy", payload=b'{"value": 123}'), capabilities=_capabilities())
     assert res.status == "success"
     assert res.payload.decode("utf-8") == '{"value": 123}'
 

@@ -162,6 +162,25 @@ start) and stops them in `cleanup` (during shutdown). Handlers may also be
 added/removed at runtime via `add_task_handler` (spawns async start when
 RUNNING) / `remove_task_handler`.
 
+## Task lifecycle state
+
+Per-task running state — the `TaskTracker` (holding the worker `asyncio.Task`,
+its `TaskData`, and a monotonic start time) and the cancel reason — is owned by
+`TaskLifecycle` (`task_lifecycle.py`), composed by `TaskProcessor.__init__`
+(AR-088). `TaskProcessor.running_tasks` delegates to
+`TaskLifecycle.trackers()` and returns a **snapshot**, not a live view, so
+callers may iterate it while tasks are added, removed, or cancelled.
+
+The tracker map and the cancel-reason map have joined lifetimes but are popped
+independently. `TaskLifecycle.remove_tracker` drops a tracker without
+consuming its cancel reason, and `TaskLifecycle.take_cancel_reason` consumes
+the reason. This split lets the watchdog drop the tracker of a task whose
+handler ignored cancellation while leaving the `"timeout"` reason in place for
+the eventual ack, so the transport can still distinguish a deliberate cancel
+from a timeout. The task manager consumes the reason with
+`take_cancel_reason` when it acks the transport entry from `handle_task`'s
+`finally`.
+
 ## Async logging handler lifecycle
 
 - `BasicWorker.__init__` attaches `ConsoleHandler` (console);
@@ -185,7 +204,8 @@ RUNNING) / `remove_task_handler`.
 |---|---|---|---|
 | Logger + async handlers | worker (via `LoggingLifecycle`) | `__init__` / startup | shutdown step 5 |
 | Manager asyncio tasks | worker (via `ManagerRuntime`) | `ManagerRuntime.start_managers` | `ManagerRuntime.stop_managers` |
-| Internal task queue, `running_tasks` | `TaskProcessor` | `__init__` | drained in `cleanup` |
+| Internal task queue | `TaskProcessor` | `__init__` | drained in `cleanup` |
+| Per-task running tracker + cancel reason (`TaskLifecycle`) | `TaskLifecycle` (composed by `TaskProcessor`) | `register`/`mark_cancelled` | `remove_tracker`/`take_cancel_reason` on task completion; drained in `cleanup` |
 | Task transport (`TaskProcessor._transport`) | `TaskProcessor` (default `InMemoryTransport`) / `ValkeyWorker` (injects `ValkeyTransport`) | `__init__` | drained in `cleanup` |
 | Task handler instances | processor (created per handler name) | `initialize` | `cleanup` |
 | Handler `is_ready` state | each `TaskHandler` | `start()` | `stop()` |

@@ -15,7 +15,7 @@ import logging
 from uuid import UUID
 
 from scietex.service import TaskProcessor, TaskProcessorConfig
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult
+from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskResult
 
 # ── Handler ──────────────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ class NamedTaskHandler(TaskHandler):
         "beta": ["beta_task"],
     }
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         self.logger.info(
             "Handler '%s' processed task '%s' with payload %r",
             self.name,

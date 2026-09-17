@@ -18,8 +18,9 @@ transformations, and any async boundaries (queues/events/tasks).
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `(task_id, task_data)` off `task_queue` with a fetch timeout of
    `task_queue_fetch_timeout` (default 1 s),
-   wraps `handle_task` in an `asyncio.Task`, records
-   `running_tasks[task_id] = TaskTracker(...)`.
+   wraps `handle_task` in an `asyncio.Task`, and records the tracker via
+   `TaskLifecycle.register(task_id, TaskTracker(...))` (the composed lifecycle
+   state, AR-088).
 3. `handle_task` (inner, 711) calls `process_task(task_id, task_data)`.
 4. `process_task` (646): guards the empty-`task` case first — an empty
    `task_data.task` returns `TaskResult(status="error", error="Task data must
@@ -27,7 +28,8 @@ transformations, and any async boundaries (queues/events/tasks).
    `_find_task_handler` (`handler.supports(task_type)`, first match among
    **active/started** handlers).
 5. Dispatch is gated by `handler.is_ready` (683): only a found **and
-   initialized** handler runs `await handler.handle(task_data)`. A `handle()`
+   initialized** handler runs `await handler.handle(task_data, capabilities=...)`.
+   A `handle()`
    exception is converted into `TaskResult(status="error", error=str(e))` with
    the default `retryable=False` — a **raised exception is permanent** (a
    handler that wants a retry must return a `retryable=True` result
@@ -36,7 +38,9 @@ transformations, and any async boundaries (queues/events/tasks).
    ("No handler found for task type ...").
 
 **Destination:** the `TaskResult` is returned to `handle_task`, whose `finally`
-pops the `running_tasks` entry and calls `task_queue.task_done()`, then: a
+removes the tracker (`TaskLifecycle.remove_tracker`), calls
+`task_queue.task_done()`, and passes the consumed cancel reason
+(`TaskLifecycle.take_cancel_reason`) to the ack. Then: a
 `retryable=True` error result is requeued via
 `return_task_to_queue(task_id, task_data)` **before** acking (747–757) — the
 retry copy is made durable (XADD) before the original is dropped (XACK) — and
@@ -114,7 +118,8 @@ exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
 
 **Source:** `TaskData.task` string. **Processing:** `_find_task_handler`
 (385) iterates `task_handlers` dict (active instances) and returns the first
-`handler.supports(task_type)`. **Destination:** `handler.handle(task_data)`.
+`handler.supports(task_type)`. **Destination:**
+`handler.handle(task_data, capabilities=...)`.
 Selection is by `supported_tasks` membership, **not** by a registration key
 (the `add_task_handler` key is the resolved handler name — the handler class
 name by default, or an explicit `name` keyword — so the same class can now be

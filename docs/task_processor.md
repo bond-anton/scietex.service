@@ -116,7 +116,7 @@ methods:
 | Property | Type | Description |
 |---|---|---|
 | `task_handlers` | `Mapping[str, TaskHandler]` | Currently active (started) handlers, as a read-only `MappingProxyType` view |
-| `running_tasks` | `Mapping[UUID, TaskTracker]` | Currently running tasks and their trackers, as a read-only `MappingProxyType` view |
+| `running_tasks` | `Mapping[UUID, TaskTracker]` | Snapshot of currently running tasks and their trackers, delegated to the composed `TaskLifecycle`; a copy, not a live view |
 
 All timing properties are read-only and derive from the immutable
 `TaskProcessorConfig`; a `None` field resolves to its `DEFAULT_*` constant,
@@ -264,7 +264,7 @@ class CountingHandler(TaskHandler):
     def supported_tasks(self) -> list[str]:
         return ["count"]
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         self.counter["n"] = self.counter.get("n", 0) + 1
         return TaskResult(status="success")
 
@@ -389,12 +389,11 @@ Timeout behavior is controlled by `TaskTimeout`:
 `TaskProcessor` exposes a transport-agnostic progress channel for handlers that
 report granular progress while a task is running.
 
-`report_progress(value)` is a public coroutine on `TaskProcessor`. It reads the
-current task id from a `ContextVar` set by `handle_task`, so it must be called
-from inside a handler's `handle()` or any coroutine running in that task's
-context. It clamps `value` to `[0.0, 100.0]` and delegates to
-`_write_task_progress`. Called outside a task context it logs a warning and
-returns without doing anything.
+The processor constructs a `TaskCapabilities` object for each task in
+`process_task()` and passes it to `handle()` as the keyword-only `capabilities`
+argument. `capabilities.report_progress(value)` clamps `value` to
+`[0.0, 100.0]` and forwards it to `_write_task_progress` for the handler's own
+task id, so concurrent tasks never share progress state.
 
 `_write_task_progress(task_id, value)` is the transport hook. The base
 implementation is a no-op; `ValkeyWorker` overrides it to write a `TaskProgress`
@@ -402,32 +401,21 @@ payload (`progress=True`, `value`) into the task's `TaskStatus` tracking record.
 
 | Method | Returns | Description |
 |---|---|---|
-| `report_progress(value)` | `None` | Report progress (clamped to `[0.0, 100.0]`) for the current task; warns and no-ops outside a task context |
+| `TaskCapabilities.report_progress(value)` | `None` | Report progress (clamped to `[0.0, 100.0]`) for the task the capabilities belong to |
 | `_write_task_progress(task_id, value)` | `None` | Transport hook that persists progress; base is a no-op, `ValkeyWorker` writes `TaskStatus.progress` |
 
-`report_progress` is not reachable from `TaskHandlerContext`; the established
-pattern is to inject the bound method through `**handler_kwargs` at
-registration:
-
-```python
-processor.add_task_handler(MyHandler, report=processor.report_progress)
-```
-
-The handler stores it and calls it inside `handle()`:
+The handler receives `capabilities` per call, so no registration-time injection
+is needed:
 
 ```python
 class MyHandler(TaskHandler):
-    def __init__(self, name, context, *, report):
-        super().__init__(name, context)
-        self._report = report
-
-    async def handle(self, task_data: TaskData) -> TaskResult:
-        await self._report(25.0)
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
+        await capabilities.report_progress(25.0)
         return TaskResult(status="success")
 ```
 
-The bound method resolves the correct task id through the `ContextVar`, so the
-same callable works for every concurrent task without per-task plumbing.
+The explicit task id on the capabilities object makes the same reporting path
+work for every concurrent task without ambient context.
 
 ## Overriding Methods
 
@@ -544,7 +532,13 @@ import uuid
 from uuid import uuid4
 
 from scietex.service import TaskProcessor, TaskProcessorConfig
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, TaskTimeout
+from scietex.service.task_handler import (
+    TaskCapabilities,
+    TaskData,
+    TaskHandler,
+    TaskResult,
+    TaskTimeout,
+)
 
 
 class EmailHandler(TaskHandler):
@@ -554,7 +548,7 @@ class EmailHandler(TaskHandler):
     def supported_tasks(self) -> list[str]:
         return ["send_email"]
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         payload = json.loads(task_data.payload)
         # await self.smtp_client.send(payload["to"], payload["subject"], payload["body"])
         return TaskResult(
@@ -708,7 +702,7 @@ produces:
   permanent and leave `retryable=False`.
 
 ```python
-async def handle(self, task_data: TaskData) -> TaskResult:
+async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
     try:
         result = await self._do_work(task_data)
         return TaskResult(status="success", payload=result)

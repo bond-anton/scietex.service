@@ -9,6 +9,7 @@ import msgspec
 from scietex.service.config import TaskProcessorConfig
 from scietex.service.task_handler.basic import TaskHandler
 from scietex.service.task_handler.cancel import CancelTaskRequest
+from scietex.service.task_handler.capabilities import TaskCapabilities
 from scietex.service.task_handler.context import TaskHandlerContext
 from scietex.service.task_handler.schemas import TaskData, TaskResult
 from scietex.service.task_processor import TaskProcessor
@@ -38,7 +39,7 @@ class DurableInMemoryTransport(InMemoryTransport):
 
 
 class DummyHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         result = task_data.payload.decode("utf-8")
         return TaskResult(status="success", error="No error", payload=result.encode("utf-8"))
 
@@ -48,7 +49,7 @@ class DummyHandler(TaskHandler):
 
 
 class SlowHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         # simulate long running task
         await asyncio.sleep(2)
         return TaskResult(payload=task_data.payload, status="success", error="No error")
@@ -64,7 +65,7 @@ class StuckStopHandler(TaskHandler):
         # asyncio.TimeoutError instead of a clean stop.
         await asyncio.sleep(10)
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="success", error="No error", payload=task_data.payload)
 
     @property
@@ -82,7 +83,7 @@ class NameDerivedHandler(TaskHandler):
         "beta": ["beta_task"],
     }
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="success", error="No error", payload=task_data.payload)
 
     @property
@@ -98,7 +99,7 @@ class ThresholdHandler(TaskHandler):
         super().__init__(name, context)
         self.threshold = threshold
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="success", error="No error", payload=task_data.payload)
 
     @property
@@ -114,7 +115,7 @@ class SharedStateHandler(TaskHandler):
         super().__init__(name, context)
         self.shared = shared
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         self.shared["count"] = self.shared.get("count", 0) + 1
         return TaskResult(status="success", error="No error", payload=task_data.payload)
 
@@ -124,7 +125,7 @@ class SharedStateHandler(TaskHandler):
 
 
 class RaisingHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         raise ValueError("boom")
 
     @property
@@ -133,7 +134,7 @@ class RaisingHandler(TaskHandler):
 
 
 class ReturningErrorHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(
             status="error",
             error="x",
@@ -148,7 +149,7 @@ class ReturningErrorHandler(TaskHandler):
 
 
 class RetryableErrorHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="error", error="transient", retryable=True)
 
     @property
@@ -157,7 +158,7 @@ class RetryableErrorHandler(TaskHandler):
 
 
 class PermanentErrorHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="error", error="permanent", retryable=False)
 
     @property
@@ -166,7 +167,7 @@ class PermanentErrorHandler(TaskHandler):
 
 
 class ExplodingSupportsHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="success", error="No error")
 
     @property
@@ -181,7 +182,7 @@ class FailingStartHandler(TaskHandler):
     async def initialize(self) -> bool:
         return False
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="error", error="never ready")
 
     @property
@@ -190,7 +191,7 @@ class FailingStartHandler(TaskHandler):
 
 
 class StubbornHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         try:
             await asyncio.sleep(2)
         except asyncio.CancelledError:
@@ -207,7 +208,7 @@ class RaisingStartHandler(TaskHandler):
     async def initialize(self) -> bool:
         raise RuntimeError("start failed")
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="error", error="never ready")
 
     @property
@@ -216,7 +217,7 @@ class RaisingStartHandler(TaskHandler):
 
 
 class NeverFinishesHandler(TaskHandler):
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         # Block until cancelled so the task stays running for the test.
         await asyncio.Event().wait()
         return TaskResult(status="success", error="No error")
@@ -233,7 +234,7 @@ class SelfCancelHandler(TaskHandler):
         super().__init__(name, context)
         self._cancel = cancel
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         outcome = await self._cancel(uuid4())
         return TaskResult(status="success", payload=outcome.encode())
 
@@ -316,9 +317,23 @@ class OrderRecordingProcessor(DemoProcessor):
         return await super().process_task(task_id, task_data)
 
 
+class ProgressReportingHandler(TaskHandler):
+    """Handler that reports progress through its per-call capabilities, so
+    tests can assert the clamped values reach ``_write_task_progress`` (AR-088)."""
+
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
+        await capabilities.report_progress(150.0)
+        await capabilities.report_progress(-5.0)
+        return TaskResult(status="success", error="No error", payload=task_data.payload)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["progress"]
+
+
 class ProgressRecordingProcessor(DemoProcessor):
-    """Processor that reports progress from within process_task and records the
-    clamped values that reach _write_task_progress."""
+    """Processor that records the clamped progress values a handler reports
+    through its capabilities, via the ``_write_task_progress`` hook."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -326,11 +341,6 @@ class ProgressRecordingProcessor(DemoProcessor):
 
     async def _write_task_progress(self, task_id, value):
         self.progress_values.append(value)
-
-    async def process_task(self, task_id, task_data):
-        await self.report_progress(150.0)
-        await self.report_progress(-5.0)
-        return await super().process_task(task_id, task_data)
 
 
 class CancelRecordingProcessor(DemoProcessor):

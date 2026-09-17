@@ -17,6 +17,7 @@ from .cancel import (
     CancelTaskRequest,
     CancelTaskResponse,
 )
+from .capabilities import TaskCapabilities
 from .context import TaskHandlerContext
 from .runtime import TaskTracker
 from .schemas import (
@@ -39,6 +40,7 @@ __all__ = [
     "CancelTaskHandler",
     "CancelTaskRequest",
     "CancelTaskResponse",
+    "TaskCapabilities",
     "TaskData",
     "TaskEnvelope",
     "TaskHandler",

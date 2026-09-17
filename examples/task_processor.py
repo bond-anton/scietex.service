@@ -14,7 +14,7 @@ import logging
 from uuid import UUID
 
 from scietex.service import TaskProcessor, TaskProcessorConfig
-from scietex.service.task_handler import TaskData, TaskHandler, TaskResult, TaskTimeout
+from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskResult, TaskTimeout
 
 # ── Handler implementations ──────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ class DataProcessingHandler(TaskHandler):
         self.logger.info("DataProcessingHandler initialized")
         return True
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         self.logger.info("Processing task '%s' with payload: %s", task_data.task, task_data.payload)
         try:
             # Decode payload
@@ -77,7 +77,7 @@ class ReportGenerationHandler(TaskHandler):
         self.logger.info("ReportGenerationHandler initialized")
         return True
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         self.logger.info("Generating report for task: %s", task_data.task)
         try:
             # Simulate report generation
@@ -112,7 +112,7 @@ class ImageProcessingHandler(TaskHandler):
         self.logger.info("ImageProcessingHandler initialized")
         return True
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         operation = task_data.task
         self.logger.info("Image operation '%s' started", operation)
 

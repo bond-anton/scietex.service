@@ -112,8 +112,10 @@ restarts the same handler instances. See
 (`_setup_signal_handlers`, basic_worker.py:350, Windows-safe no-op) and
 removed in `stop()` (`_remove_signal_handlers`, 380); `__init__` no longer
 touches the loop, so workers may be constructed outside a running loop.
-`events` (basic_worker.py:150), `task_handlers` (task_processor.py:144)
-and `running_tasks` (156) now return read-only `MappingProxyType` views.
+`events` (basic_worker.py:150) and `task_handlers`
+(task_processor.py:147) now return read-only `MappingProxyType` views;
+`running_tasks` (159) instead returns a snapshot delegated to `TaskLifecycle`
+(AR-088), so callers may iterate it while tasks are added or removed.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 

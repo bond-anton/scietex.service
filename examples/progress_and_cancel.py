@@ -14,10 +14,10 @@ request for it. The example shows the full round trip:
    terminal status becomes ``cancelled`` and embeds the original ``TaskData``
    so an external process can modify and resubmit it under a new id.
 
-``report_progress`` lives on the processor, not on the handler, so it is
-injected at registration time via ``**handler_kwargs`` — the same seam used by
-``examples/stateful_handler.py``. The bound method resolves the current task id
-from a context variable set by the processor around each ``handle()`` call.
+``report_progress`` is exposed as a per-call capability: the processor passes a
+``TaskCapabilities`` object to ``handle``, whose ``report_progress`` method
+routes to the transport's progress hook for that specific task. The handler
+never touches processor internals.
 
 Requires a running Valkey server and the ``valkey`` extra:
 
@@ -28,7 +28,6 @@ Run with ``python -m examples.progress_and_cancel``.
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
 import msgspec
@@ -46,6 +45,7 @@ from scietex.service.task_handler import (
     CANCEL_TASK_TYPE,
     CancelTaskRequest,
     CancelTaskResponse,
+    TaskCapabilities,
     TaskData,
     TaskHandler,
     TaskHandlerContext,
@@ -70,32 +70,25 @@ STEP_DELAY = 0.25
 class LongJobHandler(TaskHandler):
     """A long-running task that reports progress and honours cancellation.
 
-    ``report`` is injected by the processor (``processor.report_progress``).
-    The handler never touches processor internals; it only awaits the callback,
-    which resolves the current task id from the processor's context variable.
+    Progress is reported through the per-call ``capabilities`` object passed to
+    ``handle``, which routes to the transport's progress hook for this specific
+    task. The handler never touches processor internals.
     """
 
-    def __init__(
-        self,
-        name: str,
-        context: TaskHandlerContext,
-        *,
-        report: Callable[[float], Awaitable[None]],
-    ) -> None:
+    def __init__(self, name: str, context: TaskHandlerContext) -> None:
         super().__init__(name, context)
-        self._report = report
 
     @property
     def supported_tasks(self) -> list[str]:
         return ["long_job"]
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         for step in range(1, TOTAL_STEPS + 1):
             # A cancellation request cancels this worker task; the sleep is the
             # cancellation point. CancelledError propagates and the processor
             # records the terminal `cancelled` status.
             await asyncio.sleep(STEP_DELAY)
-            await self._report(step / TOTAL_STEPS * 100.0)
+            await capabilities.report_progress(step / TOTAL_STEPS * 100.0)
             self.logger.info("long_job progress: %d/%d", step, TOTAL_STEPS)
         return TaskResult(status="success", payload=b"finished")
 
@@ -174,8 +167,8 @@ async def run(host: str, port: int) -> None:
             max_concurrent_tasks=4,
         )
     )
-    # Inject the processor's progress reporter into the handler.
-    worker.add_task_handler(LongJobHandler, report=worker.report_progress)
+    # The handler reports progress through the per-call capabilities object.
+    worker.add_task_handler(LongJobHandler)
 
     producer = await GlideClient.create(
         generate_glide_config(

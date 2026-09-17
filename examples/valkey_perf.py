@@ -28,6 +28,7 @@ from scietex.service import (
 )
 from scietex.service.task_handler import (
     CancelReason,
+    TaskCapabilities,
     TaskData,
     TaskHandler,
     TaskResult,
@@ -43,7 +44,7 @@ class PerfHandler(TaskHandler):
     def supported_tasks(self) -> list[str]:
         return ["perf"]
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         return TaskResult(status="success")
 
 

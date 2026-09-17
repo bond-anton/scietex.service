@@ -106,15 +106,21 @@ async def test_watchdog_refreshes_leases_for_running_tasks():
         # the running trackers the base watchdog inspects.
         worker._task_entry_ids[t1] = b"1-0"
         worker._task_entry_ids[t2] = b"2-0"
-        worker._TaskProcessor__running_tasks[t1] = TaskTracker(
-            worker_task=task_a,
-            data=TaskData(task="dummy", payload=b"{}"),
-            started=time.monotonic(),
+        worker._task_lifecycle.register(
+            t1,
+            TaskTracker(
+                worker_task=task_a,
+                data=TaskData(task="dummy", payload=b"{}"),
+                started=time.monotonic(),
+            ),
         )
-        worker._TaskProcessor__running_tasks[t2] = TaskTracker(
-            worker_task=task_b,
-            data=TaskData(task="dummy", payload=b"{}"),
-            started=time.monotonic(),
+        worker._task_lifecycle.register(
+            t2,
+            TaskTracker(
+                worker_task=task_b,
+                data=TaskData(task="dummy", payload=b"{}"),
+                started=time.monotonic(),
+            ),
         )
 
         await worker.watchdog()
@@ -195,10 +201,13 @@ async def test_refresh_task_leases_covers_queued_and_running():
     worker._task_entry_ids[running_id] = b"2-0"  # running: has a tracker
     task = asyncio.create_task(asyncio.sleep(100))
     try:
-        worker._TaskProcessor__running_tasks[running_id] = TaskTracker(
-            worker_task=task,
-            data=TaskData(task="dummy", payload=b"{}"),
-            started=time.monotonic(),
+        worker._task_lifecycle.register(
+            running_id,
+            TaskTracker(
+                worker_task=task,
+                data=TaskData(task="dummy", payload=b"{}"),
+                started=time.monotonic(),
+            ),
         )
 
         await worker._transport.refresh_leases()

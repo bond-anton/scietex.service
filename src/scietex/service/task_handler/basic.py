@@ -3,6 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 
+from .capabilities import TaskCapabilities
 from .context import TaskHandlerContext
 from .schemas import TaskData, TaskResult
 
@@ -42,12 +43,15 @@ class TaskHandler(ABC):
         pass
 
     @abstractmethod
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Process the given task and return a ``TaskResult``.
 
         Args:
             task_data: Typed task data structure containing the task type,
                 payload, timeout, and cancellation behavior.
+            capabilities: Keyword-only per-call capabilities object exposing
+                :meth:`TaskCapabilities.report_progress` for reporting progress
+                on this specific task.
 
         Returns:
             A ``TaskResult`` with status, optional error message, and payload.

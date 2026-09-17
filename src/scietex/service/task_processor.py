@@ -11,7 +11,6 @@ import logging
 import os
 import time
 from collections.abc import Mapping
-from contextvars import ContextVar
 from types import MappingProxyType
 from typing import ClassVar, cast
 from uuid import UUID
@@ -33,12 +32,14 @@ from .task_handler import (
     CancelOutcome,
     CancelReason,
     CancelTaskHandler,
+    TaskCapabilities,
     TaskData,
     TaskHandler,
     TaskHandlerContext,
     TaskResult,
     TaskTracker,
 )
+from .task_lifecycle import TaskLifecycle
 from .transport import InMemoryTransport, TaskTransport
 
 
@@ -89,6 +90,7 @@ class TaskProcessor(BasicWorker):
                 (e.g. ``ValkeyWorker``) inject their own transport.
         """
         super().__init__(config)
+        self._task_lifecycle = TaskLifecycle()
         # Transport extension seam (AR-072): the ordering-sensitive hooks below
         # delegate here. A bare processor gets a working in-memory transport;
         # subclasses swap it for their own at construction.
@@ -100,10 +102,8 @@ class TaskProcessor(BasicWorker):
 
         self.__task_handlers_map: dict[str, tuple[type[TaskHandler], dict[str, object]]] = {}
         self.__task_handlers: dict[str, TaskHandler] = {}
-        self.__current_task_id: ContextVar[UUID | None] = ContextVar("scietex_task_id", default=None)
 
         # Initialize queues and tracking structures
-        self.__running_tasks: dict[UUID, TaskTracker] = {}  # Track running tasks
         self.__queue_size: int = cfg.queue_size if cfg.queue_size is not None else DEFAULT_MAX_TASKS_QUEUE_SIZE
         if cfg.max_concurrent_tasks is not None:
             self.__max_concurrent_tasks: int = cfg.max_concurrent_tasks
@@ -138,13 +138,6 @@ class TaskProcessor(BasicWorker):
 
         self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
 
-        # Why a running task was cancelled, keyed by task id. Set synchronously
-        # by the canceller immediately before ``worker_task.cancel()`` and
-        # popped by ``handle_task``'s finally, which forwards it to
-        # ``on_task_completed``. This is how a deliberate ``cancel_task`` is
-        # distinguished from a timeout/shutdown cancellation.
-        self.__cancel_reasons: dict[UUID, CancelReason] = {}
-
         # Built-in cancellation handler. Registered here so every processor can
         # cancel its own tasks; the callback is a bound method, so the handler
         # stays transport-agnostic and never reaches into processor internals.
@@ -164,8 +157,13 @@ class TaskProcessor(BasicWorker):
 
     @property
     def running_tasks(self) -> Mapping[UUID, TaskTracker]:
-        """Read-only mapping of currently running tasks and their trackers."""
-        return MappingProxyType(self.__running_tasks)
+        """Snapshot mapping of currently running tasks and their trackers.
+
+        Returns a copy (not a live view) of the running trackers, delegated to
+        ``TaskLifecycle``. Callers may safely iterate the snapshot while tasks
+        are being removed or cancelled.
+        """
+        return self._task_lifecycle.trackers()
 
     @property
     def queue_size(self) -> int:
@@ -289,17 +287,19 @@ class TaskProcessor(BasicWorker):
             name: Optional lifecycle key, defaulting to the handler class name.
                 Enables multiple instances of one class under distinct keys.
             **handler_kwargs: Extra keyword arguments forwarded to the handler
-                constructor on every instantiation. Enables stateful handlers
-                by injecting shared mutable objects (e.g. a shared counter or
-                cache) that outlive a single start/stop cycle. A misspelled
-                kwarg raises a loud ``TypeError`` at construction, because
-                ``TaskHandler`` subclasses do not accept arbitrary kwargs.
+                constructor on every instantiation. This is the per-instance
+                state-injection channel: shared mutable objects (e.g. a shared
+                counter or cache) outlive a single start/stop cycle, and
+                constructor kwargs such as ``cancel=`` inject a per-instance
+                callback. A misspelled kwarg raises a loud ``TypeError`` at
+                construction, because ``TaskHandler`` subclasses do not accept
+                arbitrary kwargs.
 
-                This is also the informal capability-injection channel (e.g.
-                ``cancel=``, ``report=``). It is an accepted trade-off for now
-                (AR-082): the convention is documented rather than typed, and a
-                misspelled capability fails loudly. Introduce an explicit
-                ``TaskCapabilities`` object when a third capability appears.
+                Per-call capabilities are delivered separately: the processor
+                constructs a ``TaskCapabilities`` object per task and passes it
+                to ``handle``. Progress reporting goes through
+                ``capabilities.report_progress(value)`` rather than through a
+                constructor-injected callable.
 
         Raises:
             ValueError: If the resolved handler name is already registered.
@@ -478,7 +478,7 @@ class TaskProcessor(BasicWorker):
             cancellation timeout, or ``"not_running"`` if the target is not
             running or queued (including a self-cancel request).
         """
-        tracker = self.__running_tasks.get(target_id)
+        tracker = self._task_lifecycle.get(target_id)
         if tracker is not None and not tracker.worker_task.done():
             if tracker.worker_task is asyncio.current_task():
                 # A task cannot cancel itself: the cancel handler runs inside
@@ -486,7 +486,7 @@ class TaskProcessor(BasicWorker):
                 return "not_running"
             # Set the reason before cancel() with no intervening await, so
             # handle_task's finally always observes it (no TOCTOU).
-            self.__cancel_reasons[target_id] = "deliberate"
+            self._task_lifecycle.mark_cancelled(target_id, "deliberate")
             tracker.worker_task.cancel()
             # asyncio.wait, not wait_for (see watchdog for why): wait_for
             # re-cancels on its timeout and blocks on a handler that swallows
@@ -562,21 +562,6 @@ class TaskProcessor(BasicWorker):
         """
         await self._transport.on_progress(task_id, value)
 
-    async def report_progress(self, value: float) -> None:
-        """Report granular progress for the task currently being handled.
-
-        Reads the current task id from a context variable set by ``handle_task``,
-        clamps ``value`` to ``[0.0, 100.0]``, and delegates to
-        ``_write_task_progress``. Logs a warning and returns when called outside a
-        task context.
-        """
-        task_id = self.__current_task_id.get()
-        if task_id is None:
-            self.logger.log(logging.WARNING, "report_progress called outside a task context")
-            return
-        clamped = min(max(value, 0.0), 100.0)
-        await self._write_task_progress(task_id, clamped)
-
     async def initialize(self) -> bool:
         """Start all registered task handlers.
 
@@ -640,10 +625,10 @@ class TaskProcessor(BasicWorker):
         # handler has actually stopped (handle_task's finally acknowledges the
         # transport entry); a handler that ignores cancellation is left pending
         # so a restart redelivers it rather than running it twice.
-        for task_id, task_tracker in list(self.running_tasks.items()):
+        for task_id, task_tracker in self._task_lifecycle.trackers().items():
             if not task_tracker.worker_task.done():
                 task_tracker.worker_task.cancel()
-                self.__cancel_reasons[task_id] = "shutdown"
+                self._task_lifecycle.mark_cancelled(task_id, "shutdown")
                 # asyncio.wait, not wait_for (see watchdog for why): wait_for
                 # re-cancels on its timeout and blocks on a handler that
                 # swallows cancellation, hanging shutdown.
@@ -700,7 +685,8 @@ class TaskProcessor(BasicWorker):
         handler = self._find_task_handler(task_type)
         if handler and handler.is_ready:
             try:
-                result = await handler.handle(task_data)
+                capabilities = TaskCapabilities(task_id=task_id, _write_progress=self._write_task_progress)
+                result = await handler.handle(task_data, capabilities=capabilities)
             except Exception as e:
                 # A handler raising is unclassified: treat it as permanent
                 # (retryable=False) so an unhandled exception cannot create an
@@ -727,7 +713,6 @@ class TaskProcessor(BasicWorker):
         """
 
         async def handle_task(t_id: UUID, t_data: TaskData):
-            token = self.__current_task_id.set(t_id)
             result: TaskResult | None = None
             try:
                 await self.on_task_started(t_id, t_data)
@@ -752,8 +737,7 @@ class TaskProcessor(BasicWorker):
                     exc,
                 )
             finally:
-                self.__current_task_id.reset(token)
-                self.__running_tasks.pop(t_id, None)
+                self._task_lifecycle.remove_tracker(t_id)
                 self.__task_queue.task_done()
                 # Retry-once (AR-022 v4): requeue a retryable error BEFORE
                 # acking the transport entry (XADD then XACK), so the retry
@@ -783,7 +767,7 @@ class TaskProcessor(BasicWorker):
                         t_id,
                         t_data,
                         result,
-                        cancel_reason=self.__cancel_reasons.pop(t_id, None),
+                        cancel_reason=self._task_lifecycle.take_cancel_reason(t_id),
                     )
                 except Exception as exc:
                     # A transport ack failure must never crash handle_task or
@@ -797,13 +781,15 @@ class TaskProcessor(BasicWorker):
                         exc,
                     )
 
-        if len(self.running_tasks) < self.max_concurrent_tasks:
+        if len(self._task_lifecycle.trackers()) < self.max_concurrent_tasks:
             try:
                 task_id, task_data = await asyncio.wait_for(
                     self.__task_queue.get(), timeout=self.__task_queue_fetch_timeout
                 )
                 task = asyncio.create_task(handle_task(task_id, task_data))
-                self.__running_tasks[task_id] = TaskTracker(worker_task=task, data=task_data, started=time.monotonic())
+                self._task_lifecycle.register(
+                    task_id, TaskTracker(worker_task=task, data=task_data, started=time.monotonic())
+                )
             except asyncio.TimeoutError:
                 pass
         else:
@@ -867,7 +853,7 @@ class TaskProcessor(BasicWorker):
         and cancellation.
         """
         now = time.monotonic()
-        for task_id, task_tracker in list(self.running_tasks.items()):
+        for task_id, task_tracker in self._task_lifecycle.trackers().items():
             timeout = task_tracker.data.timeout.timeout
             if timeout is None:
                 timeout = self.__task_timeout
@@ -886,7 +872,7 @@ class TaskProcessor(BasicWorker):
                 # swallows cancellation eventually finishes, hanging the
                 # watchdog. wait() returns after the timeout with the task
                 # still pending when the handler ignored the cancellation.
-                self.__cancel_reasons[task_id] = "timeout"
+                self._task_lifecycle.mark_cancelled(task_id, "timeout")
                 await asyncio.wait(
                     [task_tracker.worker_task],
                     timeout=self.__task_cancellation_timeout,
@@ -916,4 +902,9 @@ class TaskProcessor(BasicWorker):
                         task_tracker.data.task,
                         task_id,
                     )
-                self.__running_tasks.pop(task_id, None)
+                # The tracker is removed unconditionally, even when the handler
+                # ignored cancellation and the task is still alive: the cancel
+                # reason must survive for handle_task's eventual ack, so only
+                # the tracker is dropped here (remove_tracker leaves the reason
+                # in place for the ack to consume).
+                self._task_lifecycle.remove_tracker(task_id)

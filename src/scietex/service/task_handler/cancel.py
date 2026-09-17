@@ -13,6 +13,7 @@ from uuid import UUID
 import msgspec
 
 from .basic import TaskHandler
+from .capabilities import TaskCapabilities
 from .context import TaskHandlerContext
 from .schemas import CANCEL_TASK_TYPE, TaskData, TaskResult
 
@@ -86,12 +87,14 @@ class CancelTaskHandler(TaskHandler):
         """Task types handled by this handler."""
         return [CANCEL_TASK_TYPE]
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Cancel the target task named in the payload.
 
         Args:
             task_data: Task data whose ``payload`` is a msgpack-encoded
                 :class:`CancelTaskRequest`.
+            capabilities: Keyword-only per-call capabilities (unused here; the
+                handler only needs the injected ``cancel`` callback).
 
         Returns:
             A ``TaskResult``: ``success`` with a msgpack-encoded

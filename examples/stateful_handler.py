@@ -21,7 +21,7 @@ import logging
 from uuid import UUID
 
 from scietex.service import TaskProcessor, TaskProcessorConfig
-from scietex.service.task_handler import TaskData, TaskHandler, TaskHandlerContext, TaskResult
+from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskHandlerContext, TaskResult
 
 # ── Shared state ─────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ class CountingHandler(TaskHandler):
     def supported_tasks(self) -> list[str]:
         return ["count"]
 
-    async def handle(self, task_data: TaskData) -> TaskResult:
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         total = self._counter.increment()
         self.logger.info("Handled task '%s'; shared counter now at %d", task_data.task, total)
         return TaskResult(status="success", payload=str(total).encode())
