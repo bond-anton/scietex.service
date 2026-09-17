@@ -21,7 +21,7 @@ import logging
 
 from .basic_worker import BasicWorker
 from .config import TaskProcessorConfig, WorkerConfig
-from .manager import Manager
+from .manager import Manager, register_manager
 from .task_processor import TaskProcessor
 from .transport import InMemoryTransport, TaskSink, TaskTransport
 from .version import __version__
@@ -31,6 +31,7 @@ __all__ = [
     "TaskProcessor",
     "BasicWorker",
     "Manager",
+    "register_manager",
     "TaskProcessorConfig",
     "WorkerConfig",
     "TaskTransport",

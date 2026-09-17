@@ -122,15 +122,24 @@ the terminal `FAILED` state (AR-063) — the watchdog logs CRITICAL when a
 manager has failed, but the worker does not auto-shutdown (the degradation
 stays observable via `worker.failed_managers`).
 
-Managers are discovered via the class MRO (most-derived to base classes)
-and executed as named `asyncio.Task` objects.
+Managers are recorded in a per-class registry (`__manager_registry__`),
+populated by `Manager.__set_name__` when the class is created. Discovery
+walks the class MRO (most-derived to base classes) reading each class's own
+registry, and runs each manager as a named `asyncio.Task` object.
 
-Each manager is identified by its `name=` (or the decorated method name when
-`name` is omitted). Discovery de-duplicates by that identity: if two managers
-independently pick the same `name=`, a WARNING is logged naming the colliding
-manager and the class it was found on, and only the first (most-derived)
-definition runs — the later one is skipped rather than silently dropped
-(AR-068).
+Each manager is identified by its `name=`, which is required and is the
+manager's stable identity — it is never derived from the attribute name or
+the decorated method name. Discovery de-duplicates by that identity: if two
+managers independently pick the same `name=`, a WARNING is logged naming the
+colliding manager and the class it was found on, and only the first
+(most-derived) definition runs — the later one is skipped rather than
+silently dropped (AR-068). A subclass that redefines a base manager must
+repeat the base manager's `name=` verbatim to shadow it; a typo registers a
+second, distinct manager instead of overriding the base one. Redefining the
+manager's attribute without re-applying `@Manager` (or calling
+`register_manager`) logs a WARNING, because the plain attribute produces no
+registry entry — the base manager still runs and the override never executes
+(AR-015).
 
 ### Creating a Manager
 
@@ -167,6 +176,40 @@ class MyWorker(BasicWorker):
         await self.pool.refresh()
         await asyncio.sleep(60)
 ```
+
+### Registering a Manager Explicitly
+
+When the `@Manager` decorator cannot be applied inside a class body (e.g. a
+manager assembled dynamically or defined outside the class), use
+`register_manager()` to register a manager after the class is created:
+
+```python
+from scietex.service import BasicWorker, register_manager
+
+
+async def poll_jobs(worker: BasicWorker) -> None:
+    """One iteration of a manager loop defined outside the class."""
+    await worker.job_source.poll()
+
+
+class MyWorker(BasicWorker):
+    pass
+
+
+register_manager(
+    MyWorker,
+    poll_jobs,
+    name="JobPoller",
+    attribute_name="poll_jobs",  # optional: binds MyWorker.poll_jobs
+)
+```
+
+`name` is required and is the manager's identity. `attribute_name` is an
+optional binding aid — it assigns the manager as `owner.<attribute_name>` for
+bound-method ergonomics, but it is never used as the identity. By default
+`replace=True` upserts in place by `name`; pass `replace=False` to always
+append, letting the discovery-time collision warning report a duplicate
+`name`.
 
 ### Built-in Managers
 

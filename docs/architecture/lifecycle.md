@@ -38,7 +38,8 @@ Public: `worker.start()` (459). It:
 6. Sets `start_time` (UTC) — before the managers start, so the heartbeat
    manager's immediate first beat is not skipped by the `start_time` guard
    (AR-049).
-7. `ManagerRuntime.start_managers()` — discover `@Manager`s via
+7. `ManagerRuntime.start_managers()` — discover `@Manager`s by walking the
+   class MRO and reading each class's own `__manager_registry__` via
    `ManagerRuntime.iter_manager_definitions()` (manager/runtime.py:49), start
    each as a named task, then set state = RUNNING.
 

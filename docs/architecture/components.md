@@ -80,13 +80,18 @@ off the worker's public properties.
 **Main symbols:** `class ManagerRuntime` (18). Constructor (27) takes the
 owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 (37).
-- `iter_manager_definitions()` (49) — iterates `type(self.worker).__mro__`
-  **most-derived-first** (64), de-duplicating names via a `seen` set so a
+- `iter_manager_definitions()` (49) — walks `type(self.worker).__mro__`
+  **most-derived-first** (70), reading each class's own
+  `__manager_registry__` list (populated by `Manager.__set_name__` and
+  `register_manager`) and de-duplicating names via a `seen` set so a
   subclass override shadows the base definition. When two managers
   independently pick the same `name=`, a WARNING is logged naming the
   colliding manager and the class it was found on (AR-068); the first
   (most-derived) definition still wins, so the collision is surfaced rather
-  than silently dropped.
+  than silently dropped. A class that redefines a base manager's attribute
+  name without re-decorating it also logs an advisory WARNING (AR-015
+  failure mode 2), because the plain attribute produces no registry entry and
+  discovery falls through to the base manager.
 - `run_manager(name, manager)` (82) — runs `manager.method(self.worker)` in a
   `while True` loop (111); on a non-`CancelledError` exception records the error
   (120) and retries after `manager_restart_backoff` (139), giving up when
@@ -139,8 +144,9 @@ owning worker and owns the `statuses` dict (35).
 **File:** `src/scietex/service/manager/__init__.py`
 
 **Purpose:** A class-based decorator turning an async method into a "managed
-loop". The worker (via `ManagerRuntime`) detects `Manager` instances in the
-MRO, runs their `method` in an infinite loop under an `asyncio.Task`, restarts
+loop". The worker (via `ManagerRuntime`) reads the managers recorded in each
+class's `__manager_registry__` across the MRO, runs their `method` in an
+infinite loop under an `asyncio.Task`, restarts
 on error, and invokes an optional `cleanup` callable on stop.
 
 **Main symbols:** `ManagerStatus` (14), `Manager` (24). Attributes: `name`,

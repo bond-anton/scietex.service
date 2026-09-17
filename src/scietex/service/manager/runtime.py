@@ -9,7 +9,7 @@ import logging
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
-from . import Manager, ManagerStatus
+from . import MANAGER_REGISTRY_ATTR, Manager, ManagerStatus
 
 if TYPE_CHECKING:
     from ..basic_worker import BasicWorker
@@ -56,23 +56,72 @@ class ManagerRuntime:
         the same ``name=``, a WARNING is logged and the first (most-derived)
         definition wins; the later one is skipped, never silently dropped.
 
-        Discovery is by MRO ``__dict__`` reflection, so a manager's identity is
-        its decorated attribute name (or the explicit ``name=``). Renaming a
-        decorated method renames the manager; overriding a method without
-        re-decorating does not shadow it. This stringly-named coupling is an
-        accepted trade-off (AR-013); an explicit registration API is the
-        planned long-term replacement.
+        Discovery reads each class's own ``MANAGER_REGISTRY_ATTR`` registry
+        (populated by ``Manager.__set_name__`` and ``register_manager``), so a
+        manager's identity is its explicit ``name``. Reading from the class's
+        own ``__dict__`` only means a subclass never inherits or mutates a base
+        class's registry list.
+
+        A WARNING is also logged when a class redefines a name that a base
+        class bound as a manager attribute without re-decorating it (AR-015
+        failure mode 2). Such a plain attribute produces no registry entry, so
+        discovery falls through to the base manager and the override never
+        runs. The shadow is reported only when the shadowing value is neither
+        a ``Manager`` instance nor the method of an already-registered manager
+        (so a legitimate re-decorated override or a shadow-then-
+        ``register_manager`` is not reported). The warning is advisory: the
+        yielded ``(name, manager)`` pairs and their order are unaffected.
 
         Yields:
-            Tuple of (manager_name, manager) for each Manager decorator found
-            in the class hierarchy, processed from most-derived to base classes.
+            Tuple of (manager_name, manager) for each Manager recorded in
+            the class hierarchy, processed from most-derived to base classes.
         """
-        seen: set[str] = set()
-        for cls in type(self.worker).__mro__:
-            for attribute_name, attribute in cls.__dict__.items():
-                if not isinstance(attribute, Manager):
+        mro = type(self.worker).__mro__
+
+        # AR-015 failure mode 2: a class in the MRO may redefine a name that
+        # a base class bound as a manager attribute, without re-decorating.
+        # That leaves a plain function/attribute in the class __dict__, no
+        # registry entry on the subclass, and discovery silently runs the
+        # base manager. Index the registered managers and their bound
+        # attribute names so the shadow can be reported below.
+        manager_attributes: dict[str, Manager] = {}
+        registered_methods: set[int] = set()
+        for cls in mro:
+            for manager in cls.__dict__.get(MANAGER_REGISTRY_ATTR, ()):
+                if manager.method is not None:
+                    registered_methods.add(id(manager.method))
+                attribute_name = manager.attribute_name
+                if attribute_name is not None:
+                    manager_attributes.setdefault(attribute_name, manager)
+
+        for cls in mro:
+            for attribute_name, value in cls.__dict__.items():
+                base_manager = manager_attributes.get(attribute_name)
+                if base_manager is None:
                     continue
-                manager_name = attribute.name or attribute_name
+                if base_manager.owner not in cls.__mro__[1:]:
+                    continue
+                if isinstance(value, Manager):
+                    continue
+                if id(value) in registered_methods:
+                    continue
+                self.worker.logger.warning(
+                    "Manager attribute %r on %s shadows the manager %r "
+                    "defined on %s without re-decorating; the base manager "
+                    "still runs and this attribute is not executed. Decorate "
+                    "it with @Manager(name=%r) or register it with "
+                    "register_manager() to override.",
+                    attribute_name,
+                    cls.__name__,
+                    base_manager.name,
+                    base_manager.owner.__name__ if base_manager.owner is not None else "<unknown>",
+                    base_manager.name,
+                )
+
+        seen: set[str] = set()
+        for cls in mro:
+            for manager in cls.__dict__.get(MANAGER_REGISTRY_ATTR, ()):
+                manager_name = manager.name
                 if manager_name in seen:
                     self.worker.logger.warning(
                         "Manager name %r collides with an already-registered manager "
@@ -80,11 +129,11 @@ class ManagerRuntime:
                         "and this one is skipped.",
                         manager_name,
                         cls.__name__,
-                        attribute_name,
+                        manager.attribute_name,
                     )
                     continue
                 seen.add(manager_name)
-                yield manager_name, attribute
+                yield manager_name, manager
 
     async def run_manager(self, name: str, manager: Manager) -> None:
         """

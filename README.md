@@ -237,8 +237,10 @@ delegators to the transport, so existing subclasses keep working.
 
 ### Manager Lifecycle
 
-Managers are async methods decorated with `@Manager`. The worker
-discovers them via the class MRO and runs each as an `asyncio.Task`:
+Managers are async methods decorated with `@Manager(name=...)` — `name` is
+required and is the manager's stable identity. The worker records them in a
+per-class registry (`__manager_registry__`) and discovers them by walking the
+class MRO, running each as an `asyncio.Task`:
 
 1. **Start** — Manager loop runs the decorated method in a `while True`
    loop until cancelled.

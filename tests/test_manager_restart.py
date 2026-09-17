@@ -8,7 +8,7 @@ import pytest
 
 from scietex.service.basic_worker import BasicWorker, ServiceStatus
 from scietex.service.config import WorkerConfig
-from scietex.service.manager import Manager, ManagerStatus
+from scietex.service.manager import MANAGER_REGISTRY_ATTR, Manager, ManagerStatus, register_manager
 
 
 class FlakyWorker(BasicWorker):
@@ -373,3 +373,470 @@ async def test_manager_name_collision_logs_warning(caplog):
     assert names.count("Dup") == 1
     # The collision is surfaced, not silently dropped.
     assert any("collides" in record.getMessage() and "Dup" in record.getMessage() for record in caplog.records)
+
+
+def test_manager_requires_explicit_name():
+    """Constructing a Manager with no name must raise TypeError (AR-015)."""
+    with pytest.raises(TypeError):
+        Manager()
+
+
+@pytest.mark.parametrize("bad_name", [None, "", "   "])
+def test_manager_rejects_blank_or_non_string_name(bad_name):
+    """Manager must reject a non-string or blank name (AR-015)."""
+    with pytest.raises(TypeError):
+        Manager(bad_name)
+
+
+def test_bare_manager_decorator_rejects_function_as_name():
+    """The bare @Manager form must reject the decorated function passed as name (AR-015)."""
+
+    async def _method(self) -> None:
+        await asyncio.sleep(0.05)
+
+    with pytest.raises(TypeError):
+        Manager(_method)
+
+
+def test_manager_call_decorator_requires_name():
+    """The @Manager() form must raise before the method is even passed (AR-015)."""
+
+    async def _method(self) -> None:
+        await asyncio.sleep(0.05)
+
+    with pytest.raises(TypeError):
+        Manager()(_method)
+
+
+def test_register_manager_requires_name_keyword():
+    """register_manager must require the name keyword (AR-015)."""
+
+    class W(BasicWorker):
+        async def _extra(self) -> None: ...
+
+    with pytest.raises(TypeError):
+        register_manager(W, W._extra)
+
+
+def test_register_manager_rejects_blank_name():
+    """register_manager must reject a blank name (AR-015)."""
+
+    class W(BasicWorker):
+        async def _extra(self) -> None: ...
+
+    with pytest.raises(TypeError):
+        register_manager(W, W._extra, name="")
+
+
+def test_manager_name_stable_across_attribute_rename():
+    """Manager identity must be its explicit name, not the attribute name (AR-015)."""
+
+    async def _loop(self) -> None:
+        await asyncio.sleep(0.05)
+
+    manager = Manager(name="Stable")
+    manager(_loop)
+    Renamed = type("Renamed", (BasicWorker,), {"_renamed": manager})
+
+    # type.__new__ invokes __set_name__, so owner/attribute_name are recorded
+    # even though the attribute name differs from the manager's identity.
+    assert manager.attribute_name == "_renamed"
+    assert manager.owner is Renamed
+    names = [name for name, _ in Renamed().manager_runtime.iter_manager_definitions()]
+    assert "Stable" in names
+
+
+def test_same_name_different_attribute_names_yield_same_name():
+    """Two classes sharing name= under different attributes yield the same name (AR-015)."""
+
+    class First(BasicWorker):
+        @Manager(name="SharedName")
+        async def _alpha(self) -> None:
+            await asyncio.sleep(0.05)
+
+    class Second(BasicWorker):
+        @Manager(name="SharedName")
+        async def _beta(self) -> None:
+            await asyncio.sleep(0.05)
+
+    assert "SharedName" in [name for name, _ in First().manager_runtime.iter_manager_definitions()]
+    assert "SharedName" in [name for name, _ in Second().manager_runtime.iter_manager_definitions()]
+    assert First.__dict__["_alpha"].attribute_name == "_alpha"
+    assert Second.__dict__["_beta"].attribute_name == "_beta"
+
+
+def test_manager_registry_isolation_between_subclasses():
+    """Each subclass must own an independent registry; managers never leak across subclasses (AR-015)."""
+
+    class A(BasicWorker):
+        @Manager(name="OnlyA")
+        async def _a(self) -> None:
+            await asyncio.sleep(0.05)
+
+    class B(BasicWorker):
+        @Manager(name="OnlyB")
+        async def _b(self) -> None:
+            await asyncio.sleep(0.05)
+
+    a_names = {name for name, _ in A().manager_runtime.iter_manager_definitions()}
+    b_names = {name for name, _ in B().manager_runtime.iter_manager_definitions()}
+    assert "OnlyA" in a_names and "OnlyA" not in b_names
+    assert "OnlyB" in b_names and "OnlyB" not in a_names
+    assert A.__dict__[MANAGER_REGISTRY_ATTR] is not B.__dict__[MANAGER_REGISTRY_ATTR]
+
+
+def test_manager_definition_order_preserved():
+    """Managers must be recorded in class-body order (AR-015)."""
+
+    class Ordered(BasicWorker):
+        @Manager(name="First")
+        async def _one(self) -> None:
+            await asyncio.sleep(0.05)
+
+        @Manager(name="Second")
+        async def _two(self) -> None:
+            await asyncio.sleep(0.05)
+
+    assert [manager.name for manager in Ordered.__dict__[MANAGER_REGISTRY_ATTR]] == ["First", "Second"]
+
+
+def test_manager_metadata_captured_on_basic_worker():
+    """The base worker's heartbeat manager must capture owner/attribute_name/name (AR-015)."""
+    manager = BasicWorker.__dict__["_heartbeat_manager"]
+    assert manager.owner is BasicWorker
+    assert manager.attribute_name == "_heartbeat_manager"
+    assert manager.name == "Heartbeat"
+
+
+def test_registry_entries_are_managers_with_yielded_names():
+    """Each discovered entry must be a Manager whose name matches the yielded name (AR-015)."""
+    worker = BasicWorker()
+    for name, manager in worker.manager_runtime.iter_manager_definitions():
+        assert isinstance(manager, Manager)
+        assert manager.name == name
+
+
+def test_manager_alias_dedup_in_registry():
+    """A Manager aliased under two attribute names must appear once in the registry (AR-015)."""
+
+    async def _loop(self) -> None:
+        await asyncio.sleep(0.05)
+
+    manager = Manager(name="Aliased")
+    manager(_loop)
+    Aliased = type("Aliased", (BasicWorker,), {"_first": manager, "_second": manager})
+
+    registry = Aliased.__dict__[MANAGER_REGISTRY_ATTR]
+    assert len(registry) == 1
+    assert registry[0] is manager
+    assert Aliased.__dict__["_first"] is manager and Aliased.__dict__["_second"] is manager
+    names = [name for name, _ in Aliased().manager_runtime.iter_manager_definitions()]
+    assert names.count("Aliased") == 1
+
+
+@pytest.mark.asyncio
+async def test_register_manager_post_creation_discovered_and_executed():
+    """A manager registered after class creation must be discovered and run (AR-015)."""
+
+    class W(BasicWorker):
+        def __init__(self, config: WorkerConfig | None = None):
+            super().__init__(config)
+            self.custom_ran = False
+
+        async def _custom(self) -> None:
+            self.custom_ran = True
+            await asyncio.sleep(0.05)
+
+    register_manager(W, W._custom, name="Custom")
+    worker = W()
+    assert "Custom" in [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
+    await worker.start()
+    try:
+        for _ in range(50):
+            if worker.custom_ran:
+                break
+            await asyncio.sleep(0.05)
+        assert worker.custom_ran, "registered manager should have run"
+    finally:
+        await worker.stop()
+
+
+def test_register_manager_attribute_name_binding():
+    """attribute_name binds a callable attribute while name stays the identity (AR-015)."""
+
+    class W(BasicWorker):
+        async def _custom_impl(self) -> None:
+            await asyncio.sleep(0.05)
+
+    manager = register_manager(W, W._custom_impl, name="Custom", attribute_name="_custom")
+    worker = W()
+    assert manager.name == "Custom"
+    assert W.__dict__["_custom"] is manager
+    assert callable(worker._custom)
+    assert "Custom" in [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
+
+
+def test_register_manager_replace_upserts_in_place(caplog):
+    """replace=True must replace the same-named manager in place, preserving order (AR-015)."""
+
+    class W(BasicWorker):
+        async def _alpha(self) -> None: ...
+        async def _beta(self) -> None: ...
+        async def _beta_two(self) -> None: ...
+
+    register_manager(W, W._alpha, name="Alpha")
+    register_manager(W, W._beta, name="Beta")
+    register_manager(W, W._beta_two, name="Beta")
+
+    registry = W.__dict__[MANAGER_REGISTRY_ATTR]
+    assert [manager.name for manager in registry] == ["Alpha", "Beta"]
+    assert registry[1].method is W._beta_two
+
+    worker = W()
+    with caplog.at_level(logging.WARNING):
+        names = [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
+    assert names.count("Beta") == 1
+    assert not any("collides" in record.getMessage() for record in caplog.records)
+
+
+def test_register_manager_append_duplicates_collide(caplog):
+    """replace=False must append, surfacing a discovery-time collision warning (AR-015)."""
+
+    class W(BasicWorker):
+        async def _first(self) -> None: ...
+        async def _second(self) -> None: ...
+
+    register_manager(W, W._first, name="Dup")
+    register_manager(W, W._second, name="Dup", replace=False)
+
+    assert [manager.name for manager in W.__dict__[MANAGER_REGISTRY_ATTR]] == ["Dup", "Dup"]
+    worker = W()
+    with caplog.at_level(logging.WARNING):
+        names = [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
+    assert names.count("Dup") == 1
+    assert any("collides" in record.getMessage() and "Dup" in record.getMessage() for record in caplog.records)
+
+
+def test_register_manager_on_base_does_not_shadow_subclass(caplog):
+    """A base registration after a subclass exists must not shadow the subclass override (AR-015)."""
+
+    class Base(BasicWorker):
+        @Manager(name="Shared")
+        async def _base_shared(self) -> None:
+            await asyncio.sleep(0.05)
+
+    class Derived(Base):
+        @Manager(name="Shared")
+        async def _derived_shared(self) -> None:
+            await asyncio.sleep(0.05)
+
+    async def _extra(self) -> None:
+        await asyncio.sleep(0.05)
+
+    register_manager(Base, _extra, name="Shared", replace=False)
+
+    worker = Derived()
+    with caplog.at_level(logging.WARNING):
+        pairs = list(worker.manager_runtime.iter_manager_definitions())
+    names = [name for name, _ in pairs]
+    assert names.count("Shared") == 1
+    assert pairs[names.index("Shared")][1] is Derived.__dict__["_derived_shared"]
+    assert any("collides" in record.getMessage() and "Shared" in record.getMessage() for record in caplog.records)
+
+
+def test_register_manager_rejects_non_type_owner():
+    """register_manager must reject a non-class owner (AR-015)."""
+
+    async def _extra(self) -> None:
+        await asyncio.sleep(0.05)
+
+    worker = BasicWorker()
+    with pytest.raises(TypeError):
+        register_manager(worker, _extra, name="Bad")
+
+
+def test_register_manager_entry_lives_in_owner_registry():
+    """A registered manager must live in the owner's registry alongside decorator entries (AR-015)."""
+
+    class W(BasicWorker):
+        @Manager(name="Decorated")
+        async def _decorated(self) -> None:
+            await asyncio.sleep(0.05)
+
+        async def _extra(self) -> None:
+            await asyncio.sleep(0.05)
+
+    manager = register_manager(W, W._extra, name="Custom")
+    assert manager in W.__dict__[MANAGER_REGISTRY_ATTR]
+    names = [name for name, _ in W().manager_runtime.iter_manager_definitions()]
+    assert "Decorated" in names and "Custom" in names
+
+
+def test_exact_name_shadows_and_typo_yields_two(caplog):
+    """An exact name= shadow hides the base manager; a typo yields two distinct managers (AR-015)."""
+
+    class Base(BasicWorker):
+        @Manager(name="Exact")
+        async def _base(self) -> None:
+            await asyncio.sleep(0.05)
+
+    class Exact(Base):
+        @Manager(name="Exact")
+        async def _derived(self) -> None:
+            await asyncio.sleep(0.05)
+
+    class Typo(Base):
+        @Manager(name="Exactt")
+        async def _derived(self) -> None:
+            await asyncio.sleep(0.05)
+
+    # Exact override: only the derived definition wins (base is shadowed).
+    exact = Exact()
+    pairs = list(exact.manager_runtime.iter_manager_definitions())
+    names = [name for name, _ in pairs]
+    assert names.count("Exact") == 1
+    assert pairs[names.index("Exact")][1] is Exact.__dict__["_derived"]
+
+    # Typo: two distinct managers with no collision warning.
+    caplog.clear()
+    typo = Typo()
+    with caplog.at_level(logging.WARNING):
+        typo_names = [name for name, _ in typo.manager_runtime.iter_manager_definitions()]
+    assert typo_names.count("Exact") == 1 and typo_names.count("Exactt") == 1
+    assert not any("collides" in record.getMessage() for record in caplog.records)
+
+
+class ShadowBase(BasicWorker):
+    """Base worker with a manager bound to ``_shared_manager`` (AR-015 shadowing)."""
+
+    @Manager(name="Shadow")
+    async def _shared_manager(self) -> None:
+        await asyncio.sleep(0.05)
+
+
+class ShadowPlain(ShadowBase):
+    """Redefines ``_shared_manager`` as a plain method without re-decorating."""
+
+    async def _shared_manager(self) -> None:
+        await asyncio.sleep(0.05)
+
+
+class ShadowDisabled(ShadowBase):
+    """Assigns ``None`` over the base manager attribute (does not disable it)."""
+
+    _shared_manager = None
+
+
+class ShadowRegistered(ShadowBase):
+    """Shadows with a plain method, then registers it under the same name."""
+
+    async def _shared_manager(self) -> None:
+        await asyncio.sleep(0.05)
+
+
+shadow_registered_manager = register_manager(ShadowRegistered, ShadowRegistered._shared_manager, name="Shadow")
+
+
+class ShadowRegisteredBound(ShadowBase):
+    """Shadows with a plain method, then registers it with an ``attribute_name`` binding."""
+
+    async def _shared_manager(self) -> None:
+        await asyncio.sleep(0.05)
+
+
+shadow_registered_bound_manager = register_manager(
+    ShadowRegisteredBound,
+    ShadowRegisteredBound._shared_manager,
+    name="Shadow",
+    attribute_name="_shared_manager",
+)
+
+
+class CoincidenceBase(BasicWorker):
+    """Base worker whose manager attribute name coincides with a subclass method name."""
+
+    @Manager(name="TaskManager")
+    async def task_manager(self) -> None:
+        await asyncio.sleep(0.05)
+
+
+class CoincidencePlain(CoincidenceBase):
+    """Redefines ``task_manager`` as a plain method without re-decorating."""
+
+    async def task_manager(self) -> None:
+        await asyncio.sleep(0.05)
+
+
+def test_plain_manager_attribute_shadow_warns(caplog):
+    """A plain attribute shadowing a base manager must log an advisory WARNING (AR-015)."""
+    worker = ShadowPlain()
+    with caplog.at_level(logging.WARNING):
+        list(worker.manager_runtime.iter_manager_definitions())
+    assert any(
+        "shadows" in record.getMessage() and "_shared_manager" in record.getMessage() for record in caplog.records
+    )
+    assert not any("collides" in record.getMessage() for record in caplog.records)
+
+
+def test_plain_manager_shadow_does_not_change_discovery(caplog):
+    """A shadowing plain attribute must not change what discovery yields (AR-015)."""
+    worker = ShadowPlain()
+    with caplog.at_level(logging.WARNING):
+        pairs = list(worker.manager_runtime.iter_manager_definitions())
+    names = [name for name, _ in pairs]
+    # The base manager still runs: exactly one "Shadow" yield, the base definition.
+    assert names.count("Shadow") == 1
+    assert pairs[names.index("Shadow")][1] is ShadowBase.__dict__["_shared_manager"]
+
+
+def test_shadow_then_register_manager_does_not_warn(caplog):
+    """Registering the shadowing method must silence the advisory warning (AR-015)."""
+    worker = ShadowRegistered()
+    with caplog.at_level(logging.WARNING):
+        pairs = list(worker.manager_runtime.iter_manager_definitions())
+    names = [name for name, _ in pairs]
+    assert not any("shadows" in record.getMessage() for record in caplog.records)
+    assert names.count("Shadow") == 1
+    assert pairs[names.index("Shadow")][1] is shadow_registered_manager
+
+
+def test_shadow_then_register_manager_with_attribute_name_does_not_warn(caplog):
+    """Registering with an attribute_name binding must also silence the warning (AR-015)."""
+    worker = ShadowRegisteredBound()
+    with caplog.at_level(logging.WARNING):
+        pairs = list(worker.manager_runtime.iter_manager_definitions())
+    names = [name for name, _ in pairs]
+    assert not any("shadows" in record.getMessage() for record in caplog.records)
+    assert names.count("Shadow") == 1
+    assert pairs[names.index("Shadow")][1] is shadow_registered_bound_manager
+
+
+def test_plain_manager_none_assignment_warns(caplog):
+    """Assigning None over a base manager attribute must still warn (AR-015)."""
+    worker = ShadowDisabled()
+    with caplog.at_level(logging.WARNING):
+        pairs = list(worker.manager_runtime.iter_manager_definitions())
+    names = [name for name, _ in pairs]
+    assert any(
+        "shadows" in record.getMessage() and "_shared_manager" in record.getMessage() for record in caplog.records
+    )
+    # None does not disable the base manager: it still runs.
+    assert names.count("Shadow") == 1
+    assert pairs[names.index("Shadow")][1] is ShadowBase.__dict__["_shared_manager"]
+
+
+def test_manager_attribute_name_coincidence_warns(caplog):
+    """A name coincidence between a manager attribute and a plain method must warn (AR-015)."""
+    worker = CoincidencePlain()
+    with caplog.at_level(logging.WARNING):
+        list(worker.manager_runtime.iter_manager_definitions())
+    assert any("shadows" in record.getMessage() and "task_manager" in record.getMessage() for record in caplog.records)
+
+
+def test_decorated_manager_override_still_warns_nothing(caplog):
+    """A re-decorated override must not trigger the shadowing warning (AR-015)."""
+    worker = DerivedWorker()
+    with caplog.at_level(logging.WARNING):
+        names = [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
+    assert not any("shadows" in record.getMessage() for record in caplog.records)
+    assert names.count("Shared") == 1

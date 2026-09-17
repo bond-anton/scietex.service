@@ -131,6 +131,7 @@ Protocol and composes the Valkey-specific collaborators `valkey/config`,
    → `xadd` on the handler's own `GlideClient` (built from `valkey_config=`,
    AR-059/061) → stream.
 4. **Manager runtime chain**: `@Manager`-decorated method →
-   `ManagerRuntime.iter_manager_definitions` (MRO scan) →
+   `ManagerRuntime.iter_manager_definitions` (per-class registry across the
+   MRO) →
    `ManagerRuntime.start_manager` (task) → `ManagerRuntime.run_manager`
    (loop; restart inlined on error).
