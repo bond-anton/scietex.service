@@ -1,6 +1,6 @@
 # v4.4.0 — MQTT Worker Design
 
-**Status:** design for review (no code written yet)
+**Status:** design approved — decisions locked (§12), ready to implement
 **Target release:** v4.4.0
 **Motivation:** AR-089 (`docs/reviews/architecture/2026-09-16-2.md`) — the
 transport seam was built so a second transport could be added without touching
@@ -88,9 +88,9 @@ Implements the seven `TaskTransport` methods. Mapping from MQTT semantics:
 | `fetch(sink)` | Drain the inbox (and/or the aiomqtt message queue) into `sink.enqueue_task` until `sink.task_queue_full()`. Returns `True` if any task was enqueued. |
 | `requeue(task_id, task_data)` | Re-publish the envelope to the task topic (QoS 2) and mark the inbox entry pending again. |
 | `release(task_id)` | Mark the inbox entry released without re-publishing (the broker still holds the message). |
-| `on_started(task_id, task_data)` | Mark the inbox entry in-flight; optionally write a `running` status record. |
-| `ack(task_id, task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and delete it (or tombstone it for dedupe). |
-| `on_progress(task_id, value)` | Update the status record (no-op if no status store is configured). |
+| `on_started(task_id, task_data)` | Mark the inbox entry in-flight. |
+| `ack(task_id, task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and remove it (or tombstone it for dedupe). |
+| `on_progress(task_id, value)` | **No-op** (§10 #5): MQTT has no server-side key space for status records. Progress still works in-process via `TaskCapabilities`. |
 | `on_drain(task_id, task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. |
 
 MQTT-specific extras beyond the Protocol (mirroring `ValkeyTransport`'s
@@ -118,8 +118,8 @@ Lifecycle overrides mirror `ValkeyWorker`:
 | `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task topic(s) → replay the inbox. |
 | `cleanup` | `super().cleanup()` → stop the message loop → stop the log handler → disconnect → flush the inbox. |
 | `watchdog` | `refresh_leases()` → `health.recover()` → `super().watchdog()` → log `critical_report()`. |
-| `heartbeat` | Publish a heartbeat (retained message or a heartbeat topic) with a TTL-equivalent. |
-| `_register_instance` / `_unregister_instance` | Best-effort registry publish (retained message on a registry topic). |
+| `heartbeat` | Publish a retained heartbeat message on `scietex/{service}/workers/{instance_id}` (§10 #6). |
+| `_register_instance` / `_unregister_instance` | Best-effort retained-message publish/clear on the registry topic (§10 #6). |
 
 ### 2.4 Logging to MQTT
 
@@ -215,23 +215,22 @@ replay. The inbox is the source of truth for "has this task been processed".
 
 ### 3.3 Inbox backend
 
-The inbox needs a durable store. Options, in order of preference:
+**Decision (§10 #3): a file-backed inbox, behind the `MqttInbox` Protocol.**
 
-1. **Reuse the Valkey client when available** — if `valkey-glide` is installed,
-   the inbox can be a Valkey key space (`scietex:{service}:inbox:{task_id}`)
-   with a TTL, reusing the existing `TaskStatusStore`/`TaskLeaseManager`
-   patterns. This gives durability without a new dependency.
-2. **A local file/SQLite inbox** — for deployments without Valkey. Adds a
-   storage dependency and a new failure mode.
-3. **No inbox (at-most-once)** — acceptable only if the user explicitly opts
-   out; must be a documented, deliberate choice.
+The inbox exists only to compensate for aiomqtt v2.5.1's premature broker ack.
+aiomqtt v3's manual ack removes that need, so the durable backend is
+transitional — a file-backed store is the smallest throwaway surface. The
+`MqttInbox` Protocol (`put`/`mark_terminal`/`pending`/`recover`) keeps the v3
+migration to an implementation swap.
 
-**Recommendation:** make the inbox backend pluggable behind a small Protocol
-(`MqttInbox` with `put`/`mark_terminal`/`pending`/`recover`), ship a Valkey-backed
-implementation first (reusing the existing client), and leave a file-backed
-implementation as a follow-up. The worker must refuse to start with
-at-least-once semantics if no durable backend is configured — fail loud, not
-silent.
+The file-backed implementation stores entries under the config directory (an
+append-only log or a small JSON store), with the same `pending`/`in-flight`/
+`terminal` lifecycle as §3.2. It is **single-process**: it does not coordinate
+across replicas. Multi-replica deployments would need a shared backend, which
+the Protocol preserves as a future option.
+
+The worker must refuse to start with at-least-once semantics if no inbox
+backend is configured — fail loud, not silent.
 
 ---
 
@@ -276,7 +275,9 @@ MQTT tests. The core `dependencies` list is unchanged.
 ### 5.1 `MqttConfig`
 
 A frozen `msgspec.Struct` mirroring the aiomqtt v2.5.1 scalar options, in the
-same spirit as `ValkeyConfig`:
+same spirit as `ValkeyConfig`. MQTT 5 is the target (§10 #1), so the session
+fields are the MQTT-5 ones (`clean_start`, `session_expiry_interval`) rather
+than the 3.1.1 `clean_session`:
 
 ```python
 class MqttConfig(msgspec.Struct, frozen=True):
@@ -286,7 +287,8 @@ class MqttConfig(msgspec.Struct, frozen=True):
     password: str | None = None
     identifier: str | None = None
     keepalive: int = 60
-    clean_session: bool | None = None
+    clean_start: bool = False
+    session_expiry_interval: int = 0
     transport: Literal["tcp", "websockets", "unix"] = "tcp"
     timeout: float | None = None
     tls_insecure: bool | None = None
@@ -304,16 +306,17 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     mqtt_config: MqttConfig | None = None
     task_topic: str = "scietex/{service}/tasks"
     task_qos: int = 2
-    inbox_backend: Literal["valkey", "file", "none"] = "valkey"
+    inbox_backend: Literal["file", "none"] = "file"
+    inbox_path: str | None = None
     inbox_ttl: int | None = None
-    task_tracking_ttl: int | None = None
     log_topic: str = "scietex/{service}/log"
     log_qos: int = 0
     log_retain: bool = False
 ```
 
 `__post_init__` calls `super().__post_init__()` then `validate_range` on the
-numeric fields, matching `ValkeyWorkerConfig`.
+numeric fields, matching `ValkeyWorkerConfig`. `inbox_backend="none"` is the
+explicit at-most-once opt-out (§10 #3); the default is the file-backed inbox.
 
 ### 5.3 Loader
 
@@ -333,31 +336,22 @@ No new format. `MqttTransport` uses the existing transport-agnostic helpers:
 - `decode_task_envelope_version(payload) -> int | None` — diagnostics on
   rejection (AR-098).
 
-The task id is carried as an MQTT user property (MQTT 5) or, for MQTT 3.1.1, as
-a topic suffix or a header inside the envelope. **Decision needed:** the
-envelope currently carries no task id (the id is the transport key). For MQTT,
-the id must travel with the message. Options:
-
-1. **MQTT 5 user property** `scietex-task-id` — clean, but MQTT-5-only.
-2. **Topic suffix** `scietex/{service}/tasks/{task_id}` — works on 3.1.1, but
-   makes the subscription a wildcard and complicates routing.
-3. **A new envelope version** carrying the id — a wire-format change, which
-   AR-064 deliberately separated from the handler contract.
-
-**Recommendation:** option 1 (user property) with option 2 as the 3.1.1
-fallback, decided by the configured protocol version. This is the one place the
+**Decision (§10 #2): the task id travels as an MQTT 5 user property**
+(`scietex-task-id`) alongside the envelope payload. The envelope stays the pure
+wire format — no wire-format change, no topic churn. This is the one place the
 MQTT transport needs information the Valkey transport gets for free from the
 stream entry key.
 
 ---
 
-## 7. `TransportHealth` — hoist to core?
+## 7. `TransportHealth` — hoist to core
 
-AR-089 states `TransportHealth` is transport-agnostic and should be hoisted to
-core when a second transport is added. This is that moment.
+**Decision (§10 #4): hoist now.** AR-089 states `TransportHealth` is
+transport-agnostic and should be hoisted to core when a second transport is
+added. This is that moment.
 
-**Recommendation:** hoist `TransportHealth` from `valkey/health.py` to
-`src/scietex/service/health.py` (core), and re-export it from
+`TransportHealth` moves from `valkey/health.py` to
+`src/scietex/service/health.py` (core), and is re-exported from
 `scietex.service.valkey.health` for backward compatibility. This:
 
 - Removes the feature→feature dependency the MQTT package would otherwise need
@@ -365,10 +359,6 @@ core when a second transport is added. This is that moment.
 - Fulfils AR-089's stated intent.
 - Is a small, mechanical move (one module + import updates + a compat
   re-export).
-
-If the team prefers to defer the hoist, the fallback is for `mqtt/` to import
-`TransportHealth` from `valkey/health.py` — acceptable but exactly the
-feature→feature coupling AR-089 warns against.
 
 ---
 
@@ -409,21 +399,33 @@ but optional; the unit tests must not require a broker.
 
 ---
 
-## 10. Open questions
+## 10. Decisions (locked)
 
-1. **Task-id transport** — user property (MQTT 5) vs topic suffix (3.1.1)?
-   (§6)
-2. **Inbox backend** — Valkey-backed first, or file-backed, or both? (§3.3)
-3. **`TransportHealth` hoist** — do it now (recommended) or defer? (§7)
-4. **Status/progress store** — does MQTT need a `TaskStatusStore` equivalent,
-   or is progress reporting a no-op for MQTT? (§2.2)
-5. **Registry/heartbeat** — retained-message topics, or omit for MQTT?
-   (§2.3)
-6. **Protocol version** — target MQTT 5 only, or support 3.1.1 too? This
-   determines the task-id mechanism and the available features.
-7. **Log-handler connection** — own connection (recommended, §2.4) or share the
-   worker's client? Own connection isolates the log path from task-transport
-   reconnects but doubles the broker connections.
+All design questions are resolved. These are binding for the v4.4.0
+implementation.
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Protocol version | **MQTT 5 only.** Single code path; user properties available. |
+| 2 | Task-id carrier | **MQTT 5 user property** (`scietex-task-id`). The envelope stays untouched. |
+| 3 | Inbox backend | **File-backed, behind the `MqttInbox` Protocol.** No new dependency; single-process; retired when aiomqtt v3 lands. |
+| 4 | `TransportHealth` hoist | **Hoist to core now** (`src/scietex/service/health.py`), re-export from `scietex.service.valkey.health` for back-compat. |
+| 5 | Status/progress store | **No status store.** `on_progress` is a no-op; progress still works in-process via `TaskCapabilities`. |
+| 6 | Registry/heartbeat | **Retained-message topics** (`scietex/{service}/workers/{instance_id}`). |
+| 7 | Log-handler connection | **Own connection** (no `client=`), matching the `AsyncValkeyHandler` pattern (AR-059/061). |
+
+### Rationale notes
+
+- **#3 (file inbox):** the durable inbox exists only to compensate for aiomqtt
+  v2.5.1's premature broker ack. aiomqtt v3's manual ack removes that need, so
+  the durable backend is transitional. A file-backed inbox is the smallest
+  throwaway surface; the `MqttInbox` Protocol keeps the v3 migration to an
+  implementation swap. Caveat: file-backed is single-process — multi-replica
+  deployments would need a shared backend, which the Protocol preserves as an
+  option.
+- **#5 (no status store):** MQTT has no server-side key space to write status
+  records into (unlike Valkey's `scietex:{service}:task:{id}` keys). Progress
+  reporting remains functional in-process; it is simply not persisted.
 
 ---
 
@@ -431,7 +433,6 @@ but optional; the unit tests must not require a broker.
 
 **Medium–Large (several days).** The transport itself is mechanical (mirroring
 `ValkeyTransport`), and the logging wiring (§2.4) is a small addition that
-reuses the existing `AsyncMqttHandler`. The durable inbox is genuinely new state
-with its own correctness argument, and the `TransportHealth` hoist touches
-existing code and tests. The design should be reviewed and the open questions
-resolved before implementation begins.
+reuses the existing `AsyncMqttHandler`. The file-backed inbox is new state with
+its own correctness argument, and the `TransportHealth` hoist touches existing
+code and tests. With the decisions above locked, implementation can proceed.
