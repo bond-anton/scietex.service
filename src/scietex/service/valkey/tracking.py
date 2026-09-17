@@ -139,7 +139,14 @@ class TaskStatusStore:
             )
 
     async def update_progress(self, task_id: UUID, value: float) -> None:
-        """Update the tracking record's progress for a running task."""
+        """Update the tracking record's progress for a running task.
+
+        A progress update for a task with no tracking record is dropped: the
+        store never fabricates a record, so a missing record stays missing
+        rather than becoming a plausible-but-wrong ``running`` entry. The miss
+        is logged at DEBUG. Transport errors are logged at WARNING and never
+        fail or requeue the task.
+        """
         client = self._client_provider()
         if client is None:
             return
@@ -153,19 +160,16 @@ class TaskStatusStore:
             return
         now = datetime.now(timezone.utc)
         if raw is None:
-            current = TaskStatus(
-                task_id=str(task_id),
-                service=self._service_name,
-                task="",
-                status="running",
-                created_at=now,
-                updated_at=now,
+            self._logger.log(
+                logging.DEBUG,
+                "No tracking record for task %s; dropping progress update",
+                task_id,
             )
-        else:
-            try:
-                current = msgspec.msgpack.decode(raw, type=TaskStatus)
-            except msgspec.DecodeError:
-                return
+            return
+        try:
+            current = msgspec.msgpack.decode(raw, type=TaskStatus)
+        except msgspec.DecodeError:
+            return
         updated = msgspec.structs.replace(
             current,
             progress=TaskProgress(progress=True, value=value),

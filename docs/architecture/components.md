@@ -548,7 +548,8 @@ client_provider, logger, report_failure=None)` with `key(task_id)`
 (`scietex:{service}:task:{id}`), `record_running(task_id, task_data)`,
 `record_terminal(task_id, task_data, task_result, cancel_reason=None)`, and
 `update_progress(task_id, value)` (read-modify-write; preserves other fields,
-synthesizes a default running record when absent, silent on `DecodeError`).
+drops the update when the record is absent (DEBUG log), silent on
+`DecodeError`).
 
 **Dependencies:** `._glide`, `..task_handler` (schemas). **Depended on by:**
 `ValkeyWorker`, `ValkeyTransport`.

@@ -139,6 +139,20 @@ async def test_write_task_progress_updates_existing_record():
 
 
 @pytest.mark.asyncio
+async def test_write_task_progress_missing_record_is_noop():
+    """_write_task_progress drops the update when no tracking record exists:
+    the read still happens but nothing is written (AR-095)."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    client = DummyClient()
+    worker = _make_tracking_worker(client)
+
+    await worker._write_task_progress(t_id, 42.5)
+
+    assert client.gets == [f"scietex:svc:task:{t_id}"]
+    assert client.sets == []
+
+
+@pytest.mark.asyncio
 async def test_tracking_write_failure_does_not_raise():
     """A tracking write failure (client raises) must not propagate out of
     on_task_started/on_task_completed: tracking is observability, not

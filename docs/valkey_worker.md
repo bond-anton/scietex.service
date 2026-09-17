@@ -364,10 +364,10 @@ no-op hook (invoked via `TaskCapabilities.report_progress()`, which clamps
 the task tracking key, msgpack-decodes the stored
 `TaskStatus`, replaces `progress` with
 `TaskProgress(progress=True, value=value)` and `updated_at` with the current
-UTC time, then rewrites the record. When the key is missing it synthesizes a
-new `running` record; when the stored payload fails to decode it returns
-without writing. A failed read is logged as a WARNING and never fails or
-requeues the task.
+UTC time, then rewrites the record. When the key is missing the progress
+update is dropped and logged at DEBUG; when the stored payload fails to
+decode it returns without writing. A failed read is logged as a WARNING and
+never fails or requeues the task.
 
 ### watchdog()
 
