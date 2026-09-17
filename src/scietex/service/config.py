@@ -228,13 +228,15 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
             minimum=MIN_TASK_HANDLER_STOP_TIMEOUT,
             maximum=MAX_TASK_HANDLER_STOP_TIMEOUT,
         )
-        validate_range(
-            self.task_timeout,
-            "task_timeout",
-            minimum=MIN_TASK_TIMEOUT,
-            maximum=MAX_TASK_TIMEOUT,
-            unbounded_ok=True,
-        )
+        # A non-positive task_timeout is the "unbounded" sentinel: the watchdog
+        # never cancels the task. It bypasses the positive-range check.
+        if self.task_timeout is None or self.task_timeout > 0:
+            validate_range(
+                self.task_timeout,
+                "task_timeout",
+                minimum=MIN_TASK_TIMEOUT,
+                maximum=MAX_TASK_TIMEOUT,
+            )
         validate_range(
             self.task_queue_fetch_timeout,
             "task_queue_fetch_timeout",
