@@ -308,7 +308,9 @@ task_manager hot loops; no processor-local timing constants remain.
 `max_concurrent_tasks` from `os.cpu_count()` at startup when
 `max_concurrent_tasks` is left unset (`None`); an explicit
 `max_concurrent_tasks` always wins (the resolution lives in
-`TaskProcessor.__init__`).
+`TaskProcessor.__init__`). The CPU count is a poor proxy for an I/O-bound
+asyncio workload and does not reflect container CPU limits, so I/O-bound
+services should set `max_concurrent_tasks` explicitly.
 
 **Public interface:** constructor takes a single immutable
 `TaskProcessorConfig` (`config.py`, extends `WorkerConfig`) or `None`; no

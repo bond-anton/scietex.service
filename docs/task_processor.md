@@ -191,7 +191,7 @@ Fields added by `TaskProcessorConfig` (in addition to `WorkerConfig`):
 |---|---|---|
 | `queue_size` | `None` (uses `DEFAULT_MAX_TASKS_QUEUE_SIZE`, `100`) | Max queue size |
 | `max_concurrent_tasks` | `None` (uses `DEFAULT_MAX_CONCURRENT_TASKS`, `10`) | Max concurrent tasks |
-| `auto_tune` | `False` | If `True` and `max_concurrent_tasks` is `None`, derive the concurrency from `os.cpu_count()` at startup |
+| `auto_tune` | `False` | If `True` and `max_concurrent_tasks` is `None`, derive the concurrency from `os.cpu_count()` at startup. The CPU count is a poor proxy for an I/O-bound asyncio workload and does not reflect container CPU limits, so I/O-bound services should set `max_concurrent_tasks` explicitly |
 | `task_manager_sleep_time` | `None` (uses `DEFAULT_MANAGER_SLEEP_TIME`, `0.01`) | Sleep between task manager iterations |
 | `task_queue_manager_sleep_time` | `None` (uses `DEFAULT_MANAGER_SLEEP_TIME`, `0.01`) | Sleep between queue manager iterations |
 | `task_handler_start_timeout` | `None` (uses `DEFAULT_TASK_HANDLER_START_TIMEOUT`, `5`) | Timeout for starting handlers |

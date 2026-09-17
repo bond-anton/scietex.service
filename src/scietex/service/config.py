@@ -171,6 +171,9 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
             worker derives the concurrency from the CPU count
             (``os.cpu_count()``) at startup instead of the static default.
             Explicit ``max_concurrent_tasks`` always wins. Default ``False``.
+            The CPU count is a poor proxy for an I/O-bound asyncio workload
+            and does not reflect container CPU limits, so I/O-bound services
+            should set ``max_concurrent_tasks`` explicitly.
         task_manager_sleep_time: Sleep time between task-manager iterations in
             seconds (``[0.001, 1]``).
         task_queue_manager_sleep_time: Sleep time between task-queue-manager
