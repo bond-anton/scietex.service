@@ -37,6 +37,8 @@ transport-agnostic wire format, and the `TransportHealth` supervisor.
   idempotent replay instead.
 - No migration of `scietex.logging` to a newer aiomqtt. That is a separate
   repository and release.
+- No new log-handler implementation. Logging to MQTT reuses the existing
+  `AsyncMqttHandler` from `scietex.logging` (§2.4); the design only wires it.
 
 ---
 
@@ -69,6 +71,7 @@ src/scietex/service/mqtt/
     transport.py     # MqttTransport — the TaskTransport implementation
     worker.py        # MqttWorker — composition + lifecycle overrides
     inbox.py         # MqttInbox — durable inbox for at-least-once
+    logging.py       # logging_handler_config — MqttConfig → AsyncMqttHandler kwargs
     health.py        # (only if TransportHealth is NOT hoisted to core — see §7)
 ```
 
@@ -113,10 +116,64 @@ Lifecycle overrides mirror `ValkeyWorker`:
 | Override | Behavior |
 |---|---|
 | `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task topic(s) → replay the inbox. |
-| `cleanup` | `super().cleanup()` → stop the message loop → disconnect → flush the inbox. |
+| `cleanup` | `super().cleanup()` → stop the message loop → stop the log handler → disconnect → flush the inbox. |
 | `watchdog` | `refresh_leases()` → `health.recover()` → `super().watchdog()` → log `critical_report()`. |
 | `heartbeat` | Publish a heartbeat (retained message or a heartbeat topic) with a TTL-equivalent. |
 | `_register_instance` / `_unregister_instance` | Best-effort registry publish (retained message on a registry topic). |
+
+### 2.4 Logging to MQTT
+
+`ValkeyWorker` attaches a backend log handler so worker logs flow to the same
+Valkey backend it consumes tasks from: `_ensure_logging_handler()`
+(`valkey/worker.py:284-306`) lazily builds
+`AsyncValkeyHandler(stream_name=self._log_stream_name, valkey_config=...)` and
+registers it via `LoggingLifecycle.register_logger_handler`. `MqttWorker`
+provides the same parity, using the `AsyncMqttHandler` that `scietex.logging`
+already ships.
+
+**Handler.** `AsyncMqttHandler` (`scietex/logging/handler/mqtt.py:18`),
+constructor:
+
+```python
+AsyncMqttHandler(
+    topic: str,
+    *,
+    mqtt_config: dict | None = None,
+    qos: int = 0,
+    retain: bool = False,
+    client: aiomqtt.Client | None = None,
+    error_handler: Callable[[logging.LogRecord | None, Exception], None] | None = None,
+    queue_maxsize: int = 10000,
+)
+```
+
+It is an `AsyncLoggingHandler`, so it plugs into the existing
+`LoggingLifecycle` start/stop machinery unchanged.
+
+**Wiring.** `MqttWorker._ensure_logging_handler()` mirrors the Valkey method:
+
+1. Return the cached handler if already built.
+2. Return `None` if `_mqtt_config` is unresolved (deferred config, AR-066).
+3. Build `AsyncMqttHandler(topic=self._log_topic, mqtt_config=logging_handler_config(config), qos=..., retain=...)`.
+4. `self._logging_lifecycle.register_logger_handler(handler)`.
+5. Return the handler.
+
+It is called from `initialize()` after a successful connect (mirroring
+`_connect_locked`'s post-PING `start_logging()`), and the handler is stopped in
+`cleanup()` before `disconnect()`.
+
+**Connection ownership.** The handler owns its own MQTT connection by default
+(no `client=` passed), matching the `AsyncValkeyHandler` pattern (AR-059/061):
+the log path must not be torn down by a task-transport reconnect, and a
+logging failure must never fail task processing. Passing the worker's client
+via `client=` is possible but rejected as the default for exactly that reason.
+
+**Config.** `MqttWorkerConfig` gains `log_topic: str = "scietex/{service}/log"`
+(the analogue of `log_stream_name`), plus optional `log_qos: int = 0` and
+`log_retain: bool = False`. The `logging_handler_config(config)` helper in
+`mqtt/logging.py` reduces the typed `MqttConfig` to the scalar dict
+`AsyncMqttHandler` expects — the direct analogue of
+`valkey/config.py:461-489`.
 
 ---
 
@@ -250,6 +307,9 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     inbox_backend: Literal["valkey", "file", "none"] = "valkey"
     inbox_ttl: int | None = None
     task_tracking_ttl: int | None = None
+    log_topic: str = "scietex/{service}/log"
+    log_qos: int = 0
+    log_retain: bool = False
 ```
 
 `__post_init__` calls `super().__post_init__()` then `validate_range` on the
@@ -322,6 +382,9 @@ Mirror the Valkey test layout under `tests/mqtt/`:
 - `tests/mqtt/test_inbox.py` — put/recover/dedupe/terminal semantics.
 - `tests/mqtt/test_worker.py` — composition, lifecycle overrides, heartbeat,
   registry.
+- `tests/mqtt/test_logging.py` — `_ensure_logging_handler` builds and registers
+  an `AsyncMqttHandler`; `logging_handler_config` translation; start/stop via
+  `LoggingLifecycle`.
 - `tests/mqtt/test_config.py` — `MqttWorkerConfig` validation and the loader.
 - `tests/mqtt/test_health.py` — if `TransportHealth` is hoisted, the existing
   tests move to `tests/test_health.py` (core).
@@ -333,9 +396,11 @@ but optional; the unit tests must not require a broker.
 
 ## 9. Documentation updates
 
-- `docs/mqtt_worker.md` — new usage guide, mirroring `docs/valkey_worker.md`.
+- `docs/mqtt_worker.md` — new usage guide, mirroring `docs/valkey_worker.md`,
+  including the logging-to-MQTT section.
 - `docs/architecture/structure.md` — add the `mqtt/` package layout.
-- `docs/architecture/components.md` — add the MQTT component sections.
+- `docs/architecture/components.md` — add the MQTT component sections
+  (transport, inbox, log handler).
 - `docs/architecture/overview.md` — add MQTT to the transport table.
 - `docs/architecture/dependencies.md` — add the `mqtt` extra and its imports.
 - `docs/ROADMAP.md` — record the v4.4.0 MQTT transport.
@@ -356,13 +421,17 @@ but optional; the unit tests must not require a broker.
    (§2.3)
 6. **Protocol version** — target MQTT 5 only, or support 3.1.1 too? This
    determines the task-id mechanism and the available features.
+7. **Log-handler connection** — own connection (recommended, §2.4) or share the
+   worker's client? Own connection isolates the log path from task-transport
+   reconnects but doubles the broker connections.
 
 ---
 
 ## 11. Effort estimate
 
 **Medium–Large (several days).** The transport itself is mechanical (mirroring
-`ValkeyTransport`), but the durable inbox is genuinely new state with its own
-correctness argument, and the `TransportHealth` hoist touches existing code and
-tests. The design should be reviewed and the open questions resolved before
-implementation begins.
+`ValkeyTransport`), and the logging wiring (§2.4) is a small addition that
+reuses the existing `AsyncMqttHandler`. The durable inbox is genuinely new state
+with its own correctness argument, and the `TransportHealth` hoist touches
+existing code and tests. The design should be reviewed and the open questions
+resolved before implementation begins.
