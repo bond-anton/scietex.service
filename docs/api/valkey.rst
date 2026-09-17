@@ -18,3 +18,4 @@ configuration structs. Requires the ``valkey`` extra.
 .. autoclass:: scietex.service.valkey.ValkeyConfig
 .. autoclass:: scietex.service.valkey.ValkeyWorkerConfig
 .. autofunction:: scietex.service.valkey.purge_task_stream
+.. autoclass:: scietex.service.valkey.PurgeResult

@@ -19,6 +19,8 @@ Public exports:
     - :class:`ValkeyUserCredentials` — Authentication credentials.
     - :class:`ValkeyBackoffStrategy` — Reconnection backoff settings.
     - :class:`ValkeyTlsAdvancedConfiguration` — TLS settings.
+    - :class:`PurgeResult` — Outcome of :func:`purge_task_stream` (entries
+      purged and any errors).
     - :func:`purge_task_stream` — Standalone task-stream purge utility.
 
 The YAML loader (:func:`read_valkey_config`) and the schema-to-glide converter
@@ -37,7 +39,7 @@ from .config import (
     ValkeyUserCredentials,
     ValkeyWorkerConfig,
 )
-from .purge import purge_task_stream
+from .purge import PurgeResult, purge_task_stream
 from .worker import ValkeyWorker
 
 __all__ = [
@@ -51,5 +53,6 @@ __all__ = [
     "ValkeyConfig",
     "ValkeyWorkerConfig",
     "ValkeyWorker",
+    "PurgeResult",
     "purge_task_stream",
 ]

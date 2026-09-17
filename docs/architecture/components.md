@@ -570,10 +570,12 @@ reads, acknowledges, and deletes every entry so an operator can clear a stream
 without running a worker. Independent of `ValkeyWorker` (AR-043: moved off the
 worker class, which previously carried it as dead code).
 
-**Main symbols:** `purge_task_stream(client, stream_name, group_name,
-consumer_name, logger=None)` (22) — orchestrates the purge; private helpers
-`_purge_group_entries` (60, `XREADGROUP` + `XACK` + `XDEL` loop), `_purge_stream_entries`
-(82, `XREAD` + `XDEL` loop), `_stream_entry_ids` (96).
+**Main symbols:** `PurgeResult` (23, frozen dataclass: `entries_purged` count and
+`errors` tuple), `purge_task_stream(client, stream_name, group_name,
+consumer_name, logger=None)` (37) — orchestrates the purge and returns a
+`PurgeResult`; private helpers `_purge_group_entries` (80, `XREADGROUP` + `XACK`
++ `XDEL` loop, returns `int` count), `_purge_stream_entries`
+(107, `XREAD` + `XDEL` loop, returns `int` count), `_stream_entry_ids` (126).
 
 **Dependencies:** none at runtime (`GlideClient` imported only under
 `TYPE_CHECKING`); the caller supplies an open client. **Depended on by:**

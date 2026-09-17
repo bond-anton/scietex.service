@@ -48,7 +48,7 @@ Layout of the repository and the Python package.
 | `utils/__init__.py` | Re-exports `prepare_conf_dir`, `print_scietex_logo` |
 | `utils/config.py` | `prepare_conf_dir()` + `_resolve_xdg_path()` config-dir search |
 | `utils/logo.py` | ASCII `LOGO` template and `print_scietex_logo()` |
-| `valkey/__init__.py` | Re-exports `ValkeyWorker`, config types, and `purge_task_stream` from the sibling modules |
+| `valkey/__init__.py` | Re-exports `ValkeyWorker`, config types, and `purge_task_stream`/`PurgeResult` from the sibling modules |
 | `valkey/_glide.py` | Private module — the single guarded `from glide import (...)` re-exporting the full union of glide names used by the valkey package (incl. aliases `GlideConnectionError`, `GlideTimeoutError`). Importing it raises `ImportError` with an install hint when `valkey-glide` is absent (AR-048) |
 | `valkey/config.py` | Typed config structs (`ValkeyConfig`, `ValkeyBaseConfig`, `ValkeyPubSubConfig`, ...) + `ValkeyWorkerConfig` (worker-level config struct extending `TaskProcessorConfig`, incl. `claim_min_idle_ms` and `task_lease_ttl`, AR-062/AR-077) + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports its `glide` names from `valkey/_glide.py` (the single guarded import, AR-048) |
 | `valkey/worker.py` | `ValkeyWorker(TaskProcessor)` + stream/connection logic. Composes a `ValkeyTransport` (assigned to `self._transport`) and the `TransportHealth`/`TaskLeaseManager`/`TaskStatusStore` collaborators; exposes `client_factory=` (AR-074), `transport_health`, and `valkey_config`. Imports its `glide` names from `valkey/_glide.py` (AR-048); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
@@ -56,7 +56,7 @@ Layout of the repository and the Python package.
 | `valkey/health.py` | `TransportHealth` (AR-075) — connection-health supervisor: aggregates glide failures, owns the single reconnect path (`recover()` with lock dedup + cooldown), and emits one CRITICAL per sustained outage (`critical_report()`). Imports no `glide` types |
 | `valkey/lease.py` | `TaskLeaseManager` (AR-073) — per-entry lease store (`key`/`write`/`acquire`/`delete`/`refresh`) plus `derive_task_lease_ttl()` and the `LEASE_TTL_*`/`MIN_TASK_LEASE_TTL_SECONDS` constants |
 | `valkey/tracking.py` | `TaskStatusStore` (AR-073) — per-task status records (`key`/`record_running`/`record_terminal`/`update_progress`) |
-| `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry); no runtime `glide` import (`TYPE_CHECKING` only), importing `GlideClient` from `valkey/_glide.py` (AR-048) |
+| `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry, returning a `PurgeResult`); no runtime `glide` import (`TYPE_CHECKING` only), importing `GlideClient` from `valkey/_glide.py` (AR-048) |
 | `valkey/schemas.py` | `Heartbeat` msgpack schema |
 
 ## Notable module boundaries

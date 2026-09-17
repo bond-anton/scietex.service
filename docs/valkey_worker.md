@@ -429,12 +429,17 @@ a task stream so an operator can clear it without running a worker.
 ```python
 from scietex.service.valkey import purge_task_stream
 
-await purge_task_stream(client, stream_name, group_name, consumer_name)
+result = await purge_task_stream(client, stream_name, group_name, consumer_name)
+if result.errors:
+    print(f"partial purge: purged {result.entries_purged}, errors: {result.errors}")
 ```
 
 Reads and acknowledges every entry in the stream via `XREADGROUP` (both
 pending and unclaimed), then deletes them with `XDEL`. Also purges any
-remaining entries via `XREAD`. See `src/scietex/service/valkey/purge.py`.
+remaining entries via `XREAD`. Returns a `PurgeResult` (`entries_purged`,
+`errors`); failures are also logged but never raised, so a caller that ignores
+the return value still sees the log output. See
+`src/scietex/service/valkey/purge.py`.
 
 ## Wire Format
 

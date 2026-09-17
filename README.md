@@ -413,7 +413,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `ValkeyBackoffStrategy` | Reconnection backoff config |
 | `ValkeyTlsAdvancedConfiguration` | TLS settings |
 | `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |
-| `purge_task_stream` | Standalone operational utility to purge a task stream |
+| `purge_task_stream` | Standalone operational utility to purge a task stream (returns a `PurgeResult` with counts and errors) |
 
 ## Development
 
