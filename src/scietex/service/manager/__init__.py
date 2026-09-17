@@ -26,11 +26,11 @@ class ManagerStatus(Enum):
 class Manager:
     """Class-based decorator that wraps an async method into a managed loop.
 
-    When applied to an async method, the method becomes a manager loop
-    that runs indefinitely until cancelled. The parent ``BasicWorker``
-    iterates over all ``Manager`` instances recorded on the class and its
-    MRO (via the ``MANAGER_REGISTRY_ATTR`` registry) and executes them as
-    ``asyncio.Task`` objects with automatic restart on error.
+    When applied to an async method, the method is registered as a manager
+    body that ``ManagerRuntime`` runs repeatedly until cancelled. The parent
+    ``BasicWorker`` iterates over all ``Manager`` instances recorded on the
+    class and its MRO (via the ``MANAGER_REGISTRY_ATTR`` registry) and
+    executes them as ``asyncio.Task`` objects with automatic restart on error.
 
     Args:
         name: Human-readable name for the manager. Required; must be a

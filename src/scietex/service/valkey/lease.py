@@ -100,8 +100,9 @@ class TaskLeaseManager:
 
         Uses ``SET ... NX`` so that when two replicas run startup recovery
         concurrently, exactly one wins the claim and the other defers. Returns
-        ``True`` when this worker now holds the lease (including when it already
-        held it), ``False`` when another holder owns it.
+        ``True`` when this worker claimed the lease, ``False`` when the key
+        already exists — whether another holder owns it or this worker already
+        holds it.
         """
         client = self._client_provider()
         if client is None:

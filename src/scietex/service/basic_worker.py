@@ -203,8 +203,9 @@ class BasicWorker:
         """Resolved configuration directory path (read-only).
 
         The directory is determined by the precedence rules:
-        ``conf_dir`` argument, ``~/.config/scietex/``, ``/etc/scietex/``,
-        ``/usr/local/etc/scietex/``, or ``./config/`` (CWD).
+        ``conf_dir`` argument, ``SCIETEX_CONFIG_DIR``, ``$XDG_CONFIG_HOME/scietex``,
+        ``~/.config/scietex/``, ``/etc/scietex/``, ``/usr/local/etc/scietex/``,
+        or ``./config/`` (CWD).
 
         Returns:
             The ``Path`` object pointing to the configuration directory.
@@ -259,8 +260,8 @@ class BasicWorker:
 
         A ``None`` configuration value resolves to
         ``DEFAULT_MANAGER_RESTART_BACKOFF``; a non-``None`` value is validated
-        against         ``[MIN_MANAGER_RESTART_BACKOFF, MAX_MANAGER_RESTART_BACKOFF]`` at
-        construction. Resolution happens eagerly in ``__init__`` (AR-080).
+        against ``[MIN_MANAGER_RESTART_BACKOFF, MAX_MANAGER_RESTART_BACKOFF]``
+        at construction. Resolution happens eagerly in ``__init__`` (AR-080).
 
         Returns:
             The current backoff delay in seconds.
@@ -405,8 +406,9 @@ class BasicWorker:
         first immediate heartbeat is not skipped (AR-049).
 
         Raises:
-            asyncio.CancelledError: If the startup process is cancelled
-            RuntimeError: If initialization fails
+            asyncio.CancelledError: If the startup process is cancelled. A
+                failed ``initialize()`` is handled internally (the worker is
+                stopped) rather than propagated.
         """
         try:
             if self._lifecycle.state != ServiceStatus.STOPPED:
@@ -537,9 +539,10 @@ class BasicWorker:
         """
         Request a graceful shutdown of the worker.
 
-        If the worker is stopped or already stopping, clears the exit events
-        and returns. Otherwise, creates a task to execute the full shutdown
-        sequence (stop managers, cleanup, shut down loggers).
+        If the worker is stopped or already stopping, returns after setting the
+        ``exit`` event when an exit was requested (and clearing
+        ``exit_requested``). Otherwise, creates a task to execute the full
+        shutdown sequence (stop managers, cleanup, shut down loggers).
 
         Note:
             This method is automatically called when SIGINT or SIGTERM is received.
@@ -649,20 +652,20 @@ class BasicWorker:
 
 
 async def _heartbeat_manager(worker: BasicWorker) -> None:
-    """Manager loop that periodically invokes ``worker.heartbeat()``.
+    """Manager body that invokes ``worker.heartbeat()`` once.
 
     Calls ``heartbeat()`` immediately, then sleeps for ``heartbeat_interval``
-    seconds. Repeats indefinitely until cancelled.
+    seconds. ``ManagerRuntime.run_manager`` repeats this body until cancelled.
     """
     await worker.heartbeat()
     await asyncio.sleep(worker.heartbeat_interval)
 
 
 async def _watchdog_manager(worker: BasicWorker) -> None:
-    """Manager loop that periodically invokes ``worker.watchdog()``.
+    """Manager body that invokes ``worker.watchdog()`` once.
 
     Calls ``watchdog()`` immediately, then sleeps for ``watchdog_interval``
-    seconds. Repeats indefinitely until cancelled.
+    seconds. ``ManagerRuntime.run_manager`` repeats this body until cancelled.
     """
     await worker.watchdog()
     await asyncio.sleep(worker.watchdog_interval)

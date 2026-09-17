@@ -61,8 +61,8 @@ class TaskProcessor(BasicWorker):
         instance_id (str): Unique identifier for this worker instance (read-only).
         version (str): Version string of the service (read-only).
         logger (logging.Logger): Logger instance for the worker.
-        logging_level (int): Current logging level (configurable).
-        task_handlers_map (dict): Registered task type to handler mappings.
+        logging_level (int): Current logging level (read-only).
+        task_handlers (dict): Active handler key to handler instance mappings.
         queue_size (int): Maximum size of the internal task queue.
         max_concurrent_tasks (int): Maximum concurrent task count.
     """
@@ -147,8 +147,10 @@ class TaskProcessor(BasicWorker):
     def task_handlers(self) -> Mapping[str, TaskHandler]:
         """Dictionary of currently active (started) task handlers.
 
-        Keys are handler class names and values are the corresponding
-        ``TaskHandler`` instances that have been initialized.
+        Keys are the resolved handler keys — the ``name`` passed to
+        ``add_task_handler`` when given, otherwise the handler class name —
+        and values are the corresponding ``TaskHandler`` instances that have
+        been initialized.
 
         Returns:
             A read-only mapping view of the active task handlers.
@@ -399,10 +401,11 @@ class TaskProcessor(BasicWorker):
             self.logger.log(logging.INFO, "Removed handler: %s", handler_name)
 
     def _find_task_handler(self, task: str) -> TaskHandler | None:
-        """Find a registered handler that supports the given task type.
+        """Find an active handler that supports the given task type.
 
-        Iterates over all registered task handlers and returns the first
-        one whose ``supports(task_type)`` method returns ``True``.
+        Iterates over the active (started) task handlers and returns the first
+        one whose ``supports(task_type)`` method returns ``True``. A handler
+        that is registered but not yet started is not searched.
 
         Args:
             task: The task type string to look up.
@@ -422,7 +425,7 @@ class TaskProcessor(BasicWorker):
         Subclasses should override this method to implement the specific
         logic for re-queueing tasks when they cannot be processed or
         need to be retried (e.g., writing back to a message queue). The
-        default is a no-op.
+        default delegates to the transport's ``requeue`` hook.
 
         Args:
             task_id: The unique identifier of the task.
@@ -530,10 +533,9 @@ class TaskProcessor(BasicWorker):
         Called by ``handle_task`` when a task's work ends — on success, on
         a terminal error, or on cancellation — with the final
         ``TaskResult``, or ``None`` when the task was cancelled before
-        producing a result. Subclasses that source tasks from a durable
-        transport (e.g. ``ValkeyWorker``) override this to acknowledge the
-        transport entry so it is removed only after the handler's work on
-        it is done (at-least-once). The default is a no-op.
+        producing a result. The default delegates to the transport's ``ack``
+        hook, which acknowledges the transport entry so it is removed only
+        after the handler's work on it is done (at-least-once).
 
         Args:
             task_id: Identifier of the task.
@@ -549,16 +551,16 @@ class TaskProcessor(BasicWorker):
     async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
         """Hook invoked when a task begins processing.
 
-        Default is a no-op. Transports override this to publish a ``running``
-        tracking record.
+        The default delegates to the transport's ``on_started`` hook, which
+        publishes a ``running`` tracking record.
         """
         await self._transport.on_started(task_id, task_data)
 
     async def _write_task_progress(self, task_id: UUID, value: float) -> None:
         """Hook invoked when a handler reports granular progress.
 
-        Default is a no-op. Transports override this to update the tracking
-        record.
+        The default delegates to the transport's ``on_progress`` hook, which
+        updates the tracking record.
         """
         await self._transport.on_progress(task_id, value)
 
@@ -801,8 +803,8 @@ class TaskProcessor(BasicWorker):
         Override this method in subclasses to implement the specific
         logic for retrieving tasks from external sources such as message
         queues, databases, or APIs, and enqueuing them via
-        ``enqueue_task()`` as ``(UUID, TaskData)`` tuples. The default is
-        a no-op.
+        ``enqueue_task()`` as ``(UUID, TaskData)`` tuples. The default
+        delegates to the transport's ``fetch`` hook.
 
         Returns:
             ``True`` if at least one task was enqueued, ``False`` otherwise.

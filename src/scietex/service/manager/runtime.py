@@ -142,8 +142,9 @@ class ManagerRuntime:
         Runs the manager's method in a loop. On cancellation the manager
         stops cleanly. On any other exception the error is recorded and the
         manager is retried after a backoff delay, up to
-        ``manager_max_retries`` consecutive failures, after which it gives
-        up. The retry happens inside this same task, so the manager never
+        ``manager_max_retries`` consecutive retries (i.e. it gives up after
+        ``manager_max_retries + 1`` consecutive failures). The retry happens
+        inside this same task, so the manager never
         cancels itself (which previously deadlocked the restart). The
         finally block runs cleanup, marks the manager STOPPED (or FAILED if
         it gave up), and removes the task from internal tracking.

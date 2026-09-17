@@ -506,8 +506,8 @@ class ValkeyWorker(TaskProcessor):
         continue). The registry set is the enumeration index; liveness is the
         status-key TTL refreshed by heartbeat(), so a stale member left by a
         crashed replica is tolerated (the operator probes each member's
-        status key). Only glide connection errors are swallowed; other
-        exceptions propagate.
+        status key). Only glide connection, request, and timeout errors are
+        swallowed; other exceptions propagate.
         """
         client = self.client
         if client is None:
@@ -529,8 +529,8 @@ class ValkeyWorker(TaskProcessor):
 
         Best-effort: a failed SREM must not fail shutdown (log WARNING and
         continue). Called by _shutdown() before cleanup() disconnects the
-        client, so the client is still open here. Only glide connection
-        errors are swallowed; other exceptions propagate.
+        client, so the client is still open here. Only glide connection,
+        request, and timeout errors are swallowed; other exceptions propagate.
         """
         client = self.client
         if client is None:

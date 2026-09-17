@@ -3,10 +3,10 @@
 Every glide failure site reports through :meth:`TransportHealth.report_failure`
 (synchronous, non-blocking), which marks the connection degraded and requests a
 reconnect. :meth:`TransportHealth.recover` is the single place a reconnect is
-actually attempted: the heartbeat manager, the watchdog manager, and
-``ValkeyTransport.fetch`` all funnel into it, so a burst of concurrent failures
-still produces exactly one reconnect attempt, gated by a cooldown to prevent
-storms (e.g. ``lease.refresh`` looping over N tasks).
+actually attempted: ``ValkeyWorker.watchdog`` and ``ValkeyTransport.fetch``
+both funnel into it, so a burst of concurrent failures still produces exactly
+one reconnect attempt, gated by a cooldown to prevent storms (e.g.
+``lease.refresh`` looping over N tasks).
 
 This module deliberately imports no ``glide`` types: a failure is unclassified
 and every reported error requests a reconnect, with the cooldown — not error
