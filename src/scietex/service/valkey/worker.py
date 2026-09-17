@@ -34,6 +34,7 @@ from .config import (
     ValkeyConfig,
     ValkeyWorkerConfig,
     generate_glide_config,
+    logging_handler_config,
     read_valkey_config,
 )
 from .health import TransportHealth
@@ -46,37 +47,6 @@ from .transport import ValkeyTransport
 # awaiting this callable with the resolved GlideClientConfiguration, so tests
 # and embedders can supply a fake or externally-built client.
 ClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]
-
-
-def _logging_handler_config(valkey_config: ValkeyConfig) -> dict:
-    """Translate a typed ``ValkeyConfig`` into the logging handler's config dict.
-
-    The external :class:`~scietex.logging.AsyncValkeyHandler` builds its own
-    connection from a plain ``dict`` of scalar ``GlideClientConfiguration``
-    options passed via ``valkey_config=``. That dict schema does not model
-    ``read_from``, ``protocol``, or ``backoff_strategy`` (the handler applies
-    its own autonomous reconnect/backoff), so only the scalar address,
-    credential, TLS, and timeout fields are translated.
-
-    This and :func:`generate_glide_config` are the two translations of the same
-    single input form: both derive from one ``ValkeyConfig`` — this produces a
-    reduced scalar view for the logging handler, the other the full
-    ``GlideClientConfiguration`` for the operational client.
-    """
-    base = valkey_config.base_config
-    credentials = base.user_credentials
-    return {
-        "addresses": [(node.host, node.port) for node in base.nodes],
-        "username": credentials.username if credentials is not None else None,
-        "password": credentials.password if credentials is not None else None,
-        "use_tls": base.use_tls,
-        "request_timeout": base.request_timeout,
-        "database_id": base.database_id,
-        "client_name": base.client_name,
-        "inflight_requests_limit": base.inflight_requests_limit,
-        "client_az": base.client_az,
-        "lazy_connect": base.lazy_connect,
-    }
 
 
 class ValkeyWorker(TaskProcessor):
@@ -330,7 +300,7 @@ class ValkeyWorker(TaskProcessor):
             return None
         self._valkey_logger_handler = AsyncValkeyHandler(
             stream_name=self._log_stream_name,
-            valkey_config=_logging_handler_config(config),
+            valkey_config=logging_handler_config(config),
         )
         self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler)
         return self._valkey_logger_handler

@@ -10,8 +10,8 @@ from scietex.service.valkey.config import (
     ValkeyPubSubConfig,
     ValkeyUserCredentials,
     ValkeyWorkerConfig,
+    logging_handler_config,
 )
-from scietex.service.valkey.worker import _logging_handler_config
 
 from ._helpers import DummyClient, FakeHandler, _patch_glide_and_handler
 
@@ -44,7 +44,7 @@ async def test_logging_handler_owns_its_own_connection(monkeypatch):
 @pytest.mark.asyncio
 async def test_logging_handler_ignores_pubsub_listening(monkeypatch):
     """A pubsub-listening ValkeyConfig still yields a handler built by
-    _logging_handler_config; listening does not leak into the logging handler."""
+    logging_handler_config; listening does not leak into the logging handler."""
 
     async def factory(cfg):
         return DummyClient(ping_ok=True)
@@ -68,7 +68,7 @@ async def test_logging_handler_ignores_pubsub_listening(monkeypatch):
 
 
 def test_logging_handler_config_translates_typed_config():
-    """_logging_handler_config maps a typed ValkeyConfig onto the external
+    """logging_handler_config maps a typed ValkeyConfig onto the external
     handler's scalar dict schema (addresses + credentials + TLS + timeouts)."""
     cfg = ValkeyConfig(
         base_config=ValkeyBaseConfig(
@@ -80,7 +80,7 @@ def test_logging_handler_config_translates_typed_config():
             client_name="logger",
         )
     )
-    assert _logging_handler_config(cfg) == {
+    assert logging_handler_config(cfg) == {
         "addresses": [("redis.internal", 6380)],
         "username": "svc",
         "password": "secret",

@@ -397,7 +397,7 @@ Connection ownership (AR-059/061): the worker runs one operational
 sequences behind `_client_lock`, and intake reconnects only on glide
 errors. The logging handler is an independent owner: `_ensure_logging_handler`
 constructs `AsyncValkeyHandler` with `valkey_config=` (a scalar dict
-translated from the typed config by `_logging_handler_config`) from the typed
+translated from the typed config by `logging_handler_config`) from the typed
 `ValkeyConfig`, so the handler builds/closes/reconnects its own
 connection and the worker never touches `handler.client` (AR-076/AR-085
 removed the raw-`GlideClientConfiguration` fallback).

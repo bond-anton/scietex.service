@@ -456,3 +456,34 @@ def generate_glide_config(
         pubsub_subscriptions=pubsub_subscriptions,
     )
     return client_config
+
+
+def logging_handler_config(valkey_config: ValkeyConfig) -> dict:
+    """Translate a typed ``ValkeyConfig`` into the logging handler's config dict.
+
+    The external :class:`~scietex.logging.AsyncValkeyHandler` builds its own
+    connection from a plain ``dict`` of scalar ``GlideClientConfiguration``
+    options passed via ``valkey_config=``. That dict schema does not model
+    ``read_from``, ``protocol``, or ``backoff_strategy`` (the handler applies
+    its own autonomous reconnect/backoff), so only the scalar address,
+    credential, TLS, and timeout fields are translated.
+
+    This and :func:`generate_glide_config` are the two translations of the same
+    single input form: both derive from one ``ValkeyConfig`` — this produces a
+    reduced scalar view for the logging handler, the other the full
+    ``GlideClientConfiguration`` for the operational client.
+    """
+    base = valkey_config.base_config
+    credentials = base.user_credentials
+    return {
+        "addresses": [(node.host, node.port) for node in base.nodes],
+        "username": credentials.username if credentials is not None else None,
+        "password": credentials.password if credentials is not None else None,
+        "use_tls": base.use_tls,
+        "request_timeout": base.request_timeout,
+        "database_id": base.database_id,
+        "client_name": base.client_name,
+        "inflight_requests_limit": base.inflight_requests_limit,
+        "client_az": base.client_az,
+        "lazy_connect": base.lazy_connect,
+    }

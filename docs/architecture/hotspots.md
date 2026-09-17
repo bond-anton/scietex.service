@@ -169,7 +169,7 @@ two domains with proper ownership: the worker's operational client (heartbeat,
 registry, intake, task completion) is serialized behind `_client_lock` (177)
 with a glide-error-only reconnect, and the logging `AsyncValkeyHandler` owns its
 own independent connection via `valkey_config=` (a scalar dict from
-`_logging_handler_config`, 56), so the worker no longer injects or re-points
+`logging_handler_config`), so the worker no longer injects or re-points
 `handler.client`.
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
