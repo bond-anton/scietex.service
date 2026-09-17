@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from ..task_handler.schemas import CancelReason, TaskData, TaskResult
-from ..task_handler.wire import decode_task_envelope, encode_task_envelope
+from ..task_handler.wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
 from ..transport import TaskSink
 from ._glide import (
     ClientProvider,
@@ -120,7 +120,12 @@ class ValkeyTransport:
                                 continue
                             task_data = decode_task_envelope(payload_bytes)
                             if task_data is None:
-                                self._logger.error("Failed to decode task envelope for %s", task_id)
+                                version = decode_task_envelope_version(payload_bytes)
+                                self._logger.error(
+                                    "Failed to decode task envelope for %s (version=%s)",
+                                    task_id,
+                                    version if version is not None else "malformed",
+                                )
                                 continue
                             if not sink.enqueue_task(UUID(task_id), task_data):
                                 # Queue is full; leave the stream entry pending
@@ -194,7 +199,12 @@ class ValkeyTransport:
                         task_id = field.decode("utf-8") if isinstance(field, bytes) else field
                         task_data = decode_task_envelope(payload_bytes)
                         if task_data is None:
-                            self._logger.error("Failed to decode recovered task envelope for %s", task_id)
+                            version = decode_task_envelope_version(payload_bytes)
+                            self._logger.error(
+                                "Failed to decode recovered task envelope for %s (version=%s)",
+                                task_id,
+                                version if version is not None else "malformed",
+                            )
                             continue
                         uuid = UUID(task_id)
                         if uuid in self._entry_ids:

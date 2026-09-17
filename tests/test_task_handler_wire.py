@@ -3,7 +3,11 @@
 import msgspec
 
 from scietex.service.task_handler.schemas import TaskData, TaskEnvelope
-from scietex.service.task_handler.wire import decode_task_envelope, encode_task_envelope
+from scietex.service.task_handler.wire import (
+    decode_task_envelope,
+    decode_task_envelope_version,
+    encode_task_envelope,
+)
 
 
 def test_encode_decode_roundtrip():
@@ -26,3 +30,21 @@ def test_unknown_version_returns_none():
 def test_garbage_bytes_returns_none():
     """Non-msgpack bytes must decode to None without raising."""
     assert decode_task_envelope(b"not-msgpack") is None
+
+
+def test_decode_task_envelope_version_distinguishes_unknown_from_malformed():
+    """The version peek reports the envelope version for a well-formed payload
+    and None for a malformed one, so transports can tell an unsupported version
+    from a corrupt payload (AR-098)."""
+    envelope = TaskEnvelope(version=99, data=msgspec.msgpack.encode(TaskData(task="x")))
+    encoded = msgspec.msgpack.encode(envelope)
+
+    assert decode_task_envelope_version(encoded) == 99
+    assert decode_task_envelope_version(b"not-msgpack") is None
+
+
+def test_decode_task_envelope_version_reports_supported_version():
+    """A v1 envelope reports version 1."""
+    encoded = encode_task_envelope(TaskData(task="send_email"))
+
+    assert decode_task_envelope_version(encoded) == 1

@@ -45,3 +45,23 @@ def decode_task_envelope(payload: bytes) -> TaskData | None:
         return None  # unknown version
     except msgspec.DecodeError:
         return None
+
+
+def decode_task_envelope_version(payload: bytes) -> int | None:
+    """Return the wire-format version of an envelope, or ``None`` if malformed.
+
+    Used by transports to distinguish "unsupported version" from "corrupt"
+    when :func:`decode_task_envelope` returns ``None`` (AR-098).
+
+    Args:
+        payload: The msgpack-encoded envelope bytes read from the transport.
+
+    Returns:
+        The envelope's version, or ``None`` when the payload is not a valid
+        envelope.
+    """
+    try:
+        envelope = msgspec.msgpack.decode(payload, type=TaskEnvelope)
+        return envelope.version
+    except msgspec.DecodeError:
+        return None

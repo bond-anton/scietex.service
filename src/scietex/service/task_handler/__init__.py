@@ -30,7 +30,7 @@ from .schemas import (
     TaskStatus,
     TaskTimeout,
 )
-from .wire import decode_task_envelope, encode_task_envelope
+from .wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
 
 __all__ = [
     "CANCEL_TASK_TYPE",
@@ -51,5 +51,6 @@ __all__ = [
     "TaskTimeout",
     "TaskTracker",
     "decode_task_envelope",
+    "decode_task_envelope_version",
     "encode_task_envelope",
 ]
