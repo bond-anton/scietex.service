@@ -518,6 +518,14 @@ per down episode past the threshold).
 glide import**. **Depended on by:** `ValkeyWorker` (exposed via
 `transport_health`), `ValkeyTransport`, `TaskLeaseManager`, `TaskStatusStore`.
 
+**Layering (AR-089):** `TransportHealth` is deliberately transport-agnostic —
+it takes only injected callables and knows nothing about Valkey. It lives under
+`valkey/` because the Valkey transport is currently the only transport, not
+because it is Valkey-specific. When a second transport is added, it should be
+hoisted to core (alongside the `TaskTransport`/`TaskSink` Protocols in
+`transport.py`) so the new transport can reuse it without a feature→feature
+dependency.
+
 ## 14. Valkey task lease — `valkey/lease.py`
 
 **File:** `src/scietex/service/valkey/lease.py`
