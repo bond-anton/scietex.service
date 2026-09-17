@@ -577,11 +577,11 @@ class BasicWorker:
             asyncio.create_task(self._shutdown(), name="Stop")
 
     async def exit(self):
-        """Request exit and wait for the worker to fully stop.
+        """Request exit, set ``exit_requested``, and trigger shutdown via ``stop()``.
 
-        Sets the ``exit_requested`` event and triggers a graceful shutdown
-        via ``stop()``. The caller should await ``events["exit"].wait()``
-        to confirm the worker has fully stopped.
+        Returns immediately: ``stop()`` only spawns the shutdown task, so this
+        method does not wait for the worker to stop. Await
+        ``events["exit"].wait()`` to confirm the worker has fully stopped.
         """
         self._lifecycle.events["exit_requested"].set()
         await self.stop()

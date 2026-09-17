@@ -92,7 +92,8 @@ method:
 4. Calls `cleanup()` (subclass override point)
 5. Shuts down logging handlers with a timeout
 6. Clears `start_time` and transitions to `STOPPED`
-7. Sets the `exit` event to signal completion
+7. Sets the `exit` event **only if** an exit was requested (via `exit()` or a
+   signal), clearing `exit_requested` at the same time
 
 ## ServiceStatus
 
@@ -470,7 +471,7 @@ Use the `events` dictionary to coordinate with external code:
 ```python
 await worker.start()
 
-# Wait for full startup
+# Wait for an exit request (set by exit() or a signal)
 await asyncio.wait_for(worker.events["exit_requested"].wait(), timeout=5.0)
 
 # Or wait for clean shutdown

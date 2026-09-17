@@ -252,3 +252,53 @@ async def test_first_heartbeat_fires_promptly():
             break
         await asyncio.sleep(0.05)
     assert worker.state == ServiceStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_stop_alone_does_not_set_exit_event():
+    """A bare stop() runs the full shutdown but must not set the exit event (AR-092).
+
+    The exit event is set only when an exit was requested, so
+    ``await worker.stop(); await worker.events["exit"].wait()`` would hang.
+    """
+    worker = BasicWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
+
+    await worker.start()
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
+
+    await worker.stop()
+    for _ in range(50):
+        if worker.state == ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.05)
+
+    assert worker.state == ServiceStatus.STOPPED
+    assert not worker.events["exit"].is_set()
+    assert not worker.events["exit_requested"].is_set()
+
+
+@pytest.mark.asyncio
+async def test_exit_sets_exit_event_from_running():
+    """exit() from RUNNING must set the exit event and clear exit_requested (AR-092)."""
+    worker = BasicWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
+
+    await worker.start()
+    for _ in range(50):
+        if worker.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.05)
+    assert worker.state == ServiceStatus.RUNNING
+
+    await worker.exit()
+    for _ in range(50):
+        if worker.events["exit"].is_set():
+            break
+        await asyncio.sleep(0.05)
+
+    assert worker.events["exit"].is_set()
+    assert worker.state == ServiceStatus.STOPPED
+    assert not worker.events["exit_requested"].is_set()

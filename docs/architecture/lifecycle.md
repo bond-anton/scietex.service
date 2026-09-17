@@ -217,6 +217,33 @@ from a timeout. The task manager consumes the reason with
 | Logging `AsyncValkeyHandler` worker loop | worker (via `LoggingLifecycle`) | `connect()` → `handler.start_logging()` | shutdown (`stop_logging`) |
 | Signal handlers (SIGINT/SIGTERM) | loop, owned by the last worker to call `setup()` (via `SignalHandler`'s weak-key registry) | `start()` (`_setup_signal_handlers` → `SignalHandler.setup()`) | `stop()` (`_remove_signal_handlers` → `SignalHandler.remove()`, no-op unless owner) |
 
-`UNKNOWN` — explicit process-exit path when a worker stops without a signal
-(e.g. plain `stop()` from user code): the loop is not closed by the library;
-consumer must manage loop/process exit.
+## Exit contract
+
+The `exit` event is set **iff** an exit was requested — by `exit()` or by a
+SIGINT/SIGTERM signal — and `exit_requested` is then cleared. A bare `stop()`
+performs the full graceful shutdown (managers stopped, `_unregister_instance`,
+`cleanup()`, loggers stopped, state `STOPPED`) but deliberately leaves `exit`
+unset: it is the lower-level primitive and does not represent a requested exit.
+Consequently `await worker.stop()` followed by
+`await worker.events["exit"].wait()` **hangs** — this is by design, not a bug.
+
+The canonical programmatic exit is `await worker.exit()`. `exit()` does **not**
+block: it sets `exit_requested` and triggers shutdown via `stop()`, then returns
+immediately. Callers that must wait for the worker to be fully stopped should
+await `worker.events["exit"]` (see `docs/basic_worker.md`, "Stopping").
+
+The library does **not** own loop or process exit. It never registers an
+`atexit`/loop-close hook and never closes the loop. If the loop ends without
+`exit()` or `stop()` — the main coroutine returns or raises, or `sys.exit()` is
+called while the worker is `RUNNING` — `_shutdown()` never runs and worker-level
+cleanup does not happen. The embedder owns process exit and must guarantee
+`exit()`/`stop()` (for example via `try`/`finally`, or by relying on the signal
+path).
+
+| Exit path | `_shutdown` runs? | `cleanup()` / `_unregister_instance()` / log flush | `exit` event |
+|---|---|---|---|
+| SIGINT / SIGTERM | yes | yes | set |
+| `await worker.exit()` | yes | yes | set |
+| `await worker.stop()` | yes | yes | **unset** |
+| loop returns / unhandled exception / `sys.exit()` | **no** | **no — resources leak** | unset |
+| SIGKILL | no (uncatchable) | no | unset |
