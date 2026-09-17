@@ -9,7 +9,7 @@ is a library whose entry point is the consumer's own `main()`.
 
 | Subsystem | Location | Responsibility |
 |---|---|---|
-| Worker core | `src/scietex/service/basic_worker.py` | `BasicWorker`: identity, lifecycle state machine, signal handling (registered in `start()`), startup/shutdown/restart orchestration, default heartbeat/watchdog/cleanup hooks. Delegates manager runtime and logging lifecycle to `ManagerRuntime` / `LoggingLifecycle` |
+| Worker core | `src/scietex/service/basic_worker.py` | `BasicWorker`: identity, startup/shutdown/restart orchestration, default heartbeat/watchdog/cleanup hooks. Composes four components — `ManagerRuntime`, `LoggingLifecycle`, `WorkerLifecycle` (state machine + events), and `SignalHandler` (signal registration/removal) |
 | Manager runtime | `src/scietex/service/manager/runtime.py` | `ManagerRuntime`: discovers `@Manager` methods across the class MRO, runs each as a task with bounded restart-on-error, owns manager status/task/error bookkeeping |
 | Logging lifecycle | `src/scietex/service/log_handlers/lifecycle.py` | `LoggingLifecycle`: async logging-handler registration and start/stop with per-handler status bookkeeping |
 | Manager decorator | `src/scietex/service/manager/__init__.py` | `@Manager` class-decorator and `ManagerStatus`; wraps an async method into a managed loop |
@@ -59,7 +59,7 @@ Interaction notes:
   asyncio tasks are created for periodic/background behavior (manager tasks,
   logger tasks inside handlers). Manager and logging bookkeeping are delegated
   to `ManagerRuntime` and `LoggingLifecycle`, which the worker constructs in
-  `__init__` (basic_worker.py:114-115).
+  `__init__` (basic_worker.py:136-139).
 - **Handlers are invoked by the processor, not by the worker.** Dispatch is
   type-based: first active handler whose `supports(task_type)` returns `True`
   wins.
@@ -103,14 +103,14 @@ asyncio.run(main())  # SIGINT/SIGTERM → exit() → STOPPED
 ```
 
 Two constraints now derive from signal handling in `BasicWorker.start` /
-`stop` (basic_worker.py:459, 548):
+`stop` (basic_worker.py:453, 538):
 
 1. A worker can be constructed **anywhere** — `__init__` no longer calls
    `asyncio.get_running_loop()`; the running loop is only touched in `start()`
    and `stop()`.
 2. Signal handlers (SIGINT/SIGTERM) are registered per instance in `start()`
-   (`_setup_signal_handlers`, 350) and removed in `stop()`
-   (`_remove_signal_handlers`, 380). Registration is a Windows-safe no-op when
+   (`_setup_signal_handlers`, 358) and removed in `stop()`
+   (`_remove_signal_handlers`, 379). Registration is a Windows-safe no-op when
    `loop.add_signal_handler` is unavailable. Because registration happens on
    `start()` rather than construction, the **last started worker in a process**
    owns the signals.
@@ -124,7 +124,7 @@ process/loop:
 |---|---|---|
 | `Start` task → `_startup()` | `BasicWorker.start()` | state → `RUNNING` (or init failure → `stop()`) |
 | `Stop` task → `_shutdown()` | `BasicWorker.stop()` / signal | state → `STOPPED`, `exit` event set |
-| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_worker.py:367, AR-033) | one shutdown; repeat signals short-circuit |
+| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_worker.py:370, AR-033) | one shutdown; repeat signals short-circuit |
 | Manager task `Heartbeat` → `_heartbeat_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `Watchdog` → `_watchdog_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `TaskManager` → `task_manager` (processor only) | `ManagerRuntime.start_managers()` | cancelled on shutdown |

@@ -19,6 +19,10 @@ The worker manages three core subsystems:
   `register_manager()`-registered functions) run as infinite loops with
   automatic restart on error
 
+Internally it composes four components: `ManagerRuntime` (manager execution),
+`LoggingLifecycle` (logging-handler lifecycle), `WorkerLifecycle` (state
+machine + events), and `SignalHandler` (signal registration/removal).
+
 Subclasses should override:
 
 | Method | Type | Description |

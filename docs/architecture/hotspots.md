@@ -26,7 +26,7 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
 | H16 | Resolved | AR-022 — structured error taxonomy fields on `TaskResult` |
-| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:367) |
+| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:370) |
 | H18 | Resolved | AR-070 — removed unused `name` param from `LoggingLifecycle.register_logger_handler` |
 
 ## H1. `BasicWorker` is a large, multi-responsibility class
@@ -109,17 +109,17 @@ restarts the same handler instances. See
   and could not construct workers outside a running loop.
 
 **Resolved (AR-015 + AR-008):** signal handlers are registered in `start()`
-(`_setup_signal_handlers`, basic_worker.py:350, Windows-safe no-op) and
-removed in `stop()` (`_remove_signal_handlers`, 380); `__init__` no longer
+(`_setup_signal_handlers`, basic_worker.py:358, Windows-safe no-op) and
+removed in `stop()` (`_remove_signal_handlers`, 379); `__init__` no longer
 touches the loop, so workers may be constructed outside a running loop.
-`events` (basic_worker.py:150) and `task_handlers`
+`events` (basic_worker.py:160) and `task_handlers`
 (task_processor.py:147) now return read-only `MappingProxyType` views;
-`running_tasks` (159) instead returns a snapshot delegated to `TaskLifecycle`
+`running_tasks` (161) instead returns a snapshot delegated to `TaskLifecycle`
 (AR-088), so callers may iterate it while tasks are added or removed.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 
-- **Location:** `basic_worker.py:501-546` (`_shutdown`).
+- **Location:** `basic_worker.py:491-536` (`_shutdown`).
 - **What:** `_shutdown` has no rollback if it is cancelled mid-way (e.g. during
   `ManagerRuntime.stop_managers()`); its `except asyncio.CancelledError` swallows the
   cancellation without re-raising or forcing STOPPED/`exit`.
@@ -129,7 +129,7 @@ touches the loop, so workers may be constructed outside a running loop.
   timeout-guarded, but an unexpected cancellation path is not.
 
 **Resolved (AR-017):** `_shutdown` (and `_startup`) now catch `CancelledError`,
-call `_force_stopped()` (basic_worker.py:487) — which sets
+call `_force_stopped()` (basic_worker.py:481) — which sets
 `state = STOPPED`, clears `start_time`, and sets the `exit` event if
 `exit_requested` — then re-raise, so a cancelled startup/shutdown always lands
 in a terminal state and the worker can be restarted.
@@ -174,7 +174,7 @@ own independent connection via `valkey_config=` (a scalar dict from
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
-- **Location:** `worker.py:401` (`connect`), 527
+- **Location:** `worker.py:308` (`connect`), 444
   (`initialize`).
 - **What:** on `GlideClient.create` exception, `connect` returned False and left
   `_client=None`; on a **failed PING**, it previously left `_client` set, so
@@ -269,7 +269,7 @@ value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `task_processor.py:646-696` (`process_task`), 257-401
+- **Location:** `task_processor.py:651-702` (`process_task`), 267-420
   (handler registry).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no

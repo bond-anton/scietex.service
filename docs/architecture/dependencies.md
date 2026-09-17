@@ -47,14 +47,15 @@ Protocol and composes the Valkey-specific collaborators `valkey/config`,
 | `task_processor` | `basic_worker` | inheritance | extends |
 | `task_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `task_processor` | `.manager` | import | for `@Manager` decorators |
-| `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskHandlerContext`, `TaskResult`, `TaskTracker` |
+| `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskHandlerContext`, `TaskResult`, `TaskTracker`, `TaskCapabilities`, `CancelReason`, `CancelOutcome`, `CancelTaskHandler` |
 | `task_processor` | `.transport` | import | `TaskTransport`, `InMemoryTransport` (default transport) |
 | `transport` | `.task_handler.schemas` | import | `TaskData`, `TaskResult`, `CancelReason` (no `glide` dependency) |
 | `task_handler.basic` | `.schemas` | import | runtime |
 | `task_handler.basic` | `.context` | import | `TaskHandlerContext` (narrow context; no worker reference) |
 | `valkey.worker` | `task_processor` | inheritance | `ValkeyWorker(TaskProcessor)` |
 | `valkey.worker` | `.task_handler`, `.task_handler.wire` | import | `TaskData`, `TaskResult`, `encode_task_envelope`/`decode_task_envelope` |
-| `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` || `valkey.worker` | `.transport`, `.health`, `.lease`, `.tracking` | import | composes `ValkeyTransport` + the health/lease/status collaborators |
+| `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
+| `valkey.worker` | `.transport`, `.health`, `.lease`, `.tracking` | import | composes `ValkeyTransport` + the health/lease/status collaborators |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
 | `valkey.worker` | `glide` | import (external, optional extra) | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); errors surface to top-level guard |
 | `valkey.transport` | `.config`, `.health`, `.lease`, `.tracking`, `._glide` | import | implements the core `TaskTransport` Protocol; composes the Valkey collaborators |
@@ -92,15 +93,15 @@ Protocol and composes the Valkey-specific collaborators `valkey/config`,
   worker's operational client (AR-059/061).
 - **Public API re-export guard**: the only place core code tolerates a missing
   optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
-  `ImportError`, which is caught (`__init__.py:54`) and reported via a warning
+  `ImportError`, which is caught (`__init__.py:71`) and reported via a warning
   plus the `VALKEY_AVAILABLE` flag; any other exception propagates so real
   Valkey bugs surface at import (AR-019).
 
 ## Circular dependencies
 
 - **None at runtime.** `task_handler` never imports the worker (it depends only
-  on `.context` and `.schemas`), so there is no handler ↔ worker cycle in
-  either direction.
+  on `.context`, `.capabilities`, and `.schemas`), so there is no handler ↔
+  worker cycle in either direction.
 - `task_handler` types are imported by `task_processor`, which extends
   `basic_worker`; the worker does not import `task_handler`, so the
   dependency direction is strictly feature → core.
@@ -113,7 +114,7 @@ Protocol and composes the Valkey-specific collaborators `valkey/config`,
 | `scietex.logging>=2.0.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
 | `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
-| `scietex.logging[valkey]>=2.0.0` | `[valkey]` extra (`pyproject.toml:32`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
+| `scietex.logging[valkey]>=2.0.0` | `[valkey]` extra (`pyproject.toml:40`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
 
 ## Important dependency chains
 

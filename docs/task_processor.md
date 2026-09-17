@@ -396,13 +396,15 @@ argument. `capabilities.report_progress(value)` clamps `value` to
 task id, so concurrent tasks never share progress state.
 
 `_write_task_progress(task_id, value)` is the transport hook. The base
-implementation is a no-op; `ValkeyWorker` overrides it to write a `TaskProgress`
-payload (`progress=True`, `value`) into the task's `TaskStatus` tracking record.
+implementation delegates to the composed transport's `on_progress` hook;
+`InMemoryTransport.on_progress` is a no-op, while `ValkeyTransport.on_progress`
+writes a `TaskProgress` payload (`progress=True`, `value`) into the task's
+`TaskStatus` tracking record.
 
 | Method | Returns | Description |
 |---|---|---|
 | `TaskCapabilities.report_progress(value)` | `None` | Report progress (clamped to `[0.0, 100.0]`) for the task the capabilities belong to |
-| `_write_task_progress(task_id, value)` | `None` | Transport hook that persists progress; base is a no-op, `ValkeyWorker` writes `TaskStatus.progress` |
+| `_write_task_progress(task_id, value)` | `None` | Transport hook that persists progress; base delegates to `transport.on_progress` (`InMemoryTransport` no-ops, `ValkeyTransport` writes `TaskStatus.progress`) |
 
 The handler receives `capabilities` per call, so no registration-time injection
 is needed:
@@ -471,9 +473,10 @@ class MyWorker(TaskProcessor):
 Override to add custom cleanup logic. The base implementation already:
 
 1. Calls `super().cleanup()` (a no-op on `BasicWorker`)
-2. Drains the internal queue by dropping items — they stay pending in the
-   transport and are redelivered on restart (subclasses whose transport
-   does not keep items pending must override to requeue drained items)
+2. Drains the internal queue through `transport.on_drain` — `InMemoryTransport`
+   requeues each item per its `canceled_action`, while `ValkeyTransport` deletes
+   the lease without re-enqueueing (the entry stays pending and is redelivered
+   on restart)
 3. Cancels running tasks; a task is requeued via `return_task_to_queue()`
    only after its handler actually stops, honoring `canceled_action`
 4. Stops all task handlers

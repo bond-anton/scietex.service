@@ -361,6 +361,7 @@ explicit `valkey_config` does not touch the filesystem (AR-066).
 | `BasicWorker` | Base async daemon worker |
 | `TaskProcessor` | Concurrent task processor |
 | `Manager` | Decorator for creating managed async loop methods |
+| `register_manager` | Explicit post-creation manager registration (`register_manager(owner, method, *, name, ...)`) |
 | `TaskTransport` | Protocol for the task-delivery backend (`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`) |
 | `TaskSink` | Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`) |
 | `InMemoryTransport` | Default in-process transport (deque-backed; `submit()` feeds it) |
@@ -384,6 +385,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 |---|---|
 | `TaskHandler` | Abstract base class for task handlers |
 | `TaskHandlerContext` | Narrow read-only context passed to handlers (service name, instance id, logger) |
+| `TaskCapabilities` | Per-call capabilities passed to `handle` (task id + `report_progress(value)`) |
 | `CancelTaskHandler` | Built-in handler for the `cancel_task` task type |
 | `CancelTaskRequest` | Payload schema for a `cancel_task` task (`target_task_id`, `reason`) |
 | `CancelTaskResponse` | Success payload schema for a `cancel_task` task (`target_task_id`, `outcome`) |
@@ -399,6 +401,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `TaskEnvelope` | Versioned transport envelope (version + serialized payload bytes) |
 | `encode_task_envelope` | Wrap a `TaskData` in a versioned envelope and msgpack-encode it |
 | `decode_task_envelope` | Decode an envelope back to a `TaskData` (returns `None` on invalid/unknown version) |
+| `decode_task_envelope_version` | Return an envelope's wire-format version, or `None` if malformed |
 
 ### Exported from `scietex.service.valkey`
 
@@ -414,6 +417,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `ValkeyTlsAdvancedConfiguration` | TLS settings |
 | `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |
 | `purge_task_stream` | Standalone operational utility to purge a task stream (returns a `PurgeResult` with counts and errors) |
+| `PurgeResult` | Frozen result of `purge_task_stream` (`entries_purged`, `errors`) |
 
 ## Development
 

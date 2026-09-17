@@ -11,6 +11,8 @@ the built-in ``cancel_task`` handler and the versioned transport wire helpers.
    :members:
 .. autoclass:: scietex.service.task_handler.TaskHandlerContext
    :members:
+.. autoclass:: scietex.service.task_handler.TaskCapabilities
+   :members:
 .. autoclass:: scietex.service.task_handler.CancelTaskHandler
    :members:
 .. autoclass:: scietex.service.task_handler.CancelTaskRequest
@@ -28,3 +30,4 @@ the built-in ``cancel_task`` handler and the versioned transport wire helpers.
 .. autoclass:: scietex.service.task_handler.TaskEnvelope
 .. autofunction:: scietex.service.task_handler.encode_task_envelope
 .. autofunction:: scietex.service.task_handler.decode_task_envelope
+.. autofunction:: scietex.service.task_handler.decode_task_envelope_version

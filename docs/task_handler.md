@@ -298,9 +298,10 @@ class TaskStatus(msgspec.Struct, frozen=True):
 | `created_at` | `datetime` | current UTC | When the record was created |
 | `updated_at` | `datetime` | current UTC | When the record was last updated |
 
-> **Not implemented.** `"queued"` is a reserved literal that no current code
-> path writes; the submitter-side write is not implemented. Only the worker
-> writes `"running"`, `"completed"`, `"failed"`, or `"cancelled"`.
+> **Submitter-side only.** `"queued"` is a reserved literal that the worker
+> never writes; it is intended for a submitter-side write that the library does
+> not perform. The worker writes only `"running"`, `"completed"`, `"failed"`,
+> or `"cancelled"`.
 
 ### TaskProgress
 

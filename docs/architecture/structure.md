@@ -11,19 +11,19 @@ Layout of the repository and the Python package.
 | `tests/` | Pytest suite: two test packages (`valkey/`, `task_processor/`), each with a shared `_helpers.py`, plus top-level `test_*.py` modules; Valkey tests mock `GlideClient` (no server needed) |
 | `docs/` | Usage docs (`index.md`, per-component guides); `docs/architecture/` is this map |
 | `pyproject.toml` | Package metadata, deps, extras (`valkey`, `dev`, `test`, `lint`), setuptools build config, and pytest config (`[tool.pytest.ini_options]`) |
-| `tox.ini` | Tox environments: `format`, `lint`, `type`, `py{314}` (coverage) |
+| `tox.ini` | Tox environments: `format`, `lint`, `type`, `py{314}` (coverage), `docs` (Sphinx build) |
 | `.ruff.toml`, `cspell.json` | Ruff and spell-check config |
 | `.github/workflows/` | CI: `python-lint.yml`, `python-package.yml` (tests with a Redis service container), `python-publish.yml` (PyPI on release) |
 | `AGENTS.md`, `README.md`, `LICENSE` | Developer instructions, public docs, MIT license |
 
 > Pytest configuration lives only in `pyproject.toml`
-> (`[tool.pytest.ini_options]`, lines 46–48); `pytest.ini` was deleted (AR-013).
+> (`[tool.pytest.ini_options]`, line 51); `pytest.ini` was deleted (AR-013).
 
 ## Package layout (`src/scietex/service/`)
 
 | Module | Responsibility |
 |---|---|
-| `__init__.py` | Public API. Always exports `__version__`, `BasicWorker`, `TaskProcessor`, `Manager`, `WorkerConfig`, `TaskProcessorConfig`, and the transport seam (`TaskTransport`, `TaskSink`, `InMemoryTransport`). In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types including `ValkeyWorkerConfig` and `ValkeyPubSubConfig`) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
+| `__init__.py` | Public API. Always exports `__version__`, `BasicWorker`, `TaskProcessor`, `Manager`, `register_manager`, `WorkerConfig`, `TaskProcessorConfig`, and the transport seam (`TaskTransport`, `TaskSink`, `InMemoryTransport`). In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types including `ValkeyWorkerConfig` and `ValkeyPubSubConfig`) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
 | `version.py` | Single source `__version__ = "4.3.0"` (also read by setuptools dynamic version) |
 | `config.py` | `WorkerConfig` + `TaskProcessorConfig` — immutable `msgspec.Struct`s (`frozen=True`) replacing the old per-worker constructor kwargs. Also holds the MIN/MAX/DEFAULT constants (single source of truth for timing/retry bounds, the task-queue defaults `DEFAULT_MAX_TASKS_QUEUE_SIZE=100` / `DEFAULT_MAX_CONCURRENT_TASKS=10`, and the task-level timing fields `task_timeout`/`task_queue_fetch_timeout`/`task_cancellation_timeout`, AR-062). `__post_init__` validates ranges and raises `msgspec.ValidationError` on an out-of-range value; a `None` field resolves to its `DEFAULT_*` constant at read time |
 | `_validation.py` | Shared `validate_range()` helper used by both `config.py` and `valkey/config.py` (AR-079) — promoted from the private `config._validate_range` so the Valkey package no longer imports a private core symbol |

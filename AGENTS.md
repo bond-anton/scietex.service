@@ -102,7 +102,7 @@ is created.
 1. Register handler: `processor.add_task_handler(HandlerClass)` — an optional keyword-only `name` (`add_task_handler(HandlerClass, name="...")`) lets multiple instances of one class coexist under distinct keys
 2. Handler `supports(task_type)` must return `True`
 3. Handler `is_ready` (initialized) required before processing
-4. `handle(task_data)` returns `TaskResult`
+4. `handle(task_data, *, capabilities=...)` returns `TaskResult`; report progress via `capabilities.report_progress(value)`
 
 **Task schemas (msgspec.Struct):**
 - `TaskData`: `task: str`, `payload: bytes`, `timeout: TaskTimeout`, `canceled_action: "requeue"|"discard"`

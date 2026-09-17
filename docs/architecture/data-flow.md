@@ -10,24 +10,24 @@ transformations, and any async boundaries (queues/events/tasks).
 `enqueue_task()` directly.
 
 **Processing chain:**
-1. `TaskProcessor.task_queue_manager` (`task_processor.py:813`,
+1. `TaskProcessor.task_queue_manager` (`task_processor.py:818`,
    `@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
    subclass/`ValkeyWorker` `fetch_tasks()`; then sleeps
    `task_queue_manager_sleep_time` (default 0.01 s).
-2. `TaskProcessor.task_manager` (`task_processor.py:699`,
+2. `TaskProcessor.task_manager` (`task_processor.py:704`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `(task_id, task_data)` off `task_queue` with a fetch timeout of
    `task_queue_fetch_timeout` (default 1 s),
    wraps `handle_task` in an `asyncio.Task`, and records the tracker via
    `TaskLifecycle.register(task_id, TaskTracker(...))` (the composed lifecycle
    state, AR-088).
-3. `handle_task` (inner, 711) calls `process_task(task_id, task_data)`.
-4. `process_task` (646): guards the empty-`task` case first — an empty
+3. `handle_task` (inner, 717) calls `process_task(task_id, task_data)`.
+4. `process_task` (651): guards the empty-`task` case first — an empty
    `task_data.task` returns `TaskResult(status="error", error="Task data must
-   contain 'task' field")` (671–680) — then selects a handler with
+   contain 'task' field")` (677–685) — then selects a handler with
    `_find_task_handler` (`handler.supports(task_type)`, first match among
    **active/started** handlers).
-5. Dispatch is gated by `handler.is_ready` (683): only a found **and
+5. Dispatch is gated by `handler.is_ready` (688): only a found **and
    initialized** handler runs `await handler.handle(task_data, capabilities=...)`.
    A `handle()`
    exception is converted into `TaskResult(status="error", error=str(e))` with
@@ -42,13 +42,13 @@ removes the tracker (`TaskLifecycle.remove_tracker`), calls
 `task_queue.task_done()`, and passes the consumed cancel reason
 (`TaskLifecycle.take_cancel_reason`) to the ack. Then: a
 `retryable=True` error result is requeued via
-`return_task_to_queue(task_id, task_data)` **before** acking (747–757) — the
+`return_task_to_queue(task_id, task_data)` **before** acking (751–761) — the
 retry copy is made durable (XADD) before the original is dropped (XACK) — and
 then `on_task_completed(task_id, task_data, task_result)` is invoked — the
-transport-agnostic ack/result-sink seam. `ValkeyWorker` overrides it to
-`XACK`+`XDEL` the stream entry. A requeue failure is logged and the entry is
-still acked (the retry copy is lost, but the entry must not stay pending
-forever).
+transport-agnostic ack/result-sink seam. The base delegates to `transport.ack`;
+`ValkeyTransport.ack` does `XACK`+`XDEL` on the stream entry. A requeue failure
+is logged and the entry is still acked (the retry copy is lost, but the entry
+must not stay pending forever).
 
 **Async boundaries:** `asyncio.Queue` (bounded, `queue_size` default 100) between
 intake and dispatch; per-task `asyncio.Task`; concurrency cap
@@ -94,20 +94,23 @@ cancellation during cleanup, (d) retry-once via `TaskResult.retryable` (an
 error result with `retryable=True` is requeued in `handle_task`'s `finally`
 before acking — see F1).
 
-**Path:** `TaskProcessor.watchdog` (832) cancels `worker_task` when
+**Path:** `TaskProcessor.watchdog` (838) cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or the configured `task_timeout`, default
 3), waits up to the configured `task_cancellation_timeout` (default 5), and only
 if the handler actually
 stopped (`worker_task.done()`) calls `return_task_to_queue(task_id,
 task_data)` when `timeout_action == "requeue"`. Base `return_task_to_queue`
-(403) is a no-op; `ValkeyWorker` (646) does `XADD` back to the same task
-stream (tail), re-entering F2/F1. A handler that ignores cancellation is not
-requeued (its entry stays pending and is redelivered on restart).
+delegates to `transport.requeue`; `ValkeyTransport.requeue` does `XADD` back to
+the same task stream (tail), re-entering F2/F1. A handler that ignores
+cancellation is not requeued (its entry stays pending and is redelivered on
+restart).
 
-**Shutdown drain** (`TaskProcessor.cleanup`, 598): queued-but-undispatched
-items are dropped (their transport entries stay pending and are redelivered on
-restart); in-flight running tasks are requeued through the same hook only after
-their handler is confirmed stopped, when `canceled_action == "requeue"`.
+**Shutdown drain** (`TaskProcessor.cleanup`): queued-but-undispatched items are
+handed to `transport.on_drain` — `InMemoryTransport` requeues each per its
+`canceled_action`, while `ValkeyTransport` deletes the lease without
+re-enqueueing (the entry stays pending and is redelivered on restart); in-flight
+running tasks are requeued through the same hook only after their handler is
+confirmed stopped, when `canceled_action == "requeue"`.
 
 **Note:** requeue via `XADD` appends to the **tail** of the stream — original
 ordering is not preserved. The original entry is acknowledged by
@@ -117,7 +120,7 @@ exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
 ## F4. Handler dispatch (selection)
 
 **Source:** `TaskData.task` string. **Processing:** `_find_task_handler`
-(385) iterates `task_handlers` dict (active instances) and returns the first
+(403) iterates `task_handlers` dict (active instances) and returns the first
 `handler.supports(task_type)`. **Destination:**
 `handler.handle(task_data, capabilities=...)`.
 Selection is by `supported_tasks` membership, **not** by a registration key
@@ -129,8 +132,8 @@ a class's per-instance task sets must not overlap.
 ## F5. Heartbeat flow
 
 **Source:** `@Manager("Heartbeat") _heartbeat_manager`
-(`basic_worker.py:601`) — sleeps `heartbeat_interval`, calls
-`self.heartbeat()`, repeats. `ValkeyWorker.heartbeat` (486) is the only
+(`basic_worker.py:654`) — sleeps `heartbeat_interval`, calls
+`self.heartbeat()`, repeats. `ValkeyWorker.heartbeat` (398) is the only
 concrete override.
 
 **Processing/destination:** encodes `Heartbeat` struct (msgpack) and writes it
@@ -152,7 +155,7 @@ heartbeat never surfaces.
   registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
-  `worker.py:366`) — owns its own `GlideClient`, built from a `valkey_config=`
+  `worker.py:284`) — owns its own `GlideClient`, built from a `valkey_config=`
   dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
   longer shares the worker's client; formats records to a dict and `xadd`s to
   the log stream `scietex:log` (default).
