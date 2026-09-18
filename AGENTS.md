@@ -104,6 +104,7 @@ is created.
 - Read deferred to first `connect()` (AR-066): constructing `ValkeyWorker()` with no explicit `valkey_config` does not touch the filesystem
 - `ValkeyWorkerConfig.valkey_config` is `ValkeyConfig | None` (the raw-`GlideClientConfiguration` fallback was removed); PubSub listening is expressed via `ValkeyConfig.pubsub_config` (`ValkeyPubSubConfig(listening=..., parse_control_message=...)`)
 - `ValkeyWorkerConfig.task_lease_ttl: int | None = None` — lease lifetime in seconds, bounds `[1, 86400]`; `None` derives `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`
+- `ValkeyWorkerConfig.log_stream_name` defaults to `scietex:{service}:log`, with `{service}` substituted with `service_name` at construction — a **breaking change** from the previous shared `scietex:log`; explicitly setting `log_stream_name="scietex:log"` pins the old shared stream
 - Install extras: `uv sync --extra valkey` or `pip install "scietex.service[valkey]"`
 
 **MQTT config:**

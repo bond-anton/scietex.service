@@ -118,6 +118,8 @@ class ValkeyWorker(TaskProcessor):
                 and reused across restarts. Owns its own connection
                 (``valkey_config=`` mode); the worker never shares its client.
             _heartbeat_key (str): Key for the worker status heartbeat entry.
+            _log_stream_name (str): Resolved Valkey stream name for log entries,
+                with ``{service}`` substituted.
             _task_stream_name (str): Valkey stream name for task entries.
             _task_group_name (str): Consumer group name for task fetching.
             _consumer_name (str): Consumer identifier within the task group.
@@ -129,7 +131,9 @@ class ValkeyWorker(TaskProcessor):
         # reads below.
         cfg = cast(ValkeyWorkerConfig, self._config)
 
-        self._log_stream_name = cfg.log_stream_name
+        # {service} is resolved here exactly as MQTT resolves log_topic; a name
+        # without the placeholder passes through unchanged.
+        self._log_stream_name = cfg.log_stream_name.format(service=self.service_name)
         # AR-066: when no explicit config was given, defer the filesystem read
         # (and the default valkey.yml write / config-dir mkdir it triggers) to
         # the first connect, so construction is side-effect-free. Both

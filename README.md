@@ -181,7 +181,9 @@ if __name__ == "__main__":
 
 Tasks are stored in a Valkey stream named
 `scietex:{service_name}:tasks` and consumed via a consumer
-group `scietex:{service_name}:task_group`.
+group `scietex:{service_name}:task_group`. Log entries are written to a
+per-service stream `scietex:{service}:log` (override with the
+`log_stream_name` config field).
 
 `ValkeyWorker` also exposes:
 

@@ -56,7 +56,7 @@ pip install scietex.service[valkey]
   │  └─────────────────────┘    └────────────────────────────┘     │
   │                                                                 │
   │  ┌─────────────────────┐    ┌────────────────────────────┐     │
-  │  │  AsyncValkeyHandler  │───►│  scietex:log stream        │     │
+  │  │  AsyncValkeyHandler  │───►│  scietex:{svc}:log stream  │     │
   │  │  (log entries)       │    │  msgpack-encoded entries   │     │
   │  └─────────────────────┘    └────────────────────────────┘     │
   └─────────────────────────────────────────────────────────────────┘
@@ -90,7 +90,7 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | Task tracking key | `scietex:{service_name}:task:{task_id}` | per task |
 | Task lease key | `scietex:{service_name}:lease:{task_id}` | per task |
 | Heartbeat key | `scietex:{service_name}:{instance_id}:status` | worker-scoped |
-| Log stream | `scietex:log` (configurable via `log_stream_name`) | — |
+| Log stream | `scietex:{service_name}:log` (configurable via `log_stream_name`) | service-scoped |
 
 ## Constants
 
@@ -174,7 +174,7 @@ worker = ValkeyWorker(
         queue_size=None,
         max_concurrent_tasks=None,
         valkey_config=None,
-        log_stream_name="scietex:log",
+        log_stream_name="scietex:{service}:log",
         task_fetch_batch_size=10,
         claim_min_idle_ms=None,
         task_tracking_ttl=None,
@@ -205,7 +205,7 @@ logging-handler construction, connectivity signal) is preserved.
 | Field | Default | Description |
 |---|---|---|
 | `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig`). If `None`, `valkey.yml` is read lazily from the config directory at first connect (not at construction). PubSub listening is expressed via `ValkeyConfig.pubsub_config` (a `ValkeyPubSubConfig`) |
-| `log_stream_name` | `"scietex:log"` | Name of the Valkey stream used for log entries |
+| `log_stream_name` | `"scietex:{service}:log"` | Name of the Valkey stream used for log entries; `{service}` is substituted with `service_name` at construction |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
 | `claim_min_idle_ms` | `None` (default `1000`) | Outer idle floor (ms) before `XAUTOCLAIM` considers reclaiming a pending entry during startup recovery; the per-entry lease is the authoritative liveness check (see [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)) |
 | `task_tracking_ttl` | `None` (default `86400`) | Server-side TTL in seconds for task tracking records; `None` resolves to `DEFAULT_TASK_TRACKING_TTL` (`86400` s / 24 h). Valid range `[1, 2592000]` |

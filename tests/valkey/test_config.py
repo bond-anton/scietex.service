@@ -194,6 +194,11 @@ def test_invalid_protocol_raises():
         generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")
 
 
+def test_worker_config_log_stream_name_default_is_service_templated():
+    """log_stream_name defaults to a {service}-templated stream name."""
+    assert ValkeyWorkerConfig().log_stream_name == "scietex:{service}:log"
+
+
 def test_worker_config_task_tracking_ttl_default_is_none():
     """task_tracking_ttl is opt-in: the default config disables tracking TTL."""
     assert ValkeyWorkerConfig().task_tracking_ttl is None

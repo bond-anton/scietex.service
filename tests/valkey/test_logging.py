@@ -92,3 +92,37 @@ def test_logging_handler_config_translates_typed_config():
         "client_az": None,
         "lazy_connect": None,
     }
+
+
+def test_log_stream_name_resolved_at_construction():
+    """The default templated log stream name is resolved to the service name
+    at construction, mirroring the MQTT worker's log_topic resolution."""
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc"))
+    assert worker._log_stream_name == "scietex:svc:log"
+
+
+def test_log_stream_name_without_placeholder_passes_through():
+    """A user-supplied name without a {service} placeholder passes through
+    ``.format()`` unchanged."""
+    worker = ValkeyWorker(ValkeyWorkerConfig(log_stream_name="scietex:log"))
+    assert worker._log_stream_name == "scietex:log"
+
+
+@pytest.mark.asyncio
+async def test_logging_handler_receives_resolved_stream_name(monkeypatch):
+    """The logging handler is handed the service-resolved stream name on connect."""
+
+    async def factory(cfg):
+        return DummyClient(ping_ok=True)
+
+    _patch_glide_and_handler(monkeypatch)
+
+    worker = ValkeyWorker(
+        ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()),
+        client_factory=factory,
+    )
+    ok = await worker.connect()
+    assert ok is True
+    handler = worker._valkey_logger_handler
+    assert isinstance(handler, FakeHandler)
+    assert handler.stream_name == "scietex:svc:log"

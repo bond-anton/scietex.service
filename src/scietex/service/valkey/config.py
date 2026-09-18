@@ -274,6 +274,7 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
         valkey_config: A :class:`ValkeyConfig` schema. ``None`` means the
             worker reads ``valkey.yml`` from its config directory.
         log_stream_name: Name of the Valkey stream used for log entries.
+            ``{service}`` is replaced with the service name.
         task_fetch_batch_size: Maximum number of stream entries read per
             ``XREADGROUP`` call (``>= 1``).
         claim_min_idle_ms: Idle floor in milliseconds before ``XAUTOCLAIM``
@@ -286,7 +287,7 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     """
 
     valkey_config: "ValkeyConfig | None" = None
-    log_stream_name: str = "scietex:log"
+    log_stream_name: str = "scietex:{service}:log"
     task_fetch_batch_size: int = 10
     claim_min_idle_ms: int | None = None
     task_tracking_ttl: int | None = None
