@@ -28,6 +28,7 @@ from pathlib import Path
 import msgspec
 
 from ._validation import validate_range
+from .config_reload import ReloadableSettings
 
 _DEFAULT_XDG_DIR = Path.home() / ".config" / "scietex"
 _ETC_DIR = Path("/etc") / "scietex"
@@ -343,3 +344,73 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
             minimum=MIN_CONFIG_STARTUP_TIMEOUT,
             maximum=MAX_CONFIG_STARTUP_TIMEOUT,
         )
+
+
+def resolve_reloadable_settings(
+    config: TaskProcessorConfig,
+    logger: logging.Logger | None = None,
+) -> ReloadableSettings:
+    """Resolve the eight hot-reloadable fields into one effective snapshot.
+
+    ``None`` resolves to the corresponding ``DEFAULT_*`` constant using
+    ``is not None`` (not ``or``), so an explicit ``0``/negative ``task_timeout``
+    survives as the "unbounded" sentinel. ``max_concurrent_tasks`` has a
+    three-way branch: explicit value, else ``auto_tune``
+    (``max(1, os.cpu_count() or 1)``), else ``DEFAULT_MAX_CONCURRENT_TASKS``.
+
+    Args:
+        config: The raw (declarative) ``TaskProcessorConfig`` whose ``None``
+            fields are resolved.
+        logger: Optional logger for the auto-tune INFO diagnostic. ``None``
+            (the default) keeps the call silent, so the function is pure and
+            cleanly testable without a logger.
+
+    Returns:
+        The resolved :class:`ReloadableSettings` snapshot.
+    """
+    if config.max_concurrent_tasks is not None:
+        max_concurrent_tasks = config.max_concurrent_tasks
+    elif config.auto_tune:
+        cpu_count = os.cpu_count() or 1
+        max_concurrent_tasks = max(1, cpu_count)
+        if logger is not None:
+            logger.log(
+                logging.INFO,
+                "Auto-tuned max_concurrent_tasks to %d (from %d CPUs)",
+                max_concurrent_tasks,
+                cpu_count,
+            )
+    else:
+        max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
+    return ReloadableSettings(
+        max_concurrent_tasks=max_concurrent_tasks,
+        task_manager_sleep_time=(
+            config.task_manager_sleep_time if config.task_manager_sleep_time is not None else DEFAULT_MANAGER_SLEEP_TIME
+        ),
+        task_queue_manager_sleep_time=(
+            config.task_queue_manager_sleep_time
+            if config.task_queue_manager_sleep_time is not None
+            else DEFAULT_MANAGER_SLEEP_TIME
+        ),
+        task_handler_start_timeout=(
+            config.task_handler_start_timeout
+            if config.task_handler_start_timeout is not None
+            else DEFAULT_TASK_HANDLER_START_TIMEOUT
+        ),
+        task_handler_stop_timeout=(
+            config.task_handler_stop_timeout
+            if config.task_handler_stop_timeout is not None
+            else DEFAULT_TASK_HANDLER_STOP_TIMEOUT
+        ),
+        task_timeout=config.task_timeout if config.task_timeout is not None else DEFAULT_TASK_TIMEOUT,
+        task_queue_fetch_timeout=(
+            config.task_queue_fetch_timeout
+            if config.task_queue_fetch_timeout is not None
+            else DEFAULT_TASK_QUEUE_FETCH_TIMEOUT
+        ),
+        task_cancellation_timeout=(
+            config.task_cancellation_timeout
+            if config.task_cancellation_timeout is not None
+            else DEFAULT_TASK_CANCELLATION_TIMEOUT
+        ),
+    )

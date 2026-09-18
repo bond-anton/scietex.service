@@ -1,8 +1,19 @@
 """TaskProcessor construction and auto-tune configuration tests."""
 
 import os
+from typing import cast
 
-from scietex.service.config import DEFAULT_MAX_CONCURRENT_TASKS, TaskProcessorConfig
+from scietex.service.config import (
+    DEFAULT_MANAGER_SLEEP_TIME,
+    DEFAULT_MAX_CONCURRENT_TASKS,
+    DEFAULT_TASK_CANCELLATION_TIMEOUT,
+    DEFAULT_TASK_HANDLER_START_TIMEOUT,
+    DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+    DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
+    DEFAULT_TASK_TIMEOUT,
+    TaskProcessorConfig,
+)
+from scietex.service.config_reload import ReloadableSettings
 from scietex.service.task_processor import TaskProcessor
 
 from ._helpers import DemoProcessor
@@ -34,3 +45,30 @@ def test_auto_tune_default_off_uses_static_default():
     static DEFAULT_MAX_CONCURRENT_TASKS."""
     proc = DemoProcessor(TaskProcessorConfig())
     assert proc.max_concurrent_tasks == DEFAULT_MAX_CONCURRENT_TASKS
+
+
+def test_effective_resolves_defaults_while_config_stays_raw():
+    """A fully-default construction resolves ``_effective`` to the DEFAULT_*
+    constants while ``_config`` keeps its declarative ``None`` fields (AR-100)."""
+    proc = TaskProcessor()
+    assert proc._effective == ReloadableSettings(
+        max_concurrent_tasks=DEFAULT_MAX_CONCURRENT_TASKS,
+        task_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
+        task_queue_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
+        task_handler_start_timeout=DEFAULT_TASK_HANDLER_START_TIMEOUT,
+        task_handler_stop_timeout=DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+        task_timeout=DEFAULT_TASK_TIMEOUT,
+        task_queue_fetch_timeout=DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
+        task_cancellation_timeout=DEFAULT_TASK_CANCELLATION_TIMEOUT,
+    )
+    assert cast(TaskProcessorConfig, proc._config).task_timeout is None
+
+
+def test_reloadable_fields_have_no_shadow_attributes():
+    """The four private reloadable shadows are gone: only ``_effective`` holds
+    the resolved values (AR-100)."""
+    proc = TaskProcessor()
+    assert not hasattr(proc, "_TaskProcessor__max_concurrent_tasks")
+    assert not hasattr(proc, "_TaskProcessor__task_timeout")
+    assert not hasattr(proc, "_TaskProcessor__task_queue_fetch_timeout")
+    assert not hasattr(proc, "_TaskProcessor__task_cancellation_timeout")

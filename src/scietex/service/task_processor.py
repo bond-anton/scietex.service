@@ -8,7 +8,6 @@ monitoring (watchdog), handler dispatch, and graceful shutdown support.
 
 import asyncio
 import logging
-import os
 import time
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -19,15 +18,9 @@ import msgspec
 
 from .basic_worker import BasicWorker, ServiceStatus
 from .config import (
-    DEFAULT_MANAGER_SLEEP_TIME,
-    DEFAULT_MAX_CONCURRENT_TASKS,
     DEFAULT_MAX_TASKS_QUEUE_SIZE,
-    DEFAULT_TASK_CANCELLATION_TIMEOUT,
-    DEFAULT_TASK_HANDLER_START_TIMEOUT,
-    DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
-    DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
-    DEFAULT_TASK_TIMEOUT,
     TaskProcessorConfig,
+    resolve_reloadable_settings,
 )
 from .config_reload import (
     CONFIG_SOURCE_UNAVAILABLE,
@@ -132,36 +125,12 @@ class TaskProcessor(BasicWorker):
 
         # Initialize queues and tracking structures
         self.__queue_size: int = cfg.queue_size if cfg.queue_size is not None else DEFAULT_MAX_TASKS_QUEUE_SIZE
-        if cfg.max_concurrent_tasks is not None:
-            self.__max_concurrent_tasks: int = cfg.max_concurrent_tasks
-        elif cfg.auto_tune:
-            cpu_count = os.cpu_count() or 1
-            self.__max_concurrent_tasks: int = max(1, cpu_count)
-            self.logger.log(
-                logging.INFO,
-                "Auto-tuned max_concurrent_tasks to %d (from %d CPUs)",
-                self.__max_concurrent_tasks,
-                cpu_count,
-            )
-        else:
-            self.__max_concurrent_tasks: int = DEFAULT_MAX_CONCURRENT_TASKS
 
-        # Resolve the task-level timing fields once: they are read in the
-        # watchdog/task_manager hot loops, so per-iteration property indirection
-        # is avoided. `is not None` (not `or`) preserves an explicit 0/negative
-        # task_timeout as the "unbounded" sentinel instead of falling back to
-        # the default.
-        self.__task_timeout: float = cfg.task_timeout if cfg.task_timeout is not None else DEFAULT_TASK_TIMEOUT
-        self.__task_queue_fetch_timeout: float = (
-            cfg.task_queue_fetch_timeout
-            if cfg.task_queue_fetch_timeout is not None
-            else DEFAULT_TASK_QUEUE_FETCH_TIMEOUT
-        )
-        self.__task_cancellation_timeout: float = (
-            cfg.task_cancellation_timeout
-            if cfg.task_cancellation_timeout is not None
-            else DEFAULT_TASK_CANCELLATION_TIMEOUT
-        )
+        # The effective config is the single resolved snapshot of the eight
+        # hot-reloadable fields (None -> DEFAULT_*, auto_tune -> CPU count).
+        # `_config` (written by BasicWorker) and `_effective` are written
+        # together only here and in `_apply_reloadable_config`.
+        self._effective: ReloadableSettings = resolve_reloadable_settings(cfg, self.logger)
 
         self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
 
@@ -172,7 +141,7 @@ class TaskProcessor(BasicWorker):
 
         # Remote configuration channel. The reloader is transport-agnostic and
         # calls back into this processor through injected callables, so the
-        # private shadows stay private. `_config_source` is attached by a
+        # effective settings stay private. `_config_source` is attached by a
         # transport subclass (steps 6/7); `None` means "no source of truth".
         self._config_source: ConfigSource | None = None
         self._config_reloader = ConfigReloader(
@@ -219,7 +188,7 @@ class TaskProcessor(BasicWorker):
     @property
     def max_concurrent_tasks(self) -> int:
         """Maximum number of tasks that can be processed concurrently."""
-        return self.__max_concurrent_tasks
+        return self._effective.max_concurrent_tasks
 
     @property
     def config_revision(self) -> int:
@@ -260,23 +229,13 @@ class TaskProcessor(BasicWorker):
         self._config_reloader.register_section(name, struct_type, apply)
 
     def _current_reloadable_settings(self) -> ReloadableSettings:
-        """Snapshot the current effective reloadable core settings.
+        """Return the current effective reloadable core settings.
 
-        Reads the already-resolved sources (the re-shadowed fields and the
-        live-read properties) rather than the raw config, so the snapshot
-        reflects the effective values including auto-tuned concurrency and
-        ``None``-resolved defaults.
+        ``self._effective`` is the resolved snapshot (``None`` -> ``DEFAULT_*``
+        and auto-tuned concurrency already applied), so this is a direct
+        pass-through.
         """
-        return ReloadableSettings(
-            max_concurrent_tasks=self.__max_concurrent_tasks,
-            task_manager_sleep_time=self.task_manager_sleep_time,
-            task_queue_manager_sleep_time=self.task_queue_manager_sleep_time,
-            task_handler_start_timeout=self.task_handler_start_timeout,
-            task_handler_stop_timeout=self.task_handler_stop_timeout,
-            task_timeout=self.__task_timeout,
-            task_queue_fetch_timeout=self.__task_queue_fetch_timeout,
-            task_cancellation_timeout=self.__task_cancellation_timeout,
-        )
+        return self._effective
 
     def _restart_required_fields(self) -> list[str]:
         """Return the concrete config's field names that are not reloadable."""
@@ -292,7 +251,7 @@ class TaskProcessor(BasicWorker):
         before any mutation. Nested structs (e.g. ``valkey_config``) are
         preserved by reference, so ``msgspec.structs.asdict`` (which recurses
         into them) must not be used. Only after a valid candidate exists are
-        the four shadows updated and the reference swapped.
+        the raw config reference and the effective snapshot swapped together.
 
         Args:
             settings: The complete snapshot of reloadable core values.
@@ -321,27 +280,13 @@ class TaskProcessor(BasicWorker):
             if f.name in RELOADABLE_FIELDS and getattr(candidate, f.name) != getattr(current, f.name)
         ]
 
-        # Update the shadows with the candidate's None-resolved values so the
-        # hot loops (task_manager/watchdog) see the new settings immediately.
-        # The reloadable values are always explicit, so the resolution here
-        # degenerates to the value itself; it mirrors __init__ for safety.
-        self.__max_concurrent_tasks = (
-            candidate.max_concurrent_tasks
-            if candidate.max_concurrent_tasks is not None
-            else (max(1, os.cpu_count() or 1) if candidate.auto_tune else DEFAULT_MAX_CONCURRENT_TASKS)
-        )
-        self.__task_timeout = candidate.task_timeout if candidate.task_timeout is not None else DEFAULT_TASK_TIMEOUT
-        self.__task_queue_fetch_timeout = (
-            candidate.task_queue_fetch_timeout
-            if candidate.task_queue_fetch_timeout is not None
-            else DEFAULT_TASK_QUEUE_FETCH_TIMEOUT
-        )
-        self.__task_cancellation_timeout = (
-            candidate.task_cancellation_timeout
-            if candidate.task_cancellation_timeout is not None
-            else DEFAULT_TASK_CANCELLATION_TIMEOUT
-        )
+        # The reloadable values are always explicit, so this resolution
+        # degenerates to the value itself; it mirrors __init__ for safety and
+        # produces the single effective snapshot. `_config` and `_effective`
+        # are written together (no await between them) in __init__ and here.
+        effective = resolve_reloadable_settings(candidate)
         self._config = candidate
+        self._effective = effective
         return changed
 
     def _write_local_config(self) -> ConfigStoreOutcome:
@@ -474,8 +419,7 @@ class TaskProcessor(BasicWorker):
         ``DEFAULT_MANAGER_SLEEP_TIME``; a non-``None`` value is validated against
         ``[MIN_MANAGER_SLEEP_TIME, MAX_MANAGER_SLEEP_TIME]`` at construction.
         """
-        v = cast(TaskProcessorConfig, self._config).task_manager_sleep_time
-        return v if v is not None else DEFAULT_MANAGER_SLEEP_TIME
+        return self._effective.task_manager_sleep_time
 
     @property
     def task_queue_manager_sleep_time(self) -> float:
@@ -485,8 +429,7 @@ class TaskProcessor(BasicWorker):
         ``DEFAULT_MANAGER_SLEEP_TIME``; a non-``None`` value is validated against
         ``[MIN_MANAGER_SLEEP_TIME, MAX_MANAGER_SLEEP_TIME]`` at construction.
         """
-        v = cast(TaskProcessorConfig, self._config).task_queue_manager_sleep_time
-        return v if v is not None else DEFAULT_MANAGER_SLEEP_TIME
+        return self._effective.task_queue_manager_sleep_time
 
     @property
     def task_handler_start_timeout(self) -> float:
@@ -501,8 +444,7 @@ class TaskProcessor(BasicWorker):
         Returns:
             The current task handler start timeout in seconds.
         """
-        v = cast(TaskProcessorConfig, self._config).task_handler_start_timeout
-        return v if v is not None else DEFAULT_TASK_HANDLER_START_TIMEOUT
+        return self._effective.task_handler_start_timeout
 
     @property
     def task_handler_stop_timeout(self) -> float:
@@ -517,8 +459,7 @@ class TaskProcessor(BasicWorker):
         Returns:
             The current task handler stop timeout in seconds.
         """
-        v = cast(TaskProcessorConfig, self._config).task_handler_stop_timeout
-        return v if v is not None else DEFAULT_TASK_HANDLER_STOP_TIMEOUT
+        return self._effective.task_handler_stop_timeout
 
     def add_task_handler(
         self,
@@ -752,7 +693,7 @@ class TaskProcessor(BasicWorker):
             # cancellation.
             await asyncio.wait(
                 [tracker.worker_task],
-                timeout=self.__task_cancellation_timeout,
+                timeout=self._effective.task_cancellation_timeout,
             )
             if tracker.worker_task.done():
                 return "cancelled"
@@ -892,7 +833,7 @@ class TaskProcessor(BasicWorker):
                 # swallows cancellation, hanging shutdown.
                 await asyncio.wait(
                     [task_tracker.worker_task],
-                    timeout=self.__task_cancellation_timeout,
+                    timeout=self._effective.task_cancellation_timeout,
                 )
                 if task_tracker.worker_task.done() and task_tracker.data.canceled_action == "requeue":
                     self.logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
@@ -1071,7 +1012,7 @@ class TaskProcessor(BasicWorker):
         if len(self._task_lifecycle.trackers()) < self.max_concurrent_tasks:
             try:
                 task_id, task_data = await asyncio.wait_for(
-                    self.__task_queue.get(), timeout=self.__task_queue_fetch_timeout
+                    self.__task_queue.get(), timeout=self._effective.task_queue_fetch_timeout
                 )
                 task = asyncio.create_task(handle_task(task_id, task_data))
                 self._task_lifecycle.register(
@@ -1143,7 +1084,7 @@ class TaskProcessor(BasicWorker):
         for task_id, task_tracker in self._task_lifecycle.trackers().items():
             timeout = task_tracker.data.timeout.timeout
             if timeout is None:
-                timeout = self.__task_timeout
+                timeout = self._effective.task_timeout
             # A non-positive timeout means "no timeout": the watchdog never
             # cancels the task (timeout <= 0 is treated as unbounded).
             if timeout > 0 and (now - task_tracker.started) > timeout and not task_tracker.worker_task.done():
@@ -1162,7 +1103,7 @@ class TaskProcessor(BasicWorker):
                 self._task_lifecycle.mark_cancelled(task_id, "timeout")
                 await asyncio.wait(
                     [task_tracker.worker_task],
-                    timeout=self.__task_cancellation_timeout,
+                    timeout=self._effective.task_cancellation_timeout,
                 )
                 if task_tracker.worker_task.done():
                     # The handler actually stopped; handle_task's finally has

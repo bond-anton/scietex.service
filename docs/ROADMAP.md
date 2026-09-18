@@ -28,6 +28,11 @@ is the service-side extension point.
 See [docs/design/remote_config.md](design/remote_config.md) and
 [docs/remote_config.md](remote_config.md).
 
+**Follow-up (v4.5.0):** AR-100 — the eight reloadable fields now resolve through
+a single pure `resolve_reloadable_settings` into one `self._effective` snapshot
+on `TaskProcessor`; the private reloadable shadows and the duplicated
+`None`/`auto_tune` resolution are removed. No public API change.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

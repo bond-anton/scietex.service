@@ -1,12 +1,25 @@
 """Tests for the typed worker configuration objects (AR-046)."""
 
 import logging
+import os
 from pathlib import Path
 
 import msgspec
 import pytest
 
-from scietex.service.config import TaskProcessorConfig, WorkerConfig
+from scietex.service.config import (
+    DEFAULT_MANAGER_SLEEP_TIME,
+    DEFAULT_MAX_CONCURRENT_TASKS,
+    DEFAULT_TASK_CANCELLATION_TIMEOUT,
+    DEFAULT_TASK_HANDLER_START_TIMEOUT,
+    DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+    DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
+    DEFAULT_TASK_TIMEOUT,
+    TaskProcessorConfig,
+    WorkerConfig,
+    resolve_reloadable_settings,
+)
+from scietex.service.config_reload import ReloadableSettings
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
 
@@ -168,6 +181,77 @@ def test_config_is_immutable():
     cfg = WorkerConfig()
     with pytest.raises(AttributeError):
         setattr(cfg, "heartbeat_interval", 5)
+
+
+# --------------------------------------------------------------------------- #
+# resolve_reloadable_settings (AR-100).
+# --------------------------------------------------------------------------- #
+
+
+def _default_settings() -> ReloadableSettings:
+    """The ReloadableSettings a fully-default config must resolve to."""
+    return ReloadableSettings(
+        max_concurrent_tasks=DEFAULT_MAX_CONCURRENT_TASKS,
+        task_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
+        task_queue_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
+        task_handler_start_timeout=DEFAULT_TASK_HANDLER_START_TIMEOUT,
+        task_handler_stop_timeout=DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+        task_timeout=DEFAULT_TASK_TIMEOUT,
+        task_queue_fetch_timeout=DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
+        task_cancellation_timeout=DEFAULT_TASK_CANCELLATION_TIMEOUT,
+    )
+
+
+def test_resolve_reloadable_settings_all_none_uses_defaults():
+    """A fully-default config resolves every field to its DEFAULT_* constant."""
+    assert resolve_reloadable_settings(TaskProcessorConfig()) == _default_settings()
+
+
+def test_resolve_reloadable_settings_explicit_values_win():
+    """Explicit values pass through unchanged."""
+    cfg = TaskProcessorConfig(
+        max_concurrent_tasks=7,
+        task_manager_sleep_time=0.5,
+        task_queue_manager_sleep_time=0.6,
+        task_handler_start_timeout=11.0,
+        task_handler_stop_timeout=12.0,
+        task_timeout=13.0,
+        task_queue_fetch_timeout=14.0,
+        task_cancellation_timeout=15.0,
+    )
+    assert resolve_reloadable_settings(cfg) == ReloadableSettings(
+        max_concurrent_tasks=7,
+        task_manager_sleep_time=0.5,
+        task_queue_manager_sleep_time=0.6,
+        task_handler_start_timeout=11.0,
+        task_handler_stop_timeout=12.0,
+        task_timeout=13.0,
+        task_queue_fetch_timeout=14.0,
+        task_cancellation_timeout=15.0,
+    )
+
+
+def test_resolve_reloadable_settings_unbounded_task_timeout_preserved():
+    """A non-positive task_timeout is the unbounded sentinel, not the default."""
+    resolved = resolve_reloadable_settings(TaskProcessorConfig(task_timeout=0))
+    assert resolved.task_timeout == 0
+    assert resolved.task_timeout != DEFAULT_TASK_TIMEOUT
+
+
+def test_resolve_reloadable_settings_auto_tune_logs_info(caplog):
+    """auto_tune with no explicit max derives from the CPU count and logs the
+    INFO line once (logger=None stays silent)."""
+    logger = logging.getLogger("scietex.service.tests.resolve")
+    with caplog.at_level(logging.INFO):
+        resolved = resolve_reloadable_settings(TaskProcessorConfig(auto_tune=True), logger=logger)
+    assert resolved.max_concurrent_tasks == max(1, os.cpu_count() or 1)
+    assert "Auto-tuned max_concurrent_tasks to" in caplog.text
+
+    # logger=None is pure: no logging output.
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        resolve_reloadable_settings(TaskProcessorConfig(auto_tune=True))
+    assert "Auto-tuned max_concurrent_tasks to" not in caplog.text
 
 
 def test_valkey_worker_config_task_fetch_batch_size_raises_below_one():

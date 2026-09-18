@@ -624,8 +624,8 @@ def test_show_never_contains_connection_config(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_apply_reloadable_config_swaps_config_and_shadows(tmp_path):
-    """Valid settings swap ``_config`` and the re-shadowed fields; the changed
+def test_apply_reloadable_config_swaps_config_and_effective(tmp_path):
+    """Valid settings swap ``_config`` and ``_effective`` together; the changed
     list names only the fields that actually moved."""
     proc = make_processor(tmp_path)
     changed = proc._apply_reloadable_config(make_settings(max_concurrent_tasks=7, task_timeout=9.0))
@@ -640,14 +640,17 @@ def test_apply_reloadable_config_swaps_config_and_shadows(tmp_path):
 
 def test_apply_reloadable_config_out_of_range_raises_and_preserves_state(tmp_path):
     """An out-of-range value is rejected before any mutation, leaving ``_config``
-    and the shadows untouched."""
+    and the effective settings untouched."""
     proc = make_processor(tmp_path)
     before = proc._config
+    before_effective = proc._effective
 
     with pytest.raises(msgspec.ValidationError):
         proc._apply_reloadable_config(make_settings(max_concurrent_tasks=0))
 
     assert proc._config is before
+    assert proc._effective is before_effective
+    assert proc._current_reloadable_settings() == before_effective
     assert cast(TaskProcessorConfig, proc._config).max_concurrent_tasks == 4
     assert proc.max_concurrent_tasks == 4
 
@@ -701,3 +704,54 @@ async def test_apply_unknown_section_rejected(tmp_path):
 
     assert outcome.applied is False
     assert outcome.error_code == UNKNOWN_CONFIG_SECTION
+
+
+# --------------------------------------------------------------------------- #
+# Effective-config collapse (AR-100).
+# --------------------------------------------------------------------------- #
+
+
+def test_reload_updates_every_read_path_atomically(tmp_path):
+    """A distinct apply updates ``_effective``, the five public properties, and
+    the decoded ``config:show`` core in one shot — every read path agrees."""
+    proc = make_processor(tmp_path, remote_config_enabled=True)
+    distinct = make_settings(
+        max_concurrent_tasks=11,
+        task_manager_sleep_time=0.5,
+        task_queue_manager_sleep_time=0.6,
+        task_handler_start_timeout=7.0,
+        task_handler_stop_timeout=8.0,
+        task_timeout=9.0,
+        task_queue_fetch_timeout=3.0,
+        task_cancellation_timeout=10.0,
+    )
+
+    changed = proc._apply_reloadable_config(distinct)
+
+    assert set(changed) == set(RELOADABLE_FIELDS)
+    eff = proc._effective
+    assert eff.max_concurrent_tasks == proc.max_concurrent_tasks
+    assert eff.task_manager_sleep_time == proc.task_manager_sleep_time
+    assert eff.task_queue_manager_sleep_time == proc.task_queue_manager_sleep_time
+    assert eff.task_handler_start_timeout == proc.task_handler_start_timeout
+    assert eff.task_handler_stop_timeout == proc.task_handler_stop_timeout
+
+    decoded = msgspec.msgpack.decode(proc._config_show(False).settings, type=ConfigSections)
+    assert decoded.core == proc._current_reloadable_settings()
+    assert decoded.core == eff
+
+
+def test_auto_tune_effective_matches_show(tmp_path):
+    """auto_tune concurrency agrees across the property, the effective snapshot,
+    and ``config:show`` while ``_config`` keeps its declarative ``None``."""
+    proc = make_processor(
+        tmp_path,
+        remote_config_enabled=True,
+        auto_tune=True,
+        max_concurrent_tasks=None,
+    )
+    decoded = msgspec.msgpack.decode(proc._config_show(False).settings, type=ConfigSections)
+
+    assert proc.max_concurrent_tasks == proc._current_reloadable_settings().max_concurrent_tasks
+    assert proc._current_reloadable_settings().max_concurrent_tasks == decoded.core.max_concurrent_tasks
+    assert cast(TaskProcessorConfig, proc._config).max_concurrent_tasks is None
