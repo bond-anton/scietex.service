@@ -4,6 +4,30 @@ Planned work for future major versions. Items here are **not** committed to a
 release date; they are tracked so architectural decisions made in earlier
 versions are not lost. Each entry cites the review finding that motivated it.
 
+## v4.5.0 — Remote configuration
+
+**Motivation:** operators change worker behaviour by editing `valkey.yml`/
+`mqtt.yml` or redeploying code; task-processing fields (timeouts, concurrency,
+cadence) live only in the `TaskProcessorConfig` constructor. A
+transport-delivered configuration channel plus three operator commands
+(`config:apply`, `config:store`, `config:show`) lets a running worker be
+reconfigured without a restart.
+
+**Decision (v4.5.0):** add a transport-agnostic `ConfigReloader` (core) owning
+the validate-before-swap apply/reload/store/show pipeline, with one durable
+desired-state location per transport — Valkey key `scietex:{service}:config`
+(`GET`/`SET`) and MQTT retained topic `scietex/{service}/config`. Only the eight
+core fields in `RELOADABLE_FIELDS` are hot-reloadable; everything else is
+restart-required. Opt-in via `TaskProcessorConfig.remote_config_enabled`
+(default `False`). Precedence at startup: constructor config < `config.yml` <
+remote source; an invalid remote config never fails startup
+(availability-first). `register_config_settings(name, struct_type, apply=...)`
+is the service-side extension point.
+
+**Status: implemented** (v4.5.0, merged to `main`).
+See [docs/design/remote_config.md](design/remote_config.md) and
+[docs/remote_config.md](remote_config.md).
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

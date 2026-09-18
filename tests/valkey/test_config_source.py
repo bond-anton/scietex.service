@@ -18,6 +18,7 @@ from scietex.service.config_reload import (
     encode_config_envelope,
     write_local_config,
 )
+from scietex.service.valkey._glide import GlideClient
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 from scietex.service.valkey.config_source import ValkeyConfigSource
 
@@ -45,7 +46,11 @@ def _settings(**overrides) -> ReloadableSettings:
 
 
 def _source(client: DummyClient, *, key: str = _CONFIG_KEY) -> ValkeyConfigSource:
-    return ValkeyConfigSource(client=client, key=key, logger=logging.getLogger("test_config_source"))
+    return ValkeyConfigSource(
+        client_provider=lambda: cast(GlideClient, client),
+        key=key,
+        logger=logging.getLogger("test_config_source"),
+    )
 
 
 # --- source unit tests ------------------------------------------------------
@@ -90,6 +95,56 @@ async def test_load_propagates_client_error():
 
     with pytest.raises(RuntimeError):
         await source.load()
+
+
+@pytest.mark.asyncio
+async def test_source_follows_reconnected_client():
+    """AR-103: the source reads the *current* client, not the one captured at
+    construction, so a reconnect that swaps the client keeps remote config
+    working."""
+    stale = DummyClient(get_value=b"stale")
+    current = DummyClient(get_value=b"current")
+    holder: dict[str, DummyClient] = {"client": stale}
+    source = ValkeyConfigSource(
+        client_provider=lambda: cast(GlideClient, holder["client"]),
+        key=_CONFIG_KEY,
+        logger=logging.getLogger("test_config_source"),
+    )
+
+    assert await source.load() == b"stale"
+
+    holder["client"] = current  # simulate _reconnect() swapping the client
+
+    assert await source.load() == b"current"
+    assert stale.gets == [_CONFIG_KEY]
+    assert current.gets == [_CONFIG_KEY]
+
+
+@pytest.mark.asyncio
+async def test_load_returns_none_when_disconnected():
+    """A disconnected worker (provider yields ``None``) makes ``load`` a no-op
+    returning ``None`` rather than raising on a closed client."""
+    source = ValkeyConfigSource(
+        client_provider=lambda: None,
+        key=_CONFIG_KEY,
+        logger=logging.getLogger("test_config_source"),
+    )
+
+    assert await source.load() is None
+
+
+@pytest.mark.asyncio
+async def test_store_raises_when_disconnected():
+    """``store`` cannot silently no-op while disconnected; it raises so the
+    reloader maps the failure to ``CONFIG_STORE_FAILED``."""
+    source = ValkeyConfigSource(
+        client_provider=lambda: None,
+        key=_CONFIG_KEY,
+        logger=logging.getLogger("test_config_source"),
+    )
+
+    with pytest.raises(RuntimeError):
+        await source.store(b"envelope-bytes")
 
 
 # --- worker startup tests ---------------------------------------------------

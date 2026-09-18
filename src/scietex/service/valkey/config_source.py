@@ -11,7 +11,7 @@ the desired-state envelope, ``store`` writes the effective config back.
 
 import logging
 
-from ._glide import GlideClient
+from ._glide import ClientProvider
 
 
 class ValkeyConfigSource:
@@ -22,17 +22,26 @@ class ValkeyConfigSource:
     Connection errors are not swallowed: they propagate to the reloader, which
     maps them to ``CONFIG_SOURCE_UNAVAILABLE``. ``store`` writes an envelope
     back with ``SET`` (used by ``config:store`` targeting ``remote``).
+
+    The client is late-bound through ``client_provider`` so a reconnect that
+    swaps the underlying ``GlideClient`` is picked up on the next call (AR-103).
     """
 
-    def __init__(self, *, client: GlideClient, key: str, logger: logging.Logger) -> None:
-        self._client = client
+    def __init__(self, *, client_provider: ClientProvider, key: str, logger: logging.Logger) -> None:
+        self._client_provider = client_provider
         self._key = key
         self._logger = logger
 
     async def load(self) -> bytes | None:
         """Read the desired-state envelope, or ``None`` when the key is absent."""
-        return await self._client.get(self._key)
+        client = self._client_provider()
+        if client is None:
+            return None
+        return await client.get(self._key)
 
     async def store(self, envelope: bytes) -> None:
         """Write the desired-state envelope back to the durable key."""
-        await self._client.set(self._key, value=envelope)
+        client = self._client_provider()
+        if client is None:
+            raise RuntimeError("Valkey client is not connected; cannot store config")
+        await client.set(self._key, value=envelope)

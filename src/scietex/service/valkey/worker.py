@@ -489,7 +489,11 @@ class ValkeyWorker(TaskProcessor):
         # Attach the durable-key source now that the client exists, then apply
         # the local snapshot and the remote source of truth. Startup must not
         # fail on a bad or unreachable remote config (availability-first).
-        self._config_source = ValkeyConfigSource(client=client, key=self._config_key, logger=self.logger)
+        self._config_source = ValkeyConfigSource(
+            client_provider=lambda: self._client,
+            key=self._config_key,
+            logger=self.logger,
+        )
         await self._apply_local_config()
         await self._reload_remote_config()
 
