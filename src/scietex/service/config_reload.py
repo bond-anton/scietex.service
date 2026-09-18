@@ -38,7 +38,7 @@ import tempfile
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import msgspec
 
@@ -315,7 +315,7 @@ class ConfigReloader:
         self._applied_hash: str = ""
         self._source: str = "default"
         # section name -> (struct type, apply hook)
-        self._sections: dict[str, tuple[type[msgspec.Struct], Callable[[object], None]]] = {}
+        self._sections: dict[str, tuple[type[msgspec.Struct], Callable[[Any], None]]] = {}
         # section name -> last-applied raw bytes, captured for store/show.
         self._section_raw: dict[str, bytes] = {}
 
@@ -323,7 +323,7 @@ class ConfigReloader:
         self,
         name: str,
         struct_type: type[msgspec.Struct],
-        apply: Callable[[object], None],
+        apply: Callable[[Any], None],
     ) -> None:
         """Register a service settings struct and its apply hook.
 

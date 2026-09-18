@@ -257,7 +257,7 @@ class TaskResult(msgspec.Struct, frozen=True):
 | `processed_at` | `datetime` | current UTC | Timestamp when result was created |
 | `payload` | `bytes` | `b""` | Optional result payload |
 | `error_code` | `str` | `""` | Structured error taxonomy code (e.g. `"PERMANENT"` or `"TRANSIENT"`, or a domain-specific code). Empty means unset |
-| `retryable` | `bool` | `False` | The single retry signal: whether the failure is transient and may succeed on retry. `True` triggers the framework's one retry |
+| `retryable` | `bool` | `False` | The single retry signal: whether the failure is transient and may succeed on retry. `True` triggers the framework's one retry; a second consecutive retryable failure is acked terminal |
 | `partial` | `bool` | `False` | Whether partial progress was made before the error |
 
 The error-taxonomy fields (`error_code`, `retryable`, `partial`) all
@@ -483,6 +483,10 @@ The processor distinguishes failure outcomes via `process_task()`:
 - A handler that **returns** its own `TaskResult` controls `retryable`
   (which defaults to `False`). Set `retryable=True` on transient errors
   that may succeed on retry.
+- The framework grants **at most one error-path retry per task id**. A
+  second consecutive `retryable=True` failure is acked as **terminal**
+  with `retryable=False` (and a warning logged) instead of being
+  requeued again.
 - Framework failures (empty `task` field, no matching handler) are
   permanent and leave `retryable=False`.
 

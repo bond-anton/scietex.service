@@ -297,8 +297,10 @@ channel is introduced.
 `retryable=False`; validation failure ⇒ `INVALID_CONFIG`, `retryable=False`;
 unknown section ⇒ `UNKNOWN_CONFIG_SECTION`, `retryable=False`; source
 unreachable ⇒ `CONFIG_SOURCE_UNAVAILABLE`, `retryable=True` (opts into the
-framework's single retry, `task_processor.py:744-761`); remote config disabled ⇒
-`REMOTE_CONFIG_DISABLED`, `retryable=False`.
+framework's single retry, enforced as a per-task-id budget in
+`handle_task`'s `finally` — `task_processor.py:1004-1046`; a second consecutive
+retryable failure is acked terminal with `retryable=False`); remote config
+disabled ⇒ `REMOTE_CONFIG_DISABLED`, `retryable=False`.
 
 ---
 

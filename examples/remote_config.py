@@ -95,7 +95,17 @@ class ConfigDemoWorker(MqttWorker):
     def __init__(self, config: MqttWorkerConfig | None = None, *, client_factory=None) -> None:
         super().__init__(config, client_factory=client_factory)
         self._demo_settings: DemoServiceSettings | None = None
+        #: Set once the worker has subscribed to the task and config topics.
+        #: ``BasicWorker.start()`` returns before startup completes, so an
+        #: operator must wait on this before publishing non-retained tasks.
+        self.subscribed = asyncio.Event()
         self.register_config_settings(DEMO_SECTION, DemoServiceSettings, apply=self._apply_demo_settings)
+
+    async def _start_intake(self) -> bool:
+        started = await super()._start_intake()
+        if started:
+            self.subscribed.set()
+        return started
 
     @property
     def demo_settings(self) -> DemoServiceSettings | None:
@@ -136,23 +146,27 @@ async def submit_command(
         qos=2,
         properties=props,
     )
-    deadline = asyncio.get_running_loop().time() + timeout
-    async for message in client.messages:
-        if asyncio.get_running_loop().time() > deadline:
-            print(f"Timed out waiting for {task_type} reply ({task_id})")
-            return None
-        try:
-            status = msgspec.msgpack.decode(message.payload, type=TaskStatus)
-        except msgspec.DecodeError:
-            continue
-        if status.task_id != str(task_id):
-            continue
-        if status.status == "completed":
-            return status.result
-        if status.status in {"failed", "cancelled"}:
-            print(f"{task_type} -> {status.status}: {status.error or status.error_code}")
-            return None
-    return None
+
+    async def _await_reply() -> bytes | None:
+        async for message in client.messages:
+            try:
+                status = msgspec.msgpack.decode(message.payload, type=TaskStatus)
+            except msgspec.DecodeError:
+                continue
+            if status.task_id != str(task_id):
+                continue
+            if status.status == "completed":
+                return status.result
+            if status.status in {"failed", "cancelled"}:
+                print(f"{task_type} -> {status.status}: {status.error or status.error_code}")
+                return None
+        return None
+
+    try:
+        return await asyncio.wait_for(_await_reply(), timeout=timeout)
+    except TimeoutError:
+        print(f"Timed out waiting for {task_type} reply ({task_id})")
+        return None
 
 
 def _print_worker_state(worker: ConfigDemoWorker) -> None:
@@ -189,6 +203,10 @@ async def run(host: str, port: int, service_name: str) -> None:
             )
         )
         await worker.start()
+        # start() returns before startup completes; wait until the worker has
+        # subscribed, otherwise the non-retained command tasks below are
+        # published to a topic with no subscriber and the broker drops them.
+        await worker.subscribed.wait()
 
         # A separate client acts as the operator: it publishes the desired
         # state and the three commands, and reads each command's reply from its
@@ -221,8 +239,9 @@ async def run(host: str, port: int, service_name: str) -> None:
             _print_worker_state(worker)
 
             # (b) config:apply — no inline payload, so the worker re-reads the
-            # retained source of truth. The QoS-1 ack above guarantees the
-            # broker forwarded it to the worker before this publish.
+            # retained source of truth. The retained publish above is delivered
+            # on the worker's existing subscription, so the snapshot is already
+            # recorded by the time this command is processed.
             payload = await submit_command(
                 operator,
                 CONFIG_APPLY_TASK_TYPE,

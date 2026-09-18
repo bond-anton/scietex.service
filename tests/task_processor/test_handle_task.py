@@ -18,6 +18,7 @@ from ._helpers import (
     RecordingProcessor,
     RequeueRecordingProcessor,
     RetryableErrorHandler,
+    RetryCycleProcessor,
 )
 
 
@@ -102,6 +103,39 @@ async def test_handle_task_requeues_retryable_error_before_ack():
         _, _, cresult = proc.completed[0]
         assert cresult.status == "error"
         assert cresult.retryable is True
+        # The single retry was consumed and is awaiting redelivery.
+        assert proc._retry_attempts == {t_id: 1}
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+@pytest.mark.asyncio
+async def test_retryable_error_retries_once_then_acks_terminal():
+    """AR-022 v4: a retryable error is requeued exactly once; the second
+    consecutive retryable failure is acked as terminal with retryable=False
+    (the transports leave a retryable entry pending, so the terminal ack must
+    not present it as retryable)."""
+    proc = RetryCycleProcessor()
+    proc.add_task_handler(RetryableErrorHandler)
+    await proc._start_task_handler("RetryableErrorHandler")
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(t_id, TaskData(task="retryable_err", payload=b"{}"))
+        for _ in range(300):
+            if len(proc.completed) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        # Give any (buggy) third cycle a chance to appear before asserting.
+        await asyncio.sleep(0.05)
+        assert len(proc.requeued) == 1
+        assert proc.requeued[0][0] == t_id
+        assert len(proc.completed) == 2
+        assert proc.completed[0][2].retryable is True
+        assert proc.completed[1][2].retryable is False
+        # Budget cleared on the terminal ack: no leak.
+        assert proc._retry_attempts == {}
     finally:
         await proc.exit()
         await proc.events["exit"].wait()
@@ -123,6 +157,7 @@ async def test_handle_task_drops_permanent_error_without_requeue():
             await asyncio.sleep(0.01)
         assert len(proc.completed) == 1
         assert not any(tid == t_id for tid, _ in proc.requeued)
+        assert proc._retry_attempts == {}
     finally:
         await proc.exit()
         await proc.events["exit"].wait()

@@ -269,6 +269,19 @@ class RequeueRecordingProcessor(RecordingProcessor):
         self.requeued.append((task_id, task_data))
 
 
+class RetryCycleProcessor(RecordingProcessor):
+    """Processor that exercises the full retry cycle through the transport.
+
+    Unlike :class:`RequeueRecordingProcessor`, it keeps the default
+    ``return_task_to_queue`` and delegates ``fetch_tasks`` to the transport, so
+    a requeued task is actually redelivered and re-handled — the only way to
+    observe the AR-022 v4 retry budget end to end.
+    """
+
+    async def fetch_tasks(self) -> bool:
+        return await self._transport.fetch(self)
+
+
 class DurableProcessor(TaskProcessor):
     """A processor whose transport keeps items pending after enqueue (e.g. a
     Valkey stream), so drained tasks must NOT be re-enqueued on shutdown —

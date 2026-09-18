@@ -701,6 +701,12 @@ produces:
 - A handler that **returns** its own `TaskResult` controls `retryable`
   (which defaults to `False`). Set `retryable=True` on transient errors
   to trigger the framework's single retry.
+- The framework grants **at most one error-path retry per task id**. A
+  second consecutive `retryable=True` failure is acked as **terminal**
+  with `retryable=False` (and a warning logged), so a handler cannot
+  requeue a task indefinitely. The budget is in-memory and
+  per-execution, and does not cover the watchdog's timeout-driven
+  requeue.
 - Framework failures (empty `task` field, no matching handler) are
   permanent and leave `retryable=False`.
 

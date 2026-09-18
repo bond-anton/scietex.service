@@ -90,9 +90,11 @@ handler's work terminates (see F1 destination note).
 ## F3. Requeue / retry flow
 
 **Source/trigger:** (a) watchdog timeout, (b) worker shutdown drain, (c) task
-cancellation during cleanup, (d) retry-once via `TaskResult.retryable` (an
-error result with `retryable=True` is requeued in `handle_task`'s `finally`
-before acking — see F1).
+cancellation during cleanup, (d) capped error-path retry via
+`TaskResult.retryable` (an error result with `retryable=True` is requeued in
+`handle_task`'s `finally` before acking, at most once per task id; a second
+consecutive retryable failure is acked terminal with `retryable=False` — see
+F1).
 
 **Path:** `TaskProcessor.watchdog` (838) cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or the configured `task_timeout`, default
@@ -115,7 +117,12 @@ confirmed stopped, when `canceled_action == "requeue"`.
 **Note:** requeue via `XADD` appends to the **tail** of the stream — original
 ordering is not preserved. The original entry is acknowledged by
 `handle_task`'s `finally` when the handler stops, so a requeued task yields
-exactly one retry copy (see §H8 for the swallowed-cancellation caveat).
+exactly one retry copy (see §H8 for the swallowed-cancellation caveat). The
+error-path budget is exactly one requeue then terminal: the per-task-id counter
+is in-memory and per-execution, so a durable transport redelivering a
+previously-requeued task after a restart starts a fresh budget. The watchdog's
+timeout-driven requeue (`timeout_action == "requeue"`) is a separate axis and is
+not gated by this budget.
 
 ## F4. Handler dispatch (selection)
 

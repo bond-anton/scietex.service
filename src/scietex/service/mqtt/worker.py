@@ -35,12 +35,7 @@ from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
 from .config_source import MqttConfigSource
 from .inbox import FileMqttInbox, MemoryInbox, MqttInbox
 from .logging import logging_handler_config
-from .transport import MqttTransport
-
-#: MQTT 5 user property carrying the task id alongside the envelope payload
-#: (design §10 #2). The envelope stays the pure wire format; the id travels
-#: here because the MQTT transport cannot read it from a stream entry key.
-TASK_ID_PROPERTY: str = "scietex-task-id"
+from .transport import TASK_ID_PROPERTY, MqttTransport
 
 #: QoS for the retained heartbeat/registry messages. Retained liveness should
 #: be at-least-once so the marker is reliably set; each beat refreshes it.
@@ -730,7 +725,7 @@ class MqttWorker(TaskProcessor):
         (the inbox write precedes any enqueue via the transport's next poll) and
         a task is never enqueued twice (design §3.2).
         """
-        if message.topic == self._config_topic:
+        if str(message.topic) == self._config_topic:
             self._mqtt_config_source.record(message.payload)
             return
         task_id = self._extract_task_id(message)

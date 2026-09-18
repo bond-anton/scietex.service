@@ -94,8 +94,9 @@ class TaskResult(msgspec.Struct, frozen=True):
             means unset.
         retryable: The single retry signal: whether a failure is
             transient and may succeed on retry. ``True`` triggers the
-            framework's one retry. A handler that raises is treated as
-            permanent (``False``).
+            framework's one retry; a second consecutive retryable
+            failure is acked as terminal. A handler that raises is
+            treated as permanent (``False``).
         partial: Whether partial progress was made before the error.
 
     All error-taxonomy fields are optional and default to "no extra

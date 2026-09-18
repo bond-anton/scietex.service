@@ -34,7 +34,15 @@ from ._aiomqtt import PacketTypes, Properties
 from .config import MqttWorkerConfig
 from .inbox import MqttInbox
 
-__all__ = ["MqttPublish", "MqttTransport"]
+__all__ = ["MqttPublish", "MqttTransport", "TASK_ID_PROPERTY"]
+
+
+#: MQTT 5 user property carrying the task id alongside the envelope payload
+#: (design §10 #2). The envelope stays the pure wire format; the id travels
+#: here because the MQTT transport cannot read it from a stream entry key.
+#: Defined here because both the worker's message loop and the transport's
+#: requeue publish must agree on it.
+TASK_ID_PROPERTY: str = "scietex-task-id"
 
 
 # The worker owns the aiomqtt connection, so the publish seam is this injected
@@ -305,11 +313,23 @@ class MqttTransport:
         redelivers it. The inbox entry is left non-terminal, so it is also
         redelivered by recovery after a crash.
 
+        The re-published message carries the ``scietex-task-id`` user property,
+        exactly as a submitter's publish does: the worker's own message loop
+        rejects any message without it, so omitting it would make the retry
+        copy a no-op.
+
         The task is then re-advertised as ``queued`` (design §13.4), and its
         progress throttle is dropped without flushing: the fresh run that
         starts on redelivery should not inherit a stale progress value.
         """
-        await self._publish(self._topic, encode_task_envelope(task_data), self._config.task_qos)
+        properties = Properties(PacketTypes.PUBLISH)
+        properties.UserProperty = [(TASK_ID_PROPERTY, str(task_id))]
+        await self._publish(
+            self._topic,
+            encode_task_envelope(task_data),
+            self._config.task_qos,
+            properties=properties,
+        )
         self._progress.pop(task_id, None)
         await self._publish_status(task_id, task_data, "queued")
 

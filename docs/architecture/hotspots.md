@@ -288,9 +288,15 @@ redundant `retry_count`/`requeue` fields are dropped. `process_task` treats a
 handler that *raises* as permanent (`retryable=False`) and passes a
 handler-returned `TaskResult` through unchanged; framework-level failures
 (empty `task` field, no matching handler) remain permanent. `handle_task`
-executes a single retry: a `retryable=True` error is requeued via
-`return_task_to_queue` before the transport entry is acked (XADD then XACK);
-permanent errors are acked and dropped. Registration keys handlers by the
+executes at most one error-path retry, tracked by an in-memory per-task-id
+budget (`_MAX_TASK_RETRIES = 1`, `self._retry_attempts`): a first
+`retryable=True` error is requeued via `return_task_to_queue` before the
+transport entry is acked (XADD then XACK); a second consecutive retryable
+failure is acked as **terminal** with `retryable=False` (via
+`msgspec.structs.replace`) and a WARNING, so a durable transport does not leave
+the entry pending for a retry that will never come; permanent errors are acked
+and dropped. The watchdog's timeout-driven requeue is a separate axis and is not
+gated by this budget. Registration keys handlers by the
 resolved handler name: `add_task_handler` takes the handler class plus an
 optional keyword-only `name`, defaulting to `handler_class.__name__` as the
 lifecycle key (single instance per resolved key, a duplicate resolved name

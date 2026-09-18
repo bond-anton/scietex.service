@@ -11,7 +11,7 @@ import pytest
 from scietex.service.health import TransportHealth
 from scietex.service.mqtt._aiomqtt import MqttError, Properties
 from scietex.service.mqtt.config import MqttWorkerConfig
-from scietex.service.mqtt.transport import MqttPublish, MqttTransport
+from scietex.service.mqtt.transport import TASK_ID_PROPERTY, MqttPublish, MqttTransport
 from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus
 from scietex.service.task_handler.wire import encode_task_envelope
 
@@ -266,10 +266,15 @@ async def test_requeue_publishes_encoded_envelope_and_leaves_entry_pending():
 
     await transport.requeue(t1, d1)
 
-    # The envelope re-publish carries no properties (no expiry); the follow-up
-    # ``queued`` status is retained and carries the message-expiry property.
+    # The envelope re-publish carries the task-id user property (without it the
+    # worker's own message loop would reject the retry copy) and no expiry; the
+    # follow-up ``queued`` status is retained and carries the message-expiry
+    # property.
     assert len(published) == 2
-    assert published[0] == (_TOPIC, encode_task_envelope(d1), 1, False, None)
+    topic, payload, qos, retain, envelope_properties = published[0]
+    assert (topic, payload, qos, retain) == (_TOPIC, encode_task_envelope(d1), 1, False)
+    assert envelope_properties is not None
+    assert envelope_properties.UserProperty == [(TASK_ID_PROPERTY, str(t1))]
     queued_properties = published[1][4]
     assert queued_properties is not None
     assert queued_properties.MessageExpiryInterval == 86400

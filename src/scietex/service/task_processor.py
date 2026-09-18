@@ -12,7 +12,7 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
 import msgspec
@@ -60,6 +60,10 @@ from .task_handler import (
 )
 from .task_lifecycle import TaskLifecycle
 from .transport import InMemoryTransport, TaskTransport
+
+#: AR-022 v4: the framework grants exactly one error-path retry per task id.
+#: A second consecutive retryable failure is acked as terminal.
+_MAX_TASK_RETRIES: int = 1
 
 
 class TaskProcessor(BasicWorker):
@@ -110,6 +114,10 @@ class TaskProcessor(BasicWorker):
         """
         super().__init__(config)
         self._task_lifecycle = TaskLifecycle()
+        # Error-path retry budget per task id (AR-022 v4: exactly one retry).
+        # Keyed by the stable task id so it survives the requeue -> dequeue ->
+        # re-handle cycle, unlike a per-attempt tracker.
+        self._retry_attempts: dict[UUID, int] = {}
         # Transport extension seam (AR-072): the ordering-sensitive hooks below
         # delegate here. A bare processor gets a working in-memory transport;
         # subclasses swap it for their own at construction.
@@ -233,7 +241,7 @@ class TaskProcessor(BasicWorker):
         name: str,
         struct_type: type[msgspec.Struct],
         *,
-        apply: Callable[[object], None],
+        apply: Callable[[Any], None],
     ) -> None:
         """Register a custom service settings struct and its apply hook.
 
@@ -896,6 +904,10 @@ class TaskProcessor(BasicWorker):
             await self._stop_task_handler(handler_name)
         self.logger.debug("All task handlers cleaned up")
 
+        # A task requeued but never re-handled before shutdown would otherwise
+        # leave its retry budget behind; the budget is per-execution state.
+        self._retry_attempts.clear()
+
     async def process_task(self, task_id: UUID, task_data: TaskData) -> TaskResult:
         """Process a single task by dispatching to the appropriate handler.
 
@@ -991,22 +1003,47 @@ class TaskProcessor(BasicWorker):
                 self.__task_queue.task_done()
                 # Retry-once (AR-022 v4): requeue a retryable error BEFORE
                 # acking the transport entry (XADD then XACK), so the retry
-                # copy is durable before the original is dropped. Permanent
-                # errors and successes are acked and dropped without requeue.
-                # A requeue failure is logged and the task is still acked (the
+                # copy is durable before the original is dropped. The framework
+                # grants exactly one error-path retry per task id; the second
+                # consecutive retryable failure is terminal. Permanent errors
+                # and successes are acked and dropped without requeue. A
+                # requeue failure is logged and the task is still acked (the
                 # retry copy is lost, but the entry must not stay pending
                 # forever).
+                retry_scheduled = False
+                ack_result = result
                 if result is not None and result.status == "error" and result.retryable:
-                    try:
-                        await self.return_task_to_queue(t_id, t_data)
-                    except Exception as exc:
+                    attempts = self._retry_attempts.get(t_id, 0)
+                    if attempts < _MAX_TASK_RETRIES:
+                        retry_scheduled = True
+                        self._retry_attempts[t_id] = attempts + 1
+                        try:
+                            await self.return_task_to_queue(t_id, t_data)
+                        except Exception as exc:
+                            retry_scheduled = False
+                            self.logger.log(
+                                logging.ERROR,
+                                "Failed to requeue retryable task %s (%s): %s",
+                                t_data.task,
+                                t_id,
+                                exc,
+                            )
+                    else:
+                        # The transports deliberately leave an entry pending for
+                        # a retryable result (AR-077b), so the terminal ack must
+                        # present retryable=False or the entry would wait for a
+                        # retry that never comes.
+                        ack_result = msgspec.structs.replace(result, retryable=False)
                         self.logger.log(
-                            logging.ERROR,
-                            "Failed to requeue retryable task %s (%s): %s",
+                            logging.WARNING,
+                            "Task %s (%s) exhausted its single retry; acking as terminal.",
                             t_data.task,
                             t_id,
-                            exc,
                         )
+                if not retry_scheduled:
+                    # Terminal for this id: drop the budget so the dict cannot
+                    # grow without bound.
+                    self._retry_attempts.pop(t_id, None)
                 try:
                     # Ack the transport entry exactly when the handler's work
                     # on it ends (success, error, or cancellation). On
@@ -1016,7 +1053,7 @@ class TaskProcessor(BasicWorker):
                     await self.on_task_completed(
                         t_id,
                         t_data,
-                        result,
+                        ack_result,
                         cancel_reason=self._task_lifecycle.take_cancel_reason(t_id),
                     )
                 except Exception as exc:
