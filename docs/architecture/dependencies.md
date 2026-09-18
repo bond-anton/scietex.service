@@ -9,26 +9,33 @@ they are structurally significant.
 ```
 scietex.service (public API)                 __init__.py
    │  guarded re-export (swallow ImportError)
-   ▼
-valkey  (valkey/worker.py)
-   │ extends │ imports
-   ▼         ▼
+   ├───────────────────────────────┐
+   ▼                               ▼
+valkey  (valkey/worker.py)     mqtt  (mqtt/worker.py)
+   │ extends │ imports             │ extends │ imports
+   ▼         ▼                     ▼         ▼
 task_processor ──► transport (TaskTransport / TaskSink / InMemoryTransport)
    │ extends      │
    ▼              └──► task_handler (basic ─► schemas; wire)
 basic_worker ──► manager
    │        │
    │        └──► utils (config, logo)
-   ▼
-scietex.logging (ConsoleHandler / AsyncValkeyHandler)     [external]
    │
+   │  health (TransportHealth, core)  ◄── valkey/worker, mqtt/worker,
+   │                                       valkey/transport, mqtt/transport
    ▼
-glide (valkey-glide, optional)                              [external]
+scietex.logging (ConsoleHandler / AsyncValkeyHandler / AsyncMqttHandler)  [external]
+   │
+   ├──► glide (valkey-glide, optional)                      [external]
+   └──► aiomqtt (optional)                                  [external]
 ```
 
 `valkey/transport.py` (`ValkeyTransport`) implements the core `transport`
 Protocol and composes the Valkey-specific collaborators `valkey/config`,
-`valkey/health`, `valkey/lease`, and `valkey/tracking`.
+`valkey/lease`, and `valkey/tracking`. `mqtt/transport.py` (`MqttTransport`)
+implements the same Protocol and composes `mqtt/config` and `mqtt/inbox`.
+Both reuse the transport-agnostic `TransportHealth` from core `health.py`
+(AR-089).
 
 ## Edge table
 
@@ -59,7 +66,18 @@ Protocol and composes the Valkey-specific collaborators `valkey/config`,
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
 | `valkey.worker` | `glide` | import (external, optional extra) | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); errors surface to top-level guard |
 | `valkey.transport` | `.config`, `.health`, `.lease`, `.tracking`, `._glide` | import | implements the core `TaskTransport` Protocol; composes the Valkey collaborators |
-| `valkey.health` | `asyncio`, `logging`, `time` | import | no `glide` dependency — a generic connection-health supervisor |
+| `valkey.health` | `..health` | import | back-compat re-export of the hoisted core `TransportHealth` (AR-089) |
+| `health` (core) | `asyncio`, `logging`, `time`, `collections.abc` | import | transport-agnostic connection-health supervisor; no transport dependency |
+| `scietex.service/__init__` | `mqtt` | import | inside `try/except ImportError` — optional feature |
+| `mqtt.worker` | `task_processor` | inheritance | `MqttWorker(TaskProcessor)` |
+| `mqtt.worker` | `..task_handler`, `..task_handler.wire` | import | `TaskData`, `encode_task_envelope`/`decode_task_envelope` |
+| `mqtt.worker` | `.config`, `.inbox`, `.transport`, `.logging`, `._aiomqtt` | import | composes `MqttWorkerConfig`, `FileMqttInbox`, `MqttTransport`; logging translator; guarded aiomqtt names |
+| `mqtt.worker` | `..health` | import | core `TransportHealth` (AR-089) |
+| `mqtt.worker` | `scietex.logging` | import (external) | `AsyncMqttHandler` |
+| `mqtt.transport` | `.config`, `.inbox`, `..health`, `..task_handler`, `..transport` | import | implements the core `TaskTransport` Protocol; composes `MqttWorkerConfig`, `MqttInbox`, `TransportHealth` |
+| `mqtt.inbox` | `..task_handler.schemas`, `..task_handler.wire` | import | `TaskData`; envelope encode/decode |
+| `mqtt.config` | `..config`, `.._validation` | import | `TaskProcessorConfig`; `validate_range` (AR-079) |
+| `mqtt._aiomqtt` | `aiomqtt` | import (external, optional extra) | single guarded `try/except ImportError` re-raise with install hint (AR-048); errors surface to top-level guard |
 | `valkey.lease` | `._glide` | import | `ClientProvider`, glide error classes |
 | `valkey.tracking` | `._glide`, `..task_handler` | import | `ClientProvider`, glide error classes; `TaskData`/`TaskResult`/`CancelReason` |
 | `valkey._glide` | `glide` | import (external, optional extra) | single guarded `try/except ImportError` re-raise with install hint (AR-048); errors surface to top-level guard |
@@ -115,6 +133,8 @@ Protocol and composes the Valkey-specific collaborators `valkey/config`,
 | `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
 | `scietex.logging[valkey]>=2.0.0` | `[valkey]` extra (`pyproject.toml:40`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
+| `aiomqtt~=2.5.0` | `[mqtt]` and `[dev]` extras | MQTT 5 client (`MqttWorker`/`MqttTransport`) | Yes (optional) |
+| `scietex.logging[mqtt]>=2.0.0` | `[mqtt]` extra (`pyproject.toml:41`) | MQTT log-handler (`AsyncMqttHandler`) dependencies | Yes (optional) |
 
 ## Important dependency chains
 

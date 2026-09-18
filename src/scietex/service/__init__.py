@@ -8,13 +8,17 @@ Core classes:
     - ``ValkeyWorker``: Extends ``TaskProcessor`` with Valkey (Redis)
       integration via the ``glide`` client for distributed task queues.
       (Requires ``scietex.service[valkey]`` extra.)
+    - ``MqttWorker``: Extends ``TaskProcessor`` with MQTT 5 integration via
+      the ``aiomqtt`` client for distributed task queues.
+      (Requires ``scietex.service[mqtt]`` extra.)
 
 Module-level exports:
     ``__version__``, ``BasicWorker``, ``TaskProcessor``, and
-    optionally ``ValkeyWorker`` and its configuration classes.
+    optionally ``ValkeyWorker``/``MqttWorker`` and their configuration
+    classes.
 
-The ``VALKEY_AVAILABLE`` flag reports whether the Valkey surface could be
-imported at package load time.
+The ``VALKEY_AVAILABLE`` and ``MQTT_AVAILABLE`` flags report whether the
+respective surfaces could be imported at package load time.
 """
 
 import logging
@@ -75,4 +79,32 @@ except ImportError:
     # hidden: they raise non-ImportError exceptions that propagate.
     logging.getLogger(__name__).warning(
         "Valkey support unavailable: install the 'valkey' extra (scietex.service[valkey]) to enable ValkeyWorker."
+    )
+
+MQTT_AVAILABLE = False
+try:
+    from .mqtt import (
+        MqttConfig,
+        MqttTransport,
+        MqttWorker,
+        MqttWorkerConfig,
+        read_mqtt_config,
+    )
+
+    MQTT_AVAILABLE = True
+
+    __all__ += [
+        "MqttWorker",
+        "MqttTransport",
+        "MqttConfig",
+        "MqttWorkerConfig",
+        "read_mqtt_config",
+    ]
+except ImportError:
+    # If the MQTT dependency (aiomqtt) is missing, swallow the ImportError so
+    # the package remains importable without the mqtt extra installed.
+    # Real bugs in the mqtt module or a broken aiomqtt install must not be
+    # hidden: they raise non-ImportError exceptions that propagate.
+    logging.getLogger(__name__).warning(
+        "MQTT support unavailable: install the 'mqtt' extra (scietex.service[mqtt]) to enable MqttWorker."
     )

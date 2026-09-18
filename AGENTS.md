@@ -37,19 +37,29 @@ Run all commands (linters, tests, examples) within this environment.
 - `BasicWorker` — Base async worker with signal handling, logging, heartbeat, watchdog
 - `TaskProcessor` — Extends worker with task queue, concurrent processing, watchdog timeout monitoring
 - `ValkeyWorker` — Extends processor with Valkey (Redis) integration via `glide` client
+- `MqttWorker` — Extends processor with MQTT 5 integration via `aiomqtt` client
 
 **Transport layer:**
 - `TaskTransport` — Protocol for the task-delivery backend (`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`); `TaskProcessor` composes one via the keyword-only `transport=` argument
 - `TaskSink` — Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`)
 - `InMemoryTransport` — Default in-process transport (deque-backed; feed it with `submit(task_id, task_data)`)
 - `ValkeyTransport` (`scietex.service.valkey`) — Valkey-stream implementation, injected automatically by `ValkeyWorker`
+- `MqttTransport` (`scietex.service.mqtt`) — MQTT 5 implementation draining a durable file-backed inbox, injected automatically by `MqttWorker`
 - The legacy hooks (`fetch_tasks`, `return_task_to_queue`, `on_task_started`, `on_task_completed`, `_write_task_progress`, `_on_queue_drain_task_processing`) remain on `TaskProcessor` as thin delegators to the transport
 
+**Transport health (core, `scietex.service.health`):**
+- `TransportHealth` — connection-health supervisor: aggregates failures, owns the single reconnect path, logs one CRITICAL per sustained outage; exposed via `ValkeyWorker.transport_health` and `MqttWorker.transport_health`. Hoisted from `valkey/health.py` to core in v4.4.0 and re-exported from `scietex.service.valkey.health` for back-compat.
+
 **Valkey collaborators (internal, `scietex.service.valkey`):**
-- `TransportHealth` (`health.py`) — connection-health supervisor: aggregates failures, owns the single reconnect path, logs one CRITICAL per sustained outage; exposed via `ValkeyWorker.transport_health`
 - `TaskLeaseManager` (`lease.py`) — per-entry lease store (`key`/`write`/`acquire`/`delete`/`refresh`)
 - `TaskStatusStore` (`tracking.py`) — per-task status records (`record_running`/`record_terminal`/`update_progress`)
 - `ValkeyWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(GlideClientConfiguration) -> Awaitable[GlideClient]` used by `connect()`, defaulting to `GlideClient.create`
+
+**MQTT collaborators (internal, `scietex.service.mqtt`):**
+- `MqttInbox` (`inbox.py`) — Protocol for the durable inbox (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`); `FileMqttInbox` is the file-backed implementation (one JSON file per entry plus `.done` tombstones)
+- `MqttTransport` (`transport.py`) — drains the inbox into the processor queue, re-publishes on `requeue`, marks entries terminal on `ack`; `on_progress` is a no-op (no status store)
+- `MqttWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(MqttConfig) -> Awaitable[Client]` used by `connect()`, defaulting to `aiomqtt.Client` (MQTT 5)
+- `AsyncMqttHandler` — log handler that owns its own connection (no `client=`), matching `AsyncValkeyHandler`
 
 ## Service Entry Points
 
@@ -95,6 +105,18 @@ is created.
 - `ValkeyWorkerConfig.valkey_config` is `ValkeyConfig | None` (the raw-`GlideClientConfiguration` fallback was removed); PubSub listening is expressed via `ValkeyConfig.pubsub_config` (`ValkeyPubSubConfig(listening=..., parse_control_message=...)`)
 - `ValkeyWorkerConfig.task_lease_ttl: int | None = None` — lease lifetime in seconds, bounds `[1, 86400]`; `None` derives `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`
 - Install extras: `uv sync --extra valkey` or `pip install "scietex.service[valkey]"`
+
+**MQTT config:**
+- Reads `mqtt.yml` from config dir (YAML, uses `msgspec.yaml.decode`)
+- Raises RuntimeError if the file is present but invalid; creates defaults only if missing
+- Read deferred to first `connect()` (AR-066): constructing `MqttWorker()` with no explicit `mqtt_config` does not touch the filesystem
+- `MqttWorkerConfig.mqtt_config` is `MqttConfig | None`; `MqttConfig` fields: `host`, `port`, `username`, `password`, `identifier`, `keepalive`, `clean_start`, `session_expiry_interval`, `transport`, `timeout`, `tls_insecure`, `tls_context`
+- `MqttWorkerConfig` fields: `task_topic` (`scietex/{service}/tasks`), `task_qos` (default 2), `inbox_backend` (`"file"`/`"none"`), `inbox_path`, `inbox_ttl`, `log_topic` (`scietex/{service}/log`), `log_qos` (default 0), `log_retain`
+- MQTT 5 only; the task id travels as the `scietex-task-id` user property (the `TaskEnvelope` wire format is untouched)
+- Delivery semantics: aiomqtt v2.5.1 auto-acks at the broker when `on_message` returns, so wire QoS 2 is at-most-once at the app layer; the durable file inbox restores at-least-once by persisting every received message before processing and deduping on replay via tombstones. `inbox_backend="none"` is the explicit at-most-once opt-out
+- No status store: `on_progress` is a no-op; progress remains in-process via `TaskCapabilities`
+- Registry/heartbeat use retained-message topics `scietex/{service}/workers/{instance_id}`
+- Install extras: `uv sync --extra mqtt` or `pip install "scietex.service[mqtt]"`
 
 ## Task Handler System
 

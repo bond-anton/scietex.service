@@ -10,6 +10,7 @@ component guides, architecture notes, and the full public API.
 basic_worker
 task_processor
 valkey_worker
+mqtt_worker
 task_handler
 ```
 

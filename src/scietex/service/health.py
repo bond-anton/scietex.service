@@ -1,7 +1,9 @@
 """Transport-agnostic connection-health supervision (AR-075, AR-089).
 
 Lives in the core package and is shared by every transport. ``ValkeyWorker``
-uses it today; future transports (MQTT, Kafka) reuse the same supervisor.
+and ``MqttWorker`` both use it; future transports (Kafka) reuse the same
+supervisor. The ``transport_name`` constructor argument labels the CRITICAL
+message so it names the failing backend rather than a hardcoded one.
 
 Every transport failure site reports through
 :meth:`TransportHealth.report_failure` (synchronous, non-blocking), which marks
@@ -40,6 +42,7 @@ class TransportHealth:
         reconnect: Callable[[], Awaitable[None]],
         is_connected: Callable[[], bool],
         logger: logging.Logger,
+        transport_name: str = "Transport",
         down_threshold: float = DEFAULT_TRANSPORT_DOWN_THRESHOLD_SECONDS,
         reconnect_cooldown: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
@@ -47,6 +50,7 @@ class TransportHealth:
         self._reconnect = reconnect
         self._is_connected = is_connected
         self._logger = logger
+        self._transport_name = transport_name
         self._down_threshold = down_threshold
         self._reconnect_cooldown = reconnect_cooldown
         self._clock = clock
@@ -166,6 +170,6 @@ class TransportHealth:
             return None
         self._reported_critical = True
         return (
-            f"Valkey connection down for {duration:.1f}s "
+            f"{self._transport_name} connection down for {duration:.1f}s "
             f"({self._failure_count} failures, last error: {self._last_error})"
         )

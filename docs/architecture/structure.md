@@ -8,9 +8,9 @@ Layout of the repository and the Python package.
 |---|---|
 | `src/scietex/service/` | The package (see below). Marked PEP 561 via `py.typed` |
 | `examples/` | Runnable blueprints: `basic_worker.py`, `manager_cleanup.py`, `manager_collision.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py`, `valkey_perf.py`, `progress_and_cancel.py` |
-| `tests/` | Pytest suite: two test packages (`valkey/`, `task_processor/`), each with a shared `_helpers.py`, plus top-level `test_*.py` modules; Valkey tests mock `GlideClient` (no server needed) |
+| `tests/` | Pytest suite: test packages (`valkey/`, `task_processor/`, `mqtt/`), each with a shared `_helpers.py`, plus top-level `test_*.py` modules; Valkey tests mock `GlideClient` and MQTT tests mock the aiomqtt client (no server needed) |
 | `docs/` | Usage docs (`index.md`, per-component guides); `docs/architecture/` is this map |
-| `pyproject.toml` | Package metadata, deps, extras (`valkey`, `dev`, `test`, `lint`), setuptools build config, and pytest config (`[tool.pytest.ini_options]`) |
+| `pyproject.toml` | Package metadata, deps, extras (`valkey`, `mqtt`, `dev`, `test`, `lint`), setuptools build config, and pytest config (`[tool.pytest.ini_options]`) |
 | `tox.ini` | Tox environments: `format`, `lint`, `type`, `py{314}` (coverage), `docs` (Sphinx build) |
 | `.ruff.toml`, `cspell.json` | Ruff and spell-check config |
 | `.github/workflows/` | CI: `python-lint.yml`, `python-package.yml` (tests with a Redis service container), `python-publish.yml` (PyPI on release) |
@@ -23,10 +23,11 @@ Layout of the repository and the Python package.
 
 | Module | Responsibility |
 |---|---|
-| `__init__.py` | Public API. Always exports `__version__`, `BasicWorker`, `TaskProcessor`, `Manager`, `register_manager`, `WorkerConfig`, `TaskProcessorConfig`, and the transport seam (`TaskTransport`, `TaskSink`, `InMemoryTransport`). In a guarded `try/except ImportError` block, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types including `ValkeyWorkerConfig` and `ValkeyPubSubConfig`) and sets the `VALKEY_AVAILABLE` flag. The guard makes the package importable without `valkey-glide`, while non-`ImportError` exceptions propagate so real Valkey bugs surface at import (AR-019) |
-| `version.py` | Single source `__version__ = "4.3.0"` (also read by setuptools dynamic version) |
+| `__init__.py` | Public API. Always exports `__version__`, `BasicWorker`, `TaskProcessor`, `Manager`, `register_manager`, `WorkerConfig`, `TaskProcessorConfig`, and the transport seam (`TaskTransport`, `TaskSink`, `InMemoryTransport`). In guarded `try/except ImportError` blocks, additionally imports and re-exports the Valkey surface (`ValkeyWorker`, config types including `ValkeyWorkerConfig` and `ValkeyPubSubConfig`) and the MQTT surface (`MqttWorker`, `MqttTransport`, `MqttConfig`, `MqttWorkerConfig`, `read_mqtt_config`), setting the `VALKEY_AVAILABLE` and `MQTT_AVAILABLE` flags respectively. The guards make the package importable without `valkey-glide`/`aiomqtt`, while non-`ImportError` exceptions propagate so real Valkey/MQTT bugs surface at import (AR-019) |
+| `version.py` | Single source `__version__ = "4.4.0"` (also read by setuptools dynamic version) |
 | `config.py` | `WorkerConfig` + `TaskProcessorConfig` — immutable `msgspec.Struct`s (`frozen=True`) replacing the old per-worker constructor kwargs. Also holds the MIN/MAX/DEFAULT constants (single source of truth for timing/retry bounds, the task-queue defaults `DEFAULT_MAX_TASKS_QUEUE_SIZE=100` / `DEFAULT_MAX_CONCURRENT_TASKS=10`, and the task-level timing fields `task_timeout`/`task_queue_fetch_timeout`/`task_cancellation_timeout`, AR-062). `__post_init__` validates ranges and raises `msgspec.ValidationError` on an out-of-range value; a `None` field resolves to its `DEFAULT_*` constant at read time |
 | `_validation.py` | Shared `validate_range()` helper used by both `config.py` and `valkey/config.py` (AR-079) — promoted from the private `config._validate_range` so the Valkey package no longer imports a private core symbol |
+| `health.py` | `TransportHealth` (AR-075, hoisted to core in AR-089) — transport-agnostic connection-health supervisor: aggregates failures, owns the single reconnect path, emits one CRITICAL per sustained outage. Imports no transport-specific types; shared by `ValkeyWorker` and `MqttWorker` |
 | `manager/__init__.py` | `Manager` class-decorator (`name` required, non-empty string — the manager's identity — plus optional `cleanup` callable; stores `method`), `ManagerStatus` enum, and `MANAGER_REGISTRY_ATTR` (`"__manager_registry__"`: a per-class ordered `list[Manager]` stored on the owner's own `__dict__`, populated by `Manager.__set_name__`). Also exports `register_manager(owner, method, *, name, cleanup=None, attribute_name=None, replace=True)` — the explicit post-creation registration path (`name` required keyword-only; `attribute_name` only binds `owner.<attribute_name>`, never the identity; `replace=True` upserts in place by `name`, `replace=False` appends) |
 | `manager/runtime.py` | `ManagerRuntime(worker)`: manager discovery by walking `type(worker).__mro__` and reading each class's own `__manager_registry__` list (`iter_manager_definitions`, yielding `(manager.name, manager)` most-derived-first; logging a WARNING on a `name=` collision so the first/most-derived definition wins — AR-068, and on a plain attribute that shadows a base manager without re-decorating — AR-086), start/stop bookkeeping (`statuses`/`tasks`/`errors`), and the bounded restart-on-error loop (`run_manager`), which ends a give-up manager in terminal `FAILED` (AR-063) and exposes `failed_managers`. Extracted from `BasicWorker` (AR-003) |
 | `log_handlers/lifecycle.py` | `LoggingLifecycle(worker)`: async logging-handler registration and start/stop with `statuses` bookkeeping. Extracted from `BasicWorker` (AR-003) |
@@ -53,11 +54,18 @@ Layout of the repository and the Python package.
 | `valkey/config.py` | Typed config structs (`ValkeyConfig`, `ValkeyBaseConfig`, `ValkeyPubSubConfig`, ...) + `ValkeyWorkerConfig` (worker-level config struct extending `TaskProcessorConfig`, incl. `claim_min_idle_ms` and `task_lease_ttl`, AR-062/AR-077) + `read_valkey_config()` (YAML; raises `RuntimeError` on invalid file, creates defaults only if missing) + `generate_glide_config()` (schema→`GlideClientConfiguration`). Imports its `glide` names from `valkey/_glide.py` (the single guarded import, AR-048) |
 | `valkey/worker.py` | `ValkeyWorker(TaskProcessor)` + stream/connection logic. Composes a `ValkeyTransport` (assigned to `self._transport`) and the `TransportHealth`/`TaskLeaseManager`/`TaskStatusStore` collaborators; exposes `client_factory=` (AR-074), `transport_health`, and `valkey_config`. Imports its `glide` names from `valkey/_glide.py` (AR-048); the `scietex.logging.AsyncValkeyHandler` import is unguarded at module top |
 | `valkey/transport.py` | `ValkeyTransport` — the Valkey implementation of the core `TaskTransport` Protocol (AR-072): stream intake (`fetch`), recovery (`recover_pending_tasks`), requeue/ack/progress/drain, and lease refresh (`refresh_leases`). Owns the entry-id map and `recovered` flag; receives the lease/status/health collaborators by injection |
-| `valkey/health.py` | `TransportHealth` (AR-075) — connection-health supervisor: aggregates glide failures, owns the single reconnect path (`recover()` with lock dedup + cooldown), and emits one CRITICAL per sustained outage (`critical_report()`). Imports no `glide` types |
+| `valkey/health.py` | Back-compat re-export of `TransportHealth`/`DEFAULT_TRANSPORT_DOWN_THRESHOLD_SECONDS` from core `health.py` (AR-089), so existing `scietex.service.valkey.health` imports keep working |
 | `valkey/lease.py` | `TaskLeaseManager` (AR-073) — per-entry lease store (`key`/`write`/`acquire`/`delete`/`refresh`) plus `derive_task_lease_ttl()` and the `LEASE_TTL_*`/`MIN_TASK_LEASE_TTL_SECONDS` constants |
 | `valkey/tracking.py` | `TaskStatusStore` (AR-073) — per-task status records (`key`/`record_running`/`record_terminal`/`update_progress`) |
 | `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry, returning a `PurgeResult`); no runtime `glide` import (`TYPE_CHECKING` only), importing `GlideClient` from `valkey/_glide.py` (AR-048) |
 | `valkey/schemas.py` | `Heartbeat` msgpack schema |
+| `mqtt/__init__.py` | Re-exports `MqttWorker`, `MqttConfig`, `MqttWorkerConfig`, `MqttTransport`, `read_mqtt_config`, and `logging_handler_config` from the sibling modules. Importing it raises `ImportError` (with an install hint) when `aiomqtt` is absent |
+| `mqtt/_aiomqtt.py` | Private module — the single guarded `from aiomqtt import (...)` re-exporting `Client`, `Message`, `MqttError`, `ProtocolVersion`, `TLSParameters`, `Topic`, and the `aiomqtt` module. The analogue of `valkey/_glide.py`: importing it raises `ImportError` with an install hint when `aiomqtt` is absent (AR-048) |
+| `mqtt/config.py` | `MqttConfig` + `MqttWorkerConfig` (extends `TaskProcessorConfig` with the MQTT-specific fields) + `read_mqtt_config()` (reads/creates `mqtt.yml`; raises `RuntimeError` on a present-but-invalid file) |
+| `mqtt/inbox.py` | `MqttInbox` Protocol (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`) + `FileMqttInbox` — the file-backed durable inbox restoring at-least-once delivery (design §3) |
+| `mqtt/logging.py` | `logging_handler_config()` — translates a typed `MqttConfig` into the scalar dict `AsyncMqttHandler` expects |
+| `mqtt/transport.py` | `MqttTransport` — the MQTT implementation of the core `TaskTransport` Protocol (drains the durable inbox, re-publishes retries, tombstones terminal entries) + the `MqttPublish` callable type |
+| `mqtt/worker.py` | `MqttWorker(TaskProcessor)` — composition + lifecycle overrides: connection management, subscribe + background message loop (persist to inbox), retained heartbeat/registry publishing, logging-handler wiring. Imports its aiomqtt names from `mqtt/_aiomqtt.py` (AR-048) |
 
 ## Notable module boundaries
 
@@ -81,10 +89,14 @@ Layout of the repository and the Python package.
   `ValkeyTransport` composes the Valkey-specific collaborators
   (`valkey/config`, `valkey/health`, `valkey/lease`, `valkey/tracking`), while
   core never imports any of them (AR-072).
-- **Package ⇄ external `scietex.logging`**: `basic_worker.py` and
-  `valkey/worker.py` attach external logging handlers. The worker
-  treats them uniformly through `start_logging()`/`stop_logging()` +
-  `handler.name` (via `LoggingLifecycle`).
+- **Core ⇄ MQTT**: like Valkey, the only core→MQTT edge is the guarded
+  re-export in `__init__.py`; core modules never import `mqtt`. Direction is
+  MQTT → core (`MqttWorker` extends `TaskProcessor`). `mqtt/` imports the
+  `TransportHealth` supervisor from core (`..health`), not from `valkey`.
+- **Package ⇄ external `scietex.logging`**: `basic_worker.py`,
+  `valkey/worker.py`, and `mqtt/worker.py` attach external logging handlers.
+  The worker treats them uniformly through `start_logging()`/`stop_logging()`
+  + `handler.name` (via `LoggingLifecycle`).
 - **Stale artifacts present in the tree** (not source): `build/`
   (`build/lib/scietex/service/` still contains `logo.py` — the flat logo that
   predates the `utils/` split — `valkey/valkey_async_worker_messaging.py`, and

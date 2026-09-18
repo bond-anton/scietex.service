@@ -164,6 +164,7 @@ class ValkeyWorker(TaskProcessor):
             reconnect=self._reconnect,
             is_connected=lambda: self._client is not None,
             logger=self.logger,
+            transport_name="Valkey",
             down_threshold=max(3 * self.watchdog_interval, self.heartbeat_interval),
             reconnect_cooldown=self.watchdog_interval,
         )

@@ -18,10 +18,12 @@ is a library whose entry point is the consumer's own `main()`.
 | Task processing | `src/scietex/service/task_processor.py` | `TaskProcessor`: in-process bounded task queue, concurrency limit, handler registry/dispatch, timeout watchdog, built-in `cancel_task` cancellation (auto-registered handler + `_cancel_task`), drain/requeue on shutdown. Composes a `TaskTransport` (keyword-only `transport=`, default `InMemoryTransport`) |
 | Transport seam | `src/scietex/service/transport.py` | `TaskSink` / `TaskTransport` Protocols (the delivery contract) + `InMemoryTransport` (deque-backed default; feed with `submit(task_id, task_data)`). Imports only `task_handler.schemas` — no glide |
 | Task handler contract | `src/scietex/service/task_handler/` | `TaskHandler` ABC + `TaskHandlerContext` + the per-call `TaskCapabilities` object (`capabilities.py`) + typed wire schemas `TaskData`, `TaskResult`, `TaskTimeout`, `TaskStatus` (`schemas.py`) + the built-in `CancelTaskHandler` for `cancel_task` (`cancel.py`) + the `TaskTracker` in-memory runtime handle (`runtime.py`) |
-| Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (composes `ValkeyTransport` + `TransportHealth`/`TaskLeaseManager`/`TaskStatusStore`), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`/`ValkeyPubSubConfig`), `Heartbeat` schema. `TransportHealth` is transport-agnostic and is slated to move to core when a second transport is added (AR-089) |
+| Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (composes `ValkeyTransport` + `TransportHealth`/`TaskLeaseManager`/`TaskStatusStore`), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`/`ValkeyPubSubConfig`), `Heartbeat` schema |
+| MQTT integration | `src/scietex/service/mqtt/` | `MqttWorker` (composes `MqttTransport` + `TransportHealth` + `FileMqttInbox`), typed MQTT config schema + YAML loader (`config.py`, incl. `MqttConfig`/`MqttWorkerConfig`), guarded `_aiomqtt.py` import, logging-handler translator (`logging.py`). MQTT 5 only; a durable inbox restores at-least-once delivery that aiomqtt v2.5.1's premature broker ack would otherwise lose |
+| Transport health (core) | `src/scietex/service/health.py` | `TransportHealth` (AR-075) — transport-agnostic connection-health supervisor; hoisted to core (AR-089) so Valkey and MQTT share it; re-exported from `valkey/health.py` for back-compat |
 | Utilities | `src/scietex/service/utils/` | `prepare_conf_dir()` config-dir resolution (`config.py`); ASCII logo printer (`logo.py`) |
-| Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional import of Valkey exports |
-| Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
+| Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional imports of Valkey and MQTT exports (`VALKEY_AVAILABLE`/`MQTT_AVAILABLE`) |
+| Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
 
 ## How subsystems interact
 
@@ -46,11 +48,14 @@ is a library whose entry point is the consumer's own `main()`.
         TaskProcessor ──► TaskTransport (Protocol)
                │              ▲
                │              │ implements
-               │        InMemoryTransport (default)  /  ValkeyTransport
+               │        InMemoryTransport (default)  /  ValkeyTransport  /  MqttTransport
                │
         ValkeyWorker — glide GlideClient — Valkey streams/groups
+               │   └── AsyncValkeyHandler (scietex.logging) — log stream
                │
-               └── AsyncValkeyHandler (scietex.logging) — log stream
+        MqttWorker — aiomqtt.Client — MQTT 5 topics
+               │   ├── FileMqttInbox — durable at-least-once store
+               │   └── AsyncMqttHandler (scietex.logging) — log topic
 ```
 
 Interaction notes:
@@ -69,6 +74,13 @@ Interaction notes:
   (`fetch_tasks`, `return_task_to_queue`, `on_task_started`,
   `on_task_completed`, `_write_task_progress`, `_on_queue_drain_task_processing`)
   remain on `TaskProcessor` as thin delegators for backwards compatibility.
+- **MQTT transport is isolated** in the `mqtt` subpackage; `MqttWorker`
+  composes an `MqttTransport` and assigns it to `TaskProcessor._transport`.
+  Because aiomqtt v2.5.1 acks at the broker before the handler runs, delivery
+  is at-least-once only through the `FileMqttInbox` (persist-before-enqueue +
+  tombstone dedupe); `inbox_backend="none"` is the explicit at-most-once
+  opt-out, and the worker refuses to start with at-least-once semantics when
+  no inbox could be built.
 - **Async logging crosses the package boundary**: the worker attaches handlers
   from the external `scietex.logging` package and drives their
   `start_logging()`/`stop_logging()` lifecycle via `LoggingLifecycle`.

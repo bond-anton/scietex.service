@@ -29,6 +29,7 @@ def _health(
     *,
     reconnect=None,
     is_connected=None,
+    transport_name: str = "Transport",
     down_threshold: float = 30.0,
     reconnect_cooldown: float = 1.0,
 ) -> TransportHealth:
@@ -41,6 +42,7 @@ def _health(
         reconnect=reconnect if reconnect is not None else noop_reconnect,
         is_connected=is_connected if is_connected is not None else (lambda: False),
         logger=logging.getLogger("test_health"),
+        transport_name=transport_name,
         down_threshold=down_threshold,
         reconnect_cooldown=reconnect_cooldown,
         clock=clock if clock is not None else FakeClock(),
@@ -180,6 +182,7 @@ def test_critical_report_once_per_episode_and_resets_after_recovery():
     first = health.critical_report()
     assert first is not None
     assert "boom" in first
+    assert first.startswith("Transport connection down"), "default label is transport-agnostic"
     assert health.critical_report() is None, "must not re-report within the same episode"
 
     health.mark_connected()
@@ -190,3 +193,17 @@ def test_critical_report_once_per_episode_and_resets_after_recovery():
     second = health.critical_report()
     assert second is not None, "a new outage must report again"
     assert "boom2" in second
+
+
+def test_critical_report_names_the_configured_transport():
+    """The CRITICAL message names the failing backend, not a hardcoded one."""
+    clock = FakeClock()
+    health = _health(clock, transport_name="MQTT", down_threshold=5.0)
+
+    health.report_failure(Exception("broker unreachable"))
+    clock.now = 6.0
+    report = health.critical_report()
+
+    assert report is not None
+    assert report.startswith("MQTT connection down")
+    assert "Valkey" not in report

@@ -441,17 +441,18 @@ code and tests. With the decisions above locked, implementation can proceed.
 
 ## 12. Implementation status
 
-Branch: `feature/mqtt-worker`. Version stays 4.3.0 until the release is cut.
+Branch: `feature/mqtt-worker`. Version bumped to 4.4.0 for the release.
 
 | # | Step | Status | Commit |
 |---|---|---|---|
 | 1 | Hoist `TransportHealth` to core (`src/scietex/service/health.py`), re-export from `valkey.health`, split `tests/test_health.py` | ✅ done | `e096f83` |
 | 2 | `mqtt/` skeleton: `_aiomqtt.py` guarded import, `config.py` (`MqttConfig`, `MqttWorkerConfig`, `read_mqtt_config`), `logging.py` (`logging_handler_config`) | ✅ done | `d939ad8` |
 | 3 | `mqtt/inbox.py` (`MqttInbox` Protocol + `FileMqttInbox`) + `tests/mqtt/test_inbox.py` | ✅ done | `a59fd38` |
-| 4 | `mqtt/transport.py` (`MqttTransport`) + `tests/mqtt/test_transport.py` | ⬜ pending | — |
-| 5 | `mqtt/worker.py` (`MqttWorker`) + `mqtt/__init__.py` exports + `tests/mqtt/test_worker.py` | ⬜ pending | — |
-| 6 | Package guard (`MQTT_AVAILABLE`) in `src/scietex/service/__init__.py` + `pyproject.toml` `mqtt` extra | ⬜ pending | — |
-| 7 | Docs updates (`docs/mqtt_worker.md`, `docs/architecture/*`, `docs/ROADMAP.md`, `README.md`, `AGENTS.md`) | ⬜ pending | — |
-| 8 | Full gate: `ruff check src/ tests/`, `ty check src/`, `pytest tests/` | ⬜ pending | — |
+| 4 | `mqtt/transport.py` (`MqttTransport`) + `tests/mqtt/test_transport.py` | ✅ done | — |
+| 5 | `mqtt/worker.py` (`MqttWorker`) + `mqtt/__init__.py` exports + `tests/mqtt/test_worker.py` | ✅ done | — |
+| 6 | Package guard (`MQTT_AVAILABLE`) in `src/scietex/service/__init__.py` + `pyproject.toml` `mqtt` extra | ✅ done | — |
+| 7 | Docs updates (`docs/mqtt_worker.md`, `docs/architecture/*`, `docs/ROADMAP.md`, `README.md`, `AGENTS.md`) | ✅ done | — |
+| 8 | Full gate: `ruff check src/ tests/`, `ty check src/`, `pytest tests/` | ✅ done | — |
 
-Test count: 294 at branch start → 302 after step 3 (8 inbox tests).
+Test count: 294 at branch start → 302 after step 3 (8 inbox tests) → 316
+after step 4 (14 transport tests) → 335 after step 5 (41 MQTT tests total).

@@ -496,35 +496,37 @@ acknowledgement) and the `recovered` flag (one-time pending recovery).
 `..task_handler.wire`. **Depended on by:** `ValkeyWorker` (injected as
 `self._transport`).
 
-## 13. Valkey transport health — `valkey/health.py`
+## 13. Transport health — `health.py` (core)
 
-**File:** `src/scietex/service/valkey/health.py`
+**File:** `src/scietex/service/health.py` (re-exported from
+`src/scietex/service/valkey/health.py` for back-compat)
 
-**Purpose:** Connection-health supervisor (AR-075). Aggregates every glide
+**Purpose:** Connection-health supervisor (AR-075). Aggregates every transport
 failure across the worker and its collaborators, owns the single reconnect
 path, and surfaces one CRITICAL per sustained outage.
 
 **Main symbols:** `DEFAULT_TRANSPORT_DOWN_THRESHOLD_SECONDS = 30.0`;
 `class TransportHealth(*, reconnect, is_connected, logger,
-down_threshold=30.0, reconnect_cooldown=1.0, clock=time.monotonic)`.
+transport_name="Transport", down_threshold=30.0, reconnect_cooldown=1.0,
+clock=time.monotonic)`.
 Properties `connected`, `degraded`, `last_error`, `failure_count`,
 `down_duration`. Methods: `mark_connected()`, `mark_disconnected()`,
 `report_failure(exc)` (sync, non-blocking — records state and requests a
 reconnect), `async recover()` (the single reconnect owner: `asyncio.Lock` dedup
 + cooldown + supervised retry), `critical_report() -> str | None` (one message
-per down episode past the threshold).
+per down episode past the threshold; the message names `transport_name`, so
+`ValkeyWorker` passes `"Valkey"` and `MqttWorker` passes `"MQTT"`).
 
-**Dependencies:** `asyncio`, `logging`, `time`, `collections.abc` only — **no
-glide import**. **Depended on by:** `ValkeyWorker` (exposed via
-`transport_health`), `ValkeyTransport`, `TaskLeaseManager`, `TaskStatusStore`.
+**Dependencies:** `asyncio`, `logging`, `time`, `collections.abc` only — no
+transport imports. **Depended on by:** `ValkeyWorker` and `MqttWorker` (each
+exposed via `transport_health`), `ValkeyTransport`, `TaskLeaseManager`,
+`TaskStatusStore`, `MqttTransport`.
 
 **Layering (AR-089):** `TransportHealth` is deliberately transport-agnostic —
-it takes only injected callables and knows nothing about Valkey. It lives under
-`valkey/` because the Valkey transport is currently the only transport, not
-because it is Valkey-specific. When a second transport is added, it should be
-hoisted to core (alongside the `TaskTransport`/`TaskSink` Protocols in
-`transport.py`) so the new transport can reuse it without a feature→feature
-dependency.
+it takes only injected callables and knows nothing about Valkey or MQTT. It
+was hoisted from `valkey/health.py` to core when the MQTT transport was added,
+so a new transport can reuse it without a feature→feature dependency;
+`valkey/health.py` remains as a back-compat re-export.
 
 ## 14. Valkey task lease — `valkey/lease.py`
 
@@ -620,6 +622,14 @@ Consumed classes:
   `GlideClientConfiguration` options translated from the typed `ValkeyConfig`)
   on the first successful `connect()`, so the handler owns
   an independent connection and reconnects autonomously.
+- `AsyncMqttHandler(AsyncBrokerHandler)` — publishes log records to an MQTT
+  topic. `MqttWorker` constructs it with `mqtt_config=` (a dict of scalar
+  `aiomqtt` options translated from the typed `MqttConfig` by
+  `mqtt/logging.py:logging_handler_config`) on the first successful
+  `connect()`, so the handler owns an independent connection and reconnects
+  autonomously. Its `mqtt_config` dict uses the MQTT 3.1.1-style
+  `clean_session` field, so the MQTT 5 session fields are omitted from the
+  translation.
 - `ScietexFormatter`.
 
 **Important:** a handler built from `valkey_config=` owns and closes its own
@@ -627,3 +637,83 @@ client (autonomous reconnect/backoff); a handler built from the `client=` kwarg
 never closes it — the caller owns its lifetime and recovery. `ValkeyWorker` uses
 the former (the raw-`GlideClientConfiguration` fallback that used the latter was
 removed in AR-076/AR-085).
+
+## 20. MQTT transport — `mqtt/transport.py`
+
+**File:** `src/scietex/service/mqtt/transport.py`
+
+**Purpose:** The MQTT implementation of the core `TaskTransport` Protocol,
+added in v4.4.0 (AR-089's second transport). Owns inbox draining, requeue,
+terminal acknowledgement, and drain handling, so `MqttWorker` keeps only
+lifecycle concerns — the same split as `ValkeyTransport`.
+
+**Main symbols:** `MqttPublish` (a `Callable[[str, bytes, int],
+Awaitable[None]]` publish seam injected by the worker, since the worker owns
+the client) and `class MqttTransport`, which receives every collaborator by
+injection (`config`, `service_name`, `topic`, `inbox`, `health`, `publish`,
+`logger`). Methods: `fetch(sink)` (first call replays non-terminal inbox
+entries via `recover_pending_tasks`, then drains the inbox's non-terminal
+snapshot into `sink.enqueue_task`, stopping on backpressure and skipping
+already-enqueued ids), `recover_pending_tasks(sink)` (returns a
+`(recovery_complete, enqueued)` tuple), `requeue(task_id, task_data)`
+(re-publishes the envelope at `task_qos` under the same id), `release(task_id)`
+(drops the in-process marker only), `on_started(task_id, task_data)` (marks the
+inbox entry in-flight), `ack(task_id, task_data, task_result, *,
+cancel_reason=None)` (tombstones the entry; a retryable error result skips the
+tombstone so the requeued copy is accepted — AR-077b mirror), `on_progress`
+(no-op), `on_drain` (drops the marker, leaving the entry pending for recovery),
+and `refresh_leases()` (no-op parity with `ValkeyTransport`).
+
+**State owned:** the `recovered` flag (one-time pending recovery) and the
+`_enqueued` set (task ids handed to the sink but not yet terminal, so the
+inbox snapshot is not re-enqueued on every poll).
+
+**Composition:** `MqttWorker` builds `TransportHealth` → `FileMqttInbox` →
+`MqttTransport`, then assigns the transport to `TaskProcessor._transport`.
+`MqttWorkerConfig` (in `mqtt/config.py`) extends `TaskProcessorConfig` with
+`mqtt_config`, `task_topic`, `task_qos`, `inbox_backend`, `inbox_path`,
+`inbox_ttl`, `log_topic`, `log_qos`, and `log_retain`.
+
+**Dependencies:** `.config`, `.inbox`, `..health`, `..task_handler.schemas`,
+`..task_handler.wire`, `..transport`. **Depended on by:** `MqttWorker`
+(injected as `self._transport`), `mqtt/__init__.py`.
+
+## 21. MQTT durable inbox — `mqtt/inbox.py`
+
+**File:** `src/scietex/service/mqtt/inbox.py`
+
+**Purpose:** At-least-once delivery for MQTT. aiomqtt v2.5.1 auto-acks at the
+broker before the handler runs, so wire QoS cannot provide at-least-once.
+Persisting every received message before it is handed to the processor, and
+deduping on replay, restores it. The backend is transitional — aiomqtt v3's
+manual ack removes the need — so the `MqttInbox` Protocol keeps that migration
+to an implementation swap.
+
+**Main symbols:** `MqttInbox` (Protocol: `put`/`mark_in_flight`/
+`mark_terminal`/`pending`/`recover`) and `FileMqttInbox(path, *, logger,
+ttl=None)`. `FileMqttInbox` stores one JSON entry per task (`{task_id}.json`,
+carrying task id, lifecycle state, creation epoch, and base64 envelope) and a
+`{task_id}.done` tombstone on terminal completion; tombstones and expired
+entries are pruned on load. All file I/O runs via `asyncio.to_thread` under an
+`asyncio.Lock`.
+
+**Dependencies:** `..task_handler.schemas`, `..task_handler.wire`; stdlib.
+**Depended on by:** `MqttWorker` (builds it), `MqttTransport` (drains it).
+
+## 22. MQTT logging-handler config — `mqtt/logging.py`
+
+**File:** `src/scietex/service/mqtt/logging.py`
+
+**Purpose:** Translates a typed `MqttConfig` into the plain scalar dict the
+external `AsyncMqttHandler` expects via `mqtt_config=` — the direct analogue
+of the Valkey translator.
+
+**Main symbols:** `logging_handler_config(mqtt_config) -> dict`, carrying
+`host`/`port`/`username`/`password`/`identifier`/`keepalive`/`transport`/
+`timeout`/`tls_insecure`. The MQTT 5 session fields (`clean_start`,
+`session_expiry_interval`) are deliberately omitted because the handler's dict
+schema uses the 3.1.1-style `clean_session` field and the logging connection
+uses its own session defaults.
+
+**Dependencies:** `.config` (`MqttConfig`). **Depended on by:** `MqttWorker`
+(`_ensure_logging_handler`), `mqtt/__init__.py`.

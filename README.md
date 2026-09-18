@@ -3,7 +3,7 @@
 Async worker framework for building background daemon services in Python.
 
 Provides a hierarchy of workers — from basic signal-handling daemons to
-concurrent task processors with Valkey-backed distributed queues.
+concurrent task processors with Valkey- or MQTT-backed distributed queues.
 
 **Python ≥ 3.10** · **License: MIT**
 
@@ -13,6 +13,7 @@ concurrent task processors with Valkey-backed distributed queues.
 - [BasicWorker](docs/basic_worker.md) — Signal handling, logging, heartbeat & watchdog managers
 - [TaskProcessor](docs/task_processor.md) — Concurrent task processing, handler dispatch, timeout monitoring
 - [ValkeyWorker](docs/valkey_worker.md) — Valkey stream-based task distribution
+- [MqttWorker](docs/mqtt_worker.md) — MQTT 5 topic-based task distribution
 - [Task Handler](docs/task_handler.md) — Pluggable handler architecture, typed schemas
 
 ## Installation
@@ -23,6 +24,9 @@ pip install scietex.service
 
 # With Valkey (Redis-compatible) support
 pip install "scietex.service[valkey]"
+
+# With MQTT 5 support
+pip install "scietex.service[mqtt]"
 ```
 
 **Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=2.0.0`
@@ -190,12 +194,57 @@ group `scietex:{service_name}:task_group`.
 - `task_lease_ttl` (config field) — lease lifetime in seconds; `None` derives
   `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`.
 
+### MQTT Worker
+
+Distributed task processing backed by MQTT 5 topics. See the [full MqttWorker docs](docs/mqtt_worker.md) for architecture, topic naming, delivery semantics, and configuration reference.
+
+```python
+import asyncio
+import logging
+from scietex.service import MqttConfig, MqttWorker, MqttWorkerConfig
+
+
+async def main() -> None:
+    worker = MqttWorker(
+        MqttWorkerConfig(
+            service_name="mqtt_worker",
+            version="1.0.0",
+            logging_level=logging.DEBUG,
+            heartbeat_interval=10,
+            mqtt_config=MqttConfig(host="localhost", port=1883),
+            queue_size=100,
+            max_concurrent_tasks=10,
+        )
+    )
+    await worker.start()
+    await worker.events["exit"].wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Tasks are published to the topic `scietex:{service_name}:tasks`; the task id
+travels as the MQTT 5 user property `scietex-task-id`. Because aiomqtt v2.5.1
+auto-acks at the broker when a message is received, the worker persists every
+message to a durable file-backed inbox before processing it, restoring
+at-least-once delivery. Set `inbox_backend="none"` to opt into at-most-once.
+
+`MqttWorker` also exposes:
+
+- `client_factory=` (keyword-only) — an async callable
+  `(MqttConfig) -> Awaitable[Client]` used by `connect()`; defaults to
+  `aiomqtt.Client`. Inject a fake to test without a broker.
+- `transport_health` — a `TransportHealth` supervisor aggregating connection
+  failures, owning the single reconnect path, and logging one CRITICAL per
+  sustained outage.
+
 ## Architecture
 
 ### Worker Hierarchy
 
 <!-- markdown-link-check-disable -->
-See [BasicWorker](docs/basic_worker.md), [TaskProcessor](docs/task_processor.md), and [ValkeyWorker](docs/valkey_worker.md) for detailed architecture diagrams.
+See [BasicWorker](docs/basic_worker.md), [TaskProcessor](docs/task_processor.md), [ValkeyWorker](docs/valkey_worker.md), and [MqttWorker](docs/mqtt_worker.md) for detailed architecture diagrams.
 <!-- markdown-link-check-enable -->
 
 ```
@@ -203,8 +252,10 @@ BasicWorker          — Signal handling, async logging, heartbeat &
                             watchdog managers, graceful shutdown
     └── TaskProcessor — Task queue, concurrent processing, handler
                             dispatch, timeout watchdog
-        └── ValkeyWorker  — Valkey stream integration, connection
-                            management, stream-based task fetching
+        ├── ValkeyWorker  — Valkey stream integration, connection
+        │                    management, stream-based task fetching
+        └── MqttWorker    — MQTT 5 topic integration, durable file
+                             inbox, retained registry/heartbeat
 ```
 
 ### Transport Layer
@@ -219,6 +270,9 @@ Task delivery is abstracted behind the `TaskTransport` protocol
   external backend.
 - **`ValkeyTransport`** (in `scietex.service.valkey`) implements the same
   protocol over a Valkey stream; `ValkeyWorker` injects it automatically.
+- **`MqttTransport`** (in `scietex.service.mqtt`) implements the same protocol
+  over MQTT 5 topics, draining a durable file-backed inbox; `MqttWorker`
+  injects it automatically.
 
 Pass a custom transport with the keyword-only `transport=` argument:
 
@@ -352,6 +406,30 @@ untouched. The read (and the default-file write) is deferred to the first
 `connect()`/`initialize()` call — constructing `ValkeyWorker()` with no
 explicit `valkey_config` does not touch the filesystem (AR-066).
 
+### MQTT Configuration
+
+`MqttWorker` reads `mqtt.yml` from the config directory:
+
+```yaml
+host: localhost
+port: 1883
+username: null
+password: null
+identifier: null
+keepalive: 60
+clean_start: true
+session_expiry_interval: 0
+transport: tcp
+timeout: 10.0
+tls_insecure: null
+tls_context: null
+```
+
+If the file is missing, it is created with default values. If the file is
+present but invalid, a ``RuntimeError`` is raised and the file is left
+untouched. As with Valkey, the read is deferred to the first
+`connect()`/`initialize()` call (AR-066).
+
 ## API Reference
 
 ### Exported from `scietex.service`
@@ -366,9 +444,14 @@ explicit `valkey_config` does not touch the filesystem (AR-066).
 | `TaskSink` | Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`) |
 | `InMemoryTransport` | Default in-process transport (deque-backed; `submit()` feeds it) |
 | `ValkeyWorker` | Valkey-backed distributed worker |
+| `MqttWorker` | MQTT 5-backed distributed worker |
+| `MqttTransport` | MQTT 5 transport (drains a durable file-backed inbox) |
 | `WorkerConfig` | Immutable `msgspec.Struct` configuration for `BasicWorker` |
 | `TaskProcessorConfig` | Immutable configuration for `TaskProcessor` (extends `WorkerConfig`) |
 | `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |
+| `MqttWorkerConfig` | Immutable configuration for `MqttWorker` (extends `TaskProcessorConfig`) |
+| `MqttConfig` | Immutable MQTT connection configuration |
+| `read_mqtt_config` | Read (or create) `mqtt.yml` from the config directory |
 | `__version__` | Package version string |
 
 The Valkey configuration classes (`ValkeyConfig`, `ValkeyNode`,
@@ -418,6 +501,17 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |
 | `purge_task_stream` | Standalone operational utility to purge a task stream (returns a `PurgeResult` with counts and errors) |
 | `PurgeResult` | Frozen result of `purge_task_stream` (`entries_purged`, `errors`) |
+
+### Exported from `scietex.service.mqtt`
+
+| Symbol | Description |
+|---|---|
+| `MqttConfig` | Immutable MQTT connection configuration |
+| `MqttWorkerConfig` | Immutable configuration for `MqttWorker` (extends `TaskProcessorConfig`) |
+| `MqttWorker` | MQTT 5-backed distributed worker |
+| `MqttTransport` | MQTT 5 transport implementing the `TaskTransport` protocol |
+| `read_mqtt_config` | Read (or create) `mqtt.yml` from the config directory |
+| `logging_handler_config` | Translate an `MqttConfig` into `AsyncMqttHandler` keyword arguments |
 
 ## Development
 

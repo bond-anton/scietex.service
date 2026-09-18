@@ -4,6 +4,33 @@ Planned work for future major versions. Items here are **not** committed to a
 release date; they are tracked so architectural decisions made in earlier
 versions are not lost. Each entry cites the review finding that motivated it.
 
+## v4.4.0 — MQTT transport
+
+**Motivation:** the framework ships a Valkey transport but no broker-agnostic
+alternative. MQTT 5 is a natural second backend: it is widely deployed, has
+native user properties (so the task id can travel without touching the
+`TaskEnvelope` wire format), and needs no server-side key space.
+
+**Decision (v4.4.0):** add `MqttWorker`/`MqttTransport` mirroring the
+`ValkeyWorker`/`ValkeyTransport` split. The transport reuses the core
+`TaskTransport`/`TaskSink` protocols, the versioned `TaskEnvelope` wire format,
+and the core `TransportHealth` supervisor (hoisted from `valkey/health.py` to
+`src/scietex/service/health.py` and re-exported for back-compat). MQTT 5 only;
+the task id travels as the `scietex-task-id` user property. Because aiomqtt
+v2.5.1 auto-acks at the broker when `on_message` returns, wire QoS 2 is
+at-most-once at the application layer; a durable file-backed inbox
+(`FileMqttInbox`, behind the `MqttInbox` Protocol) restores at-least-once by
+persisting every received message before handing it to the processor and
+deduping on replay via tombstones. `inbox_backend="none"` is the explicit
+at-most-once opt-out. There is no status store — `on_progress` is a no-op and
+progress remains in-process via `TaskCapabilities`. Registry/heartbeat use
+retained-message topics (`scietex/{service}/workers/{instance_id}`), and the
+log handler owns its own connection, matching `AsyncValkeyHandler`.
+
+**Status: implemented** on branch `feature/mqtt-worker` (v4.4.0, unreleased).
+See [docs/design/mqtt_worker.md](design/mqtt_worker.md) and
+[docs/mqtt_worker.md](mqtt_worker.md).
+
 ## v4 — Multi-replica / shared-queue topology
 
 **Motivation:** AR-023 (docs/reviews/architecture/2026-09-06.md). In v3 a
