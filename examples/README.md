@@ -21,10 +21,10 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | [`stateful_handler.py`](#stateful_handlerpy) | no | A stateful handler that mutates shared state injected via `**handler_kwargs` |
 | [`valkey_async_service.py`](#valkey_async_servicepy) | yes | `ValkeyWorker` consuming a task stream via a programmatic `ValkeyConfig` |
 | [`valkey_pubsub_worker.py`](#valkey_pubsub_workerpy) | yes | A `ValkeyWorker` that also subscribes to PubSub control channels via `ValkeyPubSubConfig` |
-| [`valkey_perf.py`](#valkey_perfpy) | yes | Single-process `ValkeyWorker` consumption-throughput benchmark |
+| [`valkey_perf.py`](#valkey_perfpy) | yes | `ValkeyWorker` consumption-throughput benchmark (separate-process producer by default) |
 | [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `cancel_task` |
 | [`mqtt_worker.py`](#mqtt_workerpy) | MQTT | `MqttWorker` consuming tasks from a broker, with retained status and throttled progress publishing |
-| [`mqtt_perf.py`](#mqtt_perfpy) | MQTT | Single-process `MqttWorker` consumption-throughput benchmark |
+| [`mqtt_perf.py`](#mqtt_perfpy) | MQTT | `MqttWorker` consumption-throughput benchmark (separate-process producer by default) |
 
 ## basic_worker.py
 
@@ -137,21 +137,27 @@ The worker subscribes its own client and delivers each message to the
 python -m examples.valkey_perf --tasks 10000
 ```
 
-A single-process `ValkeyWorker` consumption-throughput benchmark. A producer
-preloads `N` tasks into the `scietex:{service_name}:tasks` stream (one `XADD`
-per task), then the worker starts and drains them; only the drain is timed.
-Reports end-to-end throughput and a median steady-state rate. Requires a
-running Valkey/Redis server and the `valkey` extra:
+A `ValkeyWorker` consumption-throughput benchmark. By default the producer runs
+in a **separate OS process** and publishes `N` tasks one-by-one while the worker
+drains them; the timed window covers the full publish -> drain pipeline, so the
+producer's `XADD` cost does not contend with the worker's event loop. Reports
+total throughput, a median steady-state rate, and the producer's own publish
+rate. Requires a running Valkey/Redis server and the `valkey` extra:
 
 ```bash
 pip install "scietex.service[valkey]"
 ```
 
-Key knobs: `--tasks`/`-n` (total tasks preloaded then drained), `--host`/
+`--producer-mode inline` restores the historical single-process behavior: the
+producer preloads the stream (one `XADD` per task), closes, and only the drain
+is timed. The two modes are not numerically comparable — `process` includes
+publish cost, `inline` does not.
+
+Key knobs: `--tasks`/`-n` (total tasks published then drained), `--host`/
 `--port`, `--max-concurrent-tasks`, `--queue-size` (defaults to `--tasks` so
 the whole backlog buffers without back-pressure), `--task-fetch-batch-size`,
-`--task-timeout`, `--heartbeat-interval`, and `--keep-stream` (skip the
-pre-load flush of the benchmark stream).
+`--task-timeout`, `--heartbeat-interval`, `--producer-mode`, and
+`--keep-stream` (skip the pre-load flush of the benchmark stream).
 
 ## progress_and_cancel.py
 
@@ -212,11 +218,16 @@ if the broker only listens on IPv4.
 python -m examples.mqtt_perf --host 127.0.0.1 --tasks 10000
 ```
 
-A single-process `MqttWorker` consumption-throughput benchmark. The worker
-starts and subscribes first, then a producer publishes `N` `perf` tasks; the
-timed window runs from the first publish until every task is acknowledged, so
-it covers the full push -> inbox -> pull -> handler pipeline. Reports total
-throughput and a median steady-state rate.
+A `MqttWorker` consumption-throughput benchmark. The worker starts and
+subscribes first, then a producer running in a **separate OS process** publishes
+`N` `perf` tasks one-by-one; the timed window runs from the first publish until
+every task is acknowledged, so it covers the full push -> inbox -> pull ->
+handler pipeline without the producer competing for the worker's event loop.
+Reports total throughput, a median steady-state rate, and the producer's own
+publish rate.
+
+`--producer-mode inline` runs the producer in the same process (the historical
+behavior). `--task-qos` controls the publish QoS (default 2).
 
 The durable inbox dominates the cost. On a local broker the file-backed inbox
 sustains roughly 120-160 tasks/sec, while the default in-memory backend
