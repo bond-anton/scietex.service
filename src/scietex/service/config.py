@@ -143,6 +143,10 @@ MIN_TASK_CANCELLATION_TIMEOUT: float = 0.1
 MAX_TASK_CANCELLATION_TIMEOUT: float = 60
 DEFAULT_TASK_CANCELLATION_TIMEOUT: float = 5
 
+MIN_CONFIG_STARTUP_TIMEOUT: float = 0.0
+MAX_CONFIG_STARTUP_TIMEOUT: float = 60.0
+DEFAULT_CONFIG_STARTUP_TIMEOUT: float = 2.0
+
 
 class WorkerConfig(msgspec.Struct, frozen=True):
     """Immutable configuration for a :class:`~scietex.service.basic_worker.BasicWorker`.
@@ -258,6 +262,16 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
         task_cancellation_timeout: Timeout in seconds for waiting on a
             cancelled task to actually stop during cleanup/watchdog
             (``[0.1, 60]``).
+        remote_config_enabled: Opt-in master switch for the remote
+            configuration channel. ``False`` (default) disables the ``config:*``
+            command handlers and the startup read.
+        config_file: Filename of the local reloadable-snapshot file, resolved
+            under ``conf_dir``.
+        config_signing_key: Optional HMAC key for envelope authenticity.
+            ``None`` (default) disables signature enforcement; a runtime-only
+            secret, never read from the remote payload.
+        config_startup_timeout: Bounded wait in seconds for the MQTT retained
+            snapshot at startup (``[0.0, 60.0]``); ignored by Valkey.
     """
 
     queue_size: int | None = None
@@ -270,6 +284,10 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
     task_timeout: float | None = None
     task_queue_fetch_timeout: float | None = None
     task_cancellation_timeout: float | None = None
+    remote_config_enabled: bool = False
+    config_file: str = "config.yml"
+    config_signing_key: str | None = None
+    config_startup_timeout: float | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -318,4 +336,10 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
             "task_cancellation_timeout",
             minimum=MIN_TASK_CANCELLATION_TIMEOUT,
             maximum=MAX_TASK_CANCELLATION_TIMEOUT,
+        )
+        validate_range(
+            self.config_startup_timeout,
+            "config_startup_timeout",
+            minimum=MIN_CONFIG_STARTUP_TIMEOUT,
+            maximum=MAX_CONFIG_STARTUP_TIMEOUT,
         )

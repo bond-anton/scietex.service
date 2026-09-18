@@ -31,6 +31,10 @@ MIN_PROGRESS_MIN_INTERVAL: float = 0.0
 MAX_PROGRESS_MIN_INTERVAL: float = 3600.0
 MIN_PROGRESS_MIN_DELTA: float = 0.0
 MAX_PROGRESS_MIN_DELTA: float = 100.0
+MIN_CONFIG_QOS: int = 0
+MAX_CONFIG_QOS: int = 2
+MIN_CONFIG_TTL: int = 1
+MAX_CONFIG_TTL: int = 30 * 24 * 3600
 
 
 class MqttConfig(msgspec.Struct, frozen=True):
@@ -119,6 +123,13 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
             (``[0.0, 3600.0]``). ``0`` disables the interval threshold.
         progress_min_delta: Minimum absolute progress change that forces a
             publish (``[0.0, 100.0]``). ``0`` disables the delta threshold.
+        config_topic: Retained desired-state topic for remote config.
+            ``{service}`` is replaced with the service name.
+        config_qos: QoS level for config-topic publishes and the subscription
+            (``[0, 2]``).
+        config_ttl: MQTT 5 message-expiry interval in seconds applied to the
+            retained config publish (``[1, 2592000]``). ``None`` disables
+            expiry.
     """
 
     mqtt_config: "MqttConfig | None" = None
@@ -137,6 +148,9 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     progress_qos: int = 0
     progress_min_interval: float = 1.0
     progress_min_delta: float = 0.0
+    config_topic: str = "scietex/{service}/config"
+    config_qos: int = 1
+    config_ttl: int | None = 86400
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -158,6 +172,8 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
             minimum=MIN_PROGRESS_MIN_DELTA,
             maximum=MAX_PROGRESS_MIN_DELTA,
         )
+        validate_range(self.config_qos, "config_qos", minimum=MIN_CONFIG_QOS, maximum=MAX_CONFIG_QOS)
+        validate_range(self.config_ttl, "config_ttl", minimum=MIN_CONFIG_TTL, maximum=MAX_CONFIG_TTL)
         if self.mqtt_config is not None:
             validate_range(
                 self.mqtt_config.port,

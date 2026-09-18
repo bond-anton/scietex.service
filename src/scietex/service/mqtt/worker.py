@@ -19,11 +19,20 @@ from uuid import UUID
 import msgspec
 from scietex.logging import AsyncMqttHandler
 
+from ..config import DEFAULT_CONFIG_STARTUP_TIMEOUT
+from ..config_reload import (
+    CONFIG_SOURCE_UNAVAILABLE,
+    STALE_CONFIG,
+    ConfigApplyOutcome,
+    encode_config_envelope,
+    read_local_config,
+)
 from ..health import TransportHealth
 from ..task_handler.wire import decode_task_envelope
 from ..task_processor import TaskProcessor
 from ._aiomqtt import Client, Message, MqttError, Properties, ProtocolVersion
 from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
+from .config_source import MqttConfigSource
 from .inbox import FileMqttInbox, MemoryInbox, MqttInbox
 from .logging import logging_handler_config
 from .transport import MqttTransport
@@ -152,6 +161,8 @@ class MqttWorker(TaskProcessor):
                 instance (heartbeat + liveness).
             _status_topic_prefix (str): Resolved ``{service}``-substituted
                 prefix for the per-task status/progress topics (design §13.2).
+            _config_topic (str): Resolved retained desired-state topic for
+                remote config (design §2).
             _inbox (MqttInbox | None): Durable inbox, or ``None`` for the
                 ``inbox_backend="memory"``/``"none"`` at-most-once opt-out.
         """
@@ -195,6 +206,18 @@ class MqttWorker(TaskProcessor):
         # as task_topic is, so the transport receives the substituted form rather
         # than repeating the {service} formatting itself.
         self._status_topic_prefix = cfg.status_topic_prefix.format(service=self.service_name)
+        # Retained desired-state topic for remote config (design §2), resolved
+        # like task_topic. The source records snapshots from this topic and is
+        # attached to the processor's `_config_source` seam below.
+        self._config_topic = cfg.config_topic.format(service=self.service_name)
+        self._mqtt_config_source = MqttConfigSource(
+            topic=self._config_topic,
+            qos=cfg.config_qos,
+            ttl=cfg.config_ttl,
+            publish=self._publish,
+            logger=self.logger,
+        )
+        self._config_source = self._mqtt_config_source
 
         # Durable inbox (design §10 #3). ``None`` for the "none" opt-out or a
         # failed file-inbox build; the transport receives a non-None inbox via
@@ -413,15 +436,17 @@ class MqttWorker(TaskProcessor):
             self.logger.info("MQTT client disconnected")
 
     async def _start_intake(self) -> bool:
-        """Subscribe to the task topic and start the message loop if needed.
+        """Subscribe to the task and config topics and start the message loop.
 
-        Subscribes to ``_task_topic`` at ``task_qos`` and starts the background
-        message loop unless one is already running. Called from
-        :meth:`_connect_locked` after the client is assigned and the logging
-        handler is ensured, so both the initial connect and a reconnect restore
-        intake. The loop is only (re)created when the previous task is missing
-        or done, which is how a reconnect after a loop exit (``MqttError``)
-        starts a fresh loop without double-starting one that is still running.
+        Subscribes to ``_task_topic`` at ``task_qos`` and to ``_config_topic``
+        at ``config_qos`` (the retained config snapshot is delivered on SUBACK,
+        design §2), then starts the background message loop unless one is
+        already running. Called from :meth:`_connect_locked` after the client is
+        assigned and the logging handler is ensured, so both the initial connect
+        and a reconnect restore intake. The loop is only (re)created when the
+        previous task is missing or done, which is how a reconnect after a loop
+        exit (``MqttError``) starts a fresh loop without double-starting one
+        that is still running.
 
         Returns:
             ``True`` when subscribed and the loop is running; ``False`` when the
@@ -434,6 +459,7 @@ class MqttWorker(TaskProcessor):
             return False
         try:
             await client.subscribe(self._task_topic, qos=cfg.task_qos)
+            await client.subscribe(self._config_topic, qos=cfg.config_qos)
         except MqttError as exc:
             self.logger.error("Failed to subscribe to task topic %s: %s", self._task_topic, exc)
             return False
@@ -516,12 +542,18 @@ class MqttWorker(TaskProcessor):
 
         Calls the parent ``TaskProcessor.initialize()`` to start registered
         task handlers, then connects to the broker (``connect`` now subscribes
-        to the task topic and starts the background message loop via
+        to the task and config topics and starts the background message loop via
         :meth:`_start_intake`) and replays any non-terminal inbox entries left
         by a previous run. The at-least-once guard runs first: when a durable
         inbox was expected (``inbox_backend == "file"``) but none could be
         built, the worker refuses to start rather than silently degrading to
         at-most-once (design §3.3).
+
+        After a successful connect (and subscription) the local ``config.yml``
+        snapshot is applied, then the retained remote snapshot is awaited for a
+        bounded ``config_startup_timeout`` and applied if present (design §5
+        precedence: constructor < local file < remote). A missing, invalid, or
+        timed-out remote config never fails startup.
 
         Returns:
             ``True`` if the parent initialization, connection (including
@@ -545,6 +577,11 @@ class MqttWorker(TaskProcessor):
             return False
         if not await self.connect():
             return False
+        # Apply the persisted snapshot first, then the retained remote snapshot
+        # (which arrives via the message loop started by connect). Startup must
+        # not fail on a bad or absent remote config (availability-first).
+        await self._apply_local_config()
+        await self._reload_remote_config()
         # Replay non-terminal inbox entries from a previous run before managers
         # start. The first fetch() re-runs recovery if this was interrupted, so
         # marking recovered here only skips that redundant re-scan.
@@ -552,6 +589,75 @@ class MqttWorker(TaskProcessor):
         if recovered:
             self._mqtt_transport.recovered = True
         return True
+
+    async def _apply_local_config(self) -> None:
+        """Apply the persisted ``config.yml`` snapshot at startup (design §5).
+
+        The local file is the worker's own persisted snapshot (written by
+        ``config:store``), so it is applied as a trusted, unsigned envelope
+        ahead of the remote read; the remote source stays authoritative when
+        present. A missing file is silently skipped, and any apply failure is
+        logged rather than failing startup.
+        """
+        cfg = cast(MqttWorkerConfig, self._config)
+        sections = read_local_config(self.conf_dir / cfg.config_file)
+        if sections is None:
+            return
+        try:
+            # revision=1 applies cleanly at startup (the reloader starts at
+            # revision 0) and stays below any remote revision, so the remote
+            # source remains authoritative when both are present.
+            payload = encode_config_envelope(sections, revision=1)
+            outcome = await self._config_reloader.apply_envelope(payload, source="file")
+        except Exception as exc:
+            self.logger.error("Failed to apply local config: %s", exc)
+            return
+        self._log_config_outcome(outcome, "file")
+
+    async def _reload_remote_config(self) -> None:
+        """Await and apply the retained config snapshot at startup (design §5).
+
+        The retained message arrives after SUBACK, so startup waits a bounded
+        ``config_startup_timeout`` for it; a timeout (no retained config) is
+        logged at DEBUG and the worker keeps its local/default config. An
+        invalid snapshot never fails startup — ``apply_envelope`` returns an
+        outcome instead of raising.
+        """
+        cfg = cast(MqttWorkerConfig, self._config)
+        timeout = (
+            cfg.config_startup_timeout if cfg.config_startup_timeout is not None else DEFAULT_CONFIG_STARTUP_TIMEOUT
+        )
+        try:
+            snapshot = await self._mqtt_config_source.wait_for_snapshot(timeout)
+        except Exception as exc:
+            self.logger.error("Failed to wait for remote config snapshot: %s", exc)
+            return
+        if snapshot is None:
+            self.logger.debug("No remote config snapshot received; keeping local/default")
+            return
+        try:
+            outcome = await self._config_reloader.apply_envelope(snapshot, source="remote")
+        except Exception as exc:
+            self.logger.error("Failed to apply remote config: %s", exc)
+            return
+        self._log_config_outcome(outcome, "remote")
+
+    def _log_config_outcome(self, outcome: ConfigApplyOutcome, source: str) -> None:
+        """Log a startup config-apply result per the design §5 failure policy.
+
+        Applied envelopes are logged at INFO with revision/hash; a stale
+        envelope at DEBUG; an unavailable source at DEBUG (the common
+        "no config" fallback); everything else (invalid / bad signature /
+        unknown section) at ERROR.
+        """
+        if outcome.applied:
+            self.logger.info("Applied %s config revision %d (hash %s)", source, outcome.revision, outcome.hash)
+        elif outcome.error_code == STALE_CONFIG:
+            self.logger.debug("Skipped stale %s config (revision %d)", source, outcome.revision)
+        elif outcome.error_code == CONFIG_SOURCE_UNAVAILABLE:
+            self.logger.debug("No %s config available; keeping local/default", source)
+        else:
+            self.logger.error("Failed to apply %s config: %s", source, outcome.error_code)
 
     async def cleanup(self):
         """Perform cleanup on shutdown.
@@ -608,17 +714,25 @@ class MqttWorker(TaskProcessor):
             self._health.report_failure(exc)
 
     async def _handle_message(self, message: Message) -> None:
-        """Persist one received MQTT message to the durable inbox.
+        """Route one received MQTT message: config snapshot or task.
 
-        The task id is read from the ``scietex-task-id`` user property and the
-        payload decoded as a versioned envelope. A message missing the property
-        or carrying an undecodable envelope is logged and skipped without
-        crashing the loop. The loop persists only: :meth:`MqttTransport.fetch`
-        is the single intake path that drains the inbox into the processor
-        queue, so persist-before-enqueue still holds (the inbox write precedes
-        any enqueue via the transport's next poll) and a task is never enqueued
-        twice (design §3.2).
+        A message on ``_config_topic`` is the retained remote-config snapshot
+        (design §2) and is recorded by the config source — it carries no
+        ``scietex-task-id`` user property and must not follow the task path,
+        which would log a spurious "missing task id" warning.
+
+        Everything else is a task: the id is read from the ``scietex-task-id``
+        user property and the payload decoded as a versioned envelope. A message
+        missing the property or carrying an undecodable envelope is logged and
+        skipped without crashing the loop. The loop persists only:
+        :meth:`MqttTransport.fetch` is the single intake path that drains the
+        inbox into the processor queue, so persist-before-enqueue still holds
+        (the inbox write precedes any enqueue via the transport's next poll) and
+        a task is never enqueued twice (design §3.2).
         """
+        if message.topic == self._config_topic:
+            self._mqtt_config_source.record(message.payload)
+            return
         task_id = self._extract_task_id(message)
         if task_id is None:
             self.logger.warning("Skipping MQTT message without a %s user property", TASK_ID_PROPERTY)

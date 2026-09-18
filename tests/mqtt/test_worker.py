@@ -36,8 +36,8 @@ class _FakeProperties:
 class _FakeMessage:
     """Minimal aiomqtt ``Message``: a payload plus optional user properties."""
 
-    def __init__(self, payload, user_properties=None):
-        self.topic = "scietex/svc/tasks"
+    def __init__(self, payload, user_properties=None, topic="scietex/svc/tasks"):
+        self.topic = topic
         self.payload = payload
         self.qos = 2
         self.retain = False
@@ -228,7 +228,7 @@ async def test_initialize_none_backend_proceeds(monkeypatch):
 
     assert await worker.initialize() is True
     assert worker.client is fake
-    assert fake.subscriptions == [("scietex/svc/tasks", 2)]
+    assert fake.subscriptions == [("scietex/svc/tasks", 2), ("scietex/svc/config", 1)]
     assert worker._inbox is None
 
     await worker._stop_message_loop()
@@ -385,7 +385,7 @@ async def test_reconnect_resubscribes_and_restarts_loop(monkeypatch):
     assert await worker.connect() is True
     first_loop = worker._message_task
     assert first_loop is not None
-    assert clients[0].subscriptions == [("scietex/svc/tasks", 2)]
+    assert clients[0].subscriptions == [("scietex/svc/tasks", 2), ("scietex/svc/config", 1)]
 
     # Simulate a broker drop: the loop exits on MqttError and reports to health.
     clients[0].feed_disconnect()
@@ -395,7 +395,7 @@ async def test_reconnect_resubscribes_and_restarts_loop(monkeypatch):
     await worker._reconnect()
 
     assert len(clients) == 2
-    assert clients[1].subscriptions == [("scietex/svc/tasks", 2)]
+    assert clients[1].subscriptions == [("scietex/svc/tasks", 2), ("scietex/svc/config", 1)]
     assert worker._message_task is not None
     assert worker._message_task is not first_loop
     assert not worker._message_task.done()

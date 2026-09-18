@@ -10,10 +10,12 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import ClassVar, cast
 from uuid import UUID
+
+import msgspec
 
 from .basic_worker import BasicWorker, ServiceStatus
 from .config import (
@@ -27,11 +29,28 @@ from .config import (
     DEFAULT_TASK_TIMEOUT,
     TaskProcessorConfig,
 )
+from .config_reload import (
+    CONFIG_SOURCE_UNAVAILABLE,
+    CONFIG_STORE_FAILED,
+    RELOADABLE_FIELDS,
+    REMOTE_CONFIG_DISABLED,
+    ConfigApplyOutcome,
+    ConfigReloader,
+    ConfigSource,
+    ConfigStoreOutcome,
+    ReloadableSettings,
+    write_local_config,
+)
 from .manager import Manager
 from .task_handler import (
     CancelOutcome,
     CancelReason,
     CancelTaskHandler,
+    ConfigApplyHandler,
+    ConfigShowHandler,
+    ConfigShowResponse,
+    ConfigSourceLabel,
+    ConfigStoreHandler,
     TaskCapabilities,
     TaskData,
     TaskHandler,
@@ -143,6 +162,23 @@ class TaskProcessor(BasicWorker):
         # stays transport-agnostic and never reaches into processor internals.
         self.add_task_handler(CancelTaskHandler, cancel=self._cancel_task)
 
+        # Remote configuration channel. The reloader is transport-agnostic and
+        # calls back into this processor through injected callables, so the
+        # private shadows stay private. `_config_source` is attached by a
+        # transport subclass (steps 6/7); `None` means "no source of truth".
+        self._config_source: ConfigSource | None = None
+        self._config_reloader = ConfigReloader(
+            apply=self._apply_reloadable_config,
+            current=self._current_reloadable_settings,
+            restart_required=self._restart_required_fields,
+            logger=self.logger,
+            signing_key=cfg.config_signing_key,
+            enabled=cfg.remote_config_enabled,
+        )
+        self.add_task_handler(ConfigApplyHandler, apply=self._config_apply)
+        self.add_task_handler(ConfigStoreHandler, store=self._config_store)
+        self.add_task_handler(ConfigShowHandler, show=self._config_show)
+
     @property
     def task_handlers(self) -> Mapping[str, TaskHandler]:
         """Dictionary of currently active (started) task handlers.
@@ -176,6 +212,218 @@ class TaskProcessor(BasicWorker):
     def max_concurrent_tasks(self) -> int:
         """Maximum number of tasks that can be processed concurrently."""
         return self.__max_concurrent_tasks
+
+    @property
+    def config_revision(self) -> int:
+        """Revision of the last successfully applied remote config (read-only)."""
+        return self._config_reloader.revision
+
+    @property
+    def config_hash(self) -> str:
+        """Hash of the last successfully applied remote config (read-only)."""
+        return self._config_reloader.hash
+
+    @property
+    def config_source(self) -> str:
+        """Source label of the last successfully applied remote config (read-only)."""
+        return self._config_reloader.source
+
+    def register_config_settings(
+        self,
+        name: str,
+        struct_type: type[msgspec.Struct],
+        *,
+        apply: Callable[[object], None],
+    ) -> None:
+        """Register a custom service settings struct and its apply hook.
+
+        Extension point for custom services: the reloadable surface grows with
+        service-specific fields without the core knowing them. The registered
+        struct is decoded against ``forbid_unknown_fields`` and its ``apply``
+        hook is called (in registration order) after the core swap succeeds.
+        Delegates to the reloader.
+
+        Args:
+            name: Section name used as the key in ``ConfigSections.services``.
+            struct_type: The ``msgspec.Struct`` type to decode the section
+                bytes against.
+            apply: Hook called with the decoded struct during an apply.
+        """
+        self._config_reloader.register_section(name, struct_type, apply)
+
+    def _current_reloadable_settings(self) -> ReloadableSettings:
+        """Snapshot the current effective reloadable core settings.
+
+        Reads the already-resolved sources (the re-shadowed fields and the
+        live-read properties) rather than the raw config, so the snapshot
+        reflects the effective values including auto-tuned concurrency and
+        ``None``-resolved defaults.
+        """
+        return ReloadableSettings(
+            max_concurrent_tasks=self.__max_concurrent_tasks,
+            task_manager_sleep_time=self.task_manager_sleep_time,
+            task_queue_manager_sleep_time=self.task_queue_manager_sleep_time,
+            task_handler_start_timeout=self.task_handler_start_timeout,
+            task_handler_stop_timeout=self.task_handler_stop_timeout,
+            task_timeout=self.__task_timeout,
+            task_queue_fetch_timeout=self.__task_queue_fetch_timeout,
+            task_cancellation_timeout=self.__task_cancellation_timeout,
+        )
+
+    def _restart_required_fields(self) -> list[str]:
+        """Return the concrete config's field names that are not reloadable."""
+        return sorted(f.name for f in msgspec.structs.fields(type(self._config)) if f.name not in RELOADABLE_FIELDS)
+
+    def _apply_reloadable_config(self, settings: ReloadableSettings) -> list[str]:
+        """Validate-then-swap the reloadable core settings into the config.
+
+        Builds a fresh concrete config by overlaying the eight reloadable
+        values onto a shallow copy of the current config's fields, then
+        constructs ``type(current)(**merged)`` so
+        ``__post_init__``/``validate_range`` reject an out-of-range value
+        before any mutation. Nested structs (e.g. ``valkey_config``) are
+        preserved by reference, so ``msgspec.structs.asdict`` (which recurses
+        into them) must not be used. Only after a valid candidate exists are
+        the four shadows updated and the reference swapped.
+
+        Args:
+            settings: The complete snapshot of reloadable core values.
+
+        Returns:
+            The names of the reloadable fields whose value changed.
+        """
+        current = cast(TaskProcessorConfig, self._config)
+        merged = {f.name: getattr(current, f.name) for f in msgspec.structs.fields(type(current))}
+        merged.update(
+            {
+                "max_concurrent_tasks": settings.max_concurrent_tasks,
+                "task_manager_sleep_time": settings.task_manager_sleep_time,
+                "task_queue_manager_sleep_time": settings.task_queue_manager_sleep_time,
+                "task_handler_start_timeout": settings.task_handler_start_timeout,
+                "task_handler_stop_timeout": settings.task_handler_stop_timeout,
+                "task_timeout": settings.task_timeout,
+                "task_queue_fetch_timeout": settings.task_queue_fetch_timeout,
+                "task_cancellation_timeout": settings.task_cancellation_timeout,
+            }
+        )
+        candidate = type(current)(**merged)
+        changed = [
+            f.name
+            for f in msgspec.structs.fields(type(current))
+            if f.name in RELOADABLE_FIELDS and getattr(candidate, f.name) != getattr(current, f.name)
+        ]
+
+        # Update the shadows with the candidate's None-resolved values so the
+        # hot loops (task_manager/watchdog) see the new settings immediately.
+        # The reloadable values are always explicit, so the resolution here
+        # degenerates to the value itself; it mirrors __init__ for safety.
+        self.__max_concurrent_tasks = (
+            candidate.max_concurrent_tasks
+            if candidate.max_concurrent_tasks is not None
+            else (max(1, os.cpu_count() or 1) if candidate.auto_tune else DEFAULT_MAX_CONCURRENT_TASKS)
+        )
+        self.__task_timeout = candidate.task_timeout if candidate.task_timeout is not None else DEFAULT_TASK_TIMEOUT
+        self.__task_queue_fetch_timeout = (
+            candidate.task_queue_fetch_timeout
+            if candidate.task_queue_fetch_timeout is not None
+            else DEFAULT_TASK_QUEUE_FETCH_TIMEOUT
+        )
+        self.__task_cancellation_timeout = (
+            candidate.task_cancellation_timeout
+            if candidate.task_cancellation_timeout is not None
+            else DEFAULT_TASK_CANCELLATION_TIMEOUT
+        )
+        self._config = candidate
+        return changed
+
+    def _write_local_config(self) -> ConfigStoreOutcome:
+        """Write the effective config to ``<conf_dir>/<config_file>``.
+
+        Uses the reloader's atomic ``write_local_config``; a failure returns
+        ``CONFIG_STORE_FAILED`` and leaves any previous file intact.
+        """
+        path = self.conf_dir / cast(TaskProcessorConfig, self._config).config_file
+        try:
+            write_local_config(path, self._config_reloader.show())
+        except Exception as exc:
+            self.logger.error("Failed to write local config %s: %s", path, exc)
+            return ConfigStoreOutcome(
+                stored=False,
+                target="disk",
+                path=str(path),
+                revision=self._config_reloader.revision,
+                hash=self._config_reloader.hash,
+                error=str(exc),
+                error_code=CONFIG_STORE_FAILED,
+            )
+        return ConfigStoreOutcome(
+            stored=True,
+            target="disk",
+            path=str(path),
+            revision=self._config_reloader.revision,
+            hash=self._config_reloader.hash,
+        )
+
+    async def _config_apply(self, payload: bytes | None, persist: bool) -> ConfigApplyOutcome:
+        """Apply a config envelope (inline or from the source of truth).
+
+        Injected into ``ConfigApplyHandler``. A present ``payload`` is applied
+        inline; ``payload=None`` re-reads the transport source, which requires
+        a source to be attached (``CONFIG_SOURCE_UNAVAILABLE`` otherwise).
+        ``persist`` additionally writes the local snapshot after a successful
+        apply.
+        """
+        if payload is not None:
+            outcome = await self._config_reloader.apply_envelope(payload, source="inline")
+        else:
+            source = self._config_source
+            if source is None:
+                return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
+            outcome = await self._config_reloader.reload(source)
+        if persist and outcome.applied:
+            self._write_local_config()
+        return outcome
+
+    async def _config_store(self, target: str) -> ConfigStoreOutcome:
+        """Persist the effective config to the requested target.
+
+        Injected into ``ConfigStoreHandler``. ``disk`` writes the local
+        snapshot; ``remote`` publishes back to the transport source; ``both``
+        does both. A remote target without an attached source is
+        ``CONFIG_SOURCE_UNAVAILABLE``.
+        """
+        if target == "disk":
+            return self._write_local_config()
+        source = self._config_source
+        if source is None:
+            return ConfigStoreOutcome(stored=False, target=target, error_code=CONFIG_SOURCE_UNAVAILABLE)
+        if target == "both":
+            disk_outcome = self._write_local_config()
+            if not disk_outcome.stored:
+                return disk_outcome
+        return await self._config_reloader.store(source, target=target)
+
+    def _config_show(self, include_restart_required: bool) -> ConfigShowResponse:
+        """Build the effective-config inspection response.
+
+        Injected into ``ConfigShowHandler``. ``settings`` is the msgpack
+        encoding of the reloader's ``ConfigSections`` (never secrets);
+        ``restart_required_fields`` is only populated when requested. When the
+        master switch is off, the response carries ``REMOTE_CONFIG_DISABLED``
+        instead of the effective settings.
+        """
+        if not self._config_reloader.enabled:
+            return ConfigShowResponse(
+                error_code=REMOTE_CONFIG_DISABLED,
+                error="remote config is disabled",
+            )
+        return ConfigShowResponse(
+            settings=msgspec.msgpack.encode(self._config_reloader.show()),
+            revision=self._config_reloader.revision,
+            hash=self._config_reloader.hash,
+            source=cast(ConfigSourceLabel, self._config_reloader.source),
+            restart_required_fields=self._restart_required_fields() if include_restart_required else [],
+        )
 
     def enqueue_task(self, task_id: UUID, task_data: TaskData) -> bool:
         """Enqueue a task for processing without blocking.

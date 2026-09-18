@@ -459,6 +459,35 @@ worker configuration, not `mqtt.yml` entries:
 | `progress_min_interval` | `1.0` | Minimum seconds between progress publishes; range `[0.0, 3600.0]`; `0` disables the interval threshold |
 | `progress_min_delta` | `0.0` | Minimum absolute progress change that forces a publish; range `[0.0, 100.0]`; `0` disables the delta threshold |
 
+### Remote Configuration
+
+Remote configuration delivers a reloadable-behaviour snapshot to a running
+worker over the transport it already uses — a durable Valkey key or an MQTT
+retained topic — plus three `config:apply` / `config:store` / `config:show`
+commands delivered as tasks. Opt in with `remote_config_enabled=True`.
+
+| Field | Config class | Default | Meaning |
+|---|---|---|---|
+| `remote_config_enabled` | `TaskProcessorConfig` | `False` | Opt-in master switch; `False` ⇒ commands return `REMOTE_CONFIG_DISABLED`, no startup read |
+| `config_file` | `TaskProcessorConfig` | `"config.yml"` | Local reloadable-snapshot filename, resolved under `conf_dir` |
+| `config_signing_key` | `TaskProcessorConfig` | `None` | HMAC key for envelope authenticity; `None` disables signature enforcement |
+| `config_startup_timeout` | `TaskProcessorConfig` | `None` (→ `2.0`) | Bounded MQTT wait for the retained snapshot at startup; range `[0.0, 60.0]` |
+| `config_key` | `ValkeyWorkerConfig` | `"scietex:{service}:config"` | Durable desired-state key; `{service}` substituted at construction |
+| `config_topic` | `MqttWorkerConfig` | `"scietex/{service}/config"` | Retained desired-state topic; `{service}` substituted at construction |
+| `config_qos` | `MqttWorkerConfig` | `1` | QoS for the config-topic subscription and publish; range `[0, 2]` |
+| `config_ttl` | `MqttWorkerConfig` | `86400` | MQTT 5 message-expiry for the retained config; range `[1, 2592000]`; `None` disables expiry |
+
+Only the eight core fields (`max_concurrent_tasks`,
+`task_manager_sleep_time`, `task_queue_manager_sleep_time`,
+`task_handler_start_timeout`, `task_handler_stop_timeout`, `task_timeout`,
+`task_queue_fetch_timeout`, `task_cancellation_timeout`) are hot-reloadable;
+everything else is restart-required and cannot be expressed remotely. A custom
+service extends the surface with
+`worker.register_config_settings(name, struct_type, apply=...)`. Startup
+precedence is `constructor config < config.yml < remote source`, and an invalid
+remote config never fails startup. See the [Remote Configuration
+guide](docs/remote_config.md) and `examples/remote_config.py`.
+
 ## API Reference
 
 ### Exported from `scietex.service`
@@ -504,6 +533,19 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `CancelOutcome` | Cancellation outcome literal (`cancelled`/`not_running`/`ignored`/`not_found`) |
 | `CancelReason` | Why a task was cancelled (`deliberate`/`timeout`/`shutdown`) |
 | `CANCEL_TASK_TYPE` | Task type string that selects the built-in cancel handler (`"cancel_task"`) |
+| `CONFIG_APPLY_TASK_TYPE` | Task type string for `config:apply` (`"config:apply"`) |
+| `CONFIG_STORE_TASK_TYPE` | Task type string for `config:store` (`"config:store"`) |
+| `CONFIG_SHOW_TASK_TYPE` | Task type string for `config:show` (`"config:show"`) |
+| `ConfigApplyHandler` | Built-in handler for `config:apply` |
+| `ConfigStoreHandler` | Built-in handler for `config:store` |
+| `ConfigShowHandler` | Built-in handler for `config:show` |
+| `ConfigApplyRequest` | Payload schema for `config:apply` (`payload`, `persist`) |
+| `ConfigApplyResponse` | Success payload schema for `config:apply` (`applied`, `revision`, `hash`, `changed`, `restart_required`, `error`) |
+| `ConfigStoreRequest` | Payload schema for `config:store` (`target`: `"disk"`/`"remote"`/`"both"`) |
+| `ConfigStoreResponse` | Success payload schema for `config:store` (`stored`, `target`, `path`, `revision`, `hash`, `error`) |
+| `ConfigShowRequest` | Payload schema for `config:show` (`include_restart_required`) |
+| `ConfigShowResponse` | Success payload schema for `config:show` (`settings`, `revision`, `hash`, `source`, `restart_required_fields`, `error`, `error_code`) |
+| `ConfigSourceLabel` | Source literal for the effective config (`default`/`file`/`remote`/`inline`) |
 | `TaskData` | Task payload schema |
 | `TaskResult` | Task result schema |
 | `TaskTimeout` | Timeout configuration schema |
@@ -514,6 +556,23 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `encode_task_envelope` | Wrap a `TaskData` in a versioned envelope and msgpack-encode it |
 | `decode_task_envelope` | Decode an envelope back to a `TaskData` (returns `None` on invalid/unknown version) |
 | `decode_task_envelope_version` | Return an envelope's wire-format version, or `None` if malformed |
+
+### Exported from `scietex.service.config_reload`
+
+| Symbol | Description |
+|---|---|
+| `ConfigReloader` | Transport-agnostic owner of the remote-config apply/reload/store/show pipeline (validate-before-swap, serialized behind an `asyncio.Lock`, replay protection) |
+| `ConfigSource` | Core Protocol (`load`/`store`) both transports implement to deliver the desired-state envelope |
+| `ConfigEnvelope` | Versioned transport envelope (`version`/`revision`/`hash`/`signature`/`settings`/`created_at`) |
+| `ConfigSections` | Named-section payload (`core: ReloadableSettings`, `services: dict[str, bytes]`) |
+| `ReloadableSettings` | Complete snapshot of the eight hot-reloadable core fields (all required) |
+| `ConfigApplyOutcome` | Result of an envelope apply attempt (`applied`/`revision`/`hash`/`changed`/`restart_required`/`error`/`error_code`) |
+| `ConfigStoreOutcome` | Result of a config store attempt (`stored`/`target`/`path`/`revision`/`hash`/`error`/`error_code`) |
+| `RELOADABLE_FIELDS` | The eight-field hot-reload allowlist |
+| `encode_config_envelope` | Encode a `ConfigSections` snapshot into a hashed, optionally HMAC-signed envelope |
+| `decode_config_envelope` | Decode an envelope back to a `ConfigEnvelope` (returns `None` on invalid input) |
+| `read_local_config` | Read the local `config.yml` snapshot (write-free; `None` on missing/invalid) |
+| `write_local_config` | Atomically write a `ConfigSections` snapshot as YAML |
 
 ### Exported from `scietex.service.valkey`
 
@@ -528,6 +587,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `ValkeyBackoffStrategy` | Reconnection backoff config |
 | `ValkeyTlsAdvancedConfiguration` | TLS settings |
 | `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |
+| `ValkeyConfigSource` | Durable-key `ConfigSource` for remote config (`load` does a live `GET`, `store` does `SET`) |
 | `purge_task_stream` | Standalone operational utility to purge a task stream (returns a `PurgeResult` with counts and errors) |
 | `PurgeResult` | Frozen result of `purge_task_stream` (`entries_purged`, `errors`) |
 
@@ -539,6 +599,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `MqttWorkerConfig` | Immutable configuration for `MqttWorker` (extends `TaskProcessorConfig`) |
 | `MqttWorker` | MQTT 5-backed distributed worker |
 | `MqttTransport` | MQTT 5 transport implementing the `TaskTransport` protocol |
+| `MqttConfigSource` | Retained-topic `ConfigSource` for remote config (snapshot + retained publish with an optional `config_ttl` message-expiry) |
 | `read_mqtt_config` | Read (or create) `mqtt.yml` from the config directory |
 | `logging_handler_config` | Translate an `MqttConfig` into `AsyncMqttHandler` keyword arguments |
 
@@ -582,6 +643,7 @@ python -m examples.valkey_perf               # requires valkey-glide
 python -m examples.progress_and_cancel       # requires valkey-glide
 python -m examples.mqtt_worker               # requires aiomqtt
 python -m examples.mqtt_perf                 # requires aiomqtt
+python -m examples.remote_config             # requires aiomqtt
 ```
 
 ## License

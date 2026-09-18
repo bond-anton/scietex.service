@@ -207,12 +207,16 @@ datetime.now(timezone.utc))` (99) so each instance gets its own timestamp
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
 
-`schemas.py` also defines `CANCEL_TASK_TYPE = "cancel_task"` (15) and
-`CancelReason` (20). The built-in handler for that task type lives in
+`schemas.py` also defines `CANCEL_TASK_TYPE = "cancel_task"` (15),
+`CONFIG_APPLY_TASK_TYPE = "config:apply"` (18),
+`CONFIG_STORE_TASK_TYPE = "config:store"` (21),
+`CONFIG_SHOW_TASK_TYPE = "config:show"` (24), and
+`CancelReason` (20). The built-in handler for the cancellation task type lives in
 `task_handler/cancel.py`: `CancelTaskHandler` (59), `CancelTaskRequest` (35),
 `CancelTaskResponse` (47), `CancelOutcome` (29), and `CancelCallback` (32).
 `TaskProcessor` auto-registers the handler in `__init__` and injects its own
-`_cancel_task` callback.
+`_cancel_task` callback. The three remote-config task types are served by the
+handlers in `task_handler/config.py` (see §24).
 
 `TaskEnvelope` is the durable wire format (AR-064): the transport persists a
 versioned envelope, not a bare `TaskData`, so the handler contract and the
@@ -312,6 +316,20 @@ task_manager hot loops; no processor-local timing constants remain.
 `TaskProcessor.__init__`). The CPU count is a poor proxy for an I/O-bound
 asyncio workload and does not reflect container CPU limits, so I/O-bound
 services should set `max_concurrent_tasks` explicitly.
+
+**Remote configuration** (see §23–§26): `__init__` builds a `ConfigReloader`
+and registers the three `config:*` handlers (169–180); the `_config_source` seam
+(169) is attached by a transport subclass (`ValkeyWorker`/`MqttWorker`).
+Extension point `register_config_settings(name, struct_type, *, apply)` (231)
+delegates to the reloader's `register_section`; the read-only observability
+properties `config_revision` (217), `config_hash` (221), and `config_source`
+(226) delegate to the reloader. The private apply/validate logic lives in
+`_apply_reloadable_config` (277) — validate-then-swap, overlaying the eight
+reloadable values onto a shallow copy of the current config and re-constructing
+`type(current)(**merged)` so `__post_init__`/`validate_range` reject a bad
+candidate before any mutation — plus `_config_apply` (367), `_config_store`
+(387), and `_config_show` (406), the callbacks injected into the three
+handlers.
 
 **Public interface:** constructor takes a single immutable
 `TaskProcessorConfig` (`config.py`, extends `WorkerConfig`) or `None`; no
@@ -725,3 +743,146 @@ uses its own session defaults.
 
 **Dependencies:** `.config` (`MqttConfig`). **Depended on by:** `MqttWorker`
 (`_ensure_logging_handler`), `mqtt/__init__.py`.
+
+## 23. Remote-config core — `config_reload.py`
+
+**File:** `src/scietex/service/config_reload.py`
+
+**Purpose:** Transport-agnostic remote-configuration machinery. Delivers a
+reloadable-behaviour config envelope to a running worker over the transport it
+already uses, without the module knowing which transport that is. It is
+deliberately core: it imports no transport package and no processor type —
+transports implement the `ConfigSource` Protocol and the reloader calls back
+into the processor through injected callables, so the private shadows stay
+private to `TaskProcessor`.
+
+**Main symbols:**
+- Constants: `CONFIG_ENVELOPE_VERSION = 1` (46); the outcome taxonomy
+  `INVALID_CONFIG_PAYLOAD`/`INVALID_CONFIG`/`UNKNOWN_CONFIG_SECTION`/
+  `HASH_MISMATCH`/`BAD_SIGNATURE`/`STALE_CONFIG`/`CONFIG_SOURCE_UNAVAILABLE`/
+  `CONFIG_STORE_FAILED`/`REMOTE_CONFIG_DISABLED` (51–59); `RELOADABLE_FIELDS`
+  (61), the eight-field allowlist.
+- Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings`
+  (77) — the complete snapshot of the eight reloadable core fields, all
+  required; `ConfigSections` (95) — `core: ReloadableSettings` +
+  `services: dict[str, bytes]`; `ConfigEnvelope` (108) — `version`/`revision`/
+  `hash`/`signature`/`settings`/`created_at`.
+- Wire helpers: `encode_config_envelope(sections, *, revision,
+  signing_key=None, created_at=None)` (130) — msgpack-encodes a hashed,
+  optionally HMAC-signed envelope; `decode_config_envelope(payload)` (166) and
+  `peek_config_envelope_version(payload)` (188) — decode/version-peek, returning
+  `None` on malformed input.
+- `ConfigSource` Protocol (208) — `load() -> bytes | None` and
+  `store(envelope: bytes) -> None`, the delivery backend seam.
+- Outcome structs: `ConfigApplyOutcome` (223) — `applied`/`revision`/`hash`/
+  `changed`/`restart_required`/`error`/`error_code`; `ConfigStoreOutcome` (247)
+  — `stored`/`target`/`path`/`revision`/`hash`/`error`/`error_code`.
+- `ConfigReloader` (269) — the validate-before-swap apply pipeline, serialized
+  behind an `asyncio.Lock` (313). Constructor takes injected `apply` (validate
+  + swap the core, returning changed names), `current` (snapshot the effective
+  core), `restart_required` (non-reloadable field names), `logger`,
+  `signing_key`, and `enabled`. `register_section(name, struct_type, apply)`
+  (322) is the additive/idempotent service-section registry.
+  `apply_envelope(payload, *, source)` (343) runs decode → version → hash →
+  optional signature → replay → decode sections → run section hooks → swap the
+  core; a raising hook aborts before any state change. `reload(source)` (472)
+  loads the desired-state envelope and applies it (a `None` payload or a `load`
+  exception maps to `CONFIG_SOURCE_UNAVAILABLE`). `store(source, *,
+  target="remote")` (496) persists the effective config back. `show()` (549)
+  returns the effective `ConfigSections`. Read-only properties `enabled` (560),
+  `revision` (566), `hash` (571), `source` (576).
+- Local-file helpers: `read_local_config(path)` (590) — write-free YAML read of
+  the `config.yml` snapshot (`None` on missing/invalid); `write_local_config
+  (path, sections)` (619) — atomic YAML write via `os.replace`.
+
+**Dependencies:** `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`,
+`msgspec`; stdlib `Protocol`/`Callable`. No transport or processor imports.
+**Depended on by:** `TaskProcessor` (builds and calls the reloader),
+`task_handler/config.py` (outcome constants), `valkey/worker.py` and
+`mqtt/worker.py` (encode/local-read helpers), the transport sources.
+
+## 24. Remote-config task handlers — `task_handler/config.py`
+
+**File:** `src/scietex/service/task_handler/config.py`
+
+**Purpose:** The three built-in `config:*` handlers, mirroring the `cancel_task`
+control path. Each decodes its request struct and delegates the work to a
+callback injected by the owning processor (which owns the `ConfigReloader` and
+the transport source), so the handlers never reach into processor internals.
+
+**Main symbols:**
+- `ConfigSourceLabel = Literal["default", "file", "remote", "inline"]` (29).
+- Request/response structs: `ConfigApplyRequest` (32,
+  `payload: bytes | None = None`, `persist: bool = False`),
+  `ConfigApplyResponse` (44, `applied`/`revision`/`hash`/`changed`/
+  `restart_required`/`error`), `ConfigStoreRequest` (65,
+  `target: Literal["disk", "remote", "both"] = "disk"`),
+  `ConfigStoreResponse` (77, `stored`/`target`/`path`/`revision`/`hash`/
+  `error`), `ConfigShowRequest` (97, `include_restart_required: bool = True`),
+  `ConfigShowResponse` (108, `settings`/`revision`/`hash`/`source`/
+  `restart_required_fields`/`error`/`error_code`).
+- Callback types: `ConfigApplyCallback` (134) `(bytes | None, bool) ->
+  Awaitable[ConfigApplyOutcome]`; `ConfigStoreCallback` (137) `(str) ->
+  Awaitable[ConfigStoreOutcome]`; `ConfigShowCallback` (141) `(bool) ->
+  ConfigShowResponse`.
+- Handlers: `ConfigApplyHandler` (144), `ConfigStoreHandler` (231),
+  `ConfigShowHandler` (318). Each decodes its request with
+  `msgspec.msgpack.decode(..., type=...)`; a `DecodeError` returns a
+  non-retryable `INVALID_CONFIG_PAYLOAD` `TaskResult` rather than raising. A
+  `CONFIG_SOURCE_UNAVAILABLE` outcome is returned as `retryable=True`; every
+  other failure is `retryable=False`. Success returns a msgpack-encoded
+  response struct as `TaskResult.payload`.
+
+**Dependencies:** `..config_reload` (outcome structs + the source-unavailable
+code), `.basic`/`.capabilities`/`.context`/`.schemas`. **Depended on by:**
+`TaskProcessor` (registers all three and injects the callbacks),
+`task_handler/__init__.py`.
+
+## 25. Valkey config source — `valkey/config_source.py`
+
+**File:** `src/scietex/service/valkey/config_source.py`
+
+**Purpose:** The durable-key implementation of the core `ConfigSource`
+Protocol. The durable key `scietex:{service}:config` is the source of truth for
+remote config, not PubSub: PubSub is at-most-once and not persisted, so it
+cannot answer "what is the desired state now?" on startup or reconnect.
+
+**Main symbols:** `ValkeyConfigSource` (17), constructed with
+`(*, client, key, logger)`. `load()` (32) does a live `await client.get(key)`
+and returns `None` when the key is absent, so the reloader falls back to the
+local/default config. `store(envelope)` (36) writes the envelope back with
+`client.set(key, value=envelope)` (used by `config:store` targeting `remote`).
+Connection errors are not swallowed — they propagate to the reloader, which
+maps them to `CONFIG_SOURCE_UNAVAILABLE`.
+
+**Dependencies:** `._glide` (`GlideClient`). **Depended on by:** `ValkeyWorker`
+(built in `initialize()` and attached to `_config_source`),
+`valkey/__init__.py`.
+
+## 26. MQTT config source — `mqtt/config_source.py`
+
+**File:** `src/scietex/service/mqtt/config_source.py`
+
+**Purpose:** The retained-topic implementation of the core `ConfigSource`
+Protocol. MQTT has no cross-topic atomicity, so the whole envelope lives in one
+retained message: retained = state, delivered on SUBACK. Unlike Valkey's
+`GET`, the retained payload cannot be read on demand — it arrives as a message
+— so the source records the latest payload received on the topic as an
+in-memory snapshot and exposes a bounded `wait_for_snapshot` for startup.
+
+**Main symbols:** `MqttConfigSource` (26), constructed with `(*, topic, qos,
+ttl, publish, logger)` — `publish` is the `MqttPublish` seam injected by the
+worker (which owns the client). `record(payload)` (56) stores the newest
+config-topic payload and signals any waiter (the newest wins). 
+`wait_for_snapshot(timeout)` (65) blocks on an `asyncio.Event` for at most
+`timeout` seconds and returns the payload or `None` on timeout — it never
+raises, so a broker without a retained config cannot fail startup. `load()`
+(78) returns the recorded snapshot without touching the network. `store
+(envelope)` (82) publishes the effective config back as a retained message
+(`retain=True`) at `qos`, carrying an MQTT 5 message-expiry property
+(`MessageExpiryInterval = ttl`) when `ttl` is set, mirroring `status_ttl`.
+
+**Dependencies:** `._aiomqtt` (`PacketTypes`, `Properties`), `.transport`
+(`MqttPublish`). **Depended on by:** `MqttWorker` (built in `__init__` and
+attached to `_config_source`; `record` is driven by `_handle_message`'s topic
+dispatch), `mqtt/__init__.py`.

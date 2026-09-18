@@ -24,6 +24,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | [`valkey_perf.py`](#valkey_perfpy) | yes | `ValkeyWorker` consumption-throughput benchmark (separate-process producer by default) |
 | [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `cancel_task` |
 | [`mqtt_worker.py`](#mqtt_workerpy) | MQTT | `MqttWorker` consuming tasks from a broker, with retained status and throttled progress publishing |
+| [`remote_config.py`](#remote_configpy) | MQTT | `MqttWorker` remote configuration: retained config envelope + `config:apply`/`config:show`/`config:store` commands and a custom settings section |
 | [`mqtt_perf.py`](#mqtt_perfpy) | MQTT | `MqttWorker` consumption-throughput benchmark (separate-process producer by default) |
 
 ## basic_worker.py
@@ -212,6 +213,32 @@ pip install "scietex.service[mqtt]"
 
 Note: on hosts where `localhost` resolves to IPv6 first, pass `--host 127.0.0.1`
 if the broker only listens on IPv4.
+
+## remote_config.py
+
+```bash
+python -m examples.remote_config --host 127.0.0.1
+```
+
+A `MqttWorker` subclass demonstrating the remote-configuration channel. It
+registers a custom `DemoServiceSettings` section (batch size + greeting) via
+`register_config_settings`, then an operator client drives the full lifecycle:
+it publishes a retained config envelope to `scietex/{service}/config` (the
+desired-state channel), then submits the three built-in `config:apply`,
+`config:show`, and `config:store` commands as tasks. The worker prints its
+`config_revision`/`config_source` after each step, showing the retained
+envelope being applied (re-read by `config:apply`), inspected over the wire
+(`config:show`), and persisted to `config.yml` in a temporary config
+directory (`config:store target=disk`).
+
+Requires a running MQTT 5 broker and the `mqtt` extra:
+
+```bash
+pip install "scietex.service[mqtt]"
+```
+
+Note: on hosts where `localhost` resolves to IPv6 first, pass `--host 127.0.0.1`
+if the broker only listens on IPv4 (the default already does this).
 
 ## mqtt_perf.py
 

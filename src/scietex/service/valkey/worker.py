@@ -18,6 +18,13 @@ from uuid import UUID
 import msgspec
 from scietex.logging import AsyncValkeyHandler
 
+from ..config_reload import (
+    CONFIG_SOURCE_UNAVAILABLE,
+    STALE_CONFIG,
+    ConfigApplyOutcome,
+    encode_config_envelope,
+    read_local_config,
+)
 from ..health import TransportHealth
 from ..task_processor import TaskProcessor
 from ._glide import (
@@ -38,6 +45,7 @@ from .config import (
     logging_handler_config,
     read_valkey_config,
 )
+from .config_source import ValkeyConfigSource
 from .lease import TaskLeaseManager, derive_task_lease_ttl
 from .schemas import Heartbeat
 from .tracking import TaskStatusStore
@@ -120,6 +128,8 @@ class ValkeyWorker(TaskProcessor):
             _heartbeat_key (str): Key for the worker status heartbeat entry.
             _log_stream_name (str): Resolved Valkey stream name for log entries,
                 with ``{service}`` substituted.
+            _config_key (str): Resolved Valkey key holding the desired-state
+                remote config, with ``{service}`` substituted.
             _task_stream_name (str): Valkey stream name for task entries.
             _task_group_name (str): Consumer group name for task fetching.
             _consumer_name (str): Consumer identifier within the task group.
@@ -134,6 +144,9 @@ class ValkeyWorker(TaskProcessor):
         # {service} is resolved here exactly as MQTT resolves log_topic; a name
         # without the placeholder passes through unchanged.
         self._log_stream_name = cfg.log_stream_name.format(service=self.service_name)
+        # The durable key is the source of truth for remote config (design §2);
+        # it is resolved here like log_stream_name.
+        self._config_key = cfg.config_key.format(service=self.service_name)
         # AR-066: when no explicit config was given, defer the filesystem read
         # (and the default valkey.yml write / config-dir mkdir it triggers) to
         # the first connect, so construction is side-effect-free. Both
@@ -453,6 +466,11 @@ class ValkeyWorker(TaskProcessor):
         A pre-existing group (``BUSYGROUP``) is ignored; any other group
         creation error fails initialization.
 
+        After a successful connect, the durable-key config source is attached
+        and the local ``config.yml`` snapshot and remote envelope are applied
+        (design §5 precedence: constructor < local file < remote). A missing,
+        invalid, or unreachable remote config never fails startup.
+
         Returns:
             ``True`` if the parent initialization and Valkey connection
             succeed and the consumer group is ready. ``False`` if the
@@ -467,6 +485,13 @@ class ValkeyWorker(TaskProcessor):
         if not client:
             return False
 
+        # Attach the durable-key source now that the client exists, then apply
+        # the local snapshot and the remote source of truth. Startup must not
+        # fail on a bad or unreachable remote config (availability-first).
+        self._config_source = ValkeyConfigSource(client=client, key=self._config_key, logger=self.logger)
+        await self._apply_local_config()
+        await self._reload_remote_config()
+
         try:
             await client.xgroup_create(
                 self._task_stream_name,
@@ -479,6 +504,65 @@ class ValkeyWorker(TaskProcessor):
                 self.logger.error("Failed to create consumer group %s: %s", self._task_group_name, exc)
                 return False
         return True
+
+    async def _apply_local_config(self) -> None:
+        """Apply the persisted ``config.yml`` snapshot at startup (design §5).
+
+        The local file is the worker's own persisted snapshot (written by
+        ``config:store``), so it is applied as a trusted, unsigned envelope
+        ahead of the remote read; the remote source stays authoritative when
+        present. A missing file is silently skipped, and any apply failure is
+        logged rather than failing startup.
+        """
+        cfg = cast(ValkeyWorkerConfig, self._config)
+        sections = read_local_config(self.conf_dir / cfg.config_file)
+        if sections is None:
+            return
+        try:
+            # revision=1 applies cleanly at startup (the reloader starts at
+            # revision 0) and stays below any remote revision, so the remote
+            # source remains authoritative when both are present.
+            payload = encode_config_envelope(sections, revision=1)
+            outcome = await self._config_reloader.apply_envelope(payload, source="file")
+        except Exception as exc:
+            self.logger.error("Failed to apply local config: %s", exc)
+            return
+        self._log_config_outcome(outcome, "file")
+
+    async def _reload_remote_config(self) -> None:
+        """Read and apply the durable-key config envelope at startup (design §5).
+
+        A missing key, an invalid envelope, or an unreachable server must not
+        fail startup: ``reload`` returns an outcome instead of raising, and the
+        worker stays on its local/default config either way.
+        """
+        source = self._config_source
+        if source is None:
+            return
+        try:
+            outcome = await self._config_reloader.reload(source)
+        except Exception as exc:
+            self.logger.error("Failed to reload remote config: %s", exc)
+            return
+        self._log_config_outcome(outcome, "remote")
+
+    def _log_config_outcome(self, outcome: ConfigApplyOutcome, source: str) -> None:
+        """Log a startup config-apply result per the design §5 failure policy.
+
+        Applied envelopes are logged at INFO with revision/hash; a stale
+        envelope at DEBUG; an unavailable source at DEBUG (the common
+        "no config" fallback — an actual GET failure is already logged at
+        WARNING by the reloader); everything else (invalid / bad signature /
+        unknown section) at ERROR.
+        """
+        if outcome.applied:
+            self.logger.info("Applied %s config revision %d (hash %s)", source, outcome.revision, outcome.hash)
+        elif outcome.error_code == STALE_CONFIG:
+            self.logger.debug("Skipped stale %s config (revision %d)", source, outcome.revision)
+        elif outcome.error_code == CONFIG_SOURCE_UNAVAILABLE:
+            self.logger.debug("No %s config available; keeping local/default", source)
+        else:
+            self.logger.error("Failed to apply %s config: %s", source, outcome.error_code)
 
     async def cleanup(self):
         """Perform cleanup on shutdown.

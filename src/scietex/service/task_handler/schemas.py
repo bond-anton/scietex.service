@@ -14,6 +14,15 @@ import msgspec
 #: Task type string that selects the built-in cancellation handler.
 CANCEL_TASK_TYPE: str = "cancel_task"
 
+#: Task type string that selects the built-in remote-config apply handler.
+CONFIG_APPLY_TASK_TYPE: str = "config:apply"
+
+#: Task type string that selects the built-in remote-config store handler.
+CONFIG_STORE_TASK_TYPE: str = "config:store"
+
+#: Task type string that selects the built-in remote-config show handler.
+CONFIG_SHOW_TASK_TYPE: str = "config:show"
+
 #: Why a running task was cancelled. Only ``"deliberate"`` (an explicit
 #: ``cancel_task`` request) produces a ``cancelled`` status; ``"timeout"`` and
 #: ``"shutdown"`` keep the existing ``failed`` status.

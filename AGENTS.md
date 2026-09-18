@@ -50,14 +50,23 @@ Run all commands (linters, tests, examples) within this environment.
 **Transport health (core, `scietex.service.health`):**
 - `TransportHealth` — connection-health supervisor: aggregates failures, owns the single reconnect path, logs one CRITICAL per sustained outage; exposed via `ValkeyWorker.transport_health` and `MqttWorker.transport_health`. Hoisted from `valkey/health.py` to core in v4.4.0 and re-exported from `scietex.service.valkey.health` for back-compat.
 
+**Remote configuration (core, `scietex.service.config_reload`):**
+- `ConfigReloader` — transport-agnostic owner of the apply/reload/store/show pipeline (validate-before-swap, serialized behind an `asyncio.Lock`, replay protection). Calls back into the processor through injected callables; imports no transport package and no processor type.
+- `ConfigSource` — core Protocol (`load`/`store`) both transports implement to deliver the desired-state envelope.
+- `ConfigEnvelope` / `ConfigSections` / `ReloadableSettings` — frozen `forbid_unknown_fields` structs; `RELOADABLE_FIELDS` is the eight-field hot-reload allowlist.
+- `ValkeyConfigSource` (`valkey/config_source.py`) — durable key `scietex:{service}:config` via `GET`/`SET`; `MqttConfigSource` (`mqtt/config_source.py`) — retained topic `scietex/{service}/config` via snapshot + retained publish.
+- Built-in `config:apply` / `config:store` / `config:show` handlers (`task_handler/config.py`) plus the `register_config_settings(name, struct_type, apply=...)` extension point on `TaskProcessor`.
+
 **Valkey collaborators (internal, `scietex.service.valkey`):**
 - `TaskLeaseManager` (`lease.py`) — per-entry lease store (`key`/`write`/`acquire`/`delete`/`refresh`)
 - `TaskStatusStore` (`tracking.py`) — per-task status records (`record_running`/`record_terminal`/`update_progress`)
+- `ValkeyConfigSource` (`config_source.py`) — durable-key `ConfigSource` for remote config (`load` does a live `GET`, `store` does `SET`)
 - `ValkeyWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(GlideClientConfiguration) -> Awaitable[GlideClient]` used by `connect()`, defaulting to `GlideClient.create`
 
 **MQTT collaborators (internal, `scietex.service.mqtt`):**
 - `MqttInbox` (`inbox.py`) — Protocol for the durable inbox (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`); `FileMqttInbox` is the file-backed implementation (one JSON file per entry plus `.done` tombstones)
 - `MqttTransport` (`transport.py`) — drains the inbox into the processor queue, re-publishes on `requeue`, marks entries terminal on `ack`; publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics (a status publisher, not a store — no read-back API)
+- `MqttConfigSource` (`config_source.py`) — retained-topic `ConfigSource` for remote config (`record`/`wait_for_snapshot`/`load`/`store`; `store` publishes retained with an optional `config_ttl` message-expiry)
 - `MqttWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(MqttConfig) -> Awaitable[Client]` used by `connect()`, defaulting to `_create_client`, which builds an `aiomqtt.Client` (MQTT 5) and enters its async context
 - `AsyncMqttHandler` — log handler that owns its own connection (no `client=`), matching `AsyncValkeyHandler`
 
@@ -77,6 +86,7 @@ python -m examples.valkey_perf            # ValkeyWorker throughput benchmark (r
 python -m examples.progress_and_cancel    # TaskProcessor + progress reporting and cancellation (requires valkey-glide)
 python -m examples.mqtt_worker            # MqttWorker (requires aiomqtt)
 python -m examples.mqtt_perf              # MqttWorker throughput benchmark (requires aiomqtt)
+python -m examples.remote_config          # MqttWorker remote configuration (requires aiomqtt)
 ```
 
 **Worker lifecycle:**
@@ -107,6 +117,7 @@ is created.
 - `ValkeyWorkerConfig.valkey_config` is `ValkeyConfig | None` (the raw-`GlideClientConfiguration` fallback was removed); PubSub listening is expressed via `ValkeyConfig.pubsub_config` (`ValkeyPubSubConfig(listening=..., parse_control_message=...)`)
 - `ValkeyWorkerConfig.task_lease_ttl: int | None = None` — lease lifetime in seconds, bounds `[1, 86400]`; `None` derives `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`
 - `ValkeyWorkerConfig.log_stream_name` defaults to `scietex:{service}:log`, with `{service}` substituted with `service_name` at construction — a **breaking change** from the previous shared `scietex:log`; explicitly setting `log_stream_name="scietex:log"` pins the old shared stream
+- `ValkeyWorkerConfig.config_key` defaults to `scietex:{service}:config` — the durable desired-state key for remote config, `{service}` substituted at construction
 - Install extras: `uv sync --extra valkey` or `pip install "scietex.service[valkey]"`
 
 **MQTT config:**
@@ -114,12 +125,20 @@ is created.
 - Raises RuntimeError if the file is present but invalid; creates defaults only if missing
 - Read deferred to first `connect()` (AR-066): constructing `MqttWorker()` with no explicit `mqtt_config` does not touch the filesystem
 - `MqttWorkerConfig.mqtt_config` is `MqttConfig | None`; `MqttConfig` fields: `host`, `port`, `username`, `password`, `identifier`, `keepalive`, `clean_start`, `session_expiry_interval`, `transport`, `timeout`, `tls_insecure`, `tls_context`
-- `MqttWorkerConfig` fields: `task_topic` (`scietex/{service}/tasks`), `task_qos` (default 2), `inbox_backend` (`"file"`/`"memory"`/`"none"`), `inbox_path`, `inbox_ttl`, `log_topic` (`scietex/{service}/log`), `log_qos` (default 0), `log_retain`, `status_publish_enabled` (default `True`), `status_topic_prefix` (default `scietex/{service}/tasks`), `status_qos` (default 1, range `[0, 2]`), `status_ttl` (default 86400, range `[1, 2592000]`, `None` disables expiry), `progress_qos` (default 0, range `[0, 2]`), `progress_min_interval` (default 1.0, range `[0.0, 3600.0]`), `progress_min_delta` (default 0.0, range `[0.0, 100.0]`)
+- `MqttWorkerConfig` fields: `task_topic` (`scietex/{service}/tasks`), `task_qos` (default 2), `inbox_backend` (`"file"`/`"memory"`/`"none"`), `inbox_path`, `inbox_ttl`, `log_topic` (`scietex/{service}/log`), `log_qos` (default 0), `log_retain`, `status_publish_enabled` (default `True`), `status_topic_prefix` (default `scietex/{service}/tasks`), `status_qos` (default 1, range `[0, 2]`), `status_ttl` (default 86400, range `[1, 2592000]`, `None` disables expiry), `progress_qos` (default 0, range `[0, 2]`), `progress_min_interval` (default 1.0, range `[0.0, 3600.0]`), `progress_min_delta` (default 0.0, range `[0.0, 100.0]`), `config_topic` (`scietex/{service}/config`), `config_qos` (default 1, range `[0, 2]`), `config_ttl` (default 86400, range `[1, 2592000]`, `None` disables expiry)
 - MQTT 5 only; the task id travels as the `scietex-task-id` user property (the `TaskEnvelope` wire format is untouched)
 - Delivery semantics: aiomqtt v2.5.1 auto-acks at the broker when `on_message` returns, so wire QoS 2 is at-most-once at the app layer; the durable file inbox restores at-least-once by persisting every received message before processing and deduping on replay via tombstones. `inbox_backend="memory"` (or its alias `"none"`) is the explicit at-most-once opt-out, backed by `MemoryInbox`
 - No status store: `MqttTransport` publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics (`scietex/{service}/tasks/{task_id}/status` default QoS 1 retained, `.../progress` default QoS 0 not retained) — a publisher with no read-back API, not a store; `status_publish_enabled=False` restores the no-op; progress also remains in-process via `TaskCapabilities`
 - Registry/heartbeat use retained-message topics `scietex/{service}/workers/{instance_id}`
 - Install extras: `uv sync --extra mqtt` or `pip install "scietex.service[mqtt]"`
+
+**Remote configuration:**
+- Opt-in via `TaskProcessorConfig.remote_config_enabled=True` (default `False`); adds `config_file` (`"config.yml"`), `config_signing_key` (HMAC, `None` disables), and `config_startup_timeout` (MQTT bounded snapshot wait, default 2.0, range `[0.0, 60.0]`)
+- Delivery: one durable desired-state location per transport — Valkey key `scietex:{service}:config` (`GET`/`SET`), MQTT retained topic `scietex/{service}/config`; commands travel as tasks (`config:apply`/`config:store`/`config:show`) through the existing pipeline
+- Precedence at startup: constructor config < `config.yml` < remote source; invalid remote config never fails startup (availability-first)
+- The payload is a `ConfigEnvelope` (msgpack) wrapping a complete `ReloadableSettings` snapshot plus optional registered service sections; only the 8 core fields (`max_concurrent_tasks`, `task_manager_sleep_time`, `task_queue_manager_sleep_time`, `task_handler_start_timeout`, `task_handler_stop_timeout`, `task_timeout`, `task_queue_fetch_timeout`, `task_cancellation_timeout`) are hot-reloadable — everything else is restart-required and unrepresentable remotely
+- Extension point: `worker.register_config_settings(name, struct_type, apply=...)` adds a custom service settings struct + apply hook without the core knowing its fields
+- Full guide: `docs/remote_config.md`
 
 ## Task Handler System
 

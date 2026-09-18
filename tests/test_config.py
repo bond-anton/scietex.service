@@ -109,6 +109,16 @@ def test_task_processor_config_timing_fields_default_none():
     assert cfg.task_cancellation_timeout is None
 
 
+def test_task_processor_config_remote_config_defaults():
+    """Remote-config fields default to disabled, the standard config.yml name,
+    no signing key, and no startup timeout."""
+    cfg = TaskProcessorConfig()
+    assert cfg.remote_config_enabled is False
+    assert cfg.config_file == "config.yml"
+    assert cfg.config_signing_key is None
+    assert cfg.config_startup_timeout is None
+
+
 def test_task_processor_config_timing_fields_in_range_accepted():
     cfg = TaskProcessorConfig(
         task_timeout=10,
@@ -131,6 +141,8 @@ def test_task_processor_config_timing_fields_in_range_accepted():
         ("task_queue_fetch_timeout", 61),
         ("task_cancellation_timeout", 0.05),
         ("task_cancellation_timeout", 61),
+        ("config_startup_timeout", -1.0),
+        ("config_startup_timeout", 61.0),
     ],
 )
 def test_task_processor_config_timing_fields_out_of_range_raises(field_name, value):
@@ -144,6 +156,12 @@ def test_task_timeout_unbounded_sentinel_accepted(value):
     must pass validation instead of being rejected by the [0.1, 3600] bound."""
     cfg = TaskProcessorConfig(task_timeout=value)
     assert cfg.task_timeout == value
+
+
+@pytest.mark.parametrize("value", [0.0, 60.0])
+def test_config_startup_timeout_boundaries_accepted(value):
+    cfg = TaskProcessorConfig(config_startup_timeout=value)
+    assert cfg.config_startup_timeout == value
 
 
 def test_config_is_immutable():

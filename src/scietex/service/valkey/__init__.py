@@ -19,6 +19,8 @@ Public exports:
     - :class:`ValkeyUserCredentials` — Authentication credentials.
     - :class:`ValkeyBackoffStrategy` — Reconnection backoff settings.
     - :class:`ValkeyTlsAdvancedConfiguration` — TLS settings.
+    - :class:`ValkeyConfigSource` — Durable-key ``ConfigSource`` (GET/SET
+      ``scietex:{service}:config``).
     - :class:`PurgeResult` — Outcome of :func:`purge_task_stream` (entries
       purged and any errors).
     - :func:`purge_task_stream` — Standalone task-stream purge utility.
@@ -39,6 +41,7 @@ from .config import (
     ValkeyUserCredentials,
     ValkeyWorkerConfig,
 )
+from .config_source import ValkeyConfigSource
 from .purge import PurgeResult, purge_task_stream
 from .worker import ValkeyWorker
 
@@ -52,6 +55,7 @@ __all__ = [
     "ValkeyBaseConfig",
     "ValkeyConfig",
     "ValkeyWorkerConfig",
+    "ValkeyConfigSource",
     "ValkeyWorker",
     "PurgeResult",
     "purge_task_stream",

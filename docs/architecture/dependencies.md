@@ -35,6 +35,16 @@ implements the same Protocol and composes `mqtt/config` and `mqtt/inbox`.
 Both reuse the transport-agnostic `TransportHealth` from core `health.py`
 (AR-089).
 
+Remote config follows the same inversion: `config_reload.py` (core) defines the
+`ConfigSource` Protocol and `ConfigReloader` and imports no transport package.
+The two sources — `valkey/config_source.py` (`ValkeyConfigSource`) and
+`mqtt/config_source.py` (`MqttConfigSource`) — implement `ConfigSource`
+**structurally** (no `config_reload` import; they only need their own transport
+names). The transport *workers* import `..config_reload` for the startup
+helpers (`encode_config_envelope`/`read_local_config`) and outcome constants,
+and `task_processor` imports `config_reload` + `task_handler.config` to build
+the reloader and register the three handlers.
+
 ## Edge table
 
 | From | To | Kind | Notes |
@@ -51,7 +61,10 @@ Both reuse the transport-agnostic `TransportHealth` from core `health.py`
 | `task_processor` | `basic_worker` | inheritance | extends |
 | `task_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `task_processor` | `.manager` | import | for `@Manager` decorators |
-| `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskHandlerContext`, `TaskResult`, `TaskTracker`, `TaskCapabilities`, `CancelReason`, `CancelOutcome`, `CancelTaskHandler` |
+| `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskHandlerContext`, `TaskResult`, `TaskTracker`, `TaskCapabilities`, `CancelReason`, `CancelOutcome`, `CancelTaskHandler`, `ConfigApplyHandler`, `ConfigShowHandler`, `ConfigShowResponse`, `ConfigSourceLabel`, `ConfigStoreHandler` |
+| `task_processor` | `.config_reload` | import | `ConfigReloader`, `ConfigSource`, `ReloadableSettings`, `CONFIG_SOURCE_UNAVAILABLE`, `CONFIG_STORE_FAILED`, `RELOADABLE_FIELDS`, `REMOTE_CONFIG_DISABLED`, `ConfigApplyOutcome`/`ConfigStoreOutcome`, `write_local_config` — builds the reloader and wires the three `config:*` handlers |
+| `config_reload` | `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`, `msgspec` | import | core machinery; imports no transport package and no processor type (the dependency-inversion anchor for the `ConfigSource` Protocol) |
+| `task_handler.config` | `..config_reload` | import | `ConfigApplyOutcome`, `ConfigStoreOutcome`, `CONFIG_SOURCE_UNAVAILABLE`, `INVALID_CONFIG`, `INVALID_CONFIG_PAYLOAD` |
 | `task_processor` | `.transport` | import | `TaskTransport`, `InMemoryTransport` (default transport) |
 | `transport` | `.task_handler.schemas` | import | `TaskData`, `TaskResult`, `CancelReason` (no `glide` dependency) |
 | `task_handler.basic` | `.schemas` | import | runtime |
@@ -59,7 +72,9 @@ Both reuse the transport-agnostic `TransportHealth` from core `health.py`
 | `valkey.worker` | `task_processor` | inheritance | `ValkeyWorker(TaskProcessor)` |
 | `valkey.worker` | `.task_handler`, `.task_handler.wire` | import | `TaskData`, `TaskResult`, `encode_task_envelope`/`decode_task_envelope` |
 | `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
-| `valkey.worker` | `.transport`, `.health`, `.lease`, `.tracking` | import | composes `ValkeyTransport` + the health/lease/status collaborators |
+| `valkey.worker` | `.transport`, `.health`, `.lease`, `.tracking`, `.config_source` | import | composes `ValkeyTransport` + the health/lease/status collaborators + the `ValkeyConfigSource` (attached to `_config_source`) |
+| `valkey.worker` | `..config_reload` | import | `encode_config_envelope`, `read_local_config`, `CONFIG_SOURCE_UNAVAILABLE`, `STALE_CONFIG`, `ConfigApplyOutcome` — startup local/remote apply |
+| `valkey.config_source` | `._glide` | import | `GlideClient` (GET/SET the durable key); implements the core `ConfigSource` Protocol structurally — no `config_reload` import |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |
 | `valkey.worker` | `glide` | import (external, optional extra) | imports glide names via `valkey/_glide.py` (single guarded import, AR-048); errors surface to top-level guard |
 | `valkey.transport` | `.config`, `.health`, `.lease`, `.tracking`, `._glide` | import | implements the core `TaskTransport` Protocol; composes the Valkey collaborators |
@@ -68,7 +83,9 @@ Both reuse the transport-agnostic `TransportHealth` from core `health.py`
 | `scietex.service/__init__` | `mqtt` | import | inside `try/except ImportError` — optional feature |
 | `mqtt.worker` | `task_processor` | inheritance | `MqttWorker(TaskProcessor)` |
 | `mqtt.worker` | `..task_handler`, `..task_handler.wire` | import | `TaskData`, `encode_task_envelope`/`decode_task_envelope` |
-| `mqtt.worker` | `.config`, `.inbox`, `.transport`, `.logging`, `._aiomqtt` | import | composes `MqttWorkerConfig`, `FileMqttInbox`, `MqttTransport`; logging translator; guarded aiomqtt names |
+| `mqtt.worker` | `.config`, `.inbox`, `.transport`, `.logging`, `.config_source`, `._aiomqtt` | import | composes `MqttWorkerConfig`, `FileMqttInbox`, `MqttTransport`, `MqttConfigSource`; logging translator; guarded aiomqtt names |
+| `mqtt.worker` | `..config_reload` | import | `encode_config_envelope`, `read_local_config`, `CONFIG_SOURCE_UNAVAILABLE`, `STALE_CONFIG`, `ConfigApplyOutcome` — startup local/remote apply |
+| `mqtt.config_source` | `._aiomqtt`, `.transport` | import | `PacketTypes`/`Properties` (message-expiry) and the `MqttPublish` seam; implements the core `ConfigSource` Protocol structurally — no `config_reload` import |
 | `mqtt.worker` | `..health` | import | core `TransportHealth` (AR-089) |
 | `mqtt.worker` | `scietex.logging` | import (external) | `AsyncMqttHandler` |
 | `mqtt.transport` | `.config`, `.inbox`, `..health`, `..task_handler`, `..transport`, `._aiomqtt` | import | implements the core `TaskTransport` Protocol; composes `MqttWorkerConfig`, `MqttInbox`, `TransportHealth`; `Properties`/`PacketTypes` for the retained-status message-expiry property |
