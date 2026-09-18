@@ -1,6 +1,6 @@
 # v4.4.0 — MQTT Worker Design
 
-**Status:** design approved — decisions locked (§10); implementation in progress (§12)
+**Status:** design approved — decisions locked (§10); implemented (§12)
 **Target release:** v4.4.0
 **Motivation:** AR-089 (`docs/reviews/architecture/2026-09-16-2.md`) — the
 transport seam was built so a second transport could be added without touching
@@ -58,7 +58,7 @@ MqttWorker(TaskProcessor)
   ├── MqttTransport          (implements the 7 Protocol methods)
   ├── TransportHealth        (connection-health supervisor)
   ├── MqttInbox              (durable inbox: at-least-once + dedupe)
-  └── TaskStatusStore-like   (optional: progress/status records)
+  └── status publisher       (retained TaskStatus + throttled TaskProgress)
 ```
 
 ### 2.1 Package layout
@@ -72,7 +72,6 @@ src/scietex/service/mqtt/
     worker.py        # MqttWorker — composition + lifecycle overrides
     inbox.py         # MqttInbox — durable inbox for at-least-once
     logging.py       # logging_handler_config — MqttConfig → AsyncMqttHandler kwargs
-    health.py        # (only if TransportHealth is NOT hoisted to core — see §7)
 ```
 
 The `_aiomqtt.py` module is the analogue of `valkey/_glide.py`: the single
@@ -224,8 +223,8 @@ replay. The inbox is the source of truth for "has this task been processed".
 The inbox exists only to compensate for aiomqtt v2.5.1's premature broker ack.
 aiomqtt v3's manual ack removes that need, so the durable backend is
 transitional — a file-backed store is the smallest throwaway surface. The
-`MqttInbox` Protocol (`put`/`mark_terminal`/`pending`/`recover`) keeps the v3
-migration to an implementation swap.
+`MqttInbox` Protocol (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`)
+keeps the v3 migration to an implementation swap.
 
 The file-backed implementation stores entries under the config directory (an
 append-only log or a small JSON store), with the same `pending`/`in-flight`/
@@ -266,7 +265,7 @@ inbox compensates for.
 
 ```toml
 [project.optional-dependencies]
-mqtt = ["aiomqtt~=2.5.0"]
+mqtt = ["scietex.logging[mqtt]>=2.0.0", "aiomqtt~=2.5.0"]
 ```
 
 `dev` should also include it so the full development environment can run the
@@ -451,7 +450,7 @@ code and tests. With the decisions above locked, implementation can proceed.
 
 ## 12. Implementation status
 
-Branch: `feature/mqtt-worker`. Version bumped to 4.4.0 for the release.
+Implemented on `main`. Version bumped to 4.4.0 for the release.
 
 | # | Step | Status | Commit |
 |---|---|---|---|
@@ -471,7 +470,7 @@ after step 4 (14 transport tests) → 335 after step 5 (41 MQTT tests total).
 
 ## 13. Task status and progress publishing (addendum)
 
-**Status:** design approved — implementation pending.
+**Status:** design approved — implemented.
 **Scope:** `MqttTransport`, `MqttWorkerConfig`, and the worker's `publish`
 seam. No core `TaskTransport` change, no new wire format, no new dependency.
 

@@ -4,12 +4,11 @@ Example of a Valkey worker that listens for PubSub control messages.
 ``ValkeyWorker`` honours ``ValkeyConfig.pubsub_config`` directly: setting
 ``ValkeyPubSubConfig(listening=True)`` subscribes the worker's own client to
 the service-specific and broadcast channels, delivering each message to the
-``parse_control_message`` callback. The directed channel uses the worker's own
-``instance_id``.
+``parse_control_message`` callback. The directed channel is service-specific.
 
 The worker subscribes to two channels:
-    - ``scietex:{service_name}:{instance_id}``  (directed at this instance)
-    - ``scietex:broadcast``                     (sent to every instance)
+    - ``scietex:{service_name}``  (directed at this service)
+    - ``scietex:broadcast``       (sent to every instance)
 
 Any message published to either channel is delivered to the
 ``parse_control_message`` callback supplied at config time.

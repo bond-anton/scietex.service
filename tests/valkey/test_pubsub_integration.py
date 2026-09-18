@@ -23,7 +23,7 @@ def _server_reachable() -> bool:
 
         client = None
         try:
-            client = await GlideClient.create(generate_glide_config(ValkeyConfig(), "probe", "probe"))
+            client = await GlideClient.create(generate_glide_config(ValkeyConfig(), "probe"))
             return await client.ping() == b"PONG"
         except Exception:
             return False
@@ -56,7 +56,6 @@ async def test_pubsub_directed_and_broadcast_delivery():
         received.append((message.channel, message.message))
 
     service_name = "pubsub-itest"
-    worker_id = "worker-1"
     client = await GlideClient.create(
         generate_glide_config(
             ValkeyConfig(
@@ -66,12 +65,11 @@ async def test_pubsub_directed_and_broadcast_delivery():
                 )
             ),
             service_name=service_name,
-            worker_id=worker_id,
         )
     )
     try:
-        # Directed channel: scietex:{service}:{worker_id}
-        directed = f"scietex:{service_name}:{worker_id}"
+        # Directed channel: scietex:{service}
+        directed = f"scietex:{service_name}"
         # Broadcast channel: scietex:broadcast
         broadcast = "scietex:broadcast"
 

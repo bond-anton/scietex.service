@@ -117,8 +117,9 @@ class TaskProgress(msgspec.Struct, frozen=True):
 class TaskStatus(msgspec.Struct, frozen=True):
     """Per-task tracking record published to the transport.
 
-    Written by the submitter as ``queued``, overwritten by the worker as
-    ``running`` when the task starts and as ``completed``/``failed`` when it
+    Written as ``queued`` when the task is accepted (by the submitter under the
+    Valkey split, or by the worker itself for MQTT), overwritten by the worker
+    as ``running`` when the task starts and as ``completed``/``failed`` when it
     finishes. A deliberate ``cancel_task`` request produces ``cancelled`` and
     embeds the original :class:`TaskData` in ``data`` so an external process
     can read it, modify it, and resubmit under a new task id.

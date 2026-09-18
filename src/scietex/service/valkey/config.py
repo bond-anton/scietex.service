@@ -147,7 +147,7 @@ class ValkeyPubSubConfig(msgspec.Struct, frozen=True):
 
     Args:
         listening: If ``True``, subscribe to the service-specific
-            (``scietex:{service_name}:{worker_id}``) and broadcast
+            (``scietex:{service_name}``) and broadcast
             (``scietex:broadcast``) channels.
         parse_control_message: Optional callback invoked for each message
             received on a subscribed channel. Runtime-only: it cannot be
@@ -391,7 +391,6 @@ def read_valkey_config(conf_dir: Path | None, *, create_default: bool = True) ->
 def generate_glide_config(
     valkey_config: ValkeyConfig,
     service_name: str,
-    worker_id: str,
 ) -> GlideClientConfiguration:
     """Convert a ``ValkeyConfig`` schema into a ``GlideClientConfiguration``.
 
@@ -404,8 +403,8 @@ def generate_glide_config(
 
     Args:
         valkey_config: The typed configuration schema.
-        service_name: Service name used for PubSub channel names.
-        worker_id: Instance identifier used for PubSub channel names.
+        service_name: Service name used for the directed PubSub channel
+            (``scietex:{service_name}``).
 
     Returns:
         A fully configured ``GlideClientConfiguration`` instance.
@@ -418,7 +417,7 @@ def generate_glide_config(
         pubsub_subscriptions = GlideClientConfiguration.PubSubSubscriptions(
             channels_and_patterns={
                 GlideClientConfiguration.PubSubChannelModes.Exact: {
-                    f"scietex:{service_name}:{worker_id}",
+                    f"scietex:{service_name}",
                     "scietex:broadcast",
                 },
             },

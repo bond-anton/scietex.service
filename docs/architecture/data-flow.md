@@ -10,11 +10,11 @@ transformations, and any async boundaries (queues/events/tasks).
 `enqueue_task()` directly.
 
 **Processing chain:**
-1. `TaskProcessor.task_queue_manager` (`task_processor.py:818`,
+1. `TaskProcessor.task_queue_manager` (`task_processor.py:819`,
    `@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
    subclass/`ValkeyWorker` `fetch_tasks()`; then sleeps
    `task_queue_manager_sleep_time` (default 0.01 s).
-2. `TaskProcessor.task_manager` (`task_processor.py:704`,
+2. `TaskProcessor.task_manager` (`task_processor.py:705`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `(task_id, task_data)` off `task_queue` with a fetch timeout of
    `task_queue_fetch_timeout` (default 1 s),
@@ -131,10 +131,10 @@ a class's per-instance task sets must not overlap.
 
 ## F5. Heartbeat flow
 
-**Source:** `@Manager("Heartbeat") _heartbeat_manager`
-(`basic_worker.py:654`) — sleeps `heartbeat_interval`, calls
-`self.heartbeat()`, repeats. `ValkeyWorker.heartbeat` (398) is the only
-concrete override.
+**Source:** `_heartbeat_manager` (`basic_worker.py:692`, registered via
+`register_manager(..., name="Heartbeat")` at 712) — sleeps
+`heartbeat_interval`, calls `self.heartbeat()`, repeats.
+`ValkeyWorker.heartbeat` (403) is the only concrete override.
 
 **Processing/destination:** encodes `Heartbeat` struct (msgpack) and writes it
 to key `scietex:{service}:{instance_id}:status` with TTL = 2 ×
@@ -155,7 +155,7 @@ heartbeat never surfaces.
   registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
-  `worker.py:284`) — owns its own `GlideClient`, built from a `valkey_config=`
+  `worker.py:289`) — owns its own `GlideClient`, built from a `valkey_config=`
   dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
   longer shares the worker's client; formats records to a dict and `xadd`s to
   the log stream `scietex:{service}:log` (default; `{service}` substituted at
@@ -187,7 +187,7 @@ only a missing file is created with defaults) →
 PubSub listening is opt-in through the typed schema:
 `ValkeyConfig.pubsub_config = ValkeyPubSubConfig(listening=True, parse_control_message=...)`.
 When `listening` is set, `generate_glide_config` subscribes the worker's own
-client to channels `scietex:{service}:{instance_id}` and `scietex:broadcast`
+client to channels `scietex:{service}` and `scietex:broadcast`
 (valkey/config.py). Each received message is delivered to the
 `parse_control_message` callback. The callback is runtime-only (a callable
 cannot be expressed in `valkey.yml`), so a YAML `listening: true` subscribes

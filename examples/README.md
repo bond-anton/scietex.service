@@ -125,11 +125,12 @@ python -m examples.valkey_pubsub_worker
 ```
 
 A `ValkeyWorker` that also subscribes to the PubSub control channels
-(`scietex:{service_name}:{instance_id}` and `scietex:broadcast`). Listening is
+(`scietex:{service_name}` and `scietex:broadcast`). Listening is
 expressed through the typed schema: `ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True, parse_control_message=...))`.
 The worker subscribes its own client and delivers each message to the
-`parse_control_message` callback; the directed channel uses the worker's own
-`instance_id`. Requires a running Valkey server and the `valkey` extra.
+`parse_control_message` callback; the directed channel is service-scoped (all
+workers of the service receive it), while `scietex:broadcast` remains global.
+Requires a running Valkey server and the `valkey` extra.
 
 ## valkey_perf.py
 

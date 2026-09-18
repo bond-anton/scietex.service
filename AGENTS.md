@@ -58,7 +58,7 @@ Run all commands (linters, tests, examples) within this environment.
 **MQTT collaborators (internal, `scietex.service.mqtt`):**
 - `MqttInbox` (`inbox.py`) — Protocol for the durable inbox (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`); `FileMqttInbox` is the file-backed implementation (one JSON file per entry plus `.done` tombstones)
 - `MqttTransport` (`transport.py`) — drains the inbox into the processor queue, re-publishes on `requeue`, marks entries terminal on `ack`; publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics (a status publisher, not a store — no read-back API)
-- `MqttWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(MqttConfig) -> Awaitable[Client]` used by `connect()`, defaulting to `aiomqtt.Client` (MQTT 5)
+- `MqttWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(MqttConfig) -> Awaitable[Client]` used by `connect()`, defaulting to `_create_client`, which builds an `aiomqtt.Client` (MQTT 5) and enters its async context
 - `AsyncMqttHandler` — log handler that owns its own connection (no `client=`), matching `AsyncValkeyHandler`
 
 ## Service Entry Points
@@ -75,6 +75,8 @@ python -m examples.valkey_async_service   # ValkeyWorker (requires valkey-glide)
 python -m examples.valkey_pubsub_worker   # ValkeyWorker + PubSub control channels (requires valkey-glide)
 python -m examples.valkey_perf            # ValkeyWorker throughput benchmark (requires valkey-glide)
 python -m examples.progress_and_cancel    # TaskProcessor + progress reporting and cancellation (requires valkey-glide)
+python -m examples.mqtt_worker            # MqttWorker (requires aiomqtt)
+python -m examples.mqtt_perf              # MqttWorker throughput benchmark (requires aiomqtt)
 ```
 
 **Worker lifecycle:**

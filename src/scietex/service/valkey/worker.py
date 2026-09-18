@@ -146,7 +146,6 @@ class ValkeyWorker(TaskProcessor):
             self._client_config = generate_glide_config(
                 cfg.valkey_config,
                 service_name=self.service_name,
-                worker_id=self.instance_id,
             )
         # The logging handler owns its own connection (AR-059/061); it is built
         # lazily on the first successful connect() and reused across restarts
@@ -282,7 +281,6 @@ class ValkeyWorker(TaskProcessor):
         self._client_config = generate_glide_config(
             valkey_config,
             service_name=self.service_name,
-            worker_id=self.instance_id,
         )
         return self._client_config
 

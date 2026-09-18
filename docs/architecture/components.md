@@ -18,8 +18,8 @@ latter two extracted in AR-087; `BasicWorker` keeps only identity, config, and
 the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 
 **Main symbols:**
-- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 38
-- `class BasicWorker` — line 54
+- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 39
+- `class BasicWorker` — line 55
 - Constructor — `__init__(config: WorkerConfig | None = None)`; stores the
   immutable `WorkerConfig` (from `config.py`), resolves identity/conf_dir/
   logging_level, and constructs all four components: `ManagerRuntime` +
@@ -28,30 +28,30 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
   raises `msgspec.ValidationError`, and `None` resolves to the matching
   `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
 - Config type mechanism (AR-069): class attribute `_config_type: ClassVar
-  [type[WorkerConfig]]` (82) tells the base which concrete config struct to
+  [type[WorkerConfig]]` (83) tells the base which concrete config struct to
   instantiate when `config=None`. Subclasses override it to their own config
   type (e.g. `TaskProcessor`→`TaskProcessorConfig`, `ValkeyWorker`→
   `ValkeyWorkerConfig`) so the base stores the concrete type and subclass
   constructors no longer re-store / double-instantiate
-- Delegators (thin, to the composed components): `_setup_signal_handlers` 358
-  → `SignalHandler.setup()` (Windows-safe no-op), `_remove_signal_handlers` 379
-  → `SignalHandler.remove()`, `_request_exit` 370 → `WorkerLifecycle.request_exit()`,
-  `_force_stopped` 481 → `WorkerLifecycle.force_stopped()`; properties `state`,
+- Delegators (thin, to the composed components): `_setup_signal_handlers` 359
+  → `SignalHandler.setup()` (Windows-safe no-op), `_remove_signal_handlers` 380
+  → `SignalHandler.remove()`, `_request_exit` 371 → `WorkerLifecycle.request_exit()`,
+  `_force_stopped` 482 → `WorkerLifecycle.force_stopped()`; properties `state`,
   `events`, `start_time` read from `WorkerLifecycle`
-- Lifecycle orchestrators: `_startup` 398, `start` 453, `_shutdown` 491,
-  `stop` 538, `exit` 582
-- Cancellation terminal-state helper: `_force_stopped` 481 (AR-017 — forces
+- Lifecycle orchestrators: `_startup` 399, `start` 454, `_shutdown` 492,
+  `stop` 539, `exit` 583
+- Cancellation terminal-state helper: `_force_stopped` 482 (AR-017 — forces
   STOPPED + `exit` event on startup/shutdown cancellation; delegated to
   `WorkerLifecycle.force_stopped()`)
-- Hooks: `initialize` 388, `heartbeat` 592, `watchdog` 604, `cleanup` 624,
-  `_register_instance` 633, `_unregister_instance` 643
-- Built-in managers: module-level `_heartbeat_manager` 654 and
-  `_watchdog_manager` 664, registered via `register_manager(BasicWorker, ...)`
-  (674, 680) with `name="Heartbeat"`/`"Watchdog"` and
+- Hooks: `initialize` 389, `heartbeat` 593, `watchdog` 605, `cleanup` 625,
+  `_register_instance` 634, `_unregister_instance` 644
+- Built-in managers: module-level `_heartbeat_manager` 692 and
+  `_watchdog_manager` 702, registered via `register_manager(BasicWorker, ...)`
+  (712, 718) with `name="Heartbeat"`/`"Watchdog"` and
   `attribute_name="_heartbeat_manager"`/`"_watchdog_manager"` — no longer
   `@Manager`-decorated methods (AR-087)
-- `_setup_signal_handlers` called from `start()` (478), not `__init__`;
-  `_remove_signal_handlers` called from `stop()` (560)
+- `_setup_signal_handlers` called from `start()` (479), not `__init__`;
+  `_remove_signal_handlers` called from `stop()` (561)
 
 **Public interface:** constructor takes a single immutable `WorkerConfig`
 (`config.py`) or `None`; all properties are read-only (no runtime setters):
@@ -64,11 +64,11 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 `FAILED` manager names, AR-063).
 Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
-subclass hooks govern registry-set membership: `_register_instance` (633) —
+subclass hooks govern registry-set membership: `_register_instance` (634) —
 called by `_startup()` after `initialize()` succeeds and before managers
-start — and `_unregister_instance` (643) — called by `_shutdown()` after
+start — and `_unregister_instance` (644) — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
-`ValkeyWorker` overrides them (worker.py:502, 527) to `SADD`/
+`ValkeyWorker` overrides them (worker.py:507, 532) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
@@ -93,7 +93,7 @@ off the worker's public properties.
 owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 (37).
 - `iter_manager_definitions()` (49) — walks `type(self.worker).__mro__`
-  **most-derived-first** (70), reading each class's own
+  **most-derived-first** (79), reading each class's own
   `__manager_registry__` list (populated by `Manager.__set_name__` and
   `register_manager`) and de-duplicating names via a `seen` set so a
   subclass override shadows the base definition. When two managers
@@ -105,14 +105,15 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
   failure mode 2), because the plain attribute produces no registry entry and
   discovery falls through to the base manager.
 - `run_manager(name, manager)` (138) — runs `manager.method(self.worker)` in a
-  `while True` loop (111); on a non-`CancelledError` exception records the error
-  (120) and retries after `manager_restart_backoff` (139), giving up when
+  `while True` loop (168); on a non-`CancelledError` exception records the error
+  (177) and retries after `manager_restart_backoff` (196), giving up when
   `consecutive_failures > manager_max_retries` — i.e. on the
-  (max_retries+1)-th consecutive failure (122–130). A successful iteration
-  resets the `consecutive_failures` counter to 0 (141–142), so the budget
-  counts consecutive failures only. `CancelledError` stops cleanly (117–118).
+  (max_retries+1)-th consecutive failure (179–187). A successful iteration
+  resets the `consecutive_failures` counter to 0 (199), so the budget
+  counts consecutive failures only. `CancelledError` stops cleanly
+  (174–175, 200–201).
   The retry happens **inside the same task** — the manager never cancels
-  itself. `finally` (145–161) runs `manager.cleanup`, marks STOPPED, and
+  itself. `finally` (202–218) runs `manager.cleanup`, marks STOPPED, and
   removes the task from tracking. A manager that gave up (exhausted the retry
   budget) is instead ended in the terminal `FAILED` state (AR-063) so the
   death is observable rather than silent.
@@ -277,8 +278,8 @@ key is the resolved name — `name` if given, otherwise `handler_class.__name__`
 duplicate resolved key raises; the map stores a `(class, handler_kwargs)`
 tuple and the kwargs are forwarded to the handler constructor on every
 instantiation), `_start_task_handler` 317
-(unpacks the tuple, builds a `TaskHandlerContext` at 336–340, and calls
-`handler_class(handler_name, context, **handler_kwargs)` at 341),
+(unpacks the tuple, builds a `TaskHandlerContext` at 338–342, and calls
+`handler_class(handler_name, context, **handler_kwargs)` at 343),
 `_stop_task_handler` 361, `remove_task_handler` 387, `_find_task_handler` 403,
 `process_task` 651.
 Queue access: `enqueue_task` 180, `dequeue_task` 201, `task_queue_empty` 193,
@@ -453,7 +454,7 @@ always-imported core `config.py`.
 `claim_min_idle_ms`, `task_tracking_ttl`, `task_lease_ttl`); `read_valkey_config(conf_dir)`
 — creates `valkey.yml` with defaults only if the file is missing; raises
 `RuntimeError` on a present-but-invalid file, never overwriting it;
-`generate_glide_config(valkey_config, service_name, worker_id)` (converts to
+`generate_glide_config(valkey_config, service_name)` (converts to
 `GlideClientConfiguration`, validates `read_from`/`protocol`, and builds PubSub
 subscriptions from `valkey_config.pubsub_config` when `listening` is set).
 
@@ -571,7 +572,7 @@ drops the update when the record is absent (DEBUG log), silent on
 **File:** `src/scietex/service/valkey/schemas.py`
 **Purpose/content:** `Heartbeat` (16) (frozen Struct) with `service`,
 `instance_id`, `status`, `heartbeat_interval`, `start_time`, `timestamp` —
-`timestamp` uses `msgspec.field(default_factory=...)` (39) for a per-instance
+`timestamp` uses `msgspec.field(default_factory=...)` (38) for a per-instance
 value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 
 ## 17. Valkey stream purge utility — `purge.py`
@@ -649,8 +650,9 @@ added in v4.4.0 (AR-089's second transport). Owns inbox draining, requeue,
 terminal acknowledgement, and drain handling, so `MqttWorker` keeps only
 lifecycle concerns — the same split as `ValkeyTransport`.
 
-**Main symbols:** `MqttPublish` (a `Callable[[str, bytes, int],
-Awaitable[None]]` publish seam injected by the worker, since the worker owns
+**Main symbols:** `MqttPublish` (a `Protocol` with
+`__call__(topic, payload, qos, *, retain=False, properties=None)` — the publish
+seam injected by the worker, since the worker owns
 the client) and `class MqttTransport`, which receives every collaborator by
 injection (`config`, `service_name`, `topic`, `inbox`, `health`, `publish`,
 `logger`). Methods: `fetch(sink)` (first call replays non-terminal inbox

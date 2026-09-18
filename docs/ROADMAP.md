@@ -23,12 +23,14 @@ at-most-once at the application layer; a durable file-backed inbox
 persisting every received message before handing it to the processor and
 deduping on replay via tombstones. `inbox_backend="memory"` (or its alias
 `"none"`) is the explicit at-most-once opt-out, backed by `MemoryInbox`. There
-is no status store — `on_progress` is a no-op and
-progress remains in-process via `TaskCapabilities`. Registry/heartbeat use
+is no status store: `MqttTransport` publishes retained `TaskStatus` messages and
+throttled `TaskProgress` messages to per-task topics (a publisher, not a store —
+no read-back API), gated by `status_publish_enabled`; progress also remains
+in-process via `TaskCapabilities`. Registry/heartbeat use
 retained-message topics (`scietex/{service}/workers/{instance_id}`), and the
 log handler owns its own connection, matching `AsyncValkeyHandler`.
 
-**Status: implemented** on branch `feature/mqtt-worker` (v4.4.0, unreleased).
+**Status: implemented** (v4.4.0, merged to `main`).
 See [docs/design/mqtt_worker.md](design/mqtt_worker.md) and
 [docs/mqtt_worker.md](mqtt_worker.md).
 

@@ -358,7 +358,8 @@ async def _write_task_progress(self, task_id: UUID, value: float) -> None:
 ```
 
 `ValkeyWorker` overrides the base `TaskProcessor._write_task_progress()`
-no-op hook (invoked via `TaskCapabilities.report_progress()`, which clamps
+hook (which delegates to `transport.on_progress`; invoked via
+`TaskCapabilities.report_progress()`, which clamps
 `value` to `[0.0, 100.0]`) and delegates to
 `TaskStatusStore.update_progress()`. It `GET`s
 the task tracking key, msgpack-decodes the stored
@@ -929,7 +930,7 @@ When `listening` is `True`, the worker's client subscribes to:
 
 | Channel | Pattern | Description |
 |---|---|---|
-| `scietex:{service_name}:{instance_id}` | Exact | Service-specific channel for this worker |
+| `scietex:{service_name}` | Exact | Service-scoped channel for all workers of this service |
 | `scietex:broadcast` | Exact | Broadcast channel for all workers in the service |
 
 Each incoming message is delivered to `parse_control_message`. The callback is

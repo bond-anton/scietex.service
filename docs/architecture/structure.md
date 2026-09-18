@@ -7,8 +7,8 @@ Layout of the repository and the Python package.
 | Path | Contents |
 |---|---|
 | `src/scietex/service/` | The package (see below). Marked PEP 561 via `py.typed` |
-| `examples/` | Runnable blueprints: `basic_worker.py`, `manager_cleanup.py`, `manager_collision.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py`, `valkey_perf.py`, `progress_and_cancel.py` |
-| `tests/` | Pytest suite: test packages (`valkey/`, `task_processor/`, `mqtt/`), each with a shared `_helpers.py`, plus top-level `test_*.py` modules; Valkey tests mock `GlideClient` and MQTT tests mock the aiomqtt client (no server needed) |
+| `examples/` | Runnable blueprints: `basic_worker.py`, `manager_cleanup.py`, `manager_collision.py`, `task_processor.py`, `named_task_handlers.py`, `stateful_handler.py`, `valkey_async_service.py`, `valkey_pubsub_worker.py`, `valkey_perf.py`, `progress_and_cancel.py`, `mqtt_worker.py`, `mqtt_perf.py` |
+| `tests/` | Pytest suite: test packages (`valkey/`, `task_processor/`, `mqtt/`), plus top-level `test_*.py` modules; `valkey/` and `task_processor/` carry a shared `_helpers.py`, `mqtt/` does not; Valkey tests mock `GlideClient` and MQTT tests mock the aiomqtt client (no server needed) |
 | `docs/` | Usage docs (`index.md`, per-component guides); `docs/architecture/` is this map |
 | `pyproject.toml` | Package metadata, deps, extras (`valkey`, `mqtt`, `dev`, `test`, `lint`), setuptools build config, and pytest config (`[tool.pytest.ini_options]`) |
 | `tox.ini` | Tox environments: `format`, `lint`, `type`, `py{314}` (coverage), `docs` (Sphinx build) |
@@ -56,7 +56,7 @@ Layout of the repository and the Python package.
 | `valkey/tracking.py` | `TaskStatusStore` (AR-073) — per-task status records (`key`/`record_running`/`record_terminal`/`update_progress`) |
 | `valkey/purge.py` | Standalone `purge_task_stream()` operational utility (read+ack+delete every stream entry, returning a `PurgeResult`); no runtime `glide` import (`TYPE_CHECKING` only), importing `GlideClient` from `valkey/_glide.py` (AR-048) |
 | `valkey/schemas.py` | `Heartbeat` msgpack schema |
-| `mqtt/__init__.py` | Re-exports `MqttWorker`, `MqttConfig`, `MqttWorkerConfig`, `MqttTransport`, `read_mqtt_config`, and `logging_handler_config` from the sibling modules. Importing it raises `ImportError` (with an install hint) when `aiomqtt` is absent |
+| `mqtt/__init__.py` | Re-exports `MqttWorker`, `MqttConfig`, `MqttWorkerConfig`, `MqttTransport`, `read_mqtt_config`, `logging_handler_config`, and the inbox classes (`MqttInbox`, `FileMqttInbox`, `MemoryInbox`) from the sibling modules. Importing it raises `ImportError` (with an install hint) when `aiomqtt` is absent |
 | `mqtt/_aiomqtt.py` | Private module — the single guarded `from aiomqtt import (...)` re-exporting `Client`, `Message`, `MqttError`, `ProtocolVersion`, `TLSParameters`, `Topic`, and the `aiomqtt` module. The analogue of `valkey/_glide.py`: importing it raises `ImportError` with an install hint when `aiomqtt` is absent (AR-048) |
 | `mqtt/config.py` | `MqttConfig` + `MqttWorkerConfig` (extends `TaskProcessorConfig` with the MQTT-specific fields) + `read_mqtt_config()` (reads/creates `mqtt.yml`; raises `RuntimeError` on a present-but-invalid file) |
 | `mqtt/inbox.py` | `MqttInbox` Protocol (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`) + `FileMqttInbox` — the file-backed durable inbox restoring at-least-once delivery (design §3) + `MemoryInbox` — the in-process at-most-once backend |

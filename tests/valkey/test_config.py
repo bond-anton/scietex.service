@@ -101,7 +101,7 @@ def test_read_valkey_config_no_create_default_invalid_file_preserves(tmp_path: P
 
 def test_generate_glide_config_defaults():
     cfg = ValkeyConfig()
-    client_cfg = generate_glide_config(cfg, service_name="svc", worker_id="abc")
+    client_cfg = generate_glide_config(cfg, service_name="svc")
     # basic shape checks
     assert hasattr(client_cfg, "addresses")
     assert isinstance(client_cfg.addresses, list)
@@ -111,7 +111,7 @@ def test_generate_glide_config_defaults():
 def test_valkey_node_addresses_roundtrip():
     node = ValkeyNode(host="127.0.0.1", port=6380)
     cfg = ValkeyBaseConfig(nodes=[node])
-    client_cfg = generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")
+    client_cfg = generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc")
     assert len(client_cfg.addresses) == 1
 
 
@@ -131,15 +131,15 @@ def test_generate_glide_config_pubsub_listening_true():
         received.append((msg, context))
 
     cfg = ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True, parse_control_message=parse_control_message))
-    client_cfg = generate_glide_config(cfg, service_name="svc", worker_id="abc")
+    client_cfg = generate_glide_config(cfg, service_name="svc")
 
     ps = client_cfg.pubsub_subscriptions
     assert ps is not None
-    # The exact-mode channel set holds the service/worker channel and the broadcast channel.
+    # The exact-mode channel set holds the service channel and the broadcast channel.
     channels = ps.channels_and_patterns
     assert len(channels) == 1
     exact = channels[list(channels)[0]]
-    assert exact == {"scietex:svc:abc", "scietex:broadcast"}
+    assert exact == {"scietex:svc", "scietex:broadcast"}
     assert ps.callback is parse_control_message
     assert ps.context is None
 
@@ -147,7 +147,7 @@ def test_generate_glide_config_pubsub_listening_true():
 def test_generate_glide_config_pubsub_listening_false_default():
     """The default (listening=False) leaves pubsub_subscriptions unset."""
     cfg = ValkeyConfig()
-    client_cfg = generate_glide_config(cfg, service_name="svc", worker_id="abc")
+    client_cfg = generate_glide_config(cfg, service_name="svc")
     assert client_cfg.pubsub_subscriptions is None
 
 
@@ -185,13 +185,13 @@ def test_invalid_read_from_raises():
     # inject invalid value
     cfg = ValkeyBaseConfig(read_from="INVALID")
     with pytest.raises(ValueError):
-        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")
+        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc")
 
 
 def test_invalid_protocol_raises():
     cfg = ValkeyBaseConfig(protocol="NOPE")
     with pytest.raises(ValueError):
-        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc", worker_id="abc")
+        generate_glide_config(ValkeyConfig(base_config=cfg), service_name="svc")
 
 
 def test_worker_config_log_stream_name_default_is_service_templated():

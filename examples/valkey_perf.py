@@ -153,7 +153,6 @@ async def _flush_stream(valkey_config: ValkeyConfig, stream_name: str, service_n
         generate_glide_config(
             valkey_config,
             service_name=service_name,
-            worker_id="perf-flusher",
         )
     )
     await client.delete([stream_name])
@@ -175,7 +174,6 @@ async def run_producer(args: argparse.Namespace) -> None:
         generate_glide_config(
             valkey_config,
             service_name=args.service_name,
-            worker_id="perf-producer",
         )
     )
     stream_name = f"scietex:{args.service_name}:tasks"
@@ -385,7 +383,6 @@ async def run(args: argparse.Namespace) -> None:
                 generate_glide_config(
                     valkey_config,
                     service_name=args.service_name,
-                    worker_id="perf-producer",
                 )
             )
             preload_start = time.perf_counter()

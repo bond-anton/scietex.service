@@ -247,7 +247,8 @@ Publishing](docs/mqtt_worker.md#task-status-and-progress-publishing).
 
 - `client_factory=` (keyword-only) — an async callable
   `(MqttConfig) -> Awaitable[Client]` used by `connect()`; defaults to
-  `aiomqtt.Client`. Inject a fake to test without a broker.
+  `_create_client`, which builds an `aiomqtt.Client` (MQTT 5) and enters its
+  async context. Inject a fake to test without a broker.
 - `transport_health` — a `TransportHealth` supervisor aggregating connection
   failures, owning the single reconnect path, and logging one CRITICAL per
   sustained outage.
@@ -430,10 +431,10 @@ username: null
 password: null
 identifier: null
 keepalive: 60
-clean_start: true
+clean_start: false
 session_expiry_interval: 0
 transport: tcp
-timeout: 10.0
+timeout: null
 tls_insecure: null
 tls_context: null
 ```
@@ -579,6 +580,8 @@ python -m examples.valkey_async_service      # requires valkey-glide
 python -m examples.valkey_pubsub_worker      # requires valkey-glide
 python -m examples.valkey_perf               # requires valkey-glide
 python -m examples.progress_and_cancel       # requires valkey-glide
+python -m examples.mqtt_worker               # requires aiomqtt
+python -m examples.mqtt_perf                 # requires aiomqtt
 ```
 
 ## License

@@ -108,7 +108,7 @@ Both reuse the transport-agnostic `TransportHealth` from core `health.py`
   worker's operational client (AR-059/061).
 - **Public API re-export guard**: the only place core code tolerates a missing
   optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
-  `ImportError`, which is caught (`__init__.py:71`) and reported via a warning
+  `ImportError`, which is caught (`__init__.py:75`) and reported via a warning
   plus the `VALKEY_AVAILABLE` flag; any other exception propagates so real
   Valkey bugs surface at import (AR-019).
 

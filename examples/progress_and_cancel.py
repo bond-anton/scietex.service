@@ -174,7 +174,6 @@ async def run(host: str, port: int) -> None:
         generate_glide_config(
             valkey_config,
             service_name=SERVICE_NAME,
-            worker_id="progress-cancel-producer",
         )
     )
 
