@@ -23,6 +23,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | [`valkey_pubsub_worker.py`](#valkey_pubsub_workerpy) | yes | A `ValkeyWorker` that also subscribes to PubSub control channels via `ValkeyPubSubConfig` |
 | [`valkey_perf.py`](#valkey_perfpy) | yes | Single-process `ValkeyWorker` consumption-throughput benchmark |
 | [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `cancel_task` |
+| [`mqtt_worker.py`](#mqtt_workerpy) | MQTT | `MqttWorker` consuming tasks from a broker, with retained status and throttled progress publishing |
 
 ## basic_worker.py
 
@@ -178,3 +179,28 @@ server and the `valkey` extra:
 ```bash
 pip install "scietex.service[valkey]"
 ```
+
+## mqtt_worker.py
+
+```bash
+python -m examples.mqtt_worker --host 127.0.0.1
+```
+
+An `MqttWorker` consuming tasks from a local MQTT 5 broker. The worker
+subscribes to `scietex/{service}/tasks` (QoS 2), persists each received message
+to its durable file inbox, and drains it into the processor queue. A producer
+client publishes a `TaskEnvelope` with the task id in the MQTT 5 user property
+`scietex-task-id`, then subscribes to the per-task status topic
+(`scietex/{service}/tasks/{task_id}/status`) and prints the lifecycle:
+`queued` -> `running` -> `completed`. The `long_job` handler reports progress
+through `capabilities.report_progress`, which the worker publishes as throttled
+`TaskProgress` messages on `.../progress`.
+
+Requires a running MQTT 5 broker and the `mqtt` extra:
+
+```bash
+pip install "scietex.service[mqtt]"
+```
+
+Note: on hosts where `localhost` resolves to IPv6 first, pass `--host 127.0.0.1`
+if the broker only listens on IPv4.
