@@ -18,11 +18,11 @@ push -> inbox -> pull -> handler pipeline, which is what makes the poll
 interval's contribution measurable.
 
 The dominant cost is the durable inbox, not the poll interval. On a local
-broker the default file-backed inbox sustains roughly 120-160 tasks/sec, while
-``--inbox-backend none`` (at-most-once, no disk) reaches roughly 4800-5000
-tasks/sec -- a ~35x difference. Use ``--inbox-backend none`` to measure the
-transport and handler pipeline in isolation, and the default to measure the
-durability cost.
+broker the file-backed inbox sustains roughly 120-160 tasks/sec, while the
+default in-memory backend (at-most-once, no disk) reaches roughly 4800-5000
+tasks/sec -- a ~35x difference. The benchmark defaults to the in-memory backend
+so it measures the transport and handler pipeline in isolation; pass
+``--inbox-backend file`` to measure the durability cost.
 """
 
 import argparse
@@ -144,9 +144,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task-qos", type=int, default=2, help="QoS for task publishes")
     parser.add_argument(
         "--inbox-backend",
-        choices=["file", "none"],
-        default="file",
-        help="Durable inbox backend; 'none' is the at-most-once opt-out (no disk I/O)",
+        choices=["file", "memory", "none"],
+        default="memory",
+        help="Inbox backend; 'memory' (default) is the at-most-once opt-out (no disk I/O), 'file' is durable",
     )
     parser.add_argument(
         "--task-queue-manager-sleep-time",

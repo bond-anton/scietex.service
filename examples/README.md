@@ -218,13 +218,13 @@ timed window runs from the first publish until every task is acknowledged, so
 it covers the full push -> inbox -> pull -> handler pipeline. Reports total
 throughput and a median steady-state rate.
 
-The durable inbox dominates the cost. On a local broker the default
-file-backed inbox sustains roughly 120-160 tasks/sec, while
-`--inbox-backend none` (at-most-once, no disk) reaches roughly 4800-5000
-tasks/sec -- a ~35x difference. Use `--inbox-backend none` (or its alias
-`memory`) to measure the transport and handler pipeline in isolation, and the
-default to measure the durability cost. `--task-queue-manager-sleep-time`
-tunes the poll interval (default 0.01s).
+The durable inbox dominates the cost. On a local broker the file-backed inbox
+sustains roughly 120-160 tasks/sec, while the default in-memory backend
+(at-most-once, no disk) reaches roughly 4800-5000 tasks/sec -- a ~35x
+difference. The benchmark defaults to the in-memory backend so it measures the
+transport and handler pipeline in isolation; pass `--inbox-backend file` to
+measure the durability cost. `--task-queue-manager-sleep-time` tunes the poll
+interval (default 0.01s).
 
 Requires a running MQTT 5 broker and the `mqtt` extra:
 
