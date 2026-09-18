@@ -19,6 +19,7 @@ from scietex.service.mqtt import MqttWorker
 | Durable inbox | Every received message is persisted before processing, restoring at-least-once delivery (see [Delivery Semantics](#delivery-semantics)) |
 | Heartbeat publishing | A retained liveness marker is published to a per-instance registry topic |
 | Async logging | Log entries are published to an MQTT topic via `AsyncMqttHandler` |
+| Task status publishing | Retained `TaskStatus` and throttled `TaskProgress` messages are published to per-task topics (see [Task Status and Progress Publishing](#task-status-and-progress-publishing)) |
 | Auto-reconnect | Connection errors trigger automatic disconnect/reconnect cycles |
 
 **Requires the optional `aiomqtt` dependency:**
@@ -95,10 +96,15 @@ worker-scoped topics embed the auto-generated `instance_id`:
 | Task topic | `scietex/{service_name}/tasks` | service-scoped |
 | Registry / heartbeat | `scietex/{service_name}/workers/{instance_id}` | worker-scoped |
 | Log topic | `scietex/{service_name}/log` | service-scoped |
+| Task status | `scietex/{service_name}/tasks/{task_id}/status` | per-task, retained |
+| Task progress | `scietex/{service_name}/tasks/{task_id}/progress` | per-task, not retained |
 
 `{service}` in `task_topic` and `log_topic` is replaced with the service name
 at construction. The registry topic is always built as
-`scietex/{service_name}/workers/{instance_id}`.
+`scietex/{service_name}/workers/{instance_id}`. The status and progress topics
+are derived from `status_topic_prefix` (default `scietex/{service}/tasks`) with
+the same `{service}` substitution; see
+[Task Status and Progress Publishing](#task-status-and-progress-publishing).
 
 ## Constants
 
@@ -112,6 +118,10 @@ at construction. The registry topic is always built as
 | `MIN_MQTT_KEEPALIVE` / `MAX_MQTT_KEEPALIVE` | `0` / `65535` | Bounds of `MqttConfig.keepalive` |
 | `MIN_SESSION_EXPIRY_INTERVAL` / `MAX_SESSION_EXPIRY_INTERVAL` | `0` / `4294967295` | Bounds of `MqttConfig.session_expiry_interval` |
 | `MIN_INBOX_TTL` / `MAX_INBOX_TTL` | `1` / `2592000` | Bounds of `MqttWorkerConfig.inbox_ttl` (30 days) |
+| `MIN_STATUS_QOS` / `MAX_STATUS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.status_qos` |
+| `MIN_PROGRESS_QOS` / `MAX_PROGRESS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.progress_qos` |
+| `MIN_PROGRESS_MIN_INTERVAL` / `MAX_PROGRESS_MIN_INTERVAL` | `0.0` / `3600.0` | Bounds of `MqttWorkerConfig.progress_min_interval` |
+| `MIN_PROGRESS_MIN_DELTA` / `MAX_PROGRESS_MIN_DELTA` | `0.0` / `100.0` | Bounds of `MqttWorkerConfig.progress_min_delta` |
 | `DEFAULT_MAX_TASKS_QUEUE_SIZE` | `100` | Default max queue size (inherited) |
 | `DEFAULT_MAX_CONCURRENT_TASKS` | `10` | Default max concurrent tasks (inherited) |
 | `task_timeout` (`TaskProcessorConfig`) | `3` | Default task timeout in seconds (inherited) |
@@ -203,6 +213,12 @@ worker = MqttWorker(
         log_topic="scietex/{service}/log",
         log_qos=0,
         log_retain=False,
+        status_publish_enabled=True,
+        status_topic_prefix="scietex/{service}/tasks",
+        status_qos=1,
+        progress_qos=0,
+        progress_min_interval=1.0,
+        progress_min_delta=0.0,
     )
 )
 ```
@@ -240,6 +256,12 @@ preserved.
 | `log_topic` | `"scietex/{service}/log"` | Topic worker logs are published to; `{service}` is replaced with the service name |
 | `log_qos` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `False` | If `True`, log messages are published with the retained flag |
+| `status_publish_enabled` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
+| `status_topic_prefix` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
+| `status_qos` | `1` | QoS for `TaskStatus` publishes; valid range `[0, 2]` |
+| `progress_qos` | `0` | QoS for `TaskProgress` publishes; valid range `[0, 2]` |
+| `progress_min_interval` | `1.0` | Minimum seconds between progress publishes; valid range `[0.0, 3600.0]`; `0` disables the interval threshold |
+| `progress_min_delta` | `0.0` | Minimum absolute progress change that forces a publish; valid range `[0.0, 100.0]`; `0` disables the delta threshold |
 
 All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
 Configuration is immutable: values are fixed at construction, and
@@ -373,17 +395,22 @@ mirror). See [Retry Semantics](#retry-semantics).
 
 ### _write_task_progress()
 
-Progress reporting is a no-op for MQTT.
+Publish a throttled progress tick.
 
 ```python
 async def _write_task_progress(self, task_id: UUID, value: float) -> None:
-    """No-op: MQTT has no server-side key space for status records."""
+    """Delegate to MqttTransport.on_progress, which publishes TaskProgress."""
 ```
 
-`MqttTransport.on_progress` does nothing (design decision #5): unlike Valkey,
-MQTT has no key space to write task status records into. Progress still works
-in-process via `TaskCapabilities.report_progress(value)`, which clamps to
-`[0.0, 100.0]`; it is simply not persisted to the broker.
+`TaskProcessor._write_task_progress` delegates to `MqttTransport.on_progress`,
+which publishes a non-retained `TaskProgress` (at `progress_qos`, default 0) to
+the task's progress topic, subject to the
+[throttling policy](#progress-throttling). Progress is observability: a publish
+failure is logged at DEBUG and reported to `TransportHealth`, never raised into
+the task path. Granular progress also remains available in-process via
+`TaskCapabilities.report_progress(value)`, which clamps to `[0.0, 100.0]`. With
+`status_publish_enabled=False`, `on_progress` is a no-op and progress stays
+in-process only.
 
 ### watchdog()
 
@@ -413,10 +440,12 @@ undispatched target and reports the outcome (`cancelled`, `not_running`,
 
 Reliable cancellation needs `max_concurrent_tasks >= 2`: with a single slot
 the cancel task queues behind its target and cannot run. Because MQTT has no
-status store, a deliberate cancel does not embed the original `TaskData` in
-any broker-persisted record — the in-process cancellation machinery is
-identical to every other transport, but there is no external record to read
-back.
+status store, there is no key space to read a cancellation back from — the
+in-process cancellation machinery is identical to every other transport. The
+status publisher does advertise the outcome: a deliberate cancel publishes a
+retained `cancelled` `TaskStatus` carrying the original `TaskData` (a
+timeout/shutdown cancel publishes `failed` instead); see
+[Task Status and Progress Publishing](#task-status-and-progress-publishing).
 
 ### Instance registry
 
@@ -531,6 +560,136 @@ On a retryable error (`TaskResult(status="error", retryable=True)`),
   lost (AR-077b mirror).
 
 Permanent failures (`retryable=False`) are tombstoned and dropped.
+
+## Task Status and Progress Publishing
+
+`MqttTransport` publishes each task's lifecycle to per-task topics as
+fire-and-forget observability. This is a status **publisher**, not a status
+**store**: the messages are write-only and consumed by subscription, there is
+no read-back or query API, and the broker's retained message is delivery state
+rather than an application data store.
+
+### Topic scheme
+
+The topics are derived once at construction from `status_topic_prefix`, with
+`{service}` substituted exactly as for `task_topic`:
+
+```
+status_topic   = f"{status_topic_prefix}/{task_id}/status"
+progress_topic = f"{status_topic_prefix}/{task_id}/progress"
+```
+
+| Purpose | Topic (default prefix) | QoS | Retain |
+|---|---|---|---|
+| Task status | `scietex/{service}/tasks/{task_id}/status` | `status_qos` (default `1`) | yes |
+| Task progress | `scietex/{service}/tasks/{task_id}/progress` | `progress_qos` (default `0`) | no |
+
+`{task_id}` is the string form of the task `UUID` — the same value carried in
+the `scietex-task-id` user property. Every status publish is retained, so the
+broker keeps the latest `TaskStatus` per task and a late subscriber still sees
+the final state; status is not cleared on completion, and retained status
+accumulates one message per task until an operator clears the topic or the
+broker expires it. Progress is never retained: a late subscriber must not
+receive a stale progress tick.
+
+The prefix is not consumed by the worker, so a subscriber and the worker must
+agree on it out of band.
+
+Subscription examples:
+
+| Want | Subscription |
+|---|---|
+| Status of every task for a service | `scietex/{service}/tasks/+/status` |
+| Progress of every task for a service | `scietex/{service}/tasks/+/progress` |
+| Everything about every task | `scietex/{service}/tasks/+/#` |
+| Everything about one task | `scietex/{service}/tasks/{task_id}/#` |
+| Status only, one task | `scietex/{service}/tasks/{task_id}/status` |
+
+### Payload schemas
+
+No new schema is introduced. Both payloads are `msgspec.msgpack`-encoded and
+reuse the existing task-handler structs:
+
+- Status topic payload: `TaskStatus` (`scietex.service.task_handler.schemas`).
+- Progress topic payload: `TaskProgress`.
+
+`TaskStatus` carries the task id as a field as well as in the topic, so a
+status message remains self-describing when copied off the wire. Every status
+message sets the default `TaskProgress()` (no granular value); granular values
+travel only on the progress topic. The progress payload always sets
+`progress=True`.
+
+### Lifecycle events
+
+| Event | `status` | Payload notes |
+|---|---|---|
+| Task accepted into the worker queue (fetch or recovery) | `queued` | — |
+| Handler started | `running` | — |
+| Success | `completed` | `result` is the handler's result payload |
+| Non-retryable error | `failed` | `error`/`error_code` from the `TaskResult` |
+| Deliberate cancellation | `cancelled` | `data` is the original `TaskData`; `error` is `"canceled"` |
+| Timeout or shutdown cancellation | `failed` | `error` is `"canceled"` |
+
+A **retryable error publishes no terminal status.** `requeue` runs before `ack`
+and publishes `queued`, then `ack` returns early without a terminal publish, so
+a subscriber sees the task transition `running -> queued -> running ...` until
+it succeeds or fails permanently. `release` and `on_drain` publish nothing
+(the task is neither terminal nor restarted).
+
+### Progress throttling
+
+Progress reports can be far more frequent than the broker should be asked to
+publish, so `MqttTransport` coalesces them in-process (per task). A progress
+tick publishes when any of these holds:
+
+- It is the task's first tick (always published, so a subscriber sees progress
+  begin).
+- `progress_min_interval > 0` and at least that many seconds have elapsed since
+  the last publish.
+- `progress_min_delta > 0` and the absolute change since the last published
+  value is at least that large.
+- Both thresholds are `0` (throttling disabled; every call publishes).
+
+Otherwise the newest value is kept as `pending` (the newest wins, never a
+backlog) and published on the next eligible tick. Any `pending` value is
+flushed on a non-retryable `ack`, immediately before the terminal status, so a
+completion is preceded by the final reported value. On `requeue`, `release`,
+and `on_drain` the throttle state is dropped without flushing, because a stale
+value would misrepresent a fresh run.
+
+### Failure semantics
+
+Status and progress are observability: a publish failure must never fail,
+block, requeue, or slow a task, and must never corrupt inbox state. Every
+status/progress publish is wrapped so no exception escapes the transport hook;
+`asyncio.CancelledError` still propagates. A failed status publish is logged at
+WARNING and a failed progress publish at DEBUG (progress is high-frequency, so
+WARNING would be noise); both report to `TransportHealth`, which drives the
+existing single reconnect path. Inbox mutations are independent of the
+publish, so a status failure can never turn a completed task into a redelivered
+one or vice versa. Setting `status_publish_enabled=False` suppresses all
+status/progress publishes; envelope requeue is unaffected because it is
+delivery, not observability.
+
+### Subscribing to task status
+
+Any MQTT 5 client can subscribe to the wildcard topics. The examples below
+assume a service named `worker`; replace it with the service name. With
+`mosquitto_sub`:
+
+```bash
+# Status of every task, with the topic printed before each payload.
+mosquitto_sub -h localhost -p 1883 -V mqttv5 \
+  -t 'scietex/worker/tasks/+/status' -v
+
+# Progress of a single task.
+mosquitto_sub -h localhost -p 1883 -V mqttv5 \
+  -t 'scietex/worker/tasks/<task_id>/progress' -v
+```
+
+The payloads are msgpack, so decode them with
+`msgspec.msgpack.decode(payload, type=TaskStatus)` (or `TaskProgress`) to read
+the fields.
 
 ## Example
 
@@ -710,6 +869,12 @@ fields).
 | `log_topic` | `str` | `"scietex/{service}/log"` | Topic worker logs are published to |
 | `log_qos` | `int` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `bool` | `False` | Publish log messages with the retained flag |
+| `status_publish_enabled` | `bool` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
+| `status_topic_prefix` | `str` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
+| `status_qos` | `int` | `1` | QoS for `TaskStatus` publishes; valid range `[0, 2]` |
+| `progress_qos` | `int` | `0` | QoS for `TaskProgress` publishes; valid range `[0, 2]` |
+| `progress_min_interval` | `float` | `1.0` | Minimum seconds between progress publishes; valid range `[0.0, 3600.0]`; `0` disables the interval threshold |
+| `progress_min_delta` | `float` | `0.0` | Minimum absolute progress change that forces a publish; valid range `[0.0, 100.0]`; `0` disables the delta threshold |
 
 ### read_mqtt_config()
 

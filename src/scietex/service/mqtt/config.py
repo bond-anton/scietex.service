@@ -21,6 +21,14 @@ MIN_LOG_QOS: int = 0
 MAX_LOG_QOS: int = 2
 MIN_INBOX_TTL: int = 1
 MAX_INBOX_TTL: int = 30 * 24 * 3600
+MIN_STATUS_QOS: int = 0
+MAX_STATUS_QOS: int = 2
+MIN_PROGRESS_QOS: int = 0
+MAX_PROGRESS_QOS: int = 2
+MIN_PROGRESS_MIN_INTERVAL: float = 0.0
+MAX_PROGRESS_MIN_INTERVAL: float = 3600.0
+MIN_PROGRESS_MIN_DELTA: float = 0.0
+MAX_PROGRESS_MIN_DELTA: float = 100.0
 
 
 class MqttConfig(msgspec.Struct, frozen=True):
@@ -94,6 +102,16 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         log_qos: QoS level for log messages (``[0, 2]``).
         log_retain: If ``True``, log messages are published with the retained
             flag.
+        status_publish_enabled: Master switch for all status/progress
+            publishing. ``False`` restores the pre-addendum no-op behavior.
+        status_topic_prefix: Prefix for the per-task status/progress topics.
+            ``{service}`` is substituted at construction.
+        status_qos: QoS level for ``TaskStatus`` publishes (``[0, 2]``).
+        progress_qos: QoS level for ``TaskProgress`` publishes (``[0, 2]``).
+        progress_min_interval: Minimum seconds between progress publishes
+            (``[0.0, 3600.0]``). ``0`` disables the interval threshold.
+        progress_min_delta: Minimum absolute progress change that forces a
+            publish (``[0.0, 100.0]``). ``0`` disables the delta threshold.
     """
 
     mqtt_config: "MqttConfig | None" = None
@@ -105,12 +123,32 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     log_topic: str = "scietex/{service}/log"
     log_qos: int = 0
     log_retain: bool = False
+    status_publish_enabled: bool = True
+    status_topic_prefix: str = "scietex/{service}/tasks"
+    status_qos: int = 1
+    progress_qos: int = 0
+    progress_min_interval: float = 1.0
+    progress_min_delta: float = 0.0
 
     def __post_init__(self) -> None:
         super().__post_init__()
         validate_range(self.task_qos, "task_qos", minimum=MIN_TASK_QOS, maximum=MAX_TASK_QOS)
         validate_range(self.log_qos, "log_qos", minimum=MIN_LOG_QOS, maximum=MAX_LOG_QOS)
         validate_range(self.inbox_ttl, "inbox_ttl", minimum=MIN_INBOX_TTL, maximum=MAX_INBOX_TTL)
+        validate_range(self.status_qos, "status_qos", minimum=MIN_STATUS_QOS, maximum=MAX_STATUS_QOS)
+        validate_range(self.progress_qos, "progress_qos", minimum=MIN_PROGRESS_QOS, maximum=MAX_PROGRESS_QOS)
+        validate_range(
+            self.progress_min_interval,
+            "progress_min_interval",
+            minimum=MIN_PROGRESS_MIN_INTERVAL,
+            maximum=MAX_PROGRESS_MIN_INTERVAL,
+        )
+        validate_range(
+            self.progress_min_delta,
+            "progress_min_delta",
+            minimum=MIN_PROGRESS_MIN_DELTA,
+            maximum=MAX_PROGRESS_MIN_DELTA,
+        )
         if self.mqtt_config is not None:
             validate_range(
                 self.mqtt_config.port,

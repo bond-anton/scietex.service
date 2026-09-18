@@ -57,7 +57,7 @@ Run all commands (linters, tests, examples) within this environment.
 
 **MQTT collaborators (internal, `scietex.service.mqtt`):**
 - `MqttInbox` (`inbox.py`) — Protocol for the durable inbox (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`); `FileMqttInbox` is the file-backed implementation (one JSON file per entry plus `.done` tombstones)
-- `MqttTransport` (`transport.py`) — drains the inbox into the processor queue, re-publishes on `requeue`, marks entries terminal on `ack`; `on_progress` is a no-op (no status store)
+- `MqttTransport` (`transport.py`) — drains the inbox into the processor queue, re-publishes on `requeue`, marks entries terminal on `ack`; publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics (a status publisher, not a store — no read-back API)
 - `MqttWorker.__init__(config=None, *, client_factory=None)` — `client_factory` is an async `(MqttConfig) -> Awaitable[Client]` used by `connect()`, defaulting to `aiomqtt.Client` (MQTT 5)
 - `AsyncMqttHandler` — log handler that owns its own connection (no `client=`), matching `AsyncValkeyHandler`
 
@@ -111,10 +111,10 @@ is created.
 - Raises RuntimeError if the file is present but invalid; creates defaults only if missing
 - Read deferred to first `connect()` (AR-066): constructing `MqttWorker()` with no explicit `mqtt_config` does not touch the filesystem
 - `MqttWorkerConfig.mqtt_config` is `MqttConfig | None`; `MqttConfig` fields: `host`, `port`, `username`, `password`, `identifier`, `keepalive`, `clean_start`, `session_expiry_interval`, `transport`, `timeout`, `tls_insecure`, `tls_context`
-- `MqttWorkerConfig` fields: `task_topic` (`scietex/{service}/tasks`), `task_qos` (default 2), `inbox_backend` (`"file"`/`"none"`), `inbox_path`, `inbox_ttl`, `log_topic` (`scietex/{service}/log`), `log_qos` (default 0), `log_retain`
+- `MqttWorkerConfig` fields: `task_topic` (`scietex/{service}/tasks`), `task_qos` (default 2), `inbox_backend` (`"file"`/`"none"`), `inbox_path`, `inbox_ttl`, `log_topic` (`scietex/{service}/log`), `log_qos` (default 0), `log_retain`, `status_publish_enabled` (default `True`), `status_topic_prefix` (default `scietex/{service}/tasks`), `status_qos` (default 1, range `[0, 2]`), `progress_qos` (default 0, range `[0, 2]`), `progress_min_interval` (default 1.0, range `[0.0, 3600.0]`), `progress_min_delta` (default 0.0, range `[0.0, 100.0]`)
 - MQTT 5 only; the task id travels as the `scietex-task-id` user property (the `TaskEnvelope` wire format is untouched)
 - Delivery semantics: aiomqtt v2.5.1 auto-acks at the broker when `on_message` returns, so wire QoS 2 is at-most-once at the app layer; the durable file inbox restores at-least-once by persisting every received message before processing and deduping on replay via tombstones. `inbox_backend="none"` is the explicit at-most-once opt-out
-- No status store: `on_progress` is a no-op; progress remains in-process via `TaskCapabilities`
+- No status store: `MqttTransport` publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics (`scietex/{service}/tasks/{task_id}/status` default QoS 1 retained, `.../progress` default QoS 0 not retained) — a publisher with no read-back API, not a store; `status_publish_enabled=False` restores the no-op; progress also remains in-process via `TaskCapabilities`
 - Registry/heartbeat use retained-message topics `scietex/{service}/workers/{instance_id}`
 - Install extras: `uv sync --extra mqtt` or `pip install "scietex.service[mqtt]"`
 

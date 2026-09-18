@@ -224,11 +224,21 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Tasks are published to the topic `scietex:{service_name}:tasks`; the task id
+Tasks are published to the topic `scietex/{service_name}/tasks`; the task id
 travels as the MQTT 5 user property `scietex-task-id`. Because aiomqtt v2.5.1
 auto-acks at the broker when a message is received, the worker persists every
 message to a durable file-backed inbox before processing it, restoring
 at-least-once delivery. Set `inbox_backend="none"` to opt into at-most-once.
+
+`MqttTransport` also publishes each task's lifecycle as fire-and-forget
+observability: a retained `TaskStatus` to
+`scietex/{service}/tasks/{task_id}/status` (default QoS 1, covering
+`queued`/`running`/`completed`/`failed`/`cancelled`) and a throttled,
+non-retained `TaskProgress` to `scietex/{service}/tasks/{task_id}/progress`
+(default QoS 0). This is a status publisher, not a store — there is no
+read-back API.
+See [Task Status and Progress
+Publishing](docs/mqtt_worker.md#task-status-and-progress-publishing).
 
 `MqttWorker` also exposes:
 
@@ -429,6 +439,20 @@ If the file is missing, it is created with default values. If the file is
 present but invalid, a ``RuntimeError`` is raised and the file is left
 untouched. As with Valkey, the read is deferred to the first
 `connect()`/`initialize()` call (AR-066).
+
+### Status and Progress Publishing
+
+These `MqttWorkerConfig` fields control status/progress publishing. They are
+worker configuration, not `mqtt.yml` entries:
+
+| Field | Default | Description |
+|---|---|---|
+| `status_publish_enabled` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
+| `status_topic_prefix` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
+| `status_qos` | `1` | QoS for `TaskStatus` publishes; range `[0, 2]` |
+| `progress_qos` | `0` | QoS for `TaskProgress` publishes; range `[0, 2]` |
+| `progress_min_interval` | `1.0` | Minimum seconds between progress publishes; range `[0.0, 3600.0]`; `0` disables the interval threshold |
+| `progress_min_delta` | `0.0` | Minimum absolute progress change that forces a publish; range `[0.0, 100.0]`; `0` disables the delta threshold |
 
 ## API Reference
 

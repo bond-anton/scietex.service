@@ -90,8 +90,12 @@ Implements the seven `TaskTransport` methods. Mapping from MQTT semantics:
 | `release(task_id)` | Mark the inbox entry released without re-publishing (the broker still holds the message). |
 | `on_started(task_id, task_data)` | Mark the inbox entry in-flight. |
 | `ack(task_id, task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and remove it (or tombstone it for dedupe). |
-| `on_progress(task_id, value)` | **No-op** (§10 #5): MQTT has no server-side key space for status records. Progress still works in-process via `TaskCapabilities`. |
-| `on_drain(task_id, task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. |
+| `on_progress(task_id, value)` | Publish a throttled `TaskProgress` message to the per-task progress topic (addendum §13); a no-op when status publishing is disabled. Progress also stays in-process via `TaskCapabilities`. |
+| `on_drain(task_id, task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. No status is published. |
+
+Every lifecycle hook additionally publishes a status message when status
+publishing is enabled; the table above lists delivery behavior only. See
+addendum §13 for the publishing contract.
 
 MQTT-specific extras beyond the Protocol (mirroring `ValkeyTransport`'s
 `recover_pending_tasks`/`refresh_leases`):
@@ -410,7 +414,7 @@ implementation.
 | 2 | Task-id carrier | **MQTT 5 user property** (`scietex-task-id`). The envelope stays untouched. |
 | 3 | Inbox backend | **File-backed, behind the `MqttInbox` Protocol.** No new dependency; single-process; retired when aiomqtt v3 lands. |
 | 4 | `TransportHealth` hoist | **Hoist to core now** (`src/scietex/service/health.py`), re-export from `scietex.service.valkey.health` for back-compat. |
-| 5 | Status/progress store | **No status store.** `on_progress` is a no-op; progress still works in-process via `TaskCapabilities`. |
+| 5 | Status/progress persistence | **No status store; status publisher instead** (amended, addendum §13). `MqttTransport` publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics. There is no read-back API, so this is not a store and does not reverse the original decision. |
 | 6 | Registry/heartbeat | **Retained-message topics** (`scietex/{service}/workers/{instance_id}`). |
 | 7 | Log-handler connection | **Own connection** (no `client=`), matching the `AsyncValkeyHandler` pattern (AR-059/061). |
 
@@ -423,9 +427,14 @@ implementation.
   implementation swap. Caveat: file-backed is single-process — multi-replica
   deployments would need a shared backend, which the Protocol preserves as an
   option.
-- **#5 (no status store):** MQTT has no server-side key space to write status
-  records into (unlike Valkey's `scietex:{service}:task:{id}` keys). Progress
-  reporting remains functional in-process; it is simply not persisted.
+- **#5 (no status store; status publisher instead):** MQTT has no server-side
+  key space to write status records into (unlike Valkey's
+  `scietex:{service}:task:{id}` keys), so no store is introduced. What the
+  transport does instead is *publish* `TaskStatus`/`TaskProgress` messages to
+  per-task topics; the broker retains the latest status message per task but
+  exposes no query or read-back API. Publishing is fire-and-forget
+  observability, not persistence with a read path, so the original decision
+  stands. See §13.
 
 ---
 
@@ -456,3 +465,417 @@ Branch: `feature/mqtt-worker`. Version bumped to 4.4.0 for the release.
 
 Test count: 294 at branch start → 302 after step 3 (8 inbox tests) → 316
 after step 4 (14 transport tests) → 335 after step 5 (41 MQTT tests total).
+
+---
+
+## 13. Task status and progress publishing (addendum)
+
+**Status:** design approved — implementation pending.
+**Scope:** `MqttTransport`, `MqttWorkerConfig`, and the worker's `publish`
+seam. No core `TaskTransport` change, no new wire format, no new dependency.
+
+### 13.0 Relationship to §10 #5
+
+This section amends §10 #5 (exact replacement wording in §13.8). The original
+decision — no status **store** — remains in force. What this addendum adds is a
+status **publisher**: `MqttTransport` publishes `TaskStatus` and `TaskProgress`
+messages to per-task MQTT topics so external observers can follow a task's
+lifecycle.
+
+A publisher is not a store. A store has a read path: a caller can ask "what is
+the status of task X?" and get an answer. MQTT has no such key space, and this
+design adds none — there is no `get_status`, no query key, no read-back at all.
+The only way to consume a status is to subscribe; the broker's retained-message
+facility is delivery state, not an application data store. Nothing here reverses
+§10 #5.
+
+### 13.1 Motivation
+
+MQTT has no server-side key space to write status records into, which is why
+§10 #5 rejected a store. But observers still need to watch a task's lifecycle:
+an external submitter needs to know when its task starts and finishes, and a
+dashboard needs to render progress. The alternatives were rejected for concrete
+reasons:
+
+- **Status on the task topic.** `scietex/{service}/tasks` carries the versioned
+  `TaskEnvelope` payload plus the `scietex-task-id` user property. Publishing
+  status there would force every task consumer to filter messages by shape, mix
+  observability traffic into the delivery path, and make the retained flag
+  unusable (a retained status on the task topic would be redelivered as a bogus
+  task on every new subscription).
+- **A single status topic for all tasks.** `scietex/{service}/tasks/status`
+  would make per-task subscription impossible: a client interested in one task
+  would receive every task's updates and filter client-side. It also forces one
+  retained value for the whole service, so only the most recently touched task
+  would be visible to a late subscriber.
+- **A per-task topic namespace.** Chosen. It allows wildcard fan-out
+  (`.../+/status`), per-task subscription (`.../{id}/#`), and per-task retained
+  status, at the cost of topic cardinality proportional to task throughput.
+
+Status and progress are split onto separate topics because they have opposite
+delivery profiles: status changes a handful of times per task and must survive
+broker restarts for late subscribers, while progress is a high-frequency
+fire-and-forget signal that must not accumulate retained state.
+
+### 13.2 Topic scheme
+
+At construction `MqttWorker` resolves the configured prefix once, substituting
+the `{service}` placeholder exactly as it already does for `task_topic`:
+
+```
+status_prefix  = cfg.status_topic_prefix.format(service=self.service_name)
+status_topic   = f"{status_prefix}/{task_id}/status"
+progress_topic = f"{status_prefix}/{task_id}/progress"
+```
+
+With the defaults (`service_name="worker"`, `status_topic_prefix =
+"scietex/{service}/tasks"`) the concrete topics are:
+
+| Purpose | Topic | QoS | Retain |
+|---|---|---|---|
+| Task status | `scietex/worker/tasks/{task_id}/status` | 1 | **yes** |
+| Task progress | `scietex/worker/tasks/{task_id}/progress` | 0 | no |
+
+`task_id` is the string form of the task `UUID` — the same value carried in the
+`scietex-task-id` user property and used in the Valkey store key.
+
+Subscription examples:
+
+| Want | Subscription |
+|---|---|
+| Status of every task for a service | `scietex/worker/tasks/+/status` |
+| Progress of every task for a service | `scietex/worker/tasks/+/progress` |
+| Everything about every task | `scietex/worker/tasks/+/#` |
+| Everything about one task | `scietex/worker/tasks/{task_id}/#` |
+| Status only, one task | `scietex/worker/tasks/{task_id}/status` |
+
+The prefix is configured with `MqttWorkerConfig.status_topic_prefix` (§13.6). It
+defaults to the existing task-topic root (`scietex/{service}/tasks`), so the
+default namespace is a subtree of the namespace operators already know. Unlike
+`task_topic`, the prefix is not itself consumed by the worker; changing it only
+moves the published status/progress topics, so a subscriber and the worker must
+agree on it out of band.
+
+Retained status semantics: every status publish sets `retain=True`, so the
+broker stores the latest `TaskStatus` per task. A subscriber that connects after
+a task finished still receives its last status. Status messages are **not**
+cleared on task completion; the final status remains observable. Operators that
+want bounded retention can clear it by publishing an empty payload to the status
+topic, or (future work, §13.11) by setting the MQTT 5 message-expiry property.
+
+Progress messages are never retained: a late subscriber must not receive a stale
+progress tick, and retained progress would leak one retained message per task.
+
+### 13.3 Payload schemas
+
+No new schema. Both message kinds reuse the existing task-handler structs and
+the `msgspec.msgpack` codec already used by `TaskStatusStore`. Reusing the
+structs keeps the MQTT and Valkey transports describing the same lifecycle with
+the same field names and semantics.
+
+- Status topic payload: `TaskStatus` (`task_handler/schemas.py:117`).
+- Progress topic payload: `TaskProgress` (`task_handler/schemas.py:106`).
+
+The task id is the topic suffix, but `TaskStatus` also carries it as a field, so
+a status message is self-describing if it is copied off the wire.
+
+**TaskStatus field population.** Every value mirrors
+`TaskStatusStore.record_running`/`record_terminal` (`valkey/tracking.py:79-139`)
+so the two transports describe the same lifecycle identically.
+
+| Event | `status` | `task_id` | `service` | `task` | `data` | `result` | `error` | `error_code` | `progress` | `created_at`/`updated_at` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| accepted into the worker queue | `queued` | `str(task_id)` | service name | `task_data.task` | `None` | `None` | `""` | `""` | `TaskProgress()` | now/now |
+| handler started | `running` | `str(task_id)` | service name | `task_data.task` | `None` | `None` | `""` | `""` | `TaskProgress()` | now/now |
+| success (`task_result.status == "success"`) | `completed` | `str(task_id)` | service name | `task_data.task` | `None` | `task_result.payload` | `""` | `""` | `TaskProgress()` | now/now |
+| non-retryable error | `failed` | `str(task_id)` | service name | `task_data.task` | `None` | `None` | `task_result.error` | `task_result.error_code` | `TaskProgress()` | now/now |
+| cancellation, `cancel_reason == "deliberate"` | `cancelled` | `str(task_id)` | service name | `task_data.task` | `task_data` | `None` | `"canceled"` | `""` | `TaskProgress()` | now/now |
+| cancellation, timeout or shutdown | `failed` | `str(task_id)` | service name | `task_data.task` | `None` | `None` | `"canceled"` | `""` | `TaskProgress()` | now/now |
+
+`created_at`/`updated_at` are both the publish instant, matching the store's
+"record write time" semantics: the terminal record replaces, rather than
+extends, the running one. The default `TaskProgress()` (meaning "no granular
+progress") is used for every status message; granular values travel only on the
+progress topic.
+
+**TaskProgress field population.** The progress payload always sets
+`progress=True`; `value` is the throttled value clamped by the reporter to
+`[0.0, 100.0]` (`task_handler/capabilities.py:21-24`). The default
+`TaskProgress()` (with `progress=False`) is never published on the progress
+topic — publishing it would be a meaningless message.
+
+### 13.4 Publishing points
+
+`MqttTransport` publishes through the existing `publish` seam (same injection
+pattern as `requeue`). The seam's signature is extended with a keyword-only
+retain flag (§13.6), because status must be retained while the envelope requeue
+must not be:
+
+```python
+class MqttPublish(Protocol):
+    async def __call__(
+        self, topic: str, payload: bytes, qos: int, *, retain: bool = False
+    ) -> None: ...
+```
+
+Hook-by-hook mapping:
+
+| Hook | Inbox behavior (unchanged) | Status/progress behavior |
+|---|---|---|
+| `fetch` / `recover_pending_tasks` | Enqueue accepted tasks. | Publish `queued` (QoS 1, retained) once per task, immediately after the id is added to `_enqueued` and before `on_started` can fire. Recovery publishes it too, so a task redelivered after a restart re-advertises itself as queued. |
+| `on_started` | `mark_in_flight`. | Publish `running` (QoS 1, retained). Reset the task's progress-throttle state. |
+| `on_progress` | (none) | Publish a throttled `TaskProgress` (QoS 0, not retained) per §13.5. |
+| `requeue` | Re-publish the envelope to the task topic; leave the entry non-terminal. | Publish `queued` (QoS 1, retained): the task has returned to the source queue. Drop the task's progress-throttle state without flushing (the task will restart; a stale progress value would be misleading). |
+| `ack` (non-retryable) | Mark terminal (tombstone), drop the enqueued marker. | Flush any coalesced progress value (§13.5), then publish the terminal `completed`/`failed`/`cancelled` status (QoS 1, retained). Drop the throttle state. |
+| `ack` (retryable error) | Drop the enqueued marker; **leave the entry non-terminal** (AR-077b mirror) so the retry copy is accepted. | Publish **no** terminal status — the task is not terminal. `requeue` already published `queued` immediately before this call. |
+| `release` | Drop the in-process claim; entry stays pending. | Publish nothing; drop the throttle state (the task returns to a not-yet-started state and will be redelivered). |
+| `on_drain` | Drop the in-process claim; entry stays pending for redelivery. | Publish nothing: the task is neither terminal nor restarted, and the retained status correctly remains `queued` or `running` until redelivery. Drop the throttle state. |
+
+Retryable-error ordering is load-bearing and mirrors the inbox path. In
+`handle_task`, `requeue` runs before `ack` (`task_processor.py:751-773`), so for
+a retryable error the sequence is: `requeue` publishes `queued`, then `ack`
+returns early without publishing a terminal status. A subscriber therefore never
+sees a retryable error as terminal; the task correctly transitions
+`running -> queued -> running ...` until it succeeds or fails permanently.
+
+Status publishing is gated by `status_publish_enabled` (§13.6). When disabled,
+the `queued`/`running`/terminal publishes are skipped and `on_progress` is a
+no-op, reproducing the pre-addendum behavior. The envelope requeue is
+unaffected — it is delivery, not observability.
+
+### 13.5 Throttling policy
+
+Progress can be reported far faster than the broker should be asked to publish,
+so progress is coalesced in the transport, below the publish seam.
+
+**Algorithm.** `MqttTransport` keeps a per-task `_ProgressThrottle` record:
+
+```
+last_value: float        # value of the last published progress message
+last_at: float           # clock() at that publish
+ever_published: bool     # False until the first publish for this task
+pending: float | None    # latest un-published value, coalesced
+```
+
+On `on_progress(task_id, value)` with `now = clock()`, `min_interval =
+progress_min_interval`, and `min_delta = progress_min_delta`:
+
+1. If `status_publish_enabled` is False, return.
+2. Fetch or create the task's throttle record.
+3. Decide whether to publish:
+   - `ever_published == False` -> publish (the first tick for a task is always
+     sent, so a subscriber sees progress begin).
+   - `min_interval > 0` AND `now - last_at >= min_interval` -> publish.
+   - `min_delta > 0` AND `abs(value - last_value) >= min_delta` -> publish.
+   - `min_interval <= 0` AND `min_delta <= 0` -> publish on every call
+     (throttling disabled).
+   - otherwise -> do not publish.
+4. On publish: send `TaskProgress(progress=True, value=value)` (QoS 0, not
+   retained), set `last_value = value`, `last_at = now`,
+   `ever_published = True`, `pending = None`.
+5. On skip: set `pending = value` (the newest value wins; the transport never
+   queues a backlog of stale ticks).
+
+A value of `0` for `min_interval` or `min_delta` disables that threshold
+explicitly; both are validated non-negative (§13.6). The "publish on every
+call" case is the accurate reading of "both thresholds disabled", not a `>= 0`
+comparison that would otherwise always be true.
+
+**Where the state lives.** In `MqttTransport`, keyed by `UUID`, in a
+`dict[UUID, _ProgressThrottle]`. It is in-process only; a restart loses it,
+which is correct because a restart also resets the in-flight task set.
+
+**Clock injection.** `MqttTransport.__init__` gains a keyword-only
+`clock: Callable[[], float] = time.monotonic`, mirroring `TransportHealth`
+(`health.py:48`), so throttling tests need no real sleeping.
+
+**Completion flush.** On a non-retryable `ack`, if the task's record has a
+`pending` value, it is published on the progress topic immediately before the
+terminal status, then the record is dropped. This guarantees a completion is
+preceded by the final reported value even when that value fell inside the
+throttle window. On `requeue`, `release`, and `on_drain` the record is dropped
+**without** flushing: the task is returning to the queue or awaiting
+redelivery, and a stale progress value would misrepresent a fresh run. To keep
+the dict bounded, every terminal/requeue/release/drain path drops the task's
+record; `on_started` also resets it, so a re-delivered task starts clean.
+
+### 13.6 Configuration additions
+
+`MqttWorkerConfig` gains six fields and corresponding bounds. They follow the
+existing style: frozen `msgspec.Struct`, module-level `MIN_`/`MAX_` constants,
+`validate_range` calls in `__post_init__` after `super().__post_init__()`.
+
+```python
+MIN_STATUS_QOS: int = 0
+MAX_STATUS_QOS: int = 2
+MIN_PROGRESS_QOS: int = 0
+MAX_PROGRESS_QOS: int = 2
+MIN_PROGRESS_MIN_INTERVAL: float = 0.0
+MAX_PROGRESS_MIN_INTERVAL: float = 3600.0
+MIN_PROGRESS_MIN_DELTA: float = 0.0
+MAX_PROGRESS_MIN_DELTA: float = 100.0
+```
+
+| Field | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `status_publish_enabled` | `bool` | `True` | — | Master switch for all status/progress publishing. `False` restores the pre-addendum no-op behavior. |
+| `status_topic_prefix` | `str` | `"scietex/{service}/tasks"` | — | Prefix for the per-task status/progress topics. `{service}` is substituted at construction. |
+| `status_qos` | `int` | `1` | `[0, 2]` | QoS for `TaskStatus` publishes. |
+| `progress_qos` | `int` | `0` | `[0, 2]` | QoS for `TaskProgress` publishes. |
+| `progress_min_interval` | `float` | `1.0` | `[0.0, 3600.0]` | Minimum seconds between progress publishes; `0` disables the interval threshold. |
+| `progress_min_delta` | `float` | `0.0` | `[0.0, 100.0]` | Minimum absolute progress change that forces a publish; `0` disables the delta threshold. |
+
+Validation added to `__post_init__`:
+
+```python
+validate_range(self.status_qos, "status_qos", minimum=MIN_STATUS_QOS, maximum=MAX_STATUS_QOS)
+validate_range(self.progress_qos, "progress_qos", minimum=MIN_PROGRESS_QOS, maximum=MAX_PROGRESS_QOS)
+validate_range(
+    self.progress_min_interval,
+    "progress_min_interval",
+    minimum=MIN_PROGRESS_MIN_INTERVAL,
+    maximum=MAX_PROGRESS_MIN_INTERVAL,
+)
+validate_range(
+    self.progress_min_delta,
+    "progress_min_delta",
+    minimum=MIN_PROGRESS_MIN_DELTA,
+    maximum=MAX_PROGRESS_MIN_DELTA,
+)
+```
+
+Retain flags are not configurable: status is always retained and progress is
+always non-retained, because those are properties of the two message kinds, not
+deployment choices.
+
+### 13.7 Failure semantics
+
+Status and progress are observability. A publish failure must never fail, block,
+requeue, or slow a task, and must never corrupt inbox state.
+
+- Every status/progress publish is wrapped so no exception escapes the hook.
+  The envelope requeue in `requeue` keeps its current contract (it may raise,
+  and `handle_task` logs it); only the status publish alongside it is swallowed.
+- A failed **status** publish is logged at WARNING and reported to
+  `TransportHealth.report_failure`, which drives the existing single reconnect
+  path. A failed **progress** publish is logged at DEBUG and also reported:
+  progress is high-frequency, so WARNING-level logging would be noise, but the
+  health supervisor still needs to see the connection failure.
+- Reporting to `TransportHealth` is safe here because `report_failure` is
+  synchronous and non-blocking (`health.py:112-124`); it only marks degraded and
+  requests a reconnect. The reconnect itself remains owned by
+  `watchdog`/`recover`.
+- Inbox mutations are performed independently of the publish. For `on_started`,
+  `mark_in_flight` runs regardless of publish outcome; for `ack`, the terminal
+  tombstone and the AR-077b retryable early-return are unchanged. A status
+  publish failure can therefore never turn a completed task into a redelivered
+  one, or vice versa.
+- Only `Exception` is caught; `asyncio.CancelledError` (a `BaseException`)
+  propagates so shutdown cancellation still works. `MqttTransport` already holds
+  `_health` "for API parity"; with this addendum the dependency becomes
+  load-bearing, and its construction comment must be updated accordingly.
+
+### 13.8 §10 decision update (exact wording)
+
+Replace §10 decision **#5** with:
+
+```
+| 5 | Status/progress persistence | **No status store; status publisher instead** (addendum §13). `MqttTransport` publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics. There is no read-back API, so this is not a store and does not reverse the original decision. |
+```
+
+Replace the §10 rationale note for **#5** with:
+
+```
+- **#5 (no status store; status publisher instead):** MQTT has no server-side
+  key space to write status records into (unlike Valkey's
+  `scietex:{service}:task:{id}` keys), so no store is introduced. What the
+  transport does instead is *publish* `TaskStatus`/`TaskProgress` messages to
+  per-task topics; the broker retains the latest status message per task but
+  exposes no query or read-back API. Publishing is fire-and-forget
+  observability, not persistence with a read path, so the original decision
+  stands. See §13.
+```
+
+The distinction is intentional and should not be described in later docs as a
+reversal: **store = read-back API + queryable record; publisher = write-only
+messages consumed by subscription.**
+
+### 13.9 Testing plan
+
+All tests remain broker-free, using the existing fake inbox and a recording
+publisher. Extend `_transport` in `tests/mqtt/test_transport.py` so `published`
+captures `(topic, payload, qos, retain)` and so an injectable clock can be
+passed.
+
+Transport-level publish assertions (`tests/mqtt/test_transport.py`):
+
+- `on_started` publishes a retained, QoS 1 `TaskStatus(status="running")` to
+  `scietex/svc/tasks/{task_id}/status`; decode with `msgspec.msgpack.decode`.
+- `ack` with a success `TaskResult` publishes `completed` with `result` set to
+  the result payload.
+- `ack` with a non-retryable error publishes `failed` with `error`/`error_code`.
+- `ack` with `task_result=None, cancel_reason="deliberate"` publishes
+  `cancelled` with `data` set; with `"timeout"`/`"shutdown"` publishes `failed`.
+- `ack` with a retryable error publishes no status and leaves the inbox entry
+  non-terminal (existing AR-077b assertion preserved).
+- `requeue` publishes `queued` (retained, QoS 1) in addition to the envelope.
+- `fetch`/recovery publishes `queued` once per accepted task and never
+  republishes on a repeat poll.
+- `release` and `on_drain` publish nothing.
+- A publish that raises `MqttError` does not propagate (both status and
+  progress), logs, and calls `health.report_failure`.
+
+Throttling (`tests/mqtt/test_transport.py`, with an injected clock):
+
+- First `on_progress` always publishes; subsequent calls inside
+  `progress_min_interval` coalesce to `pending` and publish nothing.
+- Advancing the clock past the interval publishes the newest pending value.
+- `progress_min_delta` forces a publish on a large jump inside the interval.
+- Both thresholds `0` publishes every call.
+- `ack` flushes a pending value before the terminal status; `requeue`,
+  `release`, and `on_drain` do not flush and drop the state.
+
+Config (`tests/mqtt/test_config.py`):
+
+- Defaults for all six new fields.
+- `validate_range` rejects `status_qos=3`, `progress_qos=3`,
+  `progress_min_interval=-1`, `progress_min_delta=101`.
+- `status_topic_prefix` formatting is exercised by the worker test, not the
+  config test.
+
+Worker wiring (`tests/mqtt/test_worker.py`):
+
+- The transport receives the resolved prefix from `status_topic_prefix` with
+  `{service}` substituted.
+- `status_publish_enabled=False` makes `on_progress` a no-op and suppresses
+  status publishes.
+- The worker's `_publish` forwards `retain` to `client.publish`.
+
+### 13.10 Implementation steps
+
+Ordered, atomic, and verifiable. Each step keeps the tree green.
+
+| # | Step | Files | Verify |
+|---|---|---|---|
+| 1 | Add the eight bounds constants, the six `MqttWorkerConfig` fields, their `__post_init__` `validate_range` calls, and the field docstrings. | `src/scietex/service/mqtt/config.py` | `pytest tests/mqtt/test_config.py` |
+| 2 | Add the new config tests (defaults, rejection cases). | `tests/mqtt/test_config.py` | `pytest tests/mqtt/test_config.py` |
+| 3 | Extend the publish seam: replace the `MqttPublish` `Callable` alias with the keyword-only-retain `Protocol`; add the `clock` constructor parameter; keep `requeue`'s call site (retain defaults to False). | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
+| 4 | Add `_ProgressThrottle`, the per-task dict, an encoder, `_publish_status`/`_publish_progress` helpers (try/except plus health), and wire `on_started`, `ack`, `on_progress`, `requeue`, `release`, `on_drain`, plus `queued` on `fetch`/`recover_pending_tasks`. Update module/class docstrings and the `_health` construction comment. | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
+| 5 | Update the worker: resolve `_status_topic_prefix`, pass the prefix and clock to `MqttTransport`, extend `_publish` with `retain`, and pass the gating config through. | `src/scietex/service/mqtt/worker.py` | `ty check src/` |
+| 6 | Extend the transport test helper (recording publisher with retain, injectable clock, config kwargs) and add the publishing/throttling/failure tests from §13.9. | `tests/mqtt/test_transport.py` | `pytest tests/mqtt/test_transport.py` |
+| 7 | Add the worker wiring tests from §13.9. | `tests/mqtt/test_worker.py` | `pytest tests/mqtt/test_worker.py` |
+| 8 | Full gate. | — | `ruff check src/ tests/ && ruff format --check src/ tests/ && ty check src/ && pytest tests/` |
+
+### 13.11 Open points
+
+- **Queued ownership.** This addendum has the worker emit `queued` on
+  acceptance so a subscriber always sees a complete lifecycle. `TaskStatus`'s
+  docstring and the Valkey path treat `queued` as submitter-written; an external
+  submitter may also publish a retained `queued` status, and the two are
+  idempotent under retained-overwrite. If parity with the Valkey split is
+  preferred, drop step 4's `fetch`/recovery publish and document `queued` as
+  submitter-owned.
+- **Retained-status expiry.** Retained status messages are never cleared
+  automatically, so one retained message per task accumulates. MQTT 5 message
+  expiry would bound this, but it requires extending the publish seam with a
+  `properties` argument; deferred as future work.

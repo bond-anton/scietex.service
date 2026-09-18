@@ -555,3 +555,47 @@ async def test_cleanup_stops_loop_handler_and_disconnects(monkeypatch):
     assert fake.closed is True
     assert handler.stop_calls == 1
     assert worker._message_task is None
+
+
+def test_status_topic_prefix_resolved_at_construction(tmp_path):
+    """The transport receives the ``{service}``-substituted status_topic_prefix,
+    resolved once at construction exactly as task_topic is (design §13.2)."""
+    worker = _make_worker(tmp_path)
+
+    assert worker._status_topic_prefix == "scietex/svc/tasks"
+    assert worker._mqtt_transport._status_topic_prefix == "scietex/svc/tasks"
+
+
+@pytest.mark.asyncio
+async def test_status_publish_disabled_suppresses_publishes(tmp_path):
+    """status_publish_enabled=False makes on_progress a no-op and skips the
+    running/terminal status publishes, so nothing reaches the broker (design
+    §13.6)."""
+    fake = FakeClient()
+    worker = _make_worker(tmp_path, inbox_backend="none", status_publish_enabled=False)
+    worker._client = fake
+    task_id = uuid4()
+    task_data = TaskData(task="send_email")
+
+    await worker._mqtt_transport.on_progress(task_id, 42.0)
+    await worker._mqtt_transport.on_started(task_id, task_data)
+    await worker._mqtt_transport.ack(task_id, task_data, TaskResult(status="success"))
+
+    assert fake.published == []
+
+
+@pytest.mark.asyncio
+async def test_publish_forwards_retain_flag():
+    """The worker's _publish forwards retain to client.publish, so status
+    (retained) and progress/requeue (non-retained) honor the seam's flag."""
+    fake = FakeClient()
+    worker = MqttWorker(MqttWorkerConfig(service_name="svc", mqtt_config=MqttConfig(), inbox_backend="none"))
+    worker._client = fake
+
+    await worker._publish("topic/status", b"st", qos=1, retain=True)
+    await worker._publish("topic/progress", b"pg", qos=0, retain=False)
+
+    assert fake.published == [
+        ("topic/status", b"st", 1, True),
+        ("topic/progress", b"pg", 0, False),
+    ]

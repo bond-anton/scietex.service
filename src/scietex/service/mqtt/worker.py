@@ -9,6 +9,7 @@ Requires the optional ``aiomqtt`` dependency.
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -176,6 +177,8 @@ class MqttWorker(TaskProcessor):
             _log_topic (str): Resolved topic worker logs are published to.
             _registry_topic (str): Retained-message registry topic for this
                 instance (heartbeat + liveness).
+            _status_topic_prefix (str): Resolved ``{service}``-substituted
+                prefix for the per-task status/progress topics (design §13.2).
             _inbox (MqttInbox | None): Durable inbox, or ``None`` for the
                 ``inbox_backend="none"`` at-most-once opt-out.
         """
@@ -215,6 +218,10 @@ class MqttWorker(TaskProcessor):
         self._task_topic = cfg.task_topic.format(service=self.service_name)
         self._log_topic = cfg.log_topic.format(service=self.service_name)
         self._registry_topic = f"scietex/{self.service_name}/workers/{self.instance_id}"
+        # Status/progress topic prefix (design §13.2), resolved once here exactly
+        # as task_topic is, so the transport receives the substituted form rather
+        # than repeating the {service} formatting itself.
+        self._status_topic_prefix = cfg.status_topic_prefix.format(service=self.service_name)
 
         # Durable inbox (design §10 #3). ``None`` for the "none" opt-out or a
         # failed file-inbox build; the transport receives a non-None inbox via
@@ -230,10 +237,12 @@ class MqttWorker(TaskProcessor):
             config=cfg,
             service_name=self.service_name,
             topic=self._task_topic,
+            status_topic_prefix=self._status_topic_prefix,
             inbox=self._inbox if self._inbox is not None else _NullInbox(),
             health=self._health,
             publish=self._publish,
             logger=self.logger,
+            clock=time.monotonic,
         )
         self._transport = self._mqtt_transport
 
@@ -457,18 +466,21 @@ class MqttWorker(TaskProcessor):
         await self.disconnect()
         await self.connect()
 
-    async def _publish(self, topic: str, payload: bytes, qos: int) -> None:
-        """Publish a payload to a topic (the transport's requeue seam).
+    async def _publish(self, topic: str, payload: bytes, qos: int, *, retain: bool = False) -> None:
+        """Publish a payload to a topic (the transport's publish seam).
 
         Reaches the operational client through :attr:`client`, so the publish
-        fails fast (raising :class:`~aiomqtt.MqttError`) when disconnected and
-        the caller (``MqttTransport.requeue``) surfaces the failure to
-        ``handle_task``, which logs it without crashing intake.
+        fails fast (raising :class:`~aiomqtt.MqttError`) when disconnected. The
+        caller (``MqttTransport``) owns the failure policy: the envelope requeue
+        lets ``handle_task`` log it without crashing intake, while the
+        status/progress publishes swallow it and report to the health supervisor.
+        ``retain`` mirrors ``Client.publish``: retained for the per-task status
+        marker, never for the envelope requeue or progress ticks.
         """
         client = self.client
         if client is None:
             raise MqttError("No MQTT client is connected")
-        await client.publish(topic, payload, qos=qos)
+        await client.publish(topic, payload, qos=qos, retain=retain)
 
     def _heartbeat_payload(self) -> bytes:
         """Encode the retained heartbeat/registry payload for this instance."""
