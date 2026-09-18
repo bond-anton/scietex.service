@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+import scietex.service.task_executor as executor_mod
 import scietex.service.task_processor as mod
 from scietex.service.config import TaskProcessorConfig
 
@@ -17,14 +18,14 @@ async def test_task_manager_uses_configured_queue_fetch_timeout():
 
     proc = DemoProcessor(TaskProcessorConfig(task_queue_fetch_timeout=0.25))
     observed: list = []
-    real_wait_for = mod.asyncio.wait_for
+    real_wait_for = executor_mod.asyncio.wait_for
 
     async def spy_wait_for(coro, timeout=None):
         observed.append(timeout)
         return await real_wait_for(coro, timeout=timeout)
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(mod.asyncio, "wait_for", spy_wait_for)
+    monkeypatch.setattr(executor_mod.asyncio, "wait_for", spy_wait_for)
     try:
         mgr = asyncio.create_task(proc.task_manager())
         # The queue is empty, so task_manager blocks in wait_for(get(), ...)
