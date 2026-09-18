@@ -216,7 +216,7 @@ handlers that only set `status`/`error` keep working unchanged.
 `CancelTaskResponse` (47), `CancelOutcome` (29), and `CancelCallback` (32).
 `TaskProcessor` auto-registers the handler in `__init__` and injects its own
 `_cancel_task` callback. The three remote-config task types are served by the
-handlers in `task_handler/config.py` (see §24).
+handlers in `task_handler/config.py` (see §25).
 
 `TaskEnvelope` is the durable wire format (AR-064): the transport persists a
 versioned envelope, not a bare `TaskData`, so the handler contract and the
@@ -327,7 +327,7 @@ task_manager hot loops; no processor-local timing constants remain.
 asyncio workload and does not reflect container CPU limits, so I/O-bound
 services should set `max_concurrent_tasks` explicitly.
 
-**Remote configuration** (see §23–§26): `__init__` builds a `ConfigReloader`
+**Remote configuration** (see §24–§27): `__init__` builds a `ConfigReloader`
 and registers the three `config:*` handlers (186–188); the `_config_source` seam
 (177) is attached by a transport subclass (`ValkeyWorker`/`MqttWorker`).
 Extension point `register_config_settings(name, struct_type, *, apply)` (239)
@@ -354,7 +354,7 @@ callers may iterate it while tasks are added or removed; `queue_size`,
 **Dependencies:** `.basic_worker`, `.manager`, `.task_handler`,
 `.task_lifecycle` (`TaskLifecycle`), `.transport`
 (`TaskTransport`/`TaskSink`/`InMemoryTransport`).
-**Depended on by:** `ValkeyWorker`, examples, tests.
+**Depended on by:** `TransportWorker` (and through it `ValkeyWorker`/`MqttWorker`), examples, tests.
 
 ## 9. Transport seam — `transport.py`
 
@@ -369,13 +369,16 @@ than on subclass overrides.
 delivers into: `task_queue_full() -> bool` and
 `enqueue_task(task_id, task_data) -> bool` (a `TaskProcessor` satisfies it
 structurally, no adapter). `TaskTransport` Protocol (32) — all async:
-`fetch(sink) -> bool`, `requeue(task_id, task_data)`, `release(task_id)`,
+`fetch(sink) -> bool`, `requeue(task_id, task_data)`,
 `on_started(task_id, task_data)`,
 `ack(task_id, task_data, task_result, *, cancel_reason=None)`,
-`on_progress(task_id, value)`, `on_drain(task_id, task_data)`.
+`on_progress(task_id, value)`,
+`refresh_leases()`, `recover_pending_tasks(sink) -> tuple[bool, bool]`,
+`on_drain(task_id, task_data)`.
 `InMemoryTransport` (62) — the default, deque-backed implementation; public
 `submit(task_id, task_data)` feeds it (not part of the Protocol), `fetch` drains
-while the sink is not full, and `on_drain` requeues iff
+while the sink is not full, `refresh_leases`/`recover_pending_tasks` are the
+no-op/`(True, False)` defaults, and `on_drain` requeues iff
 `canceled_action == "requeue"`.
 
 **Public interface:** the two Protocols (structural typing — no inheritance
@@ -383,10 +386,51 @@ required) and `InMemoryTransport(*, logger)`.
 
 **Dependencies:** `.task_handler.schemas` only — no `glide`, no `valkey`.
 **Depended on by:** `TaskProcessor` (composes one via keyword-only `transport=`,
-default `InMemoryTransport`), `valkey/transport.py` (implements the Protocol),
-package `__init__.py`.
+default `InMemoryTransport`), `TransportWorker` (calls `refresh_leases()`
+through the Protocol), `valkey/transport.py` and `mqtt/transport.py` (implement
+the Protocol), package `__init__.py`.
 
-## 10. Valkey worker — `ValkeyWorker`
+## 10. Transport worker base — `TransportWorker`
+
+**File:** `src/scietex/service/transport_worker.py`
+
+**Purpose:** Shared lifecycle scaffold for broker-backed workers (AR-102).
+Extends `TaskProcessor` with the transport-independent pieces every
+broker-backed worker repeats, so `ValkeyWorker` and `MqttWorker` no longer
+duplicate the connection/health/config-reload/watchdog glue. The concrete
+workers keep only broker-specific connect/disconnect/heartbeat/registry/
+cleanup plus the transport itself.
+
+**Main symbols:** `class TransportWorker(TaskProcessor)` (26). Class attribute
+`_transport_name` — the transport label surfaced in the CRITICAL down message;
+concrete workers override it to `"Valkey"`/`"MQTT"`. Constructor (42) takes the
+config plus a keyword-only `client_factory`, stores the client-construction
+seam, builds the `asyncio.Lock` client lock, and constructs the
+`TransportHealth` supervisor (down threshold derived from the heartbeat/watchdog
+intervals). Properties: `client` (abstract; typed override in each concrete
+worker), `transport_health` (the `TransportHealth`). Methods: `connect`/
+`disconnect` (the lock-serialized wrappers around the abstract
+`_connect_locked`/`_disconnect_locked`), `_reconnect` (`disconnect` +
+`connect`), `_apply_local_config`/`_reload_remote_config` (the startup
+config-apply pipeline; `_read_remote_outcome` is the abstract pluggable
+remote-source hook and `_log_config_outcome` the shared outcome logger), and
+`watchdog` (`refresh_leases()` → `health.recover()` → `super().watchdog()` →
+`critical_report()`).
+
+**Public interface:** constructor takes a single immutable config plus the
+keyword-only `client_factory`; `transport_health` is read-only; subclasses
+override `client`, `_connect_locked`, `_disconnect_locked`, and
+`_read_remote_outcome`.
+
+**Dependencies:** `.config` (`TaskProcessorConfig`), `.config_reload`
+(`ConfigApplyOutcome`, `encode_config_envelope`, `read_local_config`, the
+outcome codes), `.health` (`TransportHealth`), `.task_processor`
+(`TaskProcessor`).
+
+**Depended on by:** `ValkeyWorker`, `MqttWorker` (both extend it), package
+`__init__.py` (re-exported, additive).
+
+## 11. Valkey worker — `ValkeyWorker`
 
 **File:** `src/scietex/service/valkey/worker.py`
 
@@ -394,7 +438,7 @@ package `__init__.py`.
 via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
-**Main symbols:** `class ValkeyWorker(TaskProcessor)` (52).
+**Main symbols:** `class ValkeyWorker(TransportWorker)` (52).
 Overrides `_config_type` (85) to `ValkeyWorkerConfig`, so the base instantiates
 the concrete config when `config=None` and `__init__` reads its fields from
 `self._config` rather than re-storing (AR-069).
@@ -402,23 +446,29 @@ Constructor — `__init__(config: ValkeyWorkerConfig | None = None, *,
 client_factory: ClientFactory | None = None)` (accepts `config.valkey_config`;
 when `None`, defers the disk read to `_ensure_client_config()`, called at first
 connect — AR-066, so construction is side-effect-free; `client_factory` is the
-AR-074 injection seam, defaulting to `GlideClient.create`),
-`connect` (`_client_factory` + PING under `_client_lock`; `_client`
+AR-074 injection seam, defaulting to `GlideClient.create`, forwarded to the
+`TransportWorker` base),
+`_connect_locked` (`_client_factory` + PING; `_client`
 assigned only after PING succeeds; then ensures the logging handler and
-starts it), `disconnect`, `heartbeat` (writes msgpack `Heartbeat` to
-`...:status` with TTL 2×interval), `initialize` (start handlers, connect,
-`xgroup_create`), `cleanup` (super + stop logging handler + disconnect),
-`_register_instance` (`SADD` `instance_id` into the registry set),
-`_unregister_instance` (`SREM` it back out).
+starts it), `_disconnect_locked` (close the client), `heartbeat` (writes msgpack
+`Heartbeat` to `...:status` with TTL 2×interval), `initialize` (start handlers,
+connect, attach the `ValkeyConfigSource`, `xgroup_create`), `cleanup` (super +
+stop logging handler + disconnect), `_read_remote_outcome` (reload the durable
+key), `_register_instance` (`SADD` `instance_id` into the registry set),
+`_unregister_instance` (`SREM` it back out). The `connect`/`disconnect` lock
+wrappers, `_reconnect`, the `TransportHealth` construction, the config-apply
+pipeline, and the `watchdog` glue live on `TransportWorker` (AR-102).
 
 Delivery is delegated to the injected `ValkeyTransport` (AR-072): the worker
 composes `self._valkey_transport` and assigns it to `self._transport`, so the
 six former hook overrides (`fetch_tasks`, `return_task_to_queue`,
 `on_task_started`, `on_task_completed`, `_write_task_progress`,
 `_on_queue_drain_task_processing`) are gone — the base `TaskProcessor` hooks
-remain as thin delegators to the composed transport. The worker also composes
-the `TransportHealth` (AR-075), `TaskLeaseManager` (AR-073), and
-`TaskStatusStore` (AR-073) collaborators and injects them into the transport.
+remain as thin delegators to the composed transport. The worker composes
+the `TaskLeaseManager` (AR-073) and `TaskStatusStore` (AR-073) collaborators
+and injects them into the transport; the `TransportHealth` (AR-075) is owned
+by the `TransportWorker` base (AR-102), whose `report_failure` hook the
+collaborators receive.
 
 Connection ownership (AR-059/061): the worker runs one operational
 `GlideClient` for heartbeat, registry, intake, and task completion;
@@ -443,7 +493,7 @@ resolved at `valkey/worker.py:150`; the `ValkeyConfigSource` is attached to
 group are service-scoped so replicas share one queue; the consumer/status keys
 are worker-scoped per
 auto-generated `instance_id`. The entry-id map and `recovered` flag now live
-on `ValkeyTransport` (see §15).
+on `ValkeyTransport` (see §13).
 
 The registry set is the enumeration index: `_register_instance` `SADD`s
 the `instance_id` on startup and `_unregister_instance` `SREM`s it on
@@ -467,7 +517,7 @@ None`), `client`, `transport_health` (`TransportHealth`).
 **Depended on by:** `valkey/__init__.py`, package `__init__.py` (guarded),
 example `examples/valkey_async_service.py`.
 
-## 11. Valkey configuration — `valkey/config.py`
+## 12. Valkey configuration — `valkey/config.py`
 
 **File:** `src/scietex/service/valkey/config.py`
 
@@ -499,7 +549,7 @@ import, AR-048); `..config` (`TaskProcessorConfig`); `.._validation`
 (`validate_range`, AR-079). **Depended on by:** `ValkeyWorker`,
 `valkey/transport.py`, `valkey/__init__.py`, tests.
 
-## 12. Valkey transport — `valkey/transport.py`
+## 13. Valkey transport — `valkey/transport.py`
 
 **File:** `src/scietex/service/valkey/transport.py`
 
@@ -516,7 +566,7 @@ injection (`config`, `service_name`, `consumer_name`, `stream_name`,
 (`XAUTOCLAIM` pending entries on first fetch; decodes via
 `decode_task_envelope`, skipping unknown-version/invalid entries with an ERROR
 log), `requeue(task_id, task_data)` (`xadd` re-queue via `encode_task_envelope`,
-then deletes the lease — AR-077b), `release(task_id)` (lease delete only),
+then deletes the lease — AR-077b),
 `on_started`, `ack(task_id, task_data, task_result, *, cancel_reason=None)`
 (`xack`+`xdel` the entry after the handler finishes; skips the lease delete for
 a retryable error result — AR-077b), `on_progress`, `on_drain` (durable drain:
@@ -530,7 +580,7 @@ acknowledgement) and the `recovered` flag (one-time pending recovery).
 `..task_handler.wire`. **Depended on by:** `ValkeyWorker` (injected as
 `self._transport`).
 
-## 13. Transport health — `health.py` (core)
+## 14. Transport health — `health.py` (core)
 
 **File:** `src/scietex/service/health.py` (re-exported from
 `src/scietex/service/valkey/health.py` for back-compat)
@@ -552,9 +602,9 @@ per down episode past the threshold; the message names `transport_name`, so
 `ValkeyWorker` passes `"Valkey"` and `MqttWorker` passes `"MQTT"`).
 
 **Dependencies:** `asyncio`, `logging`, `time`, `collections.abc` only — no
-transport imports. **Depended on by:** `ValkeyWorker` and `MqttWorker` (each
-exposed via `transport_health`), `ValkeyTransport`, `TaskLeaseManager`,
-`TaskStatusStore`, `MqttTransport`.
+transport imports. **Depended on by:** `TransportWorker` (constructs it and
+exposes `transport_health`), `ValkeyWorker`/`MqttWorker` (inherit it),
+`ValkeyTransport`, `TaskLeaseManager`, `TaskStatusStore`, `MqttTransport`.
 
 **Layering (AR-089):** `TransportHealth` is deliberately transport-agnostic —
 it takes only injected callables and knows nothing about Valkey or MQTT. It
@@ -562,7 +612,7 @@ was hoisted from `valkey/health.py` to core when the MQTT transport was added,
 so a new transport can reuse it without a feature→feature dependency;
 `valkey/health.py` remains as a back-compat re-export.
 
-## 14. Valkey task lease — `valkey/lease.py`
+## 15. Valkey task lease — `valkey/lease.py`
 
 **File:** `src/scietex/service/valkey/lease.py`
 
@@ -582,7 +632,7 @@ TTL), `acquire(task_id)` (SET NX; `True` on error, fail-safe), `delete(task_id)`
 **Dependencies:** `._glide` (`ClientProvider`, glide error classes).
 **Depended on by:** `ValkeyWorker`, `ValkeyTransport`.
 
-## 15. Valkey task status — `valkey/tracking.py`
+## 16. Valkey task status — `valkey/tracking.py`
 
 **File:** `src/scietex/service/valkey/tracking.py`
 
@@ -600,7 +650,7 @@ drops the update when the record is absent (DEBUG log), silent on
 **Dependencies:** `._glide`, `..task_handler` (schemas). **Depended on by:**
 `ValkeyWorker`, `ValkeyTransport`.
 
-## 16. Valkey heartbeat schema
+## 17. Valkey heartbeat schema
 
 **File:** `src/scietex/service/valkey/schemas.py`
 **Purpose/content:** `Heartbeat` (16) (frozen Struct) with `service`,
@@ -608,7 +658,7 @@ drops the update when the record is absent (DEBUG log), silent on
 `timestamp` uses `msgspec.field(default_factory=...)` (38) for a per-instance
 value. msgpack-serialized by `ValkeyWorker.heartbeat`.
 
-## 17. Valkey stream purge utility — `purge.py`
+## 18. Valkey stream purge utility — `purge.py`
 
 **File:** `src/scietex/service/valkey/purge.py`
 
@@ -628,7 +678,7 @@ consumer_name, logger=None)` (37) — orchestrates the purge and returns a
 `TYPE_CHECKING`); the caller supplies an open client. **Depended on by:**
 `valkey/__init__.py`.
 
-## 18. Config-dir resolution and service logo
+## 19. Config-dir resolution and service logo
 
 - **`config.py`** — `prepare_conf_dir()` (45): returns first existing dir
   in order `conf_dir` arg → `SCIETEX_CONFIG_DIR` env → `$XDG_CONFIG_HOME/scietex`
@@ -639,7 +689,7 @@ consumer_name, logger=None)` (37) — orchestrates the purge and returns a
   (679) prints the ASCII banner using `.version.__version__`. Moved here from
   the former `utils/logo.py` (its only consumer).
 
-## 19. External async logging backend — `scietex.logging`
+## 20. External async logging backend — `scietex.logging`
 
 Installed dependency (>=2.0.0). The package embeds this framework's log sink.
 Consumed classes:
@@ -674,7 +724,7 @@ never closes it — the caller owns its lifetime and recovery. `ValkeyWorker` us
 the former (the raw-`GlideClientConfiguration` fallback that used the latter was
 removed in AR-076/AR-085).
 
-## 20. MQTT transport — `mqtt/transport.py`
+## 21. MQTT transport — `mqtt/transport.py`
 
 **File:** `src/scietex/service/mqtt/transport.py`
 
@@ -693,8 +743,7 @@ entries via `recover_pending_tasks`, then drains the inbox's non-terminal
 snapshot into `sink.enqueue_task`, stopping on backpressure and skipping
 already-enqueued ids), `recover_pending_tasks(sink)` (returns a
 `(recovery_complete, enqueued)` tuple), `requeue(task_id, task_data)`
-(re-publishes the envelope at `task_qos` under the same id), `release(task_id)`
-(drops the in-process marker only), `on_started(task_id, task_data)` (marks the
+(re-publishes the envelope at `task_qos` under the same id), `on_started(task_id, task_data)` (marks the
 inbox entry in-flight), `ack(task_id, task_data, task_result, *,
 cancel_reason=None)` (tombstones the entry; a retryable error result skips the
 tombstone so the requeued copy is accepted — AR-077b mirror), `on_progress`
@@ -711,8 +760,9 @@ inbox snapshot is not re-enqueued on every poll).
 (`mqtt/transport.py:326`), so a retried copy is indistinguishable from the
 original on the wire.
 
-**Composition:** `MqttWorker` builds `TransportHealth` → `FileMqttInbox` →
-`MqttTransport`, then assigns the transport to `TaskProcessor._transport`.
+**Composition:** `MqttWorker` builds `FileMqttInbox` → `MqttTransport`
+(the `TransportHealth` is inherited from `TransportWorker`), then assigns the
+transport to `TaskProcessor._transport`.
 `MqttWorkerConfig` (in `mqtt/config.py`) extends `TaskProcessorConfig` with
 `mqtt_config`, `task_topic`, `task_qos`, `inbox_backend`, `inbox_path`,
 `inbox_ttl`, `log_topic`, `log_qos`, `log_retain`, `status_publish_enabled`,
@@ -723,7 +773,7 @@ original on the wire.
 `..task_handler.wire`, `..transport`. **Depended on by:** `MqttWorker`
 (injected as `self._transport`), `mqtt/__init__.py`.
 
-## 21. MQTT durable inbox — `mqtt/inbox.py`
+## 22. MQTT durable inbox — `mqtt/inbox.py`
 
 **File:** `src/scietex/service/mqtt/inbox.py`
 
@@ -747,7 +797,7 @@ restart) and there is no tombstone.
 **Dependencies:** `..task_handler.schemas`, `..task_handler.wire`; stdlib.
 **Depended on by:** `MqttWorker` (builds it), `MqttTransport` (drains it).
 
-## 22. MQTT logging-handler config — `mqtt/logging.py`
+## 23. MQTT logging-handler config — `mqtt/logging.py`
 
 **File:** `src/scietex/service/mqtt/logging.py`
 
@@ -765,7 +815,7 @@ uses its own session defaults.
 **Dependencies:** `.config` (`MqttConfig`). **Depended on by:** `MqttWorker`
 (`_ensure_logging_handler`), `mqtt/__init__.py`.
 
-## 23. Remote-config core — `config_reload.py`
+## 24. Remote-config core — `config_reload.py`
 
 **File:** `src/scietex/service/config_reload.py`
 
@@ -822,7 +872,7 @@ private to `TaskProcessor`.
 `task_handler/config.py` (outcome constants), `valkey/worker.py` and
 `mqtt/worker.py` (encode/local-read helpers), the transport sources.
 
-## 24. Remote-config task handlers — `task_handler/config.py`
+## 25. Remote-config task handlers — `task_handler/config.py`
 
 **File:** `src/scietex/service/task_handler/config.py`
 
@@ -859,7 +909,7 @@ code), `.basic`/`.capabilities`/`.context`/`.schemas`. **Depended on by:**
 `TaskProcessor` (registers all three and injects the callbacks),
 `task_handler/__init__.py`.
 
-## 25. Valkey config source — `valkey/config_source.py`
+## 26. Valkey config source — `valkey/config_source.py`
 
 **File:** `src/scietex/service/valkey/config_source.py`
 
@@ -880,7 +930,7 @@ maps them to `CONFIG_SOURCE_UNAVAILABLE`.
 (built in `initialize()` and attached to `_config_source`),
 `valkey/__init__.py`.
 
-## 26. MQTT config source — `mqtt/config_source.py`
+## 27. MQTT config source — `mqtt/config_source.py`
 
 **File:** `src/scietex/service/mqtt/config_source.py`
 

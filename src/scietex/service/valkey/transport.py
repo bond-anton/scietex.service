@@ -258,14 +258,6 @@ class ValkeyTransport:
             await client.xadd(self._stream_name, [(t_id, packed)])
         await self._lease.delete(task_id)
 
-    async def release(self, task_id: UUID) -> None:
-        """Release this task's transport-side ownership claim (its lease).
-
-        Part of the ``TaskTransport`` contract; the entry itself stays pending
-        in the stream and is redelivered on restart.
-        """
-        await self._lease.delete(task_id)
-
     async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
         """Publish a ``running`` tracking record when a task begins."""
         await self._status.record_running(task_id, task_data)

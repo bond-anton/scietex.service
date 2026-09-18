@@ -140,7 +140,7 @@ class MqttTransport:
         # Task ids handed to the sink but not yet terminal. The inbox snapshot
         # returns every non-terminal entry, so without this the drain would
         # re-enqueue an already-queued task on every poll. An id is added on
-        # enqueue accept and discarded on ack/release/on_drain.
+        # enqueue accept and discarded on ack/on_drain.
         self._enqueued: set[UUID] = set()
         # Per-task progress-coalescing state (design §13.5), keyed by task id.
         # In-process only: a restart loses it, which is correct because a
@@ -332,17 +332,6 @@ class MqttTransport:
         )
         self._progress.pop(task_id, None)
         await self._publish_status(task_id, task_data, "queued")
-
-    async def release(self, task_id: UUID) -> None:
-        """Release this task's in-process claim without re-publishing it.
-
-        The inbox entry stays non-terminal (the broker still holds the message
-        and a restart replays it), so only the in-process enqueued marker is
-        dropped. No status is published; the throttle state is dropped because
-        the task returns to a not-yet-started state (design §13.4).
-        """
-        self._enqueued.discard(task_id)
-        self._progress.pop(task_id, None)
 
     async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
         """Record that a task began processing (the inbox entry is in-flight).

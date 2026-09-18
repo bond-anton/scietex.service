@@ -33,6 +33,15 @@ a single pure `resolve_reloadable_settings` into one `self._effective` snapshot
 on `TaskProcessor`; the private reloadable shadows and the duplicated
 `None`/`auto_tune` resolution are removed. No public API change.
 
+**Follow-up (v4.5.0):** AR-102 + AR-113 — the shared `TransportWorker` base
+(`src/scietex/service/transport_worker.py`) now owns the client-lock/reconnect
+pattern, `TransportHealth` construction, the startup config-apply pipeline, and
+the watchdog glue; `ValkeyWorker`/`MqttWorker` extend it and keep only
+broker-specific methods. The `TaskTransport` Protocol is reconciled to 8
+methods: the dead `release` method is removed and `refresh_leases()`/
+`recover_pending_tasks(sink)` are promoted to required Protocol members, so
+workers stay protocol-typed with no concrete down-cast.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

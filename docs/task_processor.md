@@ -164,7 +164,7 @@ processor = TaskProcessor(
 When `transport` is omitted, the processor composes an `InMemoryTransport`
 (the default in-process backend). The transport is the delivery seam: the
 processor calls `transport.fetch(self)` to pull tasks and delegates the
-delivery hooks (`requeue`, `release`, `on_started`, `ack`, `on_progress`,
+delivery hooks (`requeue`, `on_started`, `ack`, `on_progress`,
 `on_drain`) to it.
 
 ```python

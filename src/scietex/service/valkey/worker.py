@@ -1,13 +1,12 @@
 """Valkey-backed async task processor for ``scietex.service``.
 
-Provides ``ValkeyWorker`` — an async worker that extends ``TaskProcessor``
+Provides ``ValkeyWorker`` — an async worker that extends ``TransportWorker``
 with Valkey stream-based task distribution, heartbeat publishing, and async
 logging. Uses the ``glide`` client for all Valkey operations.
 
 Requires the optional ``valkey-glide`` dependency.
 """
 
-import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -18,16 +17,8 @@ from uuid import UUID
 import msgspec
 from scietex.logging import AsyncValkeyHandler
 
-from ..config_reload import (
-    CONFIG_SOURCE_UNAVAILABLE,
-    REMOTE_CONFIG_DISABLED,
-    STALE_CONFIG,
-    ConfigApplyOutcome,
-    encode_config_envelope,
-    read_local_config,
-)
-from ..health import TransportHealth
-from ..task_processor import TaskProcessor
+from ..config_reload import CONFIG_SOURCE_UNAVAILABLE, ConfigApplyOutcome
+from ..transport_worker import TransportWorker
 from ._glide import (
     ExpirySet,
     ExpiryType,
@@ -58,11 +49,11 @@ from .transport import ValkeyTransport
 ClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]
 
 
-class ValkeyWorker(TaskProcessor):
+class ValkeyWorker(TransportWorker):
     """
     Async worker backed by a Valkey (Redis) stream for task distribution.
 
-    Extends ``TaskProcessor`` with Valkey-specific operations including
+    Extends ``TransportWorker`` with Valkey-specific operations including
     connection management, stream-based task fetching, heartbeat publishing,
     and async logging to a Valkey stream via the ``glide`` client.
 
@@ -92,6 +83,10 @@ class ValkeyWorker(TaskProcessor):
     # ``self._config``, so ``config=None`` instantiates the concrete type here
     # (AR-069) and no re-store / double-instantiation is needed.
     _config_type: ClassVar[type[ValkeyWorkerConfig]] = ValkeyWorkerConfig
+
+    # Transport label surfaced in the CRITICAL down message (AR-102); the base
+    # reads it when building the TransportHealth supervisor.
+    _transport_name: ClassVar[str] = "Valkey"
 
     def __init__(
         self,
@@ -136,7 +131,8 @@ class ValkeyWorker(TaskProcessor):
             _consumer_name (str): Consumer identifier within the task group.
             _registry_key (str): Service-scoped worker registry set key.
         """
-        super().__init__(config)
+        factory = client_factory if client_factory is not None else GlideClient.create
+        super().__init__(config, client_factory=factory)
         # The base already stored the concrete config into ``self._config``
         # (AR-069); keep a typed local reference for the synchronous setup
         # reads below.
@@ -169,22 +165,7 @@ class ValkeyWorker(TaskProcessor):
         self._client: GlideClient | None = None
         # Client-construction seam (AR-074): connect() awaits this factory with
         # the resolved client config; defaults to the real GlideClient.create.
-        self._client_factory: ClientFactory = client_factory if client_factory is not None else GlideClient.create
-        # Serializes connect()/disconnect() so only one task mutates _client at
-        # a time (AR-059): intake reconnect and shutdown cannot race each other.
-        self._client_lock: asyncio.Lock = asyncio.Lock()
-        # Connection-health supervisor (AR-075): the single reconnect owner that
-        # every glide-failure site reports into. Built before the collaborators
-        # so lease/status/transport can all receive it by injection. The down
-        # threshold and cooldown are derived from the intervals, not configured.
-        self._health = TransportHealth(
-            reconnect=self._reconnect,
-            is_connected=lambda: self._client is not None,
-            logger=self.logger,
-            transport_name="Valkey",
-            down_threshold=max(3 * self.watchdog_interval, self.heartbeat_interval),
-            reconnect_cooldown=self.watchdog_interval,
-        )
+        self._client_factory: ClientFactory = factory
         self._heartbeat_key = f"scietex:{self.service_name}:{self.instance_id}:status"
         self._task_stream_name = f"scietex:{self.service_name}:tasks"
         self._task_group_name = f"scietex:{self.service_name}:task_group"
@@ -266,16 +247,6 @@ class ValkeyWorker(TaskProcessor):
         """
         return self._client
 
-    @property
-    def transport_health(self) -> TransportHealth:
-        """The connection-health supervisor for this worker (read-only, AR-075).
-
-        Exposes the :class:`~scietex.service.health.TransportHealth`
-        aggregating every glide failure and owning the single reconnect path, so
-        callers can observe degraded state without reaching into internals.
-        """
-        return self._health
-
     def _ensure_client_config(self) -> GlideClientConfiguration:
         """Load the Valkey config on first connect (AR-066).
 
@@ -321,20 +292,6 @@ class ValkeyWorker(TaskProcessor):
         )
         self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler)
         return self._valkey_logger_handler
-
-    async def connect(self) -> bool:
-        """Establish an asynchronous connection to the Valkey server.
-
-        Serialized behind ``_client_lock`` so a concurrent ``disconnect()``
-        (intake reconnect, shutdown) cannot race the create → ping → assign
-        sequence (AR-059). Delegates to :meth:`_connect_locked`.
-
-        Returns:
-            ``True`` if the connection is established and ``PING``
-            succeeds; ``False`` on connection failure or timeout.
-        """
-        async with self._client_lock:
-            return await self._connect_locked()
 
     async def _connect_locked(self) -> bool:
         """Establish the connection; assumes ``_client_lock`` is held.
@@ -383,16 +340,6 @@ class ValkeyWorker(TaskProcessor):
             pass  # best-effort close; the client is unusable either way
         return False
 
-    async def disconnect(self):
-        """Gracefully close the connection to the Valkey server.
-
-        Serialized behind ``_client_lock`` so a concurrent ``connect()`` cannot
-        race the close → null sequence (AR-059). Delegates to
-        :meth:`_disconnect_locked`.
-        """
-        async with self._client_lock:
-            await self._disconnect_locked()
-
     async def _disconnect_locked(self):
         """Close the connection; assumes ``_client_lock`` is held.
 
@@ -406,11 +353,6 @@ class ValkeyWorker(TaskProcessor):
             self.logger.info("Valkey client disconnected")
             self._client = None
             self._health.mark_disconnected()
-
-    async def _reconnect(self) -> None:
-        """Tear down and re-establish the connection (intake error recovery)."""
-        await self.disconnect()
-        await self.connect()
 
     async def heartbeat(self) -> None:
         """Publish a heartbeat entry to the Valkey status key.
@@ -510,71 +452,23 @@ class ValkeyWorker(TaskProcessor):
                 return False
         return True
 
-    async def _apply_local_config(self) -> None:
-        """Apply the persisted ``config.yml`` snapshot at startup (design §5).
-
-        The local file is the worker's own persisted snapshot (written by
-        ``config:store``), so it is applied as a trusted, unsigned envelope
-        ahead of the remote read; the remote source stays authoritative when
-        present. A missing file is silently skipped, and any apply failure is
-        logged rather than failing startup.
-        """
-        cfg = cast(ValkeyWorkerConfig, self._config)
-        if not self._config_reloader.enabled:
-            # The local snapshot is part of the remote-config feature; when the
-            # feature is off the file is ignored rather than applied-then-logged.
-            return
-        sections = read_local_config(self.conf_dir / cfg.config_file)
-        if sections is None:
-            return
-        try:
-            # revision=1 applies cleanly at startup (the reloader starts at
-            # revision 0) and stays below any remote revision, so the remote
-            # source remains authoritative when both are present.
-            payload = encode_config_envelope(sections, revision=1)
-            outcome = await self._config_reloader.apply_envelope(payload, source="file")
-        except Exception as exc:
-            self.logger.error("Failed to apply local config: %s", exc)
-            return
-        self._log_config_outcome(outcome, "file")
-
-    async def _reload_remote_config(self) -> None:
-        """Read and apply the durable-key config envelope at startup (design §5).
+    async def _read_remote_outcome(self) -> ConfigApplyOutcome:
+        """Read and apply the durable-key config envelope (design §5).
 
         A missing key, an invalid envelope, or an unreachable server must not
         fail startup: ``reload`` returns an outcome instead of raising, and the
-        worker stays on its local/default config either way.
+        worker stays on its local/default config either way. An unavailable
+        source maps to ``CONFIG_SOURCE_UNAVAILABLE``, so the base pipeline logs
+        the "no config available" fallback instead of an error.
         """
         source = self._config_source
         if source is None:
-            return
+            return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
         try:
-            outcome = await self._config_reloader.reload(source)
+            return await self._config_reloader.reload(source)
         except Exception as exc:
             self.logger.error("Failed to reload remote config: %s", exc)
-            return
-        self._log_config_outcome(outcome, "remote")
-
-    def _log_config_outcome(self, outcome: ConfigApplyOutcome, source: str) -> None:
-        """Log a startup config-apply result per the design §5 failure policy.
-
-        Applied envelopes are logged at INFO with revision/hash; a stale
-        envelope at DEBUG; an unavailable source at DEBUG (the common
-        "no config" fallback — an actual GET failure is already logged at
-        WARNING by the reloader); a disabled feature at DEBUG (the reloader
-        short-circuits before touching the source); everything else
-        (invalid / bad signature / unknown section) at ERROR.
-        """
-        if outcome.applied:
-            self.logger.info("Applied %s config revision %d (hash %s)", source, outcome.revision, outcome.hash)
-        elif outcome.error_code == STALE_CONFIG:
-            self.logger.debug("Skipped stale %s config (revision %d)", source, outcome.revision)
-        elif outcome.error_code == CONFIG_SOURCE_UNAVAILABLE:
-            self.logger.debug("No %s config available; keeping local/default", source)
-        elif outcome.error_code == REMOTE_CONFIG_DISABLED:
-            self.logger.debug("Remote config is disabled; skipping %s config", source)
-        else:
-            self.logger.error("Failed to apply %s config: %s", source, outcome.error_code)
+            return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
 
     async def cleanup(self):
         """Perform cleanup on shutdown.
@@ -645,24 +539,3 @@ class ValkeyWorker(TaskProcessor):
                 exc,
             )
             self._health.report_failure(exc)
-
-    async def watchdog(self) -> None:
-        """Refresh per-entry leases, supervise the connection, then run the base watchdog.
-
-        Refreshing before ``super().watchdog()`` keeps leases fresh even when the
-        base implementation blocks on a cancellation wait. Tasks the base watchdog
-        cancels are removed from ``running_tasks``, so their leases stop being
-        refreshed and expire, making the entries reclaimable.
-
-        After the base watchdog runs, a degraded connection past its down
-        threshold surfaces one CRITICAL message per down episode (AR-075); when
-        healthy this emits nothing.
-        """
-        # refresh_leases is valkey-specific (not part of the core TaskTransport
-        # protocol), so it is reached through the concrete transport.
-        await self._valkey_transport.refresh_leases()
-        await self._health.recover()
-        await super().watchdog()
-        msg = self._health.critical_report()
-        if msg:
-            self.logger.critical(msg)

@@ -283,22 +283,6 @@ async def test_requeue_publishes_encoded_envelope_and_leaves_entry_pending():
 
 
 @pytest.mark.asyncio
-async def test_release_does_not_publish():
-    """release drops the in-process claim without publishing or marking terminal."""
-    t1 = uuid4()
-    d1 = TaskData(task="a")
-    inbox = FakeInbox()
-    inbox.seed((t1, d1))
-    transport, used_inbox, published = _transport(inbox)
-
-    await transport.release(t1)
-
-    assert published == []
-    assert used_inbox.mark_terminal_calls == []
-    assert await used_inbox.pending() == [(t1, d1)]
-
-
-@pytest.mark.asyncio
 async def test_on_started_marks_in_flight():
     """on_started marks the inbox entry in-flight."""
     t1 = uuid4()
@@ -805,10 +789,9 @@ async def test_requeue_drops_pending_progress_without_flushing():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hook", ["release", "on_drain"])
-async def test_release_and_on_drain_drop_pending_progress(hook):
-    """release/on_drain drop the throttle state without flushing the pending
-    tick and publish nothing."""
+async def test_on_drain_drops_pending_progress():
+    """on_drain drops the throttle state without flushing the pending tick
+    and publishes nothing."""
     t1 = uuid4()
     d1 = TaskData(task="a")
     clock = FakeClock()
@@ -818,13 +801,9 @@ async def test_release_and_on_drain_drop_pending_progress(hook):
     await transport.on_progress(t1, 20.0)  # coalesces to pending
     assert [p[0] for p in published] == [_progress_topic(t1)]
 
-    method = getattr(transport, hook)
-    if hook == "release":
-        await method(t1)
-    else:
-        await method(t1, d1)
+    await transport.on_drain(t1, d1)
 
-    # Neither hook publishes the pending tick nor anything else.
+    # on_drain publishes neither the pending tick nor anything else.
     assert [p[0] for p in published] == [_progress_topic(t1)]
 
     await transport.on_progress(t1, 5.0)  # state dropped: publishes as a fresh first tick

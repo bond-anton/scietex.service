@@ -28,6 +28,7 @@ from .config import TaskProcessorConfig, WorkerConfig
 from .manager import Manager, register_manager
 from .task_processor import TaskProcessor
 from .transport import InMemoryTransport, TaskSink, TaskTransport
+from .transport_worker import TransportWorker
 from .version import __version__
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "TaskTransport",
     "TaskSink",
     "InMemoryTransport",
+    "TransportWorker",
 ]
 
 VALKEY_AVAILABLE = False

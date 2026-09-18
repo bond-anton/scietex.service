@@ -45,7 +45,7 @@ transport-agnostic wire format, and the `TransportHealth` supervisor.
 ## 2. Architecture
 
 The design mirrors `ValkeyWorker` exactly, because that pattern is already
-proven and documented (`docs/architecture/components.md` §12–13).
+proven and documented (`docs/architecture/components.md` §13–14).
 
 ```
 TaskProcessor (core)
@@ -54,8 +54,8 @@ TaskProcessor (core)
         ├── ValkeyTransport     (valkey/ package)
         └── MqttTransport       (mqtt/ package)   ← new in v4.4.0
 
-MqttWorker(TaskProcessor)
-  ├── MqttTransport          (implements the 7 Protocol methods)
+MqttWorker(TransportWorker)
+  ├── MqttTransport          (implements the 8 Protocol methods)
   ├── TransportHealth        (connection-health supervisor)
   ├── MqttInbox              (durable inbox: at-least-once + dedupe)
   └── status publisher       (retained TaskStatus + throttled TaskProgress)
@@ -80,49 +80,55 @@ an install hint when the extra is absent (AR-048 pattern).
 
 ### 2.2 `MqttTransport`
 
-Implements the seven `TaskTransport` methods. Mapping from MQTT semantics:
+Implements the eight `TaskTransport` methods. Mapping from MQTT semantics:
 
 | Protocol method | MQTT behavior |
 |---|---|
 | `fetch(sink)` | Drain the inbox (and/or the aiomqtt message queue) into `sink.enqueue_task` until `sink.task_queue_full()`. Returns `True` if any task was enqueued. |
 | `requeue(task_id, task_data)` | Re-publish the envelope to the task topic (QoS 2), carrying the `scietex-task-id` user property (`mqtt/transport.py:326`), and mark the inbox entry pending again. The user property is load-bearing: the worker's own message loop rejects any message without it. |
-| `release(task_id)` | Mark the inbox entry released without re-publishing (the broker still holds the message). |
 | `on_started(task_id, task_data)` | Mark the inbox entry in-flight. |
 | `ack(task_id, task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and remove it (or tombstone it for dedupe). |
 | `on_progress(task_id, value)` | Publish a throttled `TaskProgress` message to the per-task progress topic (addendum §13); a no-op when status publishing is disabled. Progress also stays in-process via `TaskCapabilities`. |
 | `on_drain(task_id, task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. No status is published. |
+| `refresh_leases()` | No-op: the file-backed inbox holds no per-entry lease to renew (kept for parity with `ValkeyTransport`). |
+| `recover_pending_tasks(sink)` | Replay non-terminal inbox entries on startup, returning `(recovery_complete, enqueued)`. |
 
 Every lifecycle hook additionally publishes a status message when status
 publishing is enabled; the table above lists delivery behavior only. See
 addendum §13 for the publishing contract.
 
-MQTT-specific extras beyond the Protocol (mirroring `ValkeyTransport`'s
-`recover_pending_tasks`/`refresh_leases`):
-
-- `recover_pending_tasks(sink)` — replay unacked inbox entries on startup.
-- `refresh_leases()` — refresh inbox-entry leases (if the inbox uses leases).
+`recover_pending_tasks` and `refresh_leases` are now Protocol members
+(AR-113), not MQTT-specific extras: `recover_pending_tasks(sink)` replays
+non-terminal inbox entries on startup, and `refresh_leases()` is a no-op for
+the file-backed inbox (kept for parity with `ValkeyTransport`).
 
 ### 2.3 `MqttWorker`
 
 Composition order mirrors `ValkeyWorker.__init__`:
 
-1. `super().__init__(config)` — builds the discarded `InMemoryTransport`.
+1. `super().__init__(config, client_factory=...)` — `TransportWorker` builds
+   the `TransportHealth` and the client lock; `TaskProcessor` builds the
+   discarded `InMemoryTransport`.
 2. Resolve `MqttWorkerConfig` from `self._config`.
-3. Build `TransportHealth` first (so collaborators can receive
-   `report_failure`).
-4. Build `MqttInbox` (durable store).
-5. Build `MqttTransport` with all collaborators injected.
-6. `self._transport = self._mqtt_transport`.
+3. Build `MqttConfigSource` (retained snapshot) and the `MqttInbox` (durable
+   store).
+4. Build `MqttTransport` with all collaborators injected (health, publish seam).
+5. `self._transport = self._mqtt_transport`.
 
 Lifecycle overrides mirror `ValkeyWorker`:
 
 | Override | Behavior |
 |---|---|
-| `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task and config topics → replay the inbox. |
+| `_connect_locked` / `_disconnect_locked` | Build/enter and exit/tear-down the aiomqtt client (the lock is held by the base `connect()`/`disconnect()`). |
+| `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task and config topics → apply local/remote config → replay the inbox. |
 | `cleanup` | `super().cleanup()` → stop the message loop → stop the log handler → disconnect → flush the inbox. |
-| `watchdog` | `refresh_leases()` → `health.recover()` → `super().watchdog()` → log `critical_report()`. |
+| `_read_remote_outcome` | Await the retained config snapshot (bounded `config_startup_timeout`) and apply it. |
 | `heartbeat` | Publish a retained heartbeat message on `scietex/{service}/workers/{instance_id}` (§10 #6). |
 | `_register_instance` / `_unregister_instance` | Best-effort retained-message publish/clear on the registry topic (§10 #6). |
+
+The `watchdog` (`refresh_leases()` → `health.recover()` →
+`super().watchdog()` → `critical_report()`) and the `connect()`/`disconnect()`
+lock wrappers are inherited from `TransportWorker` (AR-102).
 
 In addition to the task topic, `initialize()` subscribes to the remote-config
 topic (`mqtt/worker.py:458`), and `_handle_message` dispatches config-topic
@@ -391,7 +397,7 @@ Mirror the Valkey test layout under `tests/mqtt/`:
 
 - `tests/mqtt/_helpers.py` — a fake aiomqtt client (analogue of `DummyClient`),
   so no broker is required for unit tests.
-- `tests/mqtt/test_transport.py` — the seven Protocol methods against the fake.
+- `tests/mqtt/test_transport.py` — the eight Protocol methods against the fake.
 - `tests/mqtt/test_inbox.py` — put/recover/dedupe/terminal semantics.
 - `tests/mqtt/test_worker.py` — composition, lifecycle overrides, heartbeat,
   registry.
@@ -657,7 +663,6 @@ Hook-by-hook mapping:
 | `requeue` | Re-publish the envelope to the task topic; leave the entry non-terminal. | Publish `queued` (QoS 1, retained): the task has returned to the source queue. Drop the task's progress-throttle state without flushing (the task will restart; a stale progress value would be misleading). |
 | `ack` (non-retryable) | Mark terminal (tombstone), drop the enqueued marker. | Flush any coalesced progress value (§13.5), then publish the terminal `completed`/`failed`/`cancelled` status (QoS 1, retained). Drop the throttle state. |
 | `ack` (retryable error) | Drop the enqueued marker; **leave the entry non-terminal** (AR-077b mirror) so the retry copy is accepted. | Publish **no** terminal status — the task is not terminal. `requeue` already published `queued` immediately before this call. |
-| `release` | Drop the in-process claim; entry stays pending. | Publish nothing; drop the throttle state (the task returns to a not-yet-started state and will be redelivered). |
 | `on_drain` | Drop the in-process claim; entry stays pending for redelivery. | Publish nothing: the task is neither terminal nor restarted, and the retained status correctly remains `queued` or `running` until redelivery. Drop the throttle state. |
 
 Retryable-error ordering is load-bearing and mirrors the inbox path. In
@@ -722,10 +727,10 @@ which is correct because a restart also resets the in-flight task set.
 `pending` value, it is published on the progress topic immediately before the
 terminal status, then the record is dropped. This guarantees a completion is
 preceded by the final reported value even when that value fell inside the
-throttle window. On `requeue`, `release`, and `on_drain` the record is dropped
+throttle window. On `requeue` and `on_drain` the record is dropped
 **without** flushing: the task is returning to the queue or awaiting
 redelivery, and a stale progress value would misrepresent a fresh run. To keep
-the dict bounded, every terminal/requeue/release/drain path drops the task's
+the dict bounded, every terminal/requeue/drain path drops the task's
 record; `on_started` also resets it, so a re-delivered task starts clean.
 
 ### 13.6 Configuration additions
@@ -854,7 +859,7 @@ Transport-level publish assertions (`tests/mqtt/test_transport.py`):
 - `requeue` publishes `queued` (retained, QoS 1) in addition to the envelope.
 - `fetch`/recovery publishes `queued` once per accepted task and never
   republishes on a repeat poll.
-- `release` and `on_drain` publish nothing.
+- `on_drain` publishes nothing.
 - A publish that raises `MqttError` does not propagate (both status and
   progress), logs, and calls `health.report_failure`.
 - A retained status publish carries an MQTT 5 message-expiry property set to
@@ -868,8 +873,8 @@ Throttling (`tests/mqtt/test_transport.py`, with an injected clock):
 - Advancing the clock past the interval publishes the newest pending value.
 - `progress_min_delta` forces a publish on a large jump inside the interval.
 - Both thresholds `0` publishes every call.
-- `ack` flushes a pending value before the terminal status; `requeue`,
-  `release`, and `on_drain` do not flush and drop the state.
+- `ack` flushes a pending value before the terminal status; `requeue`
+  and `on_drain` do not flush and drop the state.
 
 Config (`tests/mqtt/test_config.py`):
 
@@ -896,7 +901,7 @@ Ordered, atomic, and verifiable. Each step keeps the tree green.
 | 1 | Add the ten bounds constants, the seven `MqttWorkerConfig` fields (including `status_ttl`), their `__post_init__` `validate_range` calls, and the field docstrings. | `src/scietex/service/mqtt/config.py` | `pytest tests/mqtt/test_config.py` |
 | 2 | Add the new config tests (defaults, rejection cases). | `tests/mqtt/test_config.py` | `pytest tests/mqtt/test_config.py` |
 | 3 | Extend the publish seam: replace the `MqttPublish` `Callable` alias with the keyword-only-retain/`properties` `Protocol`; add the `clock` constructor parameter; keep `requeue`'s call site (retain defaults to False, no properties). | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
-| 4 | Add `_ProgressThrottle`, the per-task dict, an encoder, `_publish_status`/`_publish_progress` helpers (try/except plus health; `_publish_status` builds the MQTT 5 message-expiry property from `status_ttl`), and wire `on_started`, `ack`, `on_progress`, `requeue`, `release`, `on_drain`, plus `queued` on `fetch`/`recover_pending_tasks`. Update module/class docstrings and the `_health` construction comment. | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
+| 4 | Add `_ProgressThrottle`, the per-task dict, an encoder, `_publish_status`/`_publish_progress` helpers (try/except plus health; `_publish_status` builds the MQTT 5 message-expiry property from `status_ttl`), and wire `on_started`, `ack`, `on_progress`, `requeue`, `on_drain`, plus `queued` on `fetch`/`recover_pending_tasks`. Update module/class docstrings and the `_health` construction comment. | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
 | 5 | Update the worker: resolve `_status_topic_prefix`, pass the prefix and clock to `MqttTransport`, extend `_publish` with `retain` and `properties`, and pass the gating config through. | `src/scietex/service/mqtt/worker.py` | `ty check src/` |
 | 6 | Extend the transport test helper (recording publisher with retain, injectable clock, config kwargs) and add the publishing/throttling/failure tests from §13.9. | `tests/mqtt/test_transport.py` | `pytest tests/mqtt/test_transport.py` |
 | 7 | Add the worker wiring tests from §13.9. | `tests/mqtt/test_worker.py` | `pytest tests/mqtt/test_worker.py` |

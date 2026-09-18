@@ -110,16 +110,41 @@ async def test_on_drain_requeues_iff_canceled_action_is_requeue():
 
 
 @pytest.mark.asyncio
-async def test_release_started_ack_progress_are_noops():
-    """release/on_started/ack/on_progress are no-ops for the in-memory
-    transport: they neither enqueue nor raise."""
+async def test_started_ack_progress_are_noops():
+    """on_started/ack/on_progress are no-ops for the in-memory transport:
+    they neither enqueue nor raise."""
     transport = InMemoryTransport(logger=_logger())
     t1 = uuid4()
     data = TaskData(task="a")
 
-    await transport.release(t1)
     await transport.on_started(t1, data)
     await transport.ack(t1, data, None)
     await transport.on_progress(t1, 42.0)
 
     assert await transport.fetch(FakeSink()) is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_leases_is_noop():
+    """refresh_leases does not raise and changes nothing observable: the
+    in-memory transport holds no lease to renew."""
+    transport = InMemoryTransport(logger=_logger())
+    t1 = uuid4()
+    data = TaskData(task="a")
+    transport.submit(t1, data)
+
+    await transport.refresh_leases()
+
+    assert await transport.fetch(FakeSink()) is True
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_returns_complete_empty():
+    """recover_pending_tasks reports recovery complete with nothing enqueued,
+    since the in-memory transport has no cross-restart state to re-deliver."""
+    transport = InMemoryTransport(logger=_logger())
+
+    recovered, enqueued = await transport.recover_pending_tasks(FakeSink())
+
+    assert recovered is True
+    assert enqueued is False

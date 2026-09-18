@@ -645,7 +645,7 @@ travel only on the progress topic. The progress payload always sets
 A **retryable error publishes no terminal status.** `requeue` runs before `ack`
 and publishes `queued`, then `ack` returns early without a terminal publish, so
 a subscriber sees the task transition `running -> queued -> running ...` until
-it succeeds or fails permanently. `release` and `on_drain` publish nothing
+it succeeds or fails permanently. `on_drain` publishes nothing
 (the task is neither terminal nor restarted).
 
 ### Progress throttling
@@ -665,9 +665,9 @@ tick publishes when any of these holds:
 Otherwise the newest value is kept as `pending` (the newest wins, never a
 backlog) and published on the next eligible tick. Any `pending` value is
 flushed on a non-retryable `ack`, immediately before the terminal status, so a
-completion is preceded by the final reported value. On `requeue`, `release`,
-and `on_drain` the throttle state is dropped without flushing, because a stale
-value would misrepresent a fresh run.
+completion is preceded by the final reported value. On `requeue` and `on_drain`
+the throttle state is dropped without flushing, because a stale value would
+misrepresent a fresh run.
 
 ### Failure semantics
 

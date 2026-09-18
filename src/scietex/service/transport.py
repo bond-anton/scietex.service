@@ -41,8 +41,6 @@ class TaskTransport(Protocol):
 
     async def requeue(self, task_id: UUID, task_data: TaskData) -> None: ...
 
-    async def release(self, task_id: UUID) -> None: ...
-
     async def on_started(self, task_id: UUID, task_data: TaskData) -> None: ...
 
     async def ack(
@@ -56,7 +54,32 @@ class TaskTransport(Protocol):
 
     async def on_progress(self, task_id: UUID, value: float) -> None: ...
 
-    async def on_drain(self, task_id: UUID, task_data: TaskData) -> None: ...
+    async def refresh_leases(self) -> None:
+        """Renew any per-entry ownership claims held for in-flight tasks.
+
+        A transport with no claim/lease mechanism implements this as a no-op.
+        """
+        ...
+
+    async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:
+        """Re-deliver entries left pending by a previous run.
+
+        Returns ``(recovery_complete, enqueued)``: ``recovery_complete`` is
+        ``False`` when a full sink interrupted recovery so the next poll
+        retries. A transport with no recovery step returns ``(True, False)``.
+        """
+        ...
+
+    async def on_drain(self, task_id: UUID, task_data: TaskData) -> None:
+        """Release the transport-side claim for a queued-but-undispatched task.
+
+        The release is unconditional. Re-delivery policy is transport-owned: a
+        durable transport leaves the entry pending (redelivered on restart or
+        recovery) and must not re-publish; a non-durable transport additionally
+        re-delivers when ``task_data.canceled_action == "requeue"`` so it does
+        not lose the work on shutdown (AR-041).
+        """
+        ...
 
 
 class InMemoryTransport:
@@ -95,9 +118,6 @@ class InMemoryTransport:
         """Re-append a task so the next :meth:`fetch` re-delivers it."""
         self._pending.append((task_id, task_data))
 
-    async def release(self, task_id: UUID) -> None:
-        """No-op: an in-memory task holds no transport-side resources."""
-
     async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
         """No-op: an in-memory transport publishes no tracking records."""
 
@@ -113,6 +133,13 @@ class InMemoryTransport:
 
     async def on_progress(self, task_id: UUID, value: float) -> None:
         """No-op: an in-memory transport stores no progress records."""
+
+    async def refresh_leases(self) -> None:
+        """No-op: an in-memory task holds no lease to renew."""
+
+    async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:
+        """Nothing is pending across restarts, so recovery is trivially complete."""
+        return True, False
 
     async def on_drain(self, task_id: UUID, task_data: TaskData) -> None:
         """Return a drained task to the queue when its action is ``requeue``.
