@@ -23,6 +23,8 @@ MIN_INBOX_TTL: int = 1
 MAX_INBOX_TTL: int = 30 * 24 * 3600
 MIN_STATUS_QOS: int = 0
 MAX_STATUS_QOS: int = 2
+MIN_STATUS_TTL: int = 1
+MAX_STATUS_TTL: int = 30 * 24 * 3600
 MIN_PROGRESS_QOS: int = 0
 MAX_PROGRESS_QOS: int = 2
 MIN_PROGRESS_MIN_INTERVAL: float = 0.0
@@ -91,7 +93,9 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         task_topic: MQTT topic tasks are consumed from. ``{service}`` is
             replaced with the service name.
         task_qos: QoS level for task messages (``[0, 2]``).
-        inbox_backend: Durable inbox backend (``"file"`` or ``"none"``).
+        inbox_backend: Durable inbox backend. ``"file"`` persists entries to
+            disk (at-least-once); ``"memory"`` and its alias ``"none"`` buffer
+            entries in process only (at-most-once).
             ``"none"`` is the explicit at-most-once opt-out.
         inbox_path: Optional path to the inbox store. ``None`` derives it from
             the config directory.
@@ -107,6 +111,9 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         status_topic_prefix: Prefix for the per-task status/progress topics.
             ``{service}`` is substituted at construction.
         status_qos: QoS level for ``TaskStatus`` publishes (``[0, 2]``).
+        status_ttl: MQTT 5 message-expiry interval in seconds applied to every
+            retained ``TaskStatus`` publish (``[1, 2592000]``). ``None``
+            disables expiry.
         progress_qos: QoS level for ``TaskProgress`` publishes (``[0, 2]``).
         progress_min_interval: Minimum seconds between progress publishes
             (``[0.0, 3600.0]``). ``0`` disables the interval threshold.
@@ -117,7 +124,7 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     mqtt_config: "MqttConfig | None" = None
     task_topic: str = "scietex/{service}/tasks"
     task_qos: int = 2
-    inbox_backend: Literal["file", "none"] = "file"
+    inbox_backend: Literal["file", "memory", "none"] = "file"
     inbox_path: str | None = None
     inbox_ttl: int | None = None
     log_topic: str = "scietex/{service}/log"
@@ -126,6 +133,7 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     status_publish_enabled: bool = True
     status_topic_prefix: str = "scietex/{service}/tasks"
     status_qos: int = 1
+    status_ttl: int | None = 86400
     progress_qos: int = 0
     progress_min_interval: float = 1.0
     progress_min_delta: float = 0.0
@@ -136,6 +144,7 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         validate_range(self.log_qos, "log_qos", minimum=MIN_LOG_QOS, maximum=MAX_LOG_QOS)
         validate_range(self.inbox_ttl, "inbox_ttl", minimum=MIN_INBOX_TTL, maximum=MAX_INBOX_TTL)
         validate_range(self.status_qos, "status_qos", minimum=MIN_STATUS_QOS, maximum=MAX_STATUS_QOS)
+        validate_range(self.status_ttl, "status_ttl", minimum=MIN_STATUS_TTL, maximum=MAX_STATUS_TTL)
         validate_range(self.progress_qos, "progress_qos", minimum=MIN_PROGRESS_QOS, maximum=MAX_PROGRESS_QOS)
         validate_range(
             self.progress_min_interval,

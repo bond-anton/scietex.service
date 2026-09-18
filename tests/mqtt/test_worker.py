@@ -11,9 +11,9 @@ import pytest
 
 import scietex.service.mqtt.worker as mod
 from scietex.service.health import TransportHealth
-from scietex.service.mqtt._aiomqtt import MqttError
+from scietex.service.mqtt._aiomqtt import MqttError, PacketTypes, Properties
 from scietex.service.mqtt.config import MqttConfig, MqttWorkerConfig
-from scietex.service.mqtt.inbox import FileMqttInbox
+from scietex.service.mqtt.inbox import FileMqttInbox, MemoryInbox
 from scietex.service.mqtt.transport import MqttTransport
 from scietex.service.mqtt.worker import TASK_ID_PROPERTY, MqttWorker
 from scietex.service.task_handler.schemas import TaskData, TaskResult
@@ -86,7 +86,7 @@ class FakeClient:
     async def publish(self, topic, payload=None, qos=0, retain=False, properties=None):
         if self.publish_error is not None:
             raise self.publish_error
-        self.published.append((topic, payload, qos, retain))
+        self.published.append((topic, payload, qos, retain, properties))
 
     async def subscribe(self, topic, qos=0, *args, **kwargs):
         if self.subscribe_error is not None:
@@ -167,7 +167,7 @@ def _health() -> TransportHealth:
 def _transport(inbox) -> MqttTransport:
     """Build an ``MqttTransport`` over a real inbox with a recording publisher."""
 
-    async def publish(topic, payload, qos):
+    async def publish(topic, payload, qos, *, retain=False, properties=None):
         return None
 
     return MqttTransport(
@@ -266,6 +266,52 @@ async def test_fetch_drains_persisted_message_exactly_once(tmp_path):
     assert worker.dequeue_task() is None
 
     assert await worker._mqtt_transport.fetch(worker) is False
+    assert worker.dequeue_task() is None
+
+
+@pytest.mark.asyncio
+async def test_none_backend_message_is_buffered_and_drained(tmp_path):
+    """inbox_backend="none" must still deliver: the message loop buffers the
+    message in the in-memory adapter and the transport's fetch drains it.
+
+    Regression: the adapter was a no-op, so the at-most-once opt-out silently
+    dropped every task and the worker never processed anything."""
+    worker = _make_worker(tmp_path, inbox_backend="none")
+    task_id = uuid4()
+    task_data = TaskData(task="send_email", payload=b'{"to":"a@b.c"}')
+    message = _FakeMessage(encode_task_envelope(task_data), [(TASK_ID_PROPERTY, str(task_id))])
+
+    await worker._handle_message(message)
+
+    assert worker._inbox is None
+    assert await worker._mqtt_transport.fetch(worker) is True
+    assert worker.dequeue_task() == (task_id, task_data)
+    assert worker.dequeue_task() is None
+
+
+@pytest.mark.asyncio
+async def test_memory_backend_is_alias_for_none(tmp_path):
+    """inbox_backend="memory" selects the same at-most-once path as "none":
+    no durable inbox, and the transport receives a MemoryInbox."""
+    worker = _make_worker(tmp_path, inbox_backend="memory")
+
+    assert worker._inbox is None
+    assert isinstance(worker._intake_inbox, MemoryInbox)
+
+
+@pytest.mark.asyncio
+async def test_memory_backend_message_is_buffered_and_drained(tmp_path):
+    """inbox_backend="memory" must deliver: the message loop buffers the
+    message in the MemoryInbox and the transport's fetch drains it."""
+    worker = _make_worker(tmp_path, inbox_backend="memory")
+    task_id = uuid4()
+    task_data = TaskData(task="send_email", payload=b'{"to":"a@b.c"}')
+    message = _FakeMessage(encode_task_envelope(task_data), [(TASK_ID_PROPERTY, str(task_id))])
+
+    await worker._handle_message(message)
+
+    assert await worker._mqtt_transport.fetch(worker) is True
+    assert worker.dequeue_task() == (task_id, task_data)
     assert worker.dequeue_task() is None
 
 
@@ -427,7 +473,7 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
     await worker.heartbeat()
 
     assert len(fake.published) == 1
-    topic, payload, qos, retain = fake.published[0]
+    topic, payload, qos, retain, _ = fake.published[0]
     assert topic == f"scietex/svc/workers/{worker.instance_id}"
     assert qos == 1
     assert retain is True
@@ -464,12 +510,12 @@ async def test_register_and_unregister_publish_and_clear():
     await worker._unregister_instance()
 
     assert len(fake.published) == 2
-    register_topic, register_payload, _, register_retain = fake.published[0]
+    register_topic, register_payload, _, register_retain, _ = fake.published[0]
     assert register_topic == f"scietex/svc/workers/{worker.instance_id}"
     assert register_retain is True
     assert msgspec.msgpack.decode(register_payload)["status"] == "active"
 
-    unregister_topic, unregister_payload, _, unregister_retain = fake.published[1]
+    unregister_topic, unregister_payload, _, unregister_retain, _ = fake.published[1]
     assert unregister_topic == f"scietex/svc/workers/{worker.instance_id}"
     assert unregister_retain is True
     assert unregister_payload is None  # empty retained payload clears the marker
@@ -587,7 +633,8 @@ async def test_status_publish_disabled_suppresses_publishes(tmp_path):
 @pytest.mark.asyncio
 async def test_publish_forwards_retain_flag():
     """The worker's _publish forwards retain to client.publish, so status
-    (retained) and progress/requeue (non-retained) honor the seam's flag."""
+    (retained) and progress/requeue (non-retained) honor the seam's flag; when
+    no properties are passed, ``None`` is forwarded."""
     fake = FakeClient()
     worker = MqttWorker(MqttWorkerConfig(service_name="svc", mqtt_config=MqttConfig(), inbox_backend="none"))
     worker._client = fake
@@ -596,6 +643,21 @@ async def test_publish_forwards_retain_flag():
     await worker._publish("topic/progress", b"pg", qos=0, retain=False)
 
     assert fake.published == [
-        ("topic/status", b"st", 1, True),
-        ("topic/progress", b"pg", 0, False),
+        ("topic/status", b"st", 1, True, None),
+        ("topic/progress", b"pg", 0, False, None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_publish_forwards_properties():
+    """The worker's _publish forwards the MQTT 5 properties to client.publish,
+    so a retained status can carry a message-expiry interval."""
+    fake = FakeClient()
+    worker = MqttWorker(MqttWorkerConfig(service_name="svc", mqtt_config=MqttConfig(), inbox_backend="none"))
+    worker._client = fake
+    props = Properties(PacketTypes.PUBLISH)
+    props.MessageExpiryInterval = 60
+
+    await worker._publish("t", b"x", qos=1, retain=True, properties=props)
+
+    assert fake.published == [("t", b"x", 1, True, props)]

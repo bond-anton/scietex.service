@@ -20,12 +20,11 @@ import msgspec
 from scietex.logging import AsyncMqttHandler
 
 from ..health import TransportHealth
-from ..task_handler.schemas import TaskData
 from ..task_handler.wire import decode_task_envelope
 from ..task_processor import TaskProcessor
-from ._aiomqtt import Client, Message, MqttError, ProtocolVersion
+from ._aiomqtt import Client, Message, MqttError, Properties, ProtocolVersion
 from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
-from .inbox import FileMqttInbox, MqttInbox
+from .inbox import FileMqttInbox, MemoryInbox, MqttInbox
 from .logging import logging_handler_config
 from .transport import MqttTransport
 
@@ -72,32 +71,6 @@ async def _create_client(config: MqttConfig) -> Client:
     )
     await client.__aenter__()
     return client
-
-
-class _NullInbox:
-    """No-op :class:`MqttInbox` handed to the transport for ``inbox_backend="none"``.
-
-    :class:`MqttTransport` requires a non-``None`` inbox, but the worker's own
-    ``_inbox`` stays ``None`` for the at-most-once opt-out so the message loop
-    skips persistence and the at-least-once guard can tell the opt-out from a
-    real inbox. This stateless adapter satisfies the transport's contract
-    without persisting anything.
-    """
-
-    async def put(self, task_id: UUID, task_data: TaskData) -> None:
-        return None
-
-    async def mark_in_flight(self, task_id: UUID) -> None:
-        return None
-
-    async def mark_terminal(self, task_id: UUID) -> None:
-        return None
-
-    async def pending(self) -> list[tuple[UUID, TaskData]]:
-        return []
-
-    async def recover(self) -> list[tuple[UUID, TaskData]]:
-        return []
 
 
 class MqttWorker(TaskProcessor):
@@ -180,7 +153,7 @@ class MqttWorker(TaskProcessor):
             _status_topic_prefix (str): Resolved ``{service}``-substituted
                 prefix for the per-task status/progress topics (design §13.2).
             _inbox (MqttInbox | None): Durable inbox, or ``None`` for the
-                ``inbox_backend="none"`` at-most-once opt-out.
+                ``inbox_backend="memory"``/``"none"`` at-most-once opt-out.
         """
         super().__init__(config)
         # The base already stored the concrete config into ``self._config``
@@ -229,6 +202,12 @@ class MqttWorker(TaskProcessor):
         # refuses to start when a real inbox was expected but could not be built.
         self._inbox: MqttInbox | None = self._build_inbox(cfg)
 
+        # The transport always receives a non-None inbox: the real one, or the
+        # in-memory backend for the at-most-once opt-out. ``_intake_inbox`` is
+        # that effective target, so the message loop persists through the same
+        # path in both modes and ``fetch`` stays the single enqueue point.
+        self._intake_inbox: MqttInbox = self._inbox if self._inbox is not None else MemoryInbox()
+
         # Transport extension seam (AR-072): the delivery/ack/drain hooks the
         # processor calls now live on MqttTransport, which receives the health
         # supervisor and publish seam by injection. The InMemoryTransport built
@@ -238,7 +217,7 @@ class MqttWorker(TaskProcessor):
             service_name=self.service_name,
             topic=self._task_topic,
             status_topic_prefix=self._status_topic_prefix,
-            inbox=self._inbox if self._inbox is not None else _NullInbox(),
+            inbox=self._intake_inbox,
             health=self._health,
             publish=self._publish,
             logger=self.logger,
@@ -258,10 +237,11 @@ class MqttWorker(TaskProcessor):
         failure (e.g. the path is an existing file) returns ``None`` so
         :meth:`initialize`'s at-least-once guard can refuse to start loudly
         rather than silently dropping the durability guarantee (design §3.3).
-        ``inbox_backend="none"`` returns ``None`` as the explicit at-most-once
-        opt-out.
+        ``inbox_backend="memory"`` (or its alias ``"none"``) returns ``None``
+        as the explicit at-most-once opt-out; the transport then receives a
+        :class:`MemoryInbox`.
         """
-        if cfg.inbox_backend == "none":
+        if cfg.inbox_backend in ("memory", "none"):
             return None
         path = Path(cfg.inbox_path) if cfg.inbox_path is not None else self.conf_dir / "inbox"
         try:
@@ -466,7 +446,15 @@ class MqttWorker(TaskProcessor):
         await self.disconnect()
         await self.connect()
 
-    async def _publish(self, topic: str, payload: bytes, qos: int, *, retain: bool = False) -> None:
+    async def _publish(
+        self,
+        topic: str,
+        payload: bytes,
+        qos: int,
+        *,
+        retain: bool = False,
+        properties: Properties | None = None,
+    ) -> None:
         """Publish a payload to a topic (the transport's publish seam).
 
         Reaches the operational client through :attr:`client`, so the publish
@@ -475,12 +463,14 @@ class MqttWorker(TaskProcessor):
         lets ``handle_task`` log it without crashing intake, while the
         status/progress publishes swallow it and report to the health supervisor.
         ``retain`` mirrors ``Client.publish``: retained for the per-task status
-        marker, never for the envelope requeue or progress ticks.
+        marker, never for the envelope requeue or progress ticks. ``properties``
+        carries the MQTT 5 message-expiry interval for retained status publishes
+        and is ``None`` (no expiry) for every other call site.
         """
         client = self.client
         if client is None:
             raise MqttError("No MQTT client is connected")
-        await client.publish(topic, payload, qos=qos, retain=retain)
+        await client.publish(topic, payload, qos=qos, retain=retain, properties=properties)
 
     def _heartbeat_payload(self) -> bytes:
         """Encode the retained heartbeat/registry payload for this instance."""
@@ -529,7 +519,7 @@ class MqttWorker(TaskProcessor):
         to the task topic and starts the background message loop via
         :meth:`_start_intake`) and replays any non-terminal inbox entries left
         by a previous run. The at-least-once guard runs first: when a durable
-        inbox was expected (``inbox_backend != "none"``) but none could be
+        inbox was expected (``inbox_backend == "file"``) but none could be
         built, the worker refuses to start rather than silently degrading to
         at-most-once (design §3.3).
 
@@ -543,7 +533,7 @@ class MqttWorker(TaskProcessor):
         # At-least-once guard (design §10 #3): refuse before starting handlers
         # or connecting when a durable inbox was expected but could not be
         # built, so the durability guarantee is never silently lost.
-        if cfg.inbox_backend != "none" and self._inbox is None:
+        if cfg.inbox_backend == "file" and self._inbox is None:
             self.logger.error(
                 "MQTT worker configured with inbox_backend=%r but no inbox could be built; "
                 "refusing to start rather than silently losing at-least-once delivery",
@@ -639,6 +629,10 @@ class MqttWorker(TaskProcessor):
             return
         if self._inbox is not None:
             await self._inbox.put(task_id, task_data)
+        else:
+            # At-most-once opt-out: buffer in memory so the transport's next
+            # fetch drains it. Nothing survives a restart, by design.
+            await self._intake_inbox.put(task_id, task_data)
 
     @staticmethod
     def _extract_task_id(message: Message) -> UUID | None:

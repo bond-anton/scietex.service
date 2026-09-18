@@ -27,7 +27,7 @@ from uuid import UUID
 from ..task_handler.schemas import TaskData
 from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 
-__all__ = ["FileMqttInbox", "MqttInbox"]
+__all__ = ["FileMqttInbox", "MemoryInbox", "MqttInbox"]
 
 # Entry lifecycle states. ``pending`` is a task persisted before it is handed
 # to the processor; ``in-flight`` is one already handed over. Both are
@@ -55,6 +55,38 @@ class MqttInbox(Protocol):
     async def pending(self) -> list[tuple[UUID, TaskData]]: ...
 
     async def recover(self) -> list[tuple[UUID, TaskData]]: ...
+
+
+class MemoryInbox:
+    """An in-memory :class:`MqttInbox` for the at-most-once opt-out.
+
+    Buffers entries in a dict so the transport's single-intake-path invariant
+    holds without touching disk: the message loop still calls :meth:`put`, and
+    :meth:`pending` hands the buffered entries to the next
+    :meth:`~MqttTransport.fetch` drain. Nothing survives a restart --
+    :meth:`recover` returns an empty list, which is exactly the at-most-once
+    contract. There is no tombstone, so a re-delivered duplicate of an
+    already-terminal task is buffered and processed again; use
+    :class:`FileMqttInbox` when durability or dedupe is required.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[UUID, TaskData] = {}
+
+    async def put(self, task_id: UUID, task_data: TaskData) -> None:
+        self._entries[task_id] = task_data
+
+    async def mark_in_flight(self, task_id: UUID) -> None:
+        return None
+
+    async def mark_terminal(self, task_id: UUID) -> None:
+        self._entries.pop(task_id, None)
+
+    async def pending(self) -> list[tuple[UUID, TaskData]]:
+        return list(self._entries.items())
+
+    async def recover(self) -> list[tuple[UUID, TaskData]]:
+        return []
 
 
 class FileMqttInbox:

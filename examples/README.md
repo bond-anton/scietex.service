@@ -24,6 +24,7 @@ Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
 | [`valkey_perf.py`](#valkey_perfpy) | yes | Single-process `ValkeyWorker` consumption-throughput benchmark |
 | [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `cancel_task` |
 | [`mqtt_worker.py`](#mqtt_workerpy) | MQTT | `MqttWorker` consuming tasks from a broker, with retained status and throttled progress publishing |
+| [`mqtt_perf.py`](#mqtt_perfpy) | MQTT | Single-process `MqttWorker` consumption-throughput benchmark |
 
 ## basic_worker.py
 
@@ -204,3 +205,29 @@ pip install "scietex.service[mqtt]"
 
 Note: on hosts where `localhost` resolves to IPv6 first, pass `--host 127.0.0.1`
 if the broker only listens on IPv4.
+
+## mqtt_perf.py
+
+```bash
+python -m examples.mqtt_perf --host 127.0.0.1 --tasks 10000
+```
+
+A single-process `MqttWorker` consumption-throughput benchmark. The worker
+starts and subscribes first, then a producer publishes `N` `perf` tasks; the
+timed window runs from the first publish until every task is acknowledged, so
+it covers the full push -> inbox -> pull -> handler pipeline. Reports total
+throughput and a median steady-state rate.
+
+The durable inbox dominates the cost. On a local broker the default
+file-backed inbox sustains roughly 120-160 tasks/sec, while
+`--inbox-backend none` (at-most-once, no disk) reaches roughly 4800-5000
+tasks/sec -- a ~35x difference. Use `--inbox-backend none` (or its alias
+`memory`) to measure the transport and handler pipeline in isolation, and the
+default to measure the durability cost. `--task-queue-manager-sleep-time`
+tunes the poll interval (default 0.01s).
+
+Requires a running MQTT 5 broker and the `mqtt` extra:
+
+```bash
+pip install "scietex.service[mqtt]"
+```

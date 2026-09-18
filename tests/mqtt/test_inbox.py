@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from scietex.service.mqtt.inbox import FileMqttInbox
+from scietex.service.mqtt.inbox import FileMqttInbox, MemoryInbox
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.task_handler.wire import encode_task_envelope
 
@@ -142,3 +142,49 @@ async def test_put_creates_directory(tmp_path):
 
     assert inbox_dir.is_dir()
     assert (inbox_dir / f"{task_id}.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_memory_inbox_put_then_pending_roundtrips():
+    """``MemoryInbox.put`` buffers the entry; ``pending`` returns it."""
+    inbox = MemoryInbox()
+    task_id = uuid4()
+    task_data = TaskData(task="send_email", payload=b'{"to": "a@b.c"}')
+
+    await inbox.put(task_id, task_data)
+
+    assert await inbox.pending() == [(task_id, task_data)]
+
+
+@pytest.mark.asyncio
+async def test_memory_inbox_mark_terminal_removes_entry():
+    """``mark_terminal`` drops the buffered entry (no tombstone)."""
+    inbox = MemoryInbox()
+    task_id = uuid4()
+    await inbox.put(task_id, TaskData(task="send_email", payload=b"x"))
+
+    await inbox.mark_terminal(task_id)
+
+    assert await inbox.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_memory_inbox_mark_in_flight_keeps_entry():
+    """``mark_in_flight`` is a no-op: the entry stays non-terminal."""
+    inbox = MemoryInbox()
+    task_id = uuid4()
+    task_data = TaskData(task="send_email", payload=b"x")
+    await inbox.put(task_id, task_data)
+
+    await inbox.mark_in_flight(task_id)
+
+    assert await inbox.pending() == [(task_id, task_data)]
+
+
+@pytest.mark.asyncio
+async def test_memory_inbox_recover_is_empty():
+    """``recover`` returns nothing: the at-most-once contract (no restart replay)."""
+    inbox = MemoryInbox()
+    await inbox.put(uuid4(), TaskData(task="send_email", payload=b"x"))
+
+    assert await inbox.recover() == []
