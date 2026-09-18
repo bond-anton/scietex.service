@@ -74,7 +74,7 @@ Both reuse the transport-agnostic `TransportHealth` from core `health.py`
 | `mqtt.worker` | `.config`, `.inbox`, `.transport`, `.logging`, `._aiomqtt` | import | composes `MqttWorkerConfig`, `FileMqttInbox`, `MqttTransport`; logging translator; guarded aiomqtt names |
 | `mqtt.worker` | `..health` | import | core `TransportHealth` (AR-089) |
 | `mqtt.worker` | `scietex.logging` | import (external) | `AsyncMqttHandler` |
-| `mqtt.transport` | `.config`, `.inbox`, `..health`, `..task_handler`, `..transport` | import | implements the core `TaskTransport` Protocol; composes `MqttWorkerConfig`, `MqttInbox`, `TransportHealth` |
+| `mqtt.transport` | `.config`, `.inbox`, `..health`, `..task_handler`, `..transport`, `._aiomqtt` | import | implements the core `TaskTransport` Protocol; composes `MqttWorkerConfig`, `MqttInbox`, `TransportHealth`; `Properties`/`PacketTypes` for the retained-status message-expiry property |
 | `mqtt.inbox` | `..task_handler.schemas`, `..task_handler.wire` | import | `TaskData`; envelope encode/decode |
 | `mqtt.config` | `..config`, `.._validation` | import | `TaskProcessorConfig`; `validate_range` (AR-079) |
 | `mqtt._aiomqtt` | `aiomqtt` | import (external, optional extra) | single guarded `try/except ImportError` re-raise with install hint (AR-048); errors surface to top-level guard |

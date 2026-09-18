@@ -17,6 +17,17 @@ def test_worker_config_status_publish_defaults():
     assert cfg.progress_min_delta == 0.0
 
 
+def test_worker_config_status_ttl_default():
+    """status_ttl defaults to 86400 seconds (one day)."""
+    assert MqttWorkerConfig().status_ttl == 86400
+
+
+@pytest.mark.parametrize("status_ttl", [None, 1, 2592000])
+def test_worker_config_status_ttl_bounds_accept(status_ttl):
+    """status_ttl=None and the [1, 2592000] bounds construct successfully."""
+    assert MqttWorkerConfig(status_ttl=status_ttl).status_ttl == status_ttl
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -24,6 +35,8 @@ def test_worker_config_status_publish_defaults():
         ("progress_qos", 3),
         ("progress_min_interval", -1),
         ("progress_min_delta", 101),
+        ("status_ttl", 0),
+        ("status_ttl", 2592001),
     ],
 )
 def test_worker_config_status_fields_out_of_range_raises(field_name, value):

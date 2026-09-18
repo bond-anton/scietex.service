@@ -30,6 +30,7 @@ from ..health import TransportHealth
 from ..task_handler.schemas import CancelReason, TaskData, TaskProgress, TaskResult, TaskStatus
 from ..task_handler.wire import encode_task_envelope
 from ..transport import TaskSink
+from ._aiomqtt import PacketTypes, Properties
 from .config import MqttWorkerConfig
 from .inbox import MqttInbox
 
@@ -38,11 +39,20 @@ __all__ = ["MqttPublish", "MqttTransport"]
 
 # The worker owns the aiomqtt connection, so the publish seam is this injected
 # callable rather than the client. The signature mirrors ``Client.publish``'s
-# ``(topic, payload, qos)``, extended with a keyword-only ``retain`` flag so
-# status can be retained while the envelope requeue (never retained) stays a
+# ``(topic, payload, qos)``, extended with keyword-only ``retain`` and
+# ``properties`` flags so retained status can carry an MQTT 5 message-expiry
+# property while the envelope requeue (never retained, no expiry) stays a
 # plain ``(topic, payload, qos)`` call.
 class MqttPublish(Protocol):
-    async def __call__(self, topic: str, payload: bytes, qos: int, *, retain: bool = False) -> None: ...
+    async def __call__(
+        self,
+        topic: str,
+        payload: bytes,
+        qos: int,
+        *,
+        retain: bool = False,
+        properties: Properties | None = None,
+    ) -> None: ...
 
 
 #: ``TaskStatus.status`` values this transport emits.
@@ -78,6 +88,8 @@ class MqttTransport:
     throttled ``TaskProgress`` to per-task topics when status publishing is
     enabled (design §13). Status and progress are observability: a publish
     failure is logged and reported to the health supervisor, never raised.
+    Each retained status carries an MQTT 5 message-expiry property (``status_ttl``)
+    so the broker ages out stale per-task markers instead of keeping one forever.
     """
 
     def __init__(
@@ -162,12 +174,21 @@ class MqttTransport:
             created_at=now,
             updated_at=now,
         )
+        # Build the expiry property per publish: a retained status with no TTL
+        # (status_ttl=None) publishes no properties, exactly as before this
+        # feature. The property is a fresh instance each publish because paho
+        # Properties objects are not reusable across sends.
+        properties = None
+        if self._config.status_ttl is not None:
+            properties = Properties(PacketTypes.PUBLISH)
+            properties.MessageExpiryInterval = self._config.status_ttl
         try:
             await self._publish(
                 f"{self._status_topic_prefix}/{task_id}/status",
                 self._encoder.encode(record),
                 self._config.status_qos,
                 retain=True,
+                properties=properties,
             )
         except Exception as exc:
             self._logger.log(

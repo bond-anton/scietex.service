@@ -16,6 +16,8 @@ try:
         TLSParameters,
         Topic,
     )
+    from paho.mqtt.packettypes import PacketTypes
+    from paho.mqtt.properties import Properties
 except ImportError as e:
     raise ImportError(
         "The 'aiomqtt' module is required to use this feature. "
@@ -26,6 +28,8 @@ __all__ = [
     "Client",
     "Message",
     "MqttError",
+    "PacketTypes",
+    "Properties",
     "ProtocolVersion",
     "TLSParameters",
     "Topic",

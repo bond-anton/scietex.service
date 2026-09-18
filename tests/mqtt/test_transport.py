@@ -9,7 +9,7 @@ import msgspec
 import pytest
 
 from scietex.service.health import TransportHealth
-from scietex.service.mqtt._aiomqtt import MqttError
+from scietex.service.mqtt._aiomqtt import MqttError, Properties
 from scietex.service.mqtt.config import MqttWorkerConfig
 from scietex.service.mqtt.transport import MqttPublish, MqttTransport
 from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus
@@ -125,18 +125,26 @@ def _transport(
     health: TransportHealth | None = None,
     publish: MqttPublish | None = None,
     **config_kwargs,
-) -> tuple[MqttTransport, FakeInbox, list[tuple[str, bytes, int, bool]]]:
+) -> tuple[MqttTransport, FakeInbox, list[tuple[str, bytes, int, bool, Properties | None]]]:
     """Build a ``MqttTransport`` with a fake inbox and a recording publisher.
 
-    The recording publisher captures ``(topic, payload, qos, retain)``; extra
-    ``config_kwargs`` override ``MqttWorkerConfig`` fields (e.g. the throttling
-    thresholds), and ``clock``/``health``/``publish`` are injectable seams.
+    The recording publisher captures ``(topic, payload, qos, retain, properties)``;
+    extra ``config_kwargs`` override ``MqttWorkerConfig`` fields (e.g. the
+    throttling thresholds), and ``clock``/``health``/``publish`` are injectable
+    seams.
     """
     inbox = inbox if inbox is not None else FakeInbox()
-    published: list[tuple[str, bytes, int, bool]] = []
+    published: list[tuple[str, bytes, int, bool, Properties | None]] = []
 
-    async def record(topic: str, payload: bytes, qos: int, *, retain: bool = False) -> None:
-        published.append((topic, payload, qos, retain))
+    async def record(
+        topic: str,
+        payload: bytes,
+        qos: int,
+        *,
+        retain: bool = False,
+        properties: Properties | None = None,
+    ) -> None:
+        published.append((topic, payload, qos, retain, properties))
 
     config = MqttWorkerConfig(service_name="svc", task_qos=task_qos, **config_kwargs)
     transport = MqttTransport(
@@ -258,7 +266,13 @@ async def test_requeue_publishes_encoded_envelope_and_leaves_entry_pending():
 
     await transport.requeue(t1, d1)
 
-    assert published[0] == (_TOPIC, encode_task_envelope(d1), 1, False)
+    # The envelope re-publish carries no properties (no expiry); the follow-up
+    # ``queued`` status is retained and carries the message-expiry property.
+    assert len(published) == 2
+    assert published[0] == (_TOPIC, encode_task_envelope(d1), 1, False, None)
+    queued_properties = published[1][4]
+    assert queued_properties is not None
+    assert queued_properties.MessageExpiryInterval == 86400
     assert used_inbox.mark_terminal_calls == []
     assert await used_inbox.pending() == [(t1, d1)]
 
@@ -317,11 +331,23 @@ async def test_on_progress_publishes_progress_tick():
     await transport.on_progress(t1, 42.0)
 
     assert len(published) == 1
-    topic, payload, qos, retain = published[0]
+    topic, payload, qos, retain, _ = published[0]
     assert topic == _progress_topic(t1)
     assert qos == 0
     assert retain is False
     assert msgspec.msgpack.decode(payload, type=TaskProgress) == TaskProgress(progress=True, value=42.0)
+
+
+@pytest.mark.asyncio
+async def test_progress_publish_has_no_expiry():
+    """Progress ticks publish with no properties (never retained, never expired)."""
+    t1 = uuid4()
+    transport, _, published = _transport()
+
+    await transport.on_progress(t1, 42.0)
+
+    assert len(published) == 1
+    assert published[0][4] is None
 
 
 @pytest.mark.asyncio
@@ -395,7 +421,7 @@ async def test_on_started_publishes_running_status():
     await transport.on_started(t1, d1)
 
     assert len(published) == 1
-    topic, payload, qos, retain = published[0]
+    topic, payload, qos, retain, _ = published[0]
     assert topic == _status_topic(t1)
     assert qos == 1
     assert retain is True
@@ -413,6 +439,36 @@ async def test_on_started_publishes_running_status():
 
 
 @pytest.mark.asyncio
+async def test_status_publish_carries_message_expiry():
+    """A retained status publish carries an MQTT 5 message-expiry property set
+    to ``status_ttl``, so the broker ages out the per-task marker."""
+    t1 = uuid4()
+    d1 = TaskData(task="a")
+    transport, _, published = _transport(status_ttl=3600)
+
+    await transport.on_started(t1, d1)
+
+    assert len(published) == 1
+    properties = published[0][4]
+    assert properties is not None
+    assert properties.MessageExpiryInterval == 3600
+
+
+@pytest.mark.asyncio
+async def test_status_publish_without_ttl_has_no_expiry():
+    """``status_ttl=None`` publishes the retained status with no properties, so
+    no message expiry is set."""
+    t1 = uuid4()
+    d1 = TaskData(task="a")
+    transport, _, published = _transport(status_ttl=None)
+
+    await transport.on_started(t1, d1)
+
+    assert len(published) == 1
+    assert published[0][4] is None
+
+
+@pytest.mark.asyncio
 async def test_ack_success_publishes_completed_with_result():
     """ack with a success TaskResult publishes ``completed`` with ``result`` set
     to the result payload."""
@@ -423,7 +479,7 @@ async def test_ack_success_publishes_completed_with_result():
     await transport.ack(t1, d1, TaskResult(status="success", payload=b"done"))
 
     assert len(published) == 1
-    topic, payload, qos, retain = published[0]
+    topic, payload, qos, retain, _ = published[0]
     assert topic == _status_topic(t1)
     assert qos == 1
     assert retain is True
@@ -445,7 +501,7 @@ async def test_ack_non_retryable_error_publishes_failed():
     await transport.ack(t1, d1, TaskResult(status="error", error="boom", error_code="PERMANENT"))
 
     assert len(published) == 1
-    _, payload, _, _ = published[0]
+    _, payload, _, _, _ = published[0]
     status = msgspec.msgpack.decode(payload, type=TaskStatus)
     assert status.status == "failed"
     assert status.error == "boom"
@@ -465,7 +521,7 @@ async def test_ack_deliberate_cancel_publishes_cancelled_with_data():
     await transport.ack(t1, d1, None, cancel_reason="deliberate")
 
     assert len(published) == 1
-    _, payload, _, _ = published[0]
+    _, payload, _, _, _ = published[0]
     status = msgspec.msgpack.decode(payload, type=TaskStatus)
     assert status.status == "cancelled"
     assert status.data == d1
@@ -485,7 +541,7 @@ async def test_ack_timeout_or_shutdown_cancel_publishes_failed(cancel_reason):
     await transport.ack(t1, d1, None, cancel_reason=cancel_reason)
 
     assert len(published) == 1
-    _, payload, _, _ = published[0]
+    _, payload, _, _, _ = published[0]
     status = msgspec.msgpack.decode(payload, type=TaskStatus)
     assert status.status == "failed"
     assert status.data is None
@@ -521,10 +577,10 @@ async def test_requeue_publishes_queued_status_after_envelope():
     await transport.requeue(t1, d1)
 
     assert len(published) == 2
-    envelope_topic, _, _, envelope_retain = published[0]
+    envelope_topic, _, _, envelope_retain, _ = published[0]
     assert envelope_topic == _TOPIC
     assert envelope_retain is False
-    topic, payload, qos, retain = published[1]
+    topic, payload, qos, retain, _ = published[1]
     assert topic == _status_topic(t1)
     assert qos == 1
     assert retain is True
@@ -545,7 +601,7 @@ async def test_fetch_publishes_queued_once_per_accepted_task():
     sink = FakeSink()
     assert await transport.fetch(sink) is True
     assert [p[0] for p in published] == [_status_topic(t1), _status_topic(t2)]
-    for _, payload, qos, retain in published:
+    for _, payload, qos, retain, _ in published:
         assert (qos, retain) == (1, True)
         assert msgspec.msgpack.decode(payload, type=TaskStatus).status == "queued"
 
@@ -568,7 +624,7 @@ async def test_recovery_publishes_queued_for_replayed_tasks():
 
     assert (complete, enqueued) == (True, True)
     assert [p[0] for p in published] == [_status_topic(t1), _status_topic(t2)]
-    for _, payload, qos, retain in published:
+    for _, payload, qos, retain, _ in published:
         assert (qos, retain) == (1, True)
         assert msgspec.msgpack.decode(payload, type=TaskStatus).status == "queued"
 
@@ -581,7 +637,14 @@ async def test_publish_status_failure_is_reported_not_raised(caplog):
     d1 = TaskData(task="a")
     health = _health()
 
-    async def failing_publish(topic: str, payload: bytes, qos: int, *, retain: bool = False) -> None:
+    async def failing_publish(
+        topic: str,
+        payload: bytes,
+        qos: int,
+        *,
+        retain: bool = False,
+        properties: Properties | None = None,
+    ) -> None:
         raise MqttError("boom")
 
     transport, _, _ = _transport(health=health, publish=failing_publish)
@@ -601,7 +664,14 @@ async def test_publish_progress_failure_is_reported_not_raised(caplog):
     t1 = uuid4()
     health = _health()
 
-    async def failing_publish(topic: str, payload: bytes, qos: int, *, retain: bool = False) -> None:
+    async def failing_publish(
+        topic: str,
+        payload: bytes,
+        qos: int,
+        *,
+        retain: bool = False,
+        properties: Properties | None = None,
+    ) -> None:
         raise MqttError("boom")
 
     transport, _, _ = _transport(health=health, publish=failing_publish)
@@ -624,7 +694,7 @@ async def test_on_progress_first_tick_publishes_then_coalesces():
 
     await transport.on_progress(t1, 10.0)
     assert len(published) == 1
-    topic, payload, qos, retain = published[0]
+    topic, payload, qos, retain, _ = published[0]
     assert topic == _progress_topic(t1)
     assert qos == 0
     assert retain is False

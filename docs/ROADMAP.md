@@ -21,8 +21,9 @@ v2.5.1 auto-acks at the broker when `on_message` returns, wire QoS 2 is
 at-most-once at the application layer; a durable file-backed inbox
 (`FileMqttInbox`, behind the `MqttInbox` Protocol) restores at-least-once by
 persisting every received message before handing it to the processor and
-deduping on replay via tombstones. `inbox_backend="none"` is the explicit
-at-most-once opt-out. There is no status store — `on_progress` is a no-op and
+deduping on replay via tombstones. `inbox_backend="memory"` (or its alias
+`"none"`) is the explicit at-most-once opt-out, backed by `MemoryInbox`. There
+is no status store — `on_progress` is a no-op and
 progress remains in-process via `TaskCapabilities`. Registry/heartbeat use
 retained-message topics (`scietex/{service}/workers/{instance_id}`), and the
 log handler owns its own connection, matching `AsyncValkeyHandler`.

@@ -310,7 +310,7 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     mqtt_config: MqttConfig | None = None
     task_topic: str = "scietex/{service}/tasks"
     task_qos: int = 2
-    inbox_backend: Literal["file", "none"] = "file"
+    inbox_backend: Literal["file", "memory", "none"] = "file"
     inbox_path: str | None = None
     inbox_ttl: int | None = None
     log_topic: str = "scietex/{service}/log"
@@ -319,8 +319,9 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
 ```
 
 `__post_init__` calls `super().__post_init__()` then `validate_range` on the
-numeric fields, matching `ValkeyWorkerConfig`. `inbox_backend="none"` is the
-explicit at-most-once opt-out (§10 #3); the default is the file-backed inbox.
+numeric fields, matching `ValkeyWorkerConfig`. `inbox_backend="memory"` (or its
+alias `"none"`) is the explicit at-most-once opt-out (§10 #3); the default is
+the file-backed inbox.
 
 ### 5.3 Loader
 
@@ -559,9 +560,13 @@ agree on it out of band.
 Retained status semantics: every status publish sets `retain=True`, so the
 broker stores the latest `TaskStatus` per task. A subscriber that connects after
 a task finished still receives its last status. Status messages are **not**
-cleared on task completion; the final status remains observable. Operators that
-want bounded retention can clear it by publishing an empty payload to the status
-topic, or (future work, §13.11) by setting the MQTT 5 message-expiry property.
+cleared on task completion; the final status remains observable. The retained
+message also carries an MQTT 5 message-expiry interval (`status_ttl`, §13.6;
+`None` disables expiry), so the broker ages out the per-task marker instead of
+accumulating one retained message per task forever. Each status publish
+overwrites the retained message and resets the expiry clock, so the terminal
+status lives `status_ttl` from completion. Operators that want to clear status
+sooner can still publish an empty payload to the status topic.
 
 Progress messages are never retained: a late subscriber must not receive a stale
 progress tick, and retained progress would leak one retained message per task.
@@ -608,13 +613,19 @@ topic — publishing it would be a meaningless message.
 
 `MqttTransport` publishes through the existing `publish` seam (same injection
 pattern as `requeue`). The seam's signature is extended with a keyword-only
-retain flag (§13.6), because status must be retained while the envelope requeue
-must not be:
+retain flag and an MQTT 5 `properties` argument (§13.6), because status must be
+retained and carry a message-expiry interval while the envelope requeue must not:
 
 ```python
 class MqttPublish(Protocol):
     async def __call__(
-        self, topic: str, payload: bytes, qos: int, *, retain: bool = False
+        self,
+        topic: str,
+        payload: bytes,
+        qos: int,
+        *,
+        retain: bool = False,
+        properties: Properties | None = None,
     ) -> None: ...
 ```
 
@@ -701,13 +712,15 @@ record; `on_started` also resets it, so a re-delivered task starts clean.
 
 ### 13.6 Configuration additions
 
-`MqttWorkerConfig` gains six fields and corresponding bounds. They follow the
+`MqttWorkerConfig` gains seven fields and corresponding bounds. They follow the
 existing style: frozen `msgspec.Struct`, module-level `MIN_`/`MAX_` constants,
 `validate_range` calls in `__post_init__` after `super().__post_init__()`.
 
 ```python
 MIN_STATUS_QOS: int = 0
 MAX_STATUS_QOS: int = 2
+MIN_STATUS_TTL: int = 1
+MAX_STATUS_TTL: int = 30 * 24 * 3600
 MIN_PROGRESS_QOS: int = 0
 MAX_PROGRESS_QOS: int = 2
 MIN_PROGRESS_MIN_INTERVAL: float = 0.0
@@ -721,6 +734,7 @@ MAX_PROGRESS_MIN_DELTA: float = 100.0
 | `status_publish_enabled` | `bool` | `True` | — | Master switch for all status/progress publishing. `False` restores the pre-addendum no-op behavior. |
 | `status_topic_prefix` | `str` | `"scietex/{service}/tasks"` | — | Prefix for the per-task status/progress topics. `{service}` is substituted at construction. |
 | `status_qos` | `int` | `1` | `[0, 2]` | QoS for `TaskStatus` publishes. |
+| `status_ttl` | `int \| None` | `86400` | `[1, 2592000]` | MQTT 5 message-expiry interval in seconds for retained `TaskStatus` publishes; `None` disables expiry. |
 | `progress_qos` | `int` | `0` | `[0, 2]` | QoS for `TaskProgress` publishes. |
 | `progress_min_interval` | `float` | `1.0` | `[0.0, 3600.0]` | Minimum seconds between progress publishes; `0` disables the interval threshold. |
 | `progress_min_delta` | `float` | `0.0` | `[0.0, 100.0]` | Minimum absolute progress change that forces a publish; `0` disables the delta threshold. |
@@ -729,6 +743,7 @@ Validation added to `__post_init__`:
 
 ```python
 validate_range(self.status_qos, "status_qos", minimum=MIN_STATUS_QOS, maximum=MAX_STATUS_QOS)
+validate_range(self.status_ttl, "status_ttl", minimum=MIN_STATUS_TTL, maximum=MAX_STATUS_TTL)
 validate_range(self.progress_qos, "progress_qos", minimum=MIN_PROGRESS_QOS, maximum=MAX_PROGRESS_QOS)
 validate_range(
     self.progress_min_interval,
@@ -824,6 +839,9 @@ Transport-level publish assertions (`tests/mqtt/test_transport.py`):
 - `release` and `on_drain` publish nothing.
 - A publish that raises `MqttError` does not propagate (both status and
   progress), logs, and calls `health.report_failure`.
+- A retained status publish carries an MQTT 5 message-expiry property set to
+  `status_ttl`; `status_ttl=None` publishes no properties; a progress tick and
+  the envelope requeue publish no properties.
 
 Throttling (`tests/mqtt/test_transport.py`, with an injected clock):
 
@@ -837,9 +855,9 @@ Throttling (`tests/mqtt/test_transport.py`, with an injected clock):
 
 Config (`tests/mqtt/test_config.py`):
 
-- Defaults for all six new fields.
-- `validate_range` rejects `status_qos=3`, `progress_qos=3`,
-  `progress_min_interval=-1`, `progress_min_delta=101`.
+- Defaults for all seven new fields.
+- `validate_range` rejects `status_qos=3`, `status_ttl=0`, `status_ttl=2592001`,
+  `progress_qos=3`, `progress_min_interval=-1`, `progress_min_delta=101`.
 - `status_topic_prefix` formatting is exercised by the worker test, not the
   config test.
 
@@ -857,11 +875,11 @@ Ordered, atomic, and verifiable. Each step keeps the tree green.
 
 | # | Step | Files | Verify |
 |---|---|---|---|
-| 1 | Add the eight bounds constants, the six `MqttWorkerConfig` fields, their `__post_init__` `validate_range` calls, and the field docstrings. | `src/scietex/service/mqtt/config.py` | `pytest tests/mqtt/test_config.py` |
+| 1 | Add the ten bounds constants, the seven `MqttWorkerConfig` fields (including `status_ttl`), their `__post_init__` `validate_range` calls, and the field docstrings. | `src/scietex/service/mqtt/config.py` | `pytest tests/mqtt/test_config.py` |
 | 2 | Add the new config tests (defaults, rejection cases). | `tests/mqtt/test_config.py` | `pytest tests/mqtt/test_config.py` |
-| 3 | Extend the publish seam: replace the `MqttPublish` `Callable` alias with the keyword-only-retain `Protocol`; add the `clock` constructor parameter; keep `requeue`'s call site (retain defaults to False). | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
-| 4 | Add `_ProgressThrottle`, the per-task dict, an encoder, `_publish_status`/`_publish_progress` helpers (try/except plus health), and wire `on_started`, `ack`, `on_progress`, `requeue`, `release`, `on_drain`, plus `queued` on `fetch`/`recover_pending_tasks`. Update module/class docstrings and the `_health` construction comment. | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
-| 5 | Update the worker: resolve `_status_topic_prefix`, pass the prefix and clock to `MqttTransport`, extend `_publish` with `retain`, and pass the gating config through. | `src/scietex/service/mqtt/worker.py` | `ty check src/` |
+| 3 | Extend the publish seam: replace the `MqttPublish` `Callable` alias with the keyword-only-retain/`properties` `Protocol`; add the `clock` constructor parameter; keep `requeue`'s call site (retain defaults to False, no properties). | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
+| 4 | Add `_ProgressThrottle`, the per-task dict, an encoder, `_publish_status`/`_publish_progress` helpers (try/except plus health; `_publish_status` builds the MQTT 5 message-expiry property from `status_ttl`), and wire `on_started`, `ack`, `on_progress`, `requeue`, `release`, `on_drain`, plus `queued` on `fetch`/`recover_pending_tasks`. Update module/class docstrings and the `_health` construction comment. | `src/scietex/service/mqtt/transport.py` | `ty check src/` |
+| 5 | Update the worker: resolve `_status_topic_prefix`, pass the prefix and clock to `MqttTransport`, extend `_publish` with `retain` and `properties`, and pass the gating config through. | `src/scietex/service/mqtt/worker.py` | `ty check src/` |
 | 6 | Extend the transport test helper (recording publisher with retain, injectable clock, config kwargs) and add the publishing/throttling/failure tests from §13.9. | `tests/mqtt/test_transport.py` | `pytest tests/mqtt/test_transport.py` |
 | 7 | Add the worker wiring tests from §13.9. | `tests/mqtt/test_worker.py` | `pytest tests/mqtt/test_worker.py` |
 | 8 | Full gate. | — | `ruff check src/ tests/ && ruff format --check src/ tests/ && ty check src/ && pytest tests/` |
@@ -875,7 +893,10 @@ Ordered, atomic, and verifiable. Each step keeps the tree green.
   idempotent under retained-overwrite. If parity with the Valkey split is
   preferred, drop step 4's `fetch`/recovery publish and document `queued` as
   submitter-owned.
-- **Retained-status expiry.** Retained status messages are never cleared
-  automatically, so one retained message per task accumulates. MQTT 5 message
-  expiry would bound this, but it requires extending the publish seam with a
-  `properties` argument; deferred as future work.
+- **Retained-status expiry — Resolved.** Retained status messages are bounded by
+  an MQTT 5 message-expiry interval. `MqttWorkerConfig.status_ttl` (default
+  `86400`, `None` disables) is applied to every retained status publish through
+  the `properties` argument added to the `MqttPublish` seam (§13.4, §13.6). Each
+  publish resets the expiry clock, so the terminal status lives `status_ttl`
+  from completion; once a client has a copy, expiry does not affect it. Progress
+  and the envelope requeue publish no expiry.

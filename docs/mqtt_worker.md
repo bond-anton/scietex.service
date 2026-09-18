@@ -119,6 +119,7 @@ the same `{service}` substitution; see
 | `MIN_SESSION_EXPIRY_INTERVAL` / `MAX_SESSION_EXPIRY_INTERVAL` | `0` / `4294967295` | Bounds of `MqttConfig.session_expiry_interval` |
 | `MIN_INBOX_TTL` / `MAX_INBOX_TTL` | `1` / `2592000` | Bounds of `MqttWorkerConfig.inbox_ttl` (30 days) |
 | `MIN_STATUS_QOS` / `MAX_STATUS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.status_qos` |
+| `MIN_STATUS_TTL` / `MAX_STATUS_TTL` | `1` / `2592000` | Bounds of `MqttWorkerConfig.status_ttl` (30 days) |
 | `MIN_PROGRESS_QOS` / `MAX_PROGRESS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.progress_qos` |
 | `MIN_PROGRESS_MIN_INTERVAL` / `MAX_PROGRESS_MIN_INTERVAL` | `0.0` / `3600.0` | Bounds of `MqttWorkerConfig.progress_min_interval` |
 | `MIN_PROGRESS_MIN_DELTA` / `MAX_PROGRESS_MIN_DELTA` | `0.0` / `100.0` | Bounds of `MqttWorkerConfig.progress_min_delta` |
@@ -216,6 +217,7 @@ worker = MqttWorker(
         status_publish_enabled=True,
         status_topic_prefix="scietex/{service}/tasks",
         status_qos=1,
+        status_ttl=86400,
         progress_qos=0,
         progress_min_interval=1.0,
         progress_min_delta=0.0,
@@ -250,7 +252,7 @@ preserved.
 | `mqtt_config` | `None` | A `MqttConfig` schema. If `None`, `mqtt.yml` is read lazily from the config directory at first connect (not at construction) |
 | `task_topic` | `"scietex/{service}/tasks"` | Topic tasks are consumed from; `{service}` is replaced with the service name |
 | `task_qos` | `2` | QoS for task messages; valid range `[0, 2]` |
-| `inbox_backend` | `"file"` | Durable inbox backend (`"file"` or `"none"`); `"none"` is the explicit at-most-once opt-out |
+| `inbox_backend` | `"file"` | Durable inbox backend (`"file"`, `"memory"`, or `"none"`); `"memory"`/`"none"` is the explicit at-most-once opt-out |
 | `inbox_path` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
 | `inbox_ttl` | `None` | TTL in seconds for inbox entries; `None` disables expiry. Valid range `[1, 2592000]` |
 | `log_topic` | `"scietex/{service}/log"` | Topic worker logs are published to; `{service}` is replaced with the service name |
@@ -259,6 +261,7 @@ preserved.
 | `status_publish_enabled` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
 | `status_topic_prefix` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
 | `status_qos` | `1` | QoS for `TaskStatus` publishes; valid range `[0, 2]` |
+| `status_ttl` | `86400` | MQTT 5 message-expiry interval in seconds applied to every retained `TaskStatus` publish; valid range `[1, 2592000]`; `None` disables expiry |
 | `progress_qos` | `0` | QoS for `TaskProgress` publishes; valid range `[0, 2]` |
 | `progress_min_interval` | `1.0` | Minimum seconds between progress publishes; valid range `[0.0, 3600.0]`; `0` disables the interval threshold |
 | `progress_min_delta` | `0.0` | Minimum absolute progress change that forces a publish; valid range `[0.0, 100.0]`; `0` disables the delta threshold |
@@ -540,9 +543,10 @@ store is **single-process**: it does not coordinate across replicas.
 Multi-replica deployments need a shared backend, which the `MqttInbox`
 Protocol preserves as a future option.
 
-`inbox_backend="none"` is the explicit at-most-once opt-out: the worker uses
-a no-op inbox, persists nothing, and does not replay on startup. The worker
-**refuses to start** with at-least-once semantics if `inbox_backend != "none"`
+`inbox_backend="memory"` (or its alias `"none"`) is the explicit at-most-once
+opt-out: the worker uses a `MemoryInbox` that buffers entries in process only,
+persists nothing to disk, and does not replay on startup. The worker
+**refuses to start** with at-least-once semantics if `inbox_backend == "file"`
 but no inbox could be built (for example, `inbox_path` points at an existing
 file). Fail loud, not silent.
 
@@ -587,10 +591,14 @@ progress_topic = f"{status_topic_prefix}/{task_id}/progress"
 `{task_id}` is the string form of the task `UUID` — the same value carried in
 the `scietex-task-id` user property. Every status publish is retained, so the
 broker keeps the latest `TaskStatus` per task and a late subscriber still sees
-the final state; status is not cleared on completion, and retained status
-accumulates one message per task until an operator clears the topic or the
-broker expires it. Progress is never retained: a late subscriber must not
-receive a stale progress tick.
+the final state. Retained status also carries an MQTT 5 message-expiry interval
+(`status_ttl`, default 24h; `None` disables expiry), so the broker ages out the
+per-task marker instead of keeping one forever. Each status publish
+(`queued`/`running`/terminal) overwrites the retained message and resets the
+expiry clock, so the terminal status lives `status_ttl` from completion. Once a
+client has received a copy, expiry does not affect it — this only bounds
+broker-side retained storage. Progress is never retained and carries no expiry:
+a late subscriber must not receive a stale progress tick.
 
 The prefix is not consumed by the worker, so a subscriber and the worker must
 agree on it out of band.
@@ -863,7 +871,7 @@ fields).
 | `mqtt_config` | `MqttConfig \| None` | `None` | Optional connection config; `None` reads `mqtt.yml` lazily at first connect |
 | `task_topic` | `str` | `"scietex/{service}/tasks"` | Topic tasks are consumed from |
 | `task_qos` | `int` | `2` | QoS for task messages; valid range `[0, 2]` |
-| `inbox_backend` | `Literal["file", "none"]` | `"file"` | Durable inbox backend; `"none"` is the explicit at-most-once opt-out |
+| `inbox_backend` | `Literal["file", "memory", "none"]` | `"file"` | Durable inbox backend; `"memory"`/`"none"` is the explicit at-most-once opt-out |
 | `inbox_path` | `str \| None` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
 | `inbox_ttl` | `int \| None` | `None` | TTL in seconds for inbox entries; valid range `[1, 2592000]` |
 | `log_topic` | `str` | `"scietex/{service}/log"` | Topic worker logs are published to |
@@ -872,6 +880,7 @@ fields).
 | `status_publish_enabled` | `bool` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
 | `status_topic_prefix` | `str` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
 | `status_qos` | `int` | `1` | QoS for `TaskStatus` publishes; valid range `[0, 2]` |
+| `status_ttl` | `int \| None` | `86400` | MQTT 5 message-expiry interval in seconds for retained `TaskStatus` publishes; valid range `[1, 2592000]`; `None` disables expiry |
 | `progress_qos` | `int` | `0` | QoS for `TaskProgress` publishes; valid range `[0, 2]` |
 | `progress_min_interval` | `float` | `1.0` | Minimum seconds between progress publishes; valid range `[0.0, 3600.0]`; `0` disables the interval threshold |
 | `progress_min_delta` | `float` | `0.0` | Minimum absolute progress change that forces a publish; valid range `[0.0, 100.0]`; `0` disables the delta threshold |

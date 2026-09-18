@@ -78,9 +78,9 @@ Interaction notes:
   composes an `MqttTransport` and assigns it to `TaskProcessor._transport`.
   Because aiomqtt v2.5.1 acks at the broker before the handler runs, delivery
   is at-least-once only through the `FileMqttInbox` (persist-before-enqueue +
-  tombstone dedupe); `inbox_backend="none"` is the explicit at-most-once
-  opt-out, and the worker refuses to start with at-least-once semantics when
-  no inbox could be built.
+  tombstone dedupe); `inbox_backend="memory"` (or its alias `"none"`) is the
+  explicit at-most-once opt-out, and the worker refuses to start with
+  at-least-once semantics when no inbox could be built.
 - **Async logging crosses the package boundary**: the worker attaches handlers
   from the external `scietex.logging` package and drives their
   `start_logging()`/`stop_logging()` lifecycle via `LoggingLifecycle`.

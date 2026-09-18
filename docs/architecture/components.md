@@ -672,7 +672,9 @@ inbox snapshot is not re-enqueued on every poll).
 `MqttTransport`, then assigns the transport to `TaskProcessor._transport`.
 `MqttWorkerConfig` (in `mqtt/config.py`) extends `TaskProcessorConfig` with
 `mqtt_config`, `task_topic`, `task_qos`, `inbox_backend`, `inbox_path`,
-`inbox_ttl`, `log_topic`, `log_qos`, and `log_retain`.
+`inbox_ttl`, `log_topic`, `log_qos`, `log_retain`, `status_publish_enabled`,
+`status_topic_prefix`, `status_qos`, `status_ttl`, `progress_qos`,
+`progress_min_interval`, and `progress_min_delta`.
 
 **Dependencies:** `.config`, `.inbox`, `..health`, `..task_handler.schemas`,
 `..task_handler.wire`, `..transport`. **Depended on by:** `MqttWorker`
@@ -690,12 +692,14 @@ manual ack removes the need — so the `MqttInbox` Protocol keeps that migration
 to an implementation swap.
 
 **Main symbols:** `MqttInbox` (Protocol: `put`/`mark_in_flight`/
-`mark_terminal`/`pending`/`recover`) and `FileMqttInbox(path, *, logger,
-ttl=None)`. `FileMqttInbox` stores one JSON entry per task (`{task_id}.json`,
-carrying task id, lifecycle state, creation epoch, and base64 envelope) and a
-`{task_id}.done` tombstone on terminal completion; tombstones and expired
-entries are pruned on load. All file I/O runs via `asyncio.to_thread` under an
-`asyncio.Lock`.
+`mark_terminal`/`pending`/`recover`), `FileMqttInbox(path, *, logger,
+ttl=None)`, and `MemoryInbox()`. `FileMqttInbox` stores one JSON entry per task
+(`{task_id}.json`, carrying task id, lifecycle state, creation epoch, and
+base64 envelope) and a `{task_id}.done` tombstone on terminal completion;
+tombstones and expired entries are pruned on load. All file I/O runs via
+`asyncio.to_thread` under an `asyncio.Lock`. `MemoryInbox` buffers entries in a
+dict for the at-most-once opt-out: `recover` returns `[]` (nothing survives a
+restart) and there is no tombstone.
 
 **Dependencies:** `..task_handler.schemas`, `..task_handler.wire`; stdlib.
 **Depended on by:** `MqttWorker` (builds it), `MqttTransport` (drains it).

@@ -228,7 +228,8 @@ Tasks are published to the topic `scietex/{service_name}/tasks`; the task id
 travels as the MQTT 5 user property `scietex-task-id`. Because aiomqtt v2.5.1
 auto-acks at the broker when a message is received, the worker persists every
 message to a durable file-backed inbox before processing it, restoring
-at-least-once delivery. Set `inbox_backend="none"` to opt into at-most-once.
+at-least-once delivery. Set `inbox_backend="memory"` (or its alias `"none"`)
+to opt into at-most-once.
 
 `MqttTransport` also publishes each task's lifecycle as fire-and-forget
 observability: a retained `TaskStatus` to
@@ -450,6 +451,7 @@ worker configuration, not `mqtt.yml` entries:
 | `status_publish_enabled` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
 | `status_topic_prefix` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
 | `status_qos` | `1` | QoS for `TaskStatus` publishes; range `[0, 2]` |
+| `status_ttl` | `86400` | MQTT 5 message-expiry interval in seconds for retained `TaskStatus` publishes; range `[1, 2592000]`; `None` disables expiry |
 | `progress_qos` | `0` | QoS for `TaskProgress` publishes; range `[0, 2]` |
 | `progress_min_interval` | `1.0` | Minimum seconds between progress publishes; range `[0.0, 3600.0]`; `0` disables the interval threshold |
 | `progress_min_delta` | `0.0` | Minimum absolute progress change that forces a publish; range `[0.0, 100.0]`; `0` disables the delta threshold |
