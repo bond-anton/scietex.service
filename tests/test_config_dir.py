@@ -1,6 +1,6 @@
-"""Tests for config-directory resolution in ``scietex.service.utils.config`` (AR-090)."""
+"""Tests for config-directory resolution in ``scietex.service.config`` (AR-090)."""
 
-from scietex.service.utils import config as config_module
+from scietex.service import config as config_module
 
 
 def _isolate_search_paths(monkeypatch, tmp_path):

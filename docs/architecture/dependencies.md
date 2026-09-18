@@ -18,8 +18,6 @@ task_processor ──► transport (TaskTransport / TaskSink / InMemoryTransport
    │ extends      │
    ▼              └──► task_handler (basic ─► schemas; wire)
 basic_worker ──► manager
-   │        │
-   │        └──► utils (config, logo)
    │
    │  health (TransportHealth, core)  ◄── valkey/worker, mqtt/worker,
    │                                       valkey/transport, mqtt/transport
@@ -43,14 +41,13 @@ Both reuse the transport-agnostic `TransportHealth` from core `health.py`
 |---|---|---|---|
 | `scietex.service/__init__` | `task_processor`, `basic_worker`, `config`, `manager`, `transport`, `version` | import | unconditional |
 | `scietex.service/__init__` | `valkey` | import | inside `try/except ImportError` — optional feature |
-| `basic_worker` | `.config` | import | `WorkerConfig`, `DEFAULT_*` constants |
+| `basic_worker` | `.config` | import | `WorkerConfig`, `DEFAULT_*` constants, `prepare_conf_dir` |
 | `basic_worker` | `.manager` | import | `Manager` |
 | `basic_worker` | `.manager.runtime` | import | `ManagerRuntime` (owns `ManagerStatus` bookkeeping) |
 | `basic_worker` | `.log_handlers` | import | `parse_logging_level` |
 | `basic_worker` | `.log_handlers.lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
-| `basic_worker` | `.utils` | import | `prepare_conf_dir`, `print_scietex_logo` |
 | `basic_worker` | `scietex.logging` | import (external) | `ConsoleHandler` |
-| `utils.logo` | `..version` | import | `__version__` |
+| `basic_worker` | `.version` | import | `__version__` (logo rendering) |
 | `task_processor` | `basic_worker` | inheritance | extends |
 | `task_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `task_processor` | `.manager` | import | for `@Manager` decorators |

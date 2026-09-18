@@ -25,6 +25,7 @@ from .config import (
     DEFAULT_MANAGER_SHUTDOWN_TIMEOUT,
     DEFAULT_WATCHDOG_INTERVAL,
     WorkerConfig,
+    prepare_conf_dir,
 )
 from .lifecycle import WorkerLifecycle
 from .log_handlers import parse_logging_level
@@ -32,7 +33,7 @@ from .log_handlers.lifecycle import LoggingLifecycle
 from .manager import register_manager
 from .manager.runtime import ManagerRuntime
 from .signal_handler import SignalHandler
-from .utils import prepare_conf_dir, print_scietex_logo
+from .version import __version__
 
 
 class ServiceStatus(Enum):
@@ -649,6 +650,43 @@ class BasicWorker:
         override to remove their instance id. Best-effort: a failure must
         not fail shutdown (log and continue).
         """
+
+
+LOGO = """
+
+          ########+                                                            
+          #########+                                                           
+          ##########-         Service: {service_name}
+          ###########-        Version: {version}
+           .##########-                      
+              .+#######-      
+     +#+..        .#####-                                                      
+   -##########.      .+##-                                                     
+ -#################+-           
+ ####################         Powered by scietex.service v{scietex_version}
+  .############-.    .-##-      
+    .####+.       .#####-     (c) ООО "Научные технологии и сервис"
+               -#######-      https://scietex.ru
+           .##########-                     
+          ###########-                      
+          ##########+                                                  
+          ##########                                                           
+          #########                                                            
+ 
+"""
+
+
+def print_scietex_logo(service_name: str, version: str) -> None:
+    """Print the Scietex Service logo with service-specific details.
+
+    Args:
+        service_name: Name of the running service.
+        version: Version string of the running service.
+
+    The scietex.service version is resolved automatically from
+    ``.version.__version__`` at call time.
+    """
+    print(LOGO.format(service_name=service_name, version=version, scietex_version=__version__))
 
 
 async def _heartbeat_manager(worker: BasicWorker) -> None:

@@ -74,8 +74,8 @@ managers stop and before `cleanup()` teardown. Both are no-ops in the base;
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
 (`LoggingLifecycle`), `.lifecycle` (`WorkerLifecycle`), `.signal_handler`
 (`SignalHandler`), `.manager` (`register_manager`), `.log_handlers`
-(`parse_logging_level`), `.utils` (`prepare_conf_dir`, `print_scietex_logo`);
-external `scietex.logging.ConsoleHandler`.
+(`parse_logging_level`), `.config` (`prepare_conf_dir`), `.version`
+(`__version__`, for the logo); external `scietex.logging.ConsoleHandler`.
 
 **Depended on by:** `TaskProcessor` (extends); `ManagerRuntime`,
 `LoggingLifecycle`, `WorkerLifecycle`, and `SignalHandler` (back-reference to
@@ -594,14 +594,16 @@ consumer_name, logger=None)` (37) — orchestrates the purge and returns a
 `TYPE_CHECKING`); the caller supplies an open client. **Depended on by:**
 `valkey/__init__.py`.
 
-## 18. Utilities
+## 18. Config-dir resolution and service logo
 
-- **`utils/config.py`** — `prepare_conf_dir()` (32): returns first existing dir
+- **`config.py`** — `prepare_conf_dir()` (45): returns first existing dir
   in order `conf_dir` arg → `SCIETEX_CONFIG_DIR` env → `$XDG_CONFIG_HOME/scietex`
   → `~/.config/scietex` → `/etc/scietex` → `/usr/local/etc/scietex` →
-  `./config` (CWD); creates `~/.config/scietex` if none exist.
-- **`utils/logo.py`** — `print_scietex_logo(service_name, version)` (34) prints
-  ASCII banner using `..version.__version__`.
+  `./config` (CWD); creates `~/.config/scietex` if none exist. Moved here from
+  the former `utils/config.py`.
+- **`basic_worker.py`** — `LOGO` + `print_scietex_logo(service_name, version)`
+  (679) prints the ASCII banner using `.version.__version__`. Moved here from
+  the former `utils/logo.py` (its only consumer).
 
 ## 19. External async logging backend — `scietex.logging`
 

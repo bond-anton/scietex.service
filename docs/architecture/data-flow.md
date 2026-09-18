@@ -170,7 +170,7 @@ timeout (`logger_handler_timeout`, default 2 s).
 ## F7. Configuration flow
 
 **Source:** config dir (resolved by `prepare_conf_dir`,
-`utils/config.py:33`), i.e. `valkey.yml` in the chosen dir, or programmatic
+`config.py:45`), i.e. `valkey.yml` in the chosen dir, or programmatic
 `ValkeyConfig`.
 
 **Path:** when `config.valkey_config` is provided, `ValkeyWorker.__init__`
