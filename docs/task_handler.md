@@ -298,10 +298,12 @@ class TaskStatus(msgspec.Struct, frozen=True):
 | `created_at` | `datetime` | current UTC | When the record was created |
 | `updated_at` | `datetime` | current UTC | When the record was last updated |
 
-> **Submitter-side only.** `"queued"` is a reserved literal that the worker
-> never writes; it is intended for a submitter-side write that the library does
-> not perform. The worker writes only `"running"`, `"completed"`, `"failed"`,
-> or `"cancelled"`.
+> **Split ownership of `"queued"`.** Under the Valkey transport, `"queued"` is a
+> submitter-side write that the library does not perform. Under the MQTT
+> transport, the worker itself publishes `"queued"` when a task is accepted,
+> recovered from the inbox, or requeued (see `MqttTransport`), so it does appear
+> in worker output there. In both transports the worker writes `"running"`,
+> `"completed"`, `"failed"`, and (for a deliberate cancel) `"cancelled"`.
 
 ### TaskProgress
 

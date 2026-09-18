@@ -85,7 +85,7 @@ Implements the seven `TaskTransport` methods. Mapping from MQTT semantics:
 | Protocol method | MQTT behavior |
 |---|---|
 | `fetch(sink)` | Drain the inbox (and/or the aiomqtt message queue) into `sink.enqueue_task` until `sink.task_queue_full()`. Returns `True` if any task was enqueued. |
-| `requeue(task_id, task_data)` | Re-publish the envelope to the task topic (QoS 2) and mark the inbox entry pending again. |
+| `requeue(task_id, task_data)` | Re-publish the envelope to the task topic (QoS 2), carrying the `scietex-task-id` user property (`mqtt/transport.py:326`), and mark the inbox entry pending again. The user property is load-bearing: the worker's own message loop rejects any message without it. |
 | `release(task_id)` | Mark the inbox entry released without re-publishing (the broker still holds the message). |
 | `on_started(task_id, task_data)` | Mark the inbox entry in-flight. |
 | `ack(task_id, task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and remove it (or tombstone it for dedupe). |
@@ -118,11 +118,16 @@ Lifecycle overrides mirror `ValkeyWorker`:
 
 | Override | Behavior |
 |---|---|
-| `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task topic(s) → replay the inbox. |
+| `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task and config topics → replay the inbox. |
 | `cleanup` | `super().cleanup()` → stop the message loop → stop the log handler → disconnect → flush the inbox. |
 | `watchdog` | `refresh_leases()` → `health.recover()` → `super().watchdog()` → log `critical_report()`. |
 | `heartbeat` | Publish a retained heartbeat message on `scietex/{service}/workers/{instance_id}` (§10 #6). |
 | `_register_instance` / `_unregister_instance` | Best-effort retained-message publish/clear on the registry topic (§10 #6). |
+
+In addition to the task topic, `initialize()` subscribes to the remote-config
+topic (`mqtt/worker.py:458`), and `_handle_message` dispatches config-topic
+messages to the config source instead of the task path (`mqtt/worker.py:736`).
+See `docs/remote_config.md` (§2, §5) for the remote-configuration channel.
 
 ### 2.4 Logging to MQTT
 
@@ -315,12 +320,26 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     log_topic: str = "scietex/{service}/log"
     log_qos: int = 0
     log_retain: bool = False
+    status_publish_enabled: bool = True
+    status_topic_prefix: str = "scietex/{service}/tasks"
+    status_qos: int = 1
+    status_ttl: int | None = 86400
+    progress_qos: int = 0
+    progress_min_interval: float = 1.0
+    progress_min_delta: float = 0.0
+    config_topic: str = "scietex/{service}/config"
+    config_qos: int = 1
+    config_ttl: int | None = 86400
 ```
 
 `__post_init__` calls `super().__post_init__()` then `validate_range` on the
 numeric fields, matching `ValkeyWorkerConfig`. `inbox_backend="memory"` (or its
 alias `"none"`) is the explicit at-most-once opt-out (§10 #3); the default is
-the file-backed inbox.
+the file-backed inbox. The seven status/progress fields
+(`status_publish_enabled`, `status_topic_prefix`, `status_qos`, `status_ttl`,
+`progress_qos`, `progress_min_interval`, `progress_min_delta`) are specified in
+§13.6; the three remote-config fields (`config_topic`, `config_qos`,
+`config_ttl`) in `docs/remote_config.md` §10.
 
 ### 5.3 Loader
 
@@ -577,8 +596,8 @@ the `msgspec.msgpack` codec already used by `TaskStatusStore`. Reusing the
 structs keeps the MQTT and Valkey transports describing the same lifecycle with
 the same field names and semantics.
 
-- Status topic payload: `TaskStatus` (`task_handler/schemas.py:117`).
-- Progress topic payload: `TaskProgress` (`task_handler/schemas.py:106`).
+- Status topic payload: `TaskStatus` (`task_handler/schemas.py:127`).
+- Progress topic payload: `TaskProgress` (`task_handler/schemas.py:116`).
 
 The task id is the topic suffix, but `TaskStatus` also carries it as a field, so
 a status message is self-describing if it is copied off the wire.
@@ -642,7 +661,7 @@ Hook-by-hook mapping:
 | `on_drain` | Drop the in-process claim; entry stays pending for redelivery. | Publish nothing: the task is neither terminal nor restarted, and the retained status correctly remains `queued` or `running` until redelivery. Drop the throttle state. |
 
 Retryable-error ordering is load-bearing and mirrors the inbox path. In
-`handle_task`, `requeue` runs before `ack` (`task_processor.py:751-773`), so for
+`handle_task`, `requeue` runs before `ack` (`task_processor.py:1004-1046`), so for
 a retryable error the sequence is: `requeue` publishes `queued`, then `ack`
 returns early without publishing a terminal status. A subscriber therefore never
 sees a retryable error as terminal; the task correctly transitions

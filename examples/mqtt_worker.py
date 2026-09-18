@@ -137,6 +137,9 @@ async def run(host: str, port: int) -> None:
             mqtt_config=MqttConfig(host=host, port=port),
             queue_size=100,
             max_concurrent_tasks=4,
+            # The long job runs TOTAL_STEPS * STEP_DELAY seconds; the default
+            # task_timeout (3s) would cancel it just before it finishes.
+            task_timeout=TOTAL_STEPS * STEP_DELAY + 5.0,
             # Publish progress at most once per second (the default), and
             # always on a >=10% jump.
             progress_min_interval=1.0,

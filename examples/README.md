@@ -2,14 +2,18 @@
 
 Runnable blueprints for the `scietex.service` package. Each example is a
 self-contained `main()` you can run with `python -m examples.<name>`.
-All of them follow the same lifecycle pattern:
+
+Most examples are signal-driven daemons that follow the same lifecycle pattern:
 
 ```python
 await worker.start()
 await worker.events["exit"].wait()
 ```
 
-Stop any example with `SIGINT` (Ctrl+C) or `SIGTERM`.
+Stop them with `SIGINT` (Ctrl+C) or `SIGTERM`. A few examples are bounded demos
+(`mqtt_worker`, `remote_config`, `progress_and_cancel`, `valkey_perf`,
+`mqtt_perf`): they do their work and then call `await worker.exit()` themselves,
+joining on `events["exit"].wait()` only to confirm shutdown.
 
 | Example | Requires Valkey | Demonstrates |
 |---|---|---|

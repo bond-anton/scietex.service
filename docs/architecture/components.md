@@ -68,7 +68,7 @@ subclass hooks govern registry-set membership: `_register_instance` (634) —
 called by `_startup()` after `initialize()` succeeds and before managers
 start — and `_unregister_instance` (644) — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
-`ValkeyWorker` overrides them (worker.py:507, 532) to `SADD`/
+`ValkeyWorker` overrides them (worker.py:597, 622) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
@@ -195,14 +195,14 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 
 | Schema | Fields |
 |---|---|
-| `TaskTimeout` (23) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
-| `TaskData` (37) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
-| `TaskEnvelope` (57) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
-| `TaskResult` (75) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
-| `TaskStatus` (117) | `task_id: str`, `service: str`, `task: str`, `status: "queued"\|"running"\|"completed"\|"failed"\|"cancelled"`, `progress: TaskProgress`, `result: bytes\|None`, `data: TaskData\|None`, `error: str`, `error_code: str`, `created_at: datetime`, `updated_at: datetime` |
+| `TaskTimeout` (32) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
+| `TaskData` (46) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
+| `TaskEnvelope` (66) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
+| `TaskResult` (84) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
+| `TaskStatus` (127) | `task_id: str`, `service: str`, `task: str`, `status: "queued"\|"running"\|"completed"\|"failed"\|"cancelled"`, `progress: TaskProgress`, `result: bytes\|None`, `data: TaskData\|None`, `error: str`, `error_code: str`, `created_at: datetime`, `updated_at: datetime` |
 
 `TaskResult.processed_at` uses `msgspec.field(default_factory=lambda:
-datetime.now(timezone.utc))` (99) so each instance gets its own timestamp
+datetime.now(timezone.utc))` (109) so each instance gets its own timestamp
 (AR-012). The error-taxonomy fields (`error_code`/`retryable`/`partial`,
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
@@ -242,9 +242,9 @@ on-the-wire format evolve independently. Encoding/decoding lives in
 contract; a narrow context decouples handlers from the worker.
 
 **Main symbols / interface:**
-- `TaskHandlerContext` (context.py:7) — frozen dataclass with `service_name`,
+- `TaskHandlerContext` (context.py:8) — frozen dataclass with `service_name`,
   `instance_id`, `logger`; replaces the full worker reference.
-- `TaskCapabilities` (capabilities.py:8) — frozen dataclass holding the task id
+- `TaskCapabilities` (capabilities.py:9) — frozen dataclass holding the task id
   and a progress writer; `report_progress(value)` clamps to `[0.0, 100.0]` and
   forwards to the transport hook. Passed per call to `handle`.
 - `__init__(name, context)` (22) — stores `name`, `context`, `logger =
@@ -269,35 +269,45 @@ and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
 drains/cancels in-flight work. Per-task lifecycle state (the running tracker
 and its cancel reason) is owned by a composed `TaskLifecycle` (AR-088).
 
-**Main symbols:** `class TaskProcessor(BasicWorker)` (46).
-Overrides `_config_type` (73) to `TaskProcessorConfig`, so the base
+**Main symbols:** `class TaskProcessor(BasicWorker)` (69).
+Overrides `_config_type` (96) to `TaskProcessorConfig`, so the base
 instantiates the concrete config when `config=None` and `__init__` reads its
 fields from `self._config` rather than re-storing (AR-069).
-Properties: `task_handlers` 147, `running_tasks` 161 (a snapshot `Mapping`
-delegated to `TaskLifecycle`), `queue_size` 171, `max_concurrent_tasks` 176.
-Registry/dispatch: `add_task_handler` 267 (takes the handler class plus an
+Properties: `task_handlers` 191, `running_tasks` 205 (a snapshot `Mapping`
+delegated to `TaskLifecycle`), `queue_size` 215, `max_concurrent_tasks` 220.
+Registry/dispatch: `add_task_handler` 523 (takes the handler class plus an
 optional keyword-only `name` and arbitrary `**handler_kwargs`; the lifecycle
 key is the resolved name — `name` if given, otherwise `handler_class.__name__`
 — so multiple instances of one class can coexist under distinct keys, a
 duplicate resolved key raises; the map stores a `(class, handler_kwargs)`
 tuple and the kwargs are forwarded to the handler constructor on every
-instantiation), `_start_task_handler` 317
-(unpacks the tuple, builds a `TaskHandlerContext` at 338–342, and calls
-`handler_class(handler_name, context, **handler_kwargs)` at 343),
-`_stop_task_handler` 361, `remove_task_handler` 387, `_find_task_handler` 403,
-`process_task` 651.
-Queue access: `enqueue_task` 180, `dequeue_task` 201, `task_queue_empty` 193,
-`task_queue_full` 197 (the raw `task_queue` attribute is no longer exposed;
+instantiation), `_start_task_handler` 573
+(unpacks the tuple, builds a `TaskHandlerContext` at 594–598, and calls
+`handler_class(handler_name, context, **handler_kwargs)` at 599),
+`_stop_task_handler` 617, `remove_task_handler` 643, `_find_task_handler` 659,
+`process_task` 911.
+Queue access: `enqueue_task` 436, `dequeue_task` 457, `task_queue_empty` 449,
+`task_queue_full` 453 (the raw `task_queue` attribute is no longer exposed;
 non-blocking `put_nowait`/`get_nowait` underneath). State:
-`__task_handlers_map`/`__task_handlers` (103–104; the map holds
+`__task_handlers_map`/`__task_handlers` (130–131; the map holds
 `(class, handler_kwargs)` tuples keyed by resolved name), `_task_lifecycle`
-(93, the composed per-task lifecycle state), `__task_queue` (139, bounded
+(116, the composed per-task lifecycle state), `__task_queue` (166, bounded
 `asyncio.Queue[(UUID, TaskData)]`).
-Managers: `@Manager("TaskManager") task_manager` 705 (inner `handle_task`
-wrapper at 717), `@Manager("TaskQueueManager") task_queue_manager` 819.
-Hooks: `fetch_tasks` 800, `return_task_to_queue` 422, `on_task_completed` 523
-(transport ack seam), `initialize` 567 (starts handlers), `cleanup` 603
-(drains queue, cancels running tasks, stops handlers), `watchdog` 838.
+Managers: `@Manager("TaskManager") task_manager` 965 (inner `handle_task`
+wrapper at 977), `@Manager("TaskQueueManager") task_queue_manager` 1104.
+Hooks: `fetch_tasks` 1085, `return_task_to_queue` 678, `on_task_completed` 779
+(transport ack seam), `initialize` 823 (starts handlers), `cleanup` 859
+(drains queue, cancels running tasks, stops handlers), `watchdog` 1123.
+
+**Retry cap** (v4.4.0): `_MAX_TASK_RETRIES = 1` (module constant,
+`task_processor.py:66`) grants exactly one error-path retry per task id;
+`self._retry_attempts: dict[UUID, int]` (`:120`) tracks the attempt budget. The
+`handle_task` `finally` block (`~1004–1046`) requeues a retryable error only
+while `attempts < _MAX_TASK_RETRIES`; on the second consecutive retryable
+failure it acks the entry terminal with
+`msgspec.structs.replace(result, retryable=False)` — load-bearing because
+transports leave a retryable entry pending (AR-077b), so the terminal ack must
+not look retryable or the entry would wait for a retry that never comes.
 
 **Config constants:** timing/retry MIN/MAX/DEFAULT bounds live in `config.py`
 (single source of truth); the task-queue defaults are
@@ -318,17 +328,17 @@ asyncio workload and does not reflect container CPU limits, so I/O-bound
 services should set `max_concurrent_tasks` explicitly.
 
 **Remote configuration** (see §23–§26): `__init__` builds a `ConfigReloader`
-and registers the three `config:*` handlers (169–180); the `_config_source` seam
-(169) is attached by a transport subclass (`ValkeyWorker`/`MqttWorker`).
-Extension point `register_config_settings(name, struct_type, *, apply)` (231)
+and registers the three `config:*` handlers (186–188); the `_config_source` seam
+(177) is attached by a transport subclass (`ValkeyWorker`/`MqttWorker`).
+Extension point `register_config_settings(name, struct_type, *, apply)` (239)
 delegates to the reloader's `register_section`; the read-only observability
-properties `config_revision` (217), `config_hash` (221), and `config_source`
-(226) delegate to the reloader. The private apply/validate logic lives in
-`_apply_reloadable_config` (277) — validate-then-swap, overlaying the eight
+properties `config_revision` (225), `config_hash` (230), and `config_source`
+(235) delegate to the reloader. The private apply/validate logic lives in
+`_apply_reloadable_config` (285) — validate-then-swap, overlaying the eight
 reloadable values onto a shallow copy of the current config and re-constructing
 `type(current)(**merged)` so `__post_init__`/`validate_range` reject a bad
-candidate before any mutation — plus `_config_apply` (367), `_config_store`
-(387), and `_config_show` (406), the callbacks injected into the three
+candidate before any mutation — plus `_config_apply` (375), `_config_store`
+(395), and `_config_show` (414), the callbacks injected into the three
 handlers.
 
 **Public interface:** constructor takes a single immutable
@@ -426,8 +436,12 @@ removed the raw-`GlideClientConfiguration` fallback).
 `scietex:{service}:tasks`, group
 `scietex:{service}:task_group`, consumer
 `scietex:{service}:{instance_id}`, registry set
-`scietex:{service}:workers`. The stream and group are service-scoped so
-replicas share one queue; the consumer/status keys are worker-scoped per
+`scietex:{service}:workers`, and the remote-config key
+`scietex:{service}:config` (`config_key`, defined at `valkey/config.py:293`,
+resolved at `valkey/worker.py:150`; the `ValkeyConfigSource` is attached to
+`_config_source` in `initialize()` at `valkey/worker.py:492`). The stream and
+group are service-scoped so replicas share one queue; the consumer/status keys
+are worker-scoped per
 auto-generated `instance_id`. The entry-id map and `recovered` flag now live
 on `ValkeyTransport` (see §15).
 
@@ -469,7 +483,8 @@ always-imported core `config.py`.
 (241, `base_config` + `advanced_config` + `pubsub_config`);
 `ValkeyWorkerConfig` (265, extends `TaskProcessorConfig` with `valkey_config`
 (`ValkeyConfig | None`), `log_stream_name`, `task_fetch_batch_size`,
-`claim_min_idle_ms`, `task_tracking_ttl`, `task_lease_ttl`); `read_valkey_config(conf_dir)`
+`claim_min_idle_ms`, `task_tracking_ttl`, `task_lease_ttl`,
+`config_key` (defaults to `scietex:{service}:config`)); `read_valkey_config(conf_dir)`
 — creates `valkey.yml` with defaults only if the file is missing; raises
 `RuntimeError` on a present-but-invalid file, never overwriting it;
 `generate_glide_config(valkey_config, service_name)` (converts to
@@ -689,6 +704,12 @@ and `refresh_leases()` (no-op parity with `ValkeyTransport`).
 **State owned:** the `recovered` flag (one-time pending recovery) and the
 `_enqueued` set (task ids handed to the sink but not yet terminal, so the
 inbox snapshot is not re-enqueued on every poll).
+
+`TASK_ID_PROPERTY` (`"scietex-task-id"`, `mqtt/transport.py:45`, exported in
+`__all__` at `:37`) carries the task id as an MQTT 5 user property;
+`MqttTransport.requeue` re-publishes the envelope with that user property set
+(`mqtt/transport.py:326`), so a retried copy is indistinguishable from the
+original on the wire.
 
 **Composition:** `MqttWorker` builds `TransportHealth` → `FileMqttInbox` →
 `MqttTransport`, then assigns the transport to `TaskProcessor._transport`.

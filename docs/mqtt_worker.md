@@ -110,7 +110,7 @@ the same `{service}` substitution; see
 
 | Constant | Default | Description |
 |---|---|---|
-| `TASK_ID_PROPERTY` (`worker.py`) | `"scietex-task-id"` | MQTT 5 user property carrying the task id alongside the envelope payload |
+| `TASK_ID_PROPERTY` (`transport.py`) | `"scietex-task-id"` | MQTT 5 user property carrying the task id alongside the envelope payload |
 | `_REGISTRY_QOS` (`worker.py`) | `1` | QoS for retained registry/heartbeat messages |
 | `MIN_TASK_QOS` / `MAX_TASK_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.task_qos` |
 | `MIN_LOG_QOS` / `MAX_LOG_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.log_qos` |
@@ -158,10 +158,14 @@ unlike a Valkey stream entry, an MQTT message has no key to carry the task id.
                                                stop handlers
 ```
 
-`initialize()` starts all registered task handlers, runs the at-least-once
-guard (see [Inbox Backend](#inbox-backend)), connects to the broker,
-subscribes to the task topic, starts the background message loop, and
-replays any non-terminal inbox entries left by a previous run.
+`initialize()` runs the at-least-once guard **first** — it refuses to start
+rather than silently lose durability when a file inbox was expected but could
+not be built (see [Inbox Backend](#inbox-backend)). It then starts all
+registered task handlers (`super().initialize()`), connects to the broker
+(subscribing to the task topic and starting the background message loop),
+applies the local `config.yml` snapshot followed by the retained remote
+snapshot, and finally replays any non-terminal inbox entries left by a
+previous run.
 
 ## Properties
 

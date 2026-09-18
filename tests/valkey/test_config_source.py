@@ -196,3 +196,22 @@ async def test_initialize_remote_overrides_local(monkeypatch, tmp_path):
     assert worker.config_source == "remote"
     assert worker.config_revision == 3
     assert cast(TaskProcessorConfig, worker._config).task_timeout == 5.0
+
+
+@pytest.mark.asyncio
+async def test_initialize_disabled_ignores_local_config_without_error(monkeypatch, tmp_path, caplog):
+    """With remote config disabled (the default), a present ``config.yml`` is
+    ignored and must not log an ERROR (a disabled feature is not a failure)."""
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=_settings(task_timeout=9.0)))
+    client = DummyClient(ping_ok=True, get_value=None)
+    _patch_glide_and_handler(monkeypatch)
+    worker = _make_worker(tmp_path, client, remote_config_enabled=False)
+
+    with caplog.at_level(logging.ERROR):
+        ok = await worker.initialize()
+
+    assert ok is True
+    assert worker.config_source == "default"
+    assert worker.config_revision == 0
+    assert cast(TaskProcessorConfig, worker._config).task_timeout is None
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

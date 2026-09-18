@@ -357,7 +357,7 @@ apply:
   (`forbid_unknown_fields` rejects a typo in a service field, not silently
   ignoring it).
 - An unregistered section name is rejected (`UNKNOWN_CONFIG_SECTION`).
-- Each section's `apply` hook runs **after** the core swap succeeds, in
+- Each section's `apply` hook runs **before** the core swap succeeds, in
   registration order; a raising hook aborts the whole apply and leaves the
   previous config in place.
 - Registration is additive and idempotent per section name; re-registering

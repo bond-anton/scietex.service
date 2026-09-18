@@ -26,12 +26,12 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
 | H16 | Resolved | AR-022 — structured error taxonomy fields on `TaskResult` |
-| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:370) |
+| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:371) |
 | H18 | Resolved | AR-070 — removed unused `name` param from `LoggingLifecycle.register_logger_handler` |
 
 ## H1. `BasicWorker` is a large, multi-responsibility class
 
-- **Location:** `src/scietex/service/basic_worker.py:56`.
+- **Location:** `src/scietex/service/basic_worker.py:55`.
 - **What:** a single class owned: identity/configuration, the lifecycle state
   machine, signal registration, async-logging handler lifecycle, the manager
   discovery + task runtime, startup and shutdown orchestration, and the default
@@ -48,7 +48,7 @@ extracted components directly.
 ## H2. Manager error-handling relies on private per-worker bookkeeping
 
 - **Location:** was `basic_worker.py` (`_run_manager`/`_restart_manager`);
-  now `manager/runtime.py:82-161`.
+  now `manager/runtime.py:138-218`.
 - **What:** managers were restarted "automatically on error" with unbounded
   restart and no backoff.
 - **Why significant:** a persistently failing manager yielded an unbounded
@@ -62,15 +62,15 @@ delay (default 1 s) between attempts; the error record lives in
 ## H3. Manager "restart" path appears to cancel the running task itself
 
 - **Location:** was `_restart_manager`; now inlined in
-  `manager/runtime.py:82-161`.
+  `manager/runtime.py:138-218`.
 - **What:** the old restart path cancelled and awaited the **same
   currently-executing task**.
 - **Why significant:** a raising manager ended as `CancelledError` rather than
   restarting.
 
 **Resolved (AR-003):** `run_manager` retries inside its own `while True` loop
-(111–142) — the manager task never cancels itself; `CancelledError` stops it
-cleanly and the `finally` block (145–161) runs cleanup and removes the task from
+(168–199) — the manager task never cancels itself; `CancelledError` stops it
+cleanly and the `finally` block (202–218) runs cleanup and removes the task from
 tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
@@ -109,17 +109,17 @@ restarts the same handler instances. See
   and could not construct workers outside a running loop.
 
 **Resolved (AR-015 + AR-008):** signal handlers are registered in `start()`
-(`_setup_signal_handlers`, basic_worker.py:358, Windows-safe no-op) and
-removed in `stop()` (`_remove_signal_handlers`, 379); `__init__` no longer
+(`_setup_signal_handlers`, basic_worker.py:359, Windows-safe no-op) and
+removed in `stop()` (`_remove_signal_handlers`, 380); `__init__` no longer
 touches the loop, so workers may be constructed outside a running loop.
 `events` (basic_worker.py:160) and `task_handlers`
-(task_processor.py:147) now return read-only `MappingProxyType` views;
-`running_tasks` (161) instead returns a snapshot delegated to `TaskLifecycle`
+(task_processor.py:191) now return read-only `MappingProxyType` views;
+`running_tasks` (205) instead returns a snapshot delegated to `TaskLifecycle`
 (AR-088), so callers may iterate it while tasks are added or removed.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 
-- **Location:** `basic_worker.py:491-536` (`_shutdown`).
+- **Location:** `basic_worker.py:492-537` (`_shutdown`).
 - **What:** `_shutdown` has no rollback if it is cancelled mid-way (e.g. during
   `ManagerRuntime.stop_managers()`); its `except asyncio.CancelledError` swallows the
   cancellation without re-raising or forcing STOPPED/`exit`.
@@ -129,7 +129,7 @@ touches the loop, so workers may be constructed outside a running loop.
   timeout-guarded, but an unexpected cancellation path is not.
 
 **Resolved (AR-017):** `_shutdown` (and `_startup`) now catch `CancelledError`,
-call `_force_stopped()` (basic_worker.py:481) — which sets
+call `_force_stopped()` (basic_worker.py:482) — which sets
 `state = STOPPED`, clears `start_time`, and sets the `exit` event if
 `exit_requested` — then re-raise, so a cancelled startup/shutdown always lands
 in a terminal state and the worker can be restarted.
@@ -166,7 +166,7 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 **Resolved (AR-018, superseded by AR-059/061):** `ValkeyWorker` originally ran
 a single `GlideClient` shared with the logging handler. AR-059/061 re-split the
 two domains with proper ownership: the worker's operational client (heartbeat,
-registry, intake, task completion) is serialized behind `_client_lock` (177)
+registry, intake, task completion) is serialized behind `_client_lock` (175)
 with a glide-error-only reconnect, and the logging `AsyncValkeyHandler` owns its
 own independent connection via `valkey_config=` (a scalar dict from
 `logging_handler_config`), so the worker no longer injects or re-points
@@ -174,7 +174,7 @@ own independent connection via `valkey_config=` (a scalar dict from
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
-- **Location:** `worker.py:308` (`connect`), 444
+- **Location:** `worker.py:325` (`connect`), 461
   (`initialize`).
 - **What:** on `GlideClient.create` exception, `connect` returned False and left
   `_client=None`; on a **failed PING**, it previously left `_client` set, so
@@ -183,13 +183,13 @@ own independent connection via `valkey_config=` (a scalar dict from
 - **Why significant:** connectivity success was not consistently propagated.
 
 **Resolved (AR-006 + AR-010):** `connect()` assigns `_client` only after PING
-succeeds (444) and closes a client that failed its ping (454-457), so
+succeeds (369) and closes a client that failed its ping (380-383), so
 `self.client` truthiness is a reliable connectivity signal and a half-connected
 worker is never observable.
 
 ## H11. Task stream and group are namespaced per `worker_id`
 
-- **Location:** `worker.py` key construction (now ~178-183).
+- **Location:** `worker.py` key construction (now 188-192).
 - **What:** in v3, stream, group, and consumer names embed `service_name` **and**
   `worker_id`. Two `ValkeyWorker`s with different `worker_id`s read **different
   streams**; horizontal scale-out required replicas that share the same
@@ -241,7 +241,7 @@ configurable" claims were removed.
 - **Why significant:** divergent import paths between test and package.
 
 **Resolved (AR-013):** `pytest.ini` was deleted; pytest configuration lives only
-in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 46-48).
+in `pyproject.toml` (`[tool.pytest.ini_options]`, line 52).
 
 ## H14. `pyaml` dependency is unused; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` is dead
 
@@ -264,12 +264,12 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, lines 46-48).
 
 **Resolved (AR-012):** both fields now use
 `msgspec.field(default_factory=lambda: datetime.now(timezone.utc))`
-(`task_handler/schemas.py:99`, `valkey/schemas.py:38`), producing a per-instance
+(`task_handler/schemas.py:109`, `valkey/schemas.py:38`), producing a per-instance
 value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `task_processor.py:651-702` (`process_task`), 267-420
+- **Location:** `task_processor.py:911-963` (`process_task`), 523-676
   (handler registry).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no

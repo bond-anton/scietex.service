@@ -1,8 +1,8 @@
 # Remote Configuration for `scietex.service`
 
-**Status:** design approved — decisions locked (§14)
+**Status:** implemented
 **Target release:** v4.5.0
-**Branch:** `main` @ `57e5f89` (v4.4.0)
+**Branch:** `main` @ `74b4692`
 **Motivation:** operators currently change worker behaviour by editing
 `valkey.yml`/`mqtt.yml` or redeploying code. Task-processing fields (timeouts,
 concurrency, cadence) are not on disk at all — they live only in the
@@ -46,7 +46,7 @@ built-in `cancel_task` control path (`task_handler/cancel.py:59-133`).
 - **No live reconfiguration of transport collaborators.** `ValkeyTransport`,
   `TaskStatusStore`, `TaskLeaseManager`, `MqttTransport`, and the durable inbox
   capture their config at construction (`valkey/transport.py:56-76`,
-  `mqtt/transport.py:108-127`). Only the core `TaskProcessor` allowlist plus
+  `mqtt/transport.py:116`). Only the core `TaskProcessor` allowlist plus
   registered service settings are hot-reloadable in v1 (§3.2).
 - **No writes to `valkey.yml`/`mqtt.yml`.** `config:store` writes a new
   dedicated file only (§7).
@@ -81,15 +81,15 @@ cross-topic atomicity, so the whole envelope lives in a single retained message.
 Retained = state; commands are non-retained and travel as tasks (prior art:
 Home Assistant discovery, Tasmota). The retained message carries an MQTT 5
 message-expiry (`config_ttl`, default `86400`, `None` disables) so a stale
-marker ages out, mirroring `status_ttl` (`mqtt/config.py:114-116`).
+marker ages out, mirroring `status_ttl` (`mqtt/config.py:118-120`).
 
 **Naming uses transport-native separators**, matching existing keys/topics:
-Valkey keys are colon-separated (`valkey/worker.py:174-178`), MQTT topics
-slash-separated (`mqtt/worker.py:191-197`).
+Valkey keys are colon-separated (`valkey/worker.py:188-192`), MQTT topics
+slash-separated (`mqtt/worker.py:198-208`).
 
 **Decision — commands are tasks, not a separate control path.** The repo already
 routes a control operation (`cancel_task`) through the task pipeline
-(`task_processor.py:144`) with an injected async callback
+(`task_processor.py:171`) with an injected async callback
 (`task_handler/cancel.py:59-133`). Reusing it gives free delivery/retry/ack/
 backpressure and keeps the two transports identical. Trade-off vs a Celery-style
 broadcast control channel: a `config:apply` task competes with worker tasks and
@@ -115,7 +115,7 @@ class ConfigEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 `forbid_unknown_fields=True` is available in the pinned `msgspec 0.20.0`. Note
 that the existing YAML loaders use `strict=True` only, which does **not** reject
-unknown keys (`read_valkey_config` at `valkey/config.py:382-388`); remote config
+unknown keys (`read_valkey_config` at `valkey/config.py:385-388`); remote config
 is stricter on purpose.
 
 Decode helpers mirror `task_handler/wire.py`: `encode_config_envelope(...) ->
@@ -131,19 +131,19 @@ config fields at construction into name-mangled attributes.
 
 | Field | Source class | Reloadable? | Evidence |
 |---|---|---|---|
-| `max_concurrent_tasks` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow set `task_processor.py:108-120`, read `:786` |
-| `task_manager_sleep_time` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:214-222` |
-| `task_queue_manager_sleep_time` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:224-233` |
-| `task_handler_start_timeout` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:235-249` |
-| `task_handler_stop_timeout` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:251-265` |
-| `task_timeout` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow `task_processor.py:127` |
-| `task_queue_fetch_timeout` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow `task_processor.py:128-132` |
-| `task_cancellation_timeout` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow `task_processor.py:133-137` |
-| `queue_size` | `TaskProcessorConfig` | no | `asyncio.Queue(maxsize=...)` fixed at `task_processor.py:139` |
-| `auto_tune` | `TaskProcessorConfig` | no | read only at construction `:110-118` |
+| `max_concurrent_tasks` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow set `task_processor.py:134-164`, read `:1071` |
+| `task_manager_sleep_time` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:469-478` |
+| `task_queue_manager_sleep_time` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:480-489` |
+| `task_handler_start_timeout` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:491-505` |
+| `task_handler_stop_timeout` | `TaskProcessorConfig` | **yes** (live property) | `task_processor.py:507-521` |
+| `task_timeout` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow `task_processor.py:154` |
+| `task_queue_fetch_timeout` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow `task_processor.py:155-159` |
+| `task_cancellation_timeout` | `TaskProcessorConfig` | **yes** (re-shadow) | shadow `task_processor.py:160-164` |
+| `queue_size` | `TaskProcessorConfig` | no | `asyncio.Queue(maxsize=...)` fixed at `task_processor.py:166` |
+| `auto_tune` | `TaskProcessorConfig` | no | read only at construction `:135-147` |
 | `service_name`, `version`, `conf_dir`, `logging_level`, `heartbeat_interval`, `watchdog_interval`, `logger_handler_timeout`, `manager_*` | `WorkerConfig` | no | resolved eagerly in `basic_worker.py:104-132`; identity and manager loop cadence |
-| all `ValkeyWorkerConfig` transport fields | valkey | no | transport/tracking/lease capture at construction (`valkey/transport.py:74-76`) |
-| all `MqttWorkerConfig` transport fields | mqtt | no | transport captures config at `mqtt/transport.py:108-127` |
+| all `ValkeyWorkerConfig` transport fields | valkey | no | transport/tracking/lease capture at construction (`valkey/transport.py:56`) |
+| all `MqttWorkerConfig` transport fields | mqtt | no | transport captures config at `mqtt/transport.py:116` |
 | `valkey_config` / `mqtt_config` | transport | no | connection config, secrets |
 
 ```python
@@ -206,9 +206,10 @@ class ConfigSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 - The core validates `core` against `ReloadableSettings` and each registered
   section against its registered struct. An unregistered section name is
   rejected (`UNKNOWN_CONFIG_SECTION`).
-- Each section's `apply` hook is called **after** the core swap succeeds, in
-  registration order. A hook that raises aborts the whole apply and leaves the
-  previous config in place (the core swap is deferred until all hooks pass).
+- Each section's `apply` hook is called **before** the core swap, in
+  registration order (`config_reload.py:434-439`). A hook that raises aborts
+  the whole apply with no state change (validate-before-swap: the core swap
+  runs only after every hook passes).
 - Registration is additive and idempotent per section name; re-registering the
   same name replaces the struct + hook.
 
@@ -219,7 +220,7 @@ service field is rejected by `forbid_unknown_fields`, not silently ignored.
 
 - **Wire (task payload, Valkey key value, MQTT retained payload): msgpack.**
   Consistent with the envelope/status wire format (`task_handler/wire.py`,
-  `mqtt/transport.py:127`), compact, typed, strict.
+  `mqtt/transport.py:135`), compact, typed, strict.
 - **Disk (`config.yml`): YAML.** Consistent with `valkey.yml`/`mqtt.yml`,
   human-editable, same `msgspec.yaml` codec.
 - **Never** pickle (untrusted input). JSON would lose the typed-struct
@@ -230,7 +231,7 @@ service field is rejected by `forbid_unknown_fields`, not silently ignored.
 ## 4. Command surface
 
 Three task types, registered exactly like `cancel_task`
-(`task_processor.py:141-144`), with async callbacks injected at construction.
+(`task_processor.py:186-188`), with async callbacks injected at construction.
 
 ```python
 CONFIG_APPLY_TASK_TYPE: str = "config:apply"
@@ -239,7 +240,7 @@ CONFIG_SHOW_TASK_TYPE: str = "config:show"
 ```
 
 Dispatch is opaque string matching (`_find_task_handler` at
-`task_processor.py:403-420`), so the colon form is safe.
+`task_processor.py:659-676`), so the colon form is safe.
 
 ```python
 class ConfigApplyRequest(msgspec.Struct, frozen=True):
@@ -309,20 +310,20 @@ disabled ⇒ `REMOTE_CONFIG_DISABLED`, `retryable=False`.
 ### Valkey
 
 Natural slot: `ValkeyWorker.initialize()` after `super().initialize()` and after
-`connect()` succeeds and the client exists (`valkey/worker.py:463-468`):
+`connect()` succeeds and the client exists (`valkey/worker.py:492`):
 
 ```
 super().initialize() -> connect() -> config_reloader.reload(ValkeyConfigSource(client)) -> xgroup_create
 ```
 
 `ValkeyConfigSource.load()` is an awaited `GET scietex:{service}:config` on the
-operational client (`valkey/worker.py:466`). Absent key ⇒ `None` ⇒ fall back to
+operational client (`valkey/config_source.py:34`). Absent key ⇒ `None` ⇒ fall back to
 local `config.yml` if present, else defaults.
 
 ### MQTT
 
 The retained message cannot be `GET`-ed; it arrives after SUBACK.
-`MqttWorker._start_intake()` (`mqtt/worker.py:415-442`) gains a subscription to
+`MqttWorker._start_intake()` (`mqtt/worker.py:434-464`) gains a subscription to
 `_config_topic`. `MqttConfigSource` records the latest payload received on that
 topic as an in-memory snapshot. Startup does:
 
@@ -332,7 +333,7 @@ topic as an in-memory snapshot. Startup does:
 
 Retained delivery is immediate after SUBACK, so the bounded wait makes startup
 deterministic without hanging a broker that has no retained config.
-`_message_loop`/`_handle_message` (`mqtt/worker.py:590-635`) currently treats
+`_message_loop`/`_handle_message` (`mqtt/worker.py:699-752`) currently treats
 **every** message as a task and skips messages lacking the `scietex-task-id`
 user property; the source requires **topic-based dispatch** in `_handle_message`:
 config-topic messages go to the source, everything else follows the existing
@@ -346,6 +347,7 @@ task path. This is a real, contained change.
 | Remote present, valid | apply; log INFO with revision/hash |
 | Remote present, invalid / bad signature / unknown field / stale revision | log ERROR (stale: DEBUG); **keep local/default; startup succeeds** |
 | Source unreachable (Valkey `GET` fails) | log WARNING; report to `TransportHealth`; startup succeeds with local/default |
+| Feature disabled (`remote_config_enabled=False`) | local `config.yml` ignored entirely — `_apply_local_config` early-returns (no apply, no ERROR log); the remote read logs `REMOTE_CONFIG_DISABLED` at DEBUG |
 
 **Decision — invalid remote config never fails startup.** Availability wins; the
 worker is still safe on its local config. A malformed override is an operator
@@ -383,7 +385,7 @@ A core `ConfigReloader` (no transport knowledge) owns the whole apply path:
    **not** use `msgspec.structs.asdict`, which recursively converts nested
    structs to dicts and breaks reconstruction), overlay the core settings, and
    construct `type(current)(**merged)`. This runs `__post_init__` and every
-   `validate_range` (`config.py:187-223`, `:274-321`; `_validation.py:11-38`).
+   `validate_range` (`config.py:191-227`, `:292-345`; `_validation.py:11-38`).
    `msgspec.structs.replace` must **not** be used: it was verified to bypass
    `__post_init__` in msgspec 0.20.0, silently accepting an out-of-range value.
 8. **Run service hooks.** Each registered `apply` hook is called with its
@@ -403,7 +405,7 @@ collaborators, connection clients, the internal `asyncio.Queue`, task handlers,
 or any transport-specific config. This is the honest boundary of v1 and is
 exactly the allowlist in §3.2.
 
-The live-read properties (`task_processor.py:214-265`) need no action — they read
+The live-read properties (`task_processor.py:469-521`) need no action — they read
 `self._config` at call time. The re-shadowed fields are the ones that would
 otherwise silently not apply.
 
@@ -418,7 +420,7 @@ Read-only observability: `worker.config_revision`, `worker.config_hash`,
 touch `valkey.yml`/`mqtt.yml`, and there is no existing on-disk `WorkerConfig`
 file to write (the `WorkerConfig`/`TaskProcessorConfig` structs are
 code-constructed only today; only `valkey.yml`/`mqtt.yml` are loaded,
-`valkey/config.py:332-388`, `mqtt/config.py:198-254`).
+`valkey/config.py:335-388`, `mqtt/config.py:214-270`).
 
 **Format:** YAML of `ConfigSections` via `msgspec.yaml.encode`.
 
@@ -434,7 +436,7 @@ validated first (same pipeline as apply) and only then written.
 
 **Interaction with startup:** `read_local_config(conf_dir)` reads `config.yml`
 write-free (unlike `read_valkey_config(create_default=True)`, which creates
-defaults — `valkey/config.py:359-381`). Missing file ⇒ `None`, no creation.
+defaults — `valkey/config.py:361-381`). Missing file ⇒ `None`, no creation.
 Invalid file ⇒ log ERROR, ignore, use defaults. Precedence at startup:
 **constructor config < `config.yml` < remote source**. The local file is the
 persisted snapshot; the remote source stays authoritative when present.
@@ -523,7 +525,7 @@ New constants in `config.py`: `MIN_CONFIG_STARTUP_TIMEOUT = 0.0`,
 
 | Field | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `config_key` | `str` | `"scietex:{service}:config"` | — | Durable desired-state key; `{service}` substituted at construction like `log_stream_name` (`valkey/worker.py:136`). |
+| `config_key` | `str` | `"scietex:{service}:config"` | — | Durable desired-state key; `{service}` substituted at construction like `log_stream_name` (`valkey/worker.py:150`). |
 
 ### MQTT (`mqtt/config.py`, on `MqttWorkerConfig`)
 
@@ -612,7 +614,7 @@ Broker-free unit tests follow existing patterns; integration tests use the
 - `ReloadableSettings` requires every field; unknown (restart-required) name
   rejected.
 - registered sections: unknown section rejected; registered struct validated;
-  apply hook called after core swap; raising hook aborts with no state change.
+  apply hook called before core swap; raising hook aborts with no state change.
 - `_apply_reloadable_config`: valid values swap `_config` and all four shadows;
   out-of-range value raises and leaves state unchanged (proves `replace` is not
   used); nested `valkey_config`/`mqtt_config` object identity preserved.

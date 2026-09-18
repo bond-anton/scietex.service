@@ -22,6 +22,7 @@ from scietex.logging import AsyncMqttHandler
 from ..config import DEFAULT_CONFIG_STARTUP_TIMEOUT
 from ..config_reload import (
     CONFIG_SOURCE_UNAVAILABLE,
+    REMOTE_CONFIG_DISABLED,
     STALE_CONFIG,
     ConfigApplyOutcome,
     encode_config_envelope,
@@ -595,6 +596,10 @@ class MqttWorker(TaskProcessor):
         logged rather than failing startup.
         """
         cfg = cast(MqttWorkerConfig, self._config)
+        if not self._config_reloader.enabled:
+            # The local snapshot is part of the remote-config feature; when the
+            # feature is off the file is ignored rather than applied-then-logged.
+            return
         sections = read_local_config(self.conf_dir / cfg.config_file)
         if sections is None:
             return
@@ -642,8 +647,9 @@ class MqttWorker(TaskProcessor):
 
         Applied envelopes are logged at INFO with revision/hash; a stale
         envelope at DEBUG; an unavailable source at DEBUG (the common
-        "no config" fallback); everything else (invalid / bad signature /
-        unknown section) at ERROR.
+        "no config" fallback); a disabled feature at DEBUG (the reloader
+        short-circuits before touching the source); everything else
+        (invalid / bad signature / unknown section) at ERROR.
         """
         if outcome.applied:
             self.logger.info("Applied %s config revision %d (hash %s)", source, outcome.revision, outcome.hash)
@@ -651,6 +657,8 @@ class MqttWorker(TaskProcessor):
             self.logger.debug("Skipped stale %s config (revision %d)", source, outcome.revision)
         elif outcome.error_code == CONFIG_SOURCE_UNAVAILABLE:
             self.logger.debug("No %s config available; keeping local/default", source)
+        elif outcome.error_code == REMOTE_CONFIG_DISABLED:
+            self.logger.debug("Remote config is disabled; skipping %s config", source)
         else:
             self.logger.error("Failed to apply %s config: %s", source, outcome.error_code)
 

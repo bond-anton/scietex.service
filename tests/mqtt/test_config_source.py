@@ -18,6 +18,7 @@ from scietex.service.config_reload import (
     ConfigSections,
     ReloadableSettings,
     encode_config_envelope,
+    write_local_config,
 )
 from scietex.service.mqtt.config import MqttConfig, MqttWorkerConfig
 from scietex.service.mqtt.config_source import MqttConfigSource
@@ -265,6 +266,28 @@ async def test_initialize_invalid_remote_does_not_fail(monkeypatch, tmp_path):
     assert worker.config_revision == 0
     assert worker.config_source == "default"
     assert cast(TaskProcessorConfig, worker._config).task_timeout is None
+
+    await worker._stop_message_loop()
+    await worker.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_initialize_disabled_ignores_local_config_without_error(monkeypatch, tmp_path, caplog):
+    """With remote config disabled (the default), a present ``config.yml`` is
+    ignored and must not log an ERROR (a disabled feature is not a failure)."""
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=_settings(task_timeout=9.0)))
+    _patch_handler(monkeypatch)
+    fake = FakeClient()
+    worker = _make_worker(tmp_path, fake, remote_config_enabled=False, config_startup_timeout=0.05)
+
+    with caplog.at_level(logging.ERROR):
+        ok = await worker.initialize()
+
+    assert ok is True
+    assert worker.config_source == "default"
+    assert worker.config_revision == 0
+    assert cast(TaskProcessorConfig, worker._config).task_timeout is None
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
     await worker._stop_message_loop()
     await worker.disconnect()
