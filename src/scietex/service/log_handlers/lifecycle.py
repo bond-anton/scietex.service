@@ -32,7 +32,10 @@ class LoggingLifecycle:
                 logger and clamped config values used by handler start/stop.
         """
         self.worker: BasicWorker = worker
-        self.statuses: dict[str, LoggerStatus] = {}
+        # Keyed by handler identity, not name/class name: two unnamed handlers of
+        # the same class would otherwise share one status entry (AR-119). Identity
+        # is stable across cycles because a handler instance is reused on restart.
+        self.statuses: dict[AsyncLoggingHandler, LoggerStatus] = {}
 
     def register_logger_handler(self, handler: AsyncLoggingHandler) -> None:
         """
@@ -53,7 +56,10 @@ class LoggingLifecycle:
         Start all async logging handlers that are not already running.
 
         Iterates over the logger's handlers and calls start_logging() on each
-        AsyncLoggingHandler whose recorded status is not RUNNING. Handlers are
+        AsyncLoggingHandler whose recorded status is not RUNNING. Statuses are
+        keyed by handler identity, not name/class name, so two unnamed handlers
+        of the same class each get their own entry (AR-119). Non-async handlers
+        have no start/stop lifecycle and are not tracked. Handlers are
         restartable in place, so no replacement is needed. A handler that fails
         to start (timeout or exception) is recorded as FAILED so it is retried
         on the next start_handlers call. Handles timeouts and errors gracefully,
@@ -61,34 +67,34 @@ class LoggingLifecycle:
         state.
         """
         for handler in list(self.worker.logger.handlers):
-            handler_name = handler.name or handler.__class__.__name__
-            if handler_name in self.statuses and self.statuses[handler_name] == LoggerStatus.RUNNING:
-                continue
             if not isinstance(handler, AsyncLoggingHandler):
-                self.statuses[handler_name] = LoggerStatus.RUNNING
+                # Non-async handlers have no start/stop lifecycle to track.
                 continue
+            if self.statuses.get(handler) == LoggerStatus.RUNNING:
+                continue
+            label = handler.name or handler.__class__.__name__
             try:
                 await asyncio.wait_for(handler.start_logging(), timeout=self.worker.logger_handler_timeout)
             except asyncio.TimeoutError:
-                self.statuses[handler_name] = LoggerStatus.FAILED
+                self.statuses[handler] = LoggerStatus.FAILED
                 try:
-                    self.worker.logger.warning("Timeout starting logging handler %s (%s)", handler_name, handler)
+                    self.worker.logger.warning("Timeout starting logging handler %s (%s)", label, handler)
                 except Exception:
                     # logger itself may be in a bad state; fallback to print
-                    print(f"Timeout starting logging handler {handler_name} ({handler})")
+                    print(f"Timeout starting logging handler {label} ({handler})")
             except Exception as e:
-                self.statuses[handler_name] = LoggerStatus.FAILED
+                self.statuses[handler] = LoggerStatus.FAILED
                 try:
                     self.worker.logger.error(
                         "Failed to start logging handler %s (%s): %s",
-                        handler_name,
+                        label,
                         handler,
                         e,
                     )
                 except Exception:
-                    print(f"Failed to start logging handler {handler_name} ({handler}): {e}")
+                    print(f"Failed to start logging handler {label} ({handler}): {e}")
             else:
-                self.statuses[handler_name] = LoggerStatus.RUNNING
+                self.statuses[handler] = LoggerStatus.RUNNING
 
     async def shut_down_handlers(self) -> None:
         """Cleanly shut down all async logging handlers.
@@ -96,27 +102,32 @@ class LoggingLifecycle:
         This will attempt to stop each `AsyncLoggingHandler` with a per-handler
         timeout to avoid hanging shutdowns if a handler blocks. `stop_logging`
         is idempotent in scietex.logging >= 1.0, so it is safe to call on every
-        handler regardless of its current state.
+        handler regardless of its current state. Statuses are keyed by handler
+        identity, not name/class name, so two unnamed handlers of the same class
+        each get their own entry (AR-119). Non-async handlers have no start/stop
+        lifecycle and are not tracked.
         """
         for handler in self.worker.logger.handlers:
-            handler_name = handler.name or handler.__class__.__name__
-            if isinstance(handler, AsyncLoggingHandler):
+            if not isinstance(handler, AsyncLoggingHandler):
+                # Never started by this lifecycle; leave it out of the status map.
+                continue
+            label = handler.name or handler.__class__.__name__
+            try:
+                await asyncio.wait_for(handler.stop_logging(), timeout=self.worker.logger_handler_timeout)
+            except asyncio.TimeoutError:
                 try:
-                    await asyncio.wait_for(handler.stop_logging(), timeout=self.worker.logger_handler_timeout)
-                except asyncio.TimeoutError:
-                    try:
-                        self.worker.logger.warning("Timeout stopping logging handler %s (%s)", handler_name, handler)
-                    except Exception:
-                        # logger itself may be in a bad state; fallback to print
-                        print(f"Timeout stopping logging handler {handler_name} ({handler})")
-                except Exception as e:
-                    try:
-                        self.worker.logger.error(
-                            "Failed to shut down logging handler %s (%s): %s",
-                            handler_name,
-                            handler,
-                            e,
-                        )
-                    except Exception:
-                        print(f"Failed to shut down logging handler {handler_name} ({handler}): {e}")
-            self.statuses[handler_name] = LoggerStatus.STOPPED
+                    self.worker.logger.warning("Timeout stopping logging handler %s (%s)", label, handler)
+                except Exception:
+                    # logger itself may be in a bad state; fallback to print
+                    print(f"Timeout stopping logging handler {label} ({handler})")
+            except Exception as e:
+                try:
+                    self.worker.logger.error(
+                        "Failed to shut down logging handler %s (%s): %s",
+                        label,
+                        handler,
+                        e,
+                    )
+                except Exception:
+                    print(f"Failed to shut down logging handler {label} ({handler}): {e}")
+            self.statuses[handler] = LoggerStatus.STOPPED
