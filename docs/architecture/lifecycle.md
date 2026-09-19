@@ -6,11 +6,15 @@ workers, and resource ownership. Facts unless marked *analysis* or `UNKNOWN`.
 ## Worker lifecycle state machine
 
 States: `ServiceStatus` (STOPPED → STARTING → RUNNING → STOPPING → STOPPED).
-The state, `start_time`, both lifecycle events, and the pending stop-task guard
-are owned by `WorkerLifecycle` (`lifecycle.py`, extracted in AR-087); the
-transitions are driven by `BasicWorker`'s `_startup`/`_shutdown` orchestrators
-(`basic_worker.py`), which write `self._lifecycle.state` and delegate
-`request_exit()`/`force_stopped()`.
+The state, `start_time`, both lifecycle events, the pending stop-task guard,
+and the `_stopped` event are owned by `WorkerLifecycle` (`lifecycle.py`,
+extracted in AR-087); the transitions are driven by `BasicWorker`'s
+`_startup`/`_shutdown` orchestrators (`basic_worker.py`). `state` is not a
+settable attribute: state moves only through
+`WorkerLifecycle.transition(new_state)` — validated against an allowed-edge
+table, with an illegal edge raising `InvalidStateTransition` — or the
+unguarded terminal escape `force_stopped()`. The `_stopped` `asyncio.Event` is
+set iff the state is STOPPED, and `_wait_until_stopped()` awaits it.
 
 Two coordination events exist per worker in `self.events` (a read-only
 `MappingProxyType` view of two `asyncio.Event`s owned by `WorkerLifecycle`):
@@ -34,7 +38,8 @@ Public: `worker.start()` (454). It:
    359) and spawns task `"Start"` running `_startup()` (399).
 
 `_startup()`:
-1. If not STOPPED, waits (0.1 s poll) for a prior shutdown to finish.
+1. If not STOPPED, `_wait_until_stopped()` awaits the `_stopped` event for a
+   prior shutdown to finish.
 2. Sets STARTING; prints logo.
 3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
    running, with `logger_handler_timeout`.
@@ -64,8 +69,10 @@ Public: `worker.start()` (454). It:
 
 Failure: if `initialize()` returns `False` → `RuntimeError("Initialization
 failed")` → `_startup` calls `stop()` → shutdown begins. If `_startup` is
-cancelled, it logs, forces `_force_stopped()` (STOPPED + `exit` event), and
-re-raises — no stranded STARTING state (AR-017).
+cancelled, it logs, unwinds already-started managers in reverse start order
+via `_stop_managers_best_effort()` (`stop_managers(reverse=True)`), then forces
+`_force_stopped()` (STOPPED + `exit` event), and re-raises — no stranded
+STARTING state or orphaned managers (AR-017).
 
 > Ordering note: `initialize()` runs **before** `_register_instance()`, which
 > runs **before** `ManagerRuntime.start_managers()` (steps 4–6). Managers and
@@ -125,9 +132,11 @@ shutdown runs (AR-033). The dedup guard lives in
 6. `start_time = None`; state = STOPPED.
 7. If `exit_requested` was set → clear it, set `exit` event.
 
-If `_shutdown` is cancelled, it logs "Shutdown task cancelled", forces
-`_force_stopped()` (STOPPED + `exit` event if `exit_requested` was set), then
-re-raises — so a cancelled shutdown never strands the worker in STOPPING
+If `_shutdown` is cancelled, it logs "Shutdown task cancelled", unwinds
+already-started managers in reverse start order via
+`_stop_managers_best_effort()`, then forces `_force_stopped()` (STOPPED +
+`exit` event if `exit_requested` was set), then re-raises — so a cancelled
+shutdown never strands the worker in STOPPING or leaves managers running
 (AR-017, §H7).
 
 ### `exit()` vs waiting

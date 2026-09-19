@@ -70,6 +70,16 @@ called from `TaskProcessor.initialize()` at the run boundary, with
 `MqttConfigSource.reset()` clearing the MQTT snapshot — so a reused worker
 instance no longer drops the persisted `config.yml` on a second `start()`.
 
+**Follow-up (v4.5.0):** AR-106 — the worker lifecycle state machine is now
+guarded: `WorkerLifecycle.state` is no longer settable, and state moves only
+through `transition(new_state)` (validated against an allowed-edge table;
+illegal edges raise `InvalidStateTransition`) or the unguarded `force_stopped()`
+terminal escape. `_wait_until_stopped()` awaits the `_stopped` event (set iff
+STOPPED) instead of the 100 ms poll. `ManagerRuntime.stop_managers(reverse=True)` and
+`BasicWorker._stop_managers_best_effort()` (called from both cancellation
+handlers) unwind managers in reverse start order before forcing STOPPED, so a
+cancelled orchestrator no longer strands running managers under STOPPED.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

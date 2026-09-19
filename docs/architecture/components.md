@@ -36,13 +36,19 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 - Delegators (thin, to the composed components): `_setup_signal_handlers` 359
   → `SignalHandler.setup()` (Windows-safe no-op), `_remove_signal_handlers` 380
   → `SignalHandler.remove()`, `_request_exit` 371 → `WorkerLifecycle.request_exit()`,
-  `_force_stopped` 482 → `WorkerLifecycle.force_stopped()`; properties `state`,
-  `events`, `start_time` read from `WorkerLifecycle`
+  `_force_stopped` 482 → `WorkerLifecycle.force_stopped()`; properties `state`
+  (read-only — transitions go through `WorkerLifecycle.transition()`,
+  validated against an allowed-edge table, or the unguarded `force_stopped()`
+  terminal escape), `events`, `start_time` read from `WorkerLifecycle`
 - Lifecycle orchestrators: `_startup` 399, `start` 454, `_shutdown` 492,
   `stop` 539, `exit` 583
-- Cancellation terminal-state helper: `_force_stopped` 482 (AR-017 — forces
+- Cancellation terminal-state helpers: `_force_stopped` 482 (AR-017 — forces
   STOPPED + `exit` event on startup/shutdown cancellation; delegated to
-  `WorkerLifecycle.force_stopped()`)
+  `WorkerLifecycle.force_stopped()`) and `_stop_managers_best_effort` 503
+  (stops managers in reverse start order via `stop_managers(reverse=True)`;
+  both the `_startup` and `_shutdown` `CancelledError` handlers call it before
+  `_force_stopped()`, so a cancelled orchestrator never strands running
+  managers under STOPPED)
 - Hooks: `initialize` 389, `heartbeat` 593, `watchdog` 605, `cleanup` 625,
   `_register_instance` 634, `_unregister_instance` 644
 - Built-in managers: module-level `_heartbeat_manager` 692 and
@@ -120,7 +126,7 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 - `failed_managers` (property, 40) — names whose `statuses[name]` is
   `ManagerStatus.FAILED` (the recorded exception for each is in `errors`).
 - `start_manager` (220), `stop_manager` (241), `start_managers` (268),
-  `stop_managers` (278).
+  `stop_managers` (278, `*, reverse: bool = False` — reverse start order).
 
 **Public interface:** methods above; constructor takes `worker`.
 
