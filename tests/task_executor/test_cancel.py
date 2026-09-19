@@ -67,6 +67,36 @@ async def test_queued_cancel_clears_timeout_budget():
 
 
 @pytest.mark.asyncio
+async def test_queued_cancel_clears_retry_budget():
+    """cancel of a queued target clears any seeded error-path retry budget,
+    without touching another live task's budget (AR-122)."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    retry_attempts = {}
+    executor = build_executor(
+        recording,
+        queue=queue,
+        lifecycle=lifecycle,
+        retry_attempts=retry_attempts,
+    )
+    target_id = uuid4()
+    other_id = uuid4()
+    task_data = TaskData(task="dummy")
+    await queue.put((target_id, task_data))
+    # Simulate a retryable error that requeued this id: budget == 1.
+    retry_attempts[target_id] = 1
+    retry_attempts[other_id] = 1
+
+    outcome = await executor.cancel(target_id)
+
+    assert outcome == "cancelled"
+    assert queue.empty()
+    assert retry_attempts == {other_id: 1}  # target cleared, other untouched
+    assert recording.completed == [(target_id, task_data, None, "deliberate")]
+
+
+@pytest.mark.asyncio
 async def test_cancel_unknown_target_returns_not_running():
     """cancel of an unknown id yields not_running with no ack."""
     recording = Recording()

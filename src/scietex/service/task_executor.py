@@ -256,7 +256,10 @@ class TaskExecutor:
         queued_data = await self._remove_queued(target_id)
         if queued_data is not None:
             # The target never started, so no handle_task will run for it:
-            # write the terminal status directly.
+            # write the terminal status directly. Both per-id budgets are
+            # popped here because _settle/_apply_retry_policy never runs for a
+            # queued cancellation (AR-122).
+            self._retry_attempts.pop(target_id, None)
             self._timeout_requeues.pop(target_id, None)
             await self._on_completed(target_id, queued_data, None, cancel_reason="deliberate")
             return "cancelled"
