@@ -56,6 +56,12 @@ delegates the config lifecycle to it. The three `config:*` handlers are
 registered only when `remote_config_enabled=True` — on a disabled worker a
 `config:*` task is answered with the permanent "No handler found" result.
 
+**Follow-up (v4.5.0):** AR-104 — bounded timeout-driven requeue: a new
+restart-required `TaskProcessorConfig.max_timeout_requeues` ceiling (default 1)
+caps the watchdog's timeout requeue loop through a distinct
+`TaskExecutor._timeout_requeues` budget; on reaching the ceiling the entry is
+acked terminal instead of redelivered indefinitely.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
