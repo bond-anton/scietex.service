@@ -208,9 +208,9 @@ from a timeout. The task manager consumes the reason with
   `start_logging()`/`stop_logging()` may be called repeatedly on the same event
   loop. `start_handlers` starts each handler whose recorded status is not
   RUNNING; `shut_down_handlers` calls the idempotent `stop_logging()` and
-  records STOPPED. `statuses` tracks STOPPED/RUNNING/FAILED per handler name
-  (a handler that fails to start is recorded FAILED so it is retried on the
-  next `start_handlers`, AR-020).
+  records STOPPED. `statuses` tracks STOPPED/RUNNING/FAILED per async handler
+  identity (a handler that fails to start is recorded FAILED so it is retried
+  on the next `start_handlers`, AR-020).
 
 ## Resource ownership map
 

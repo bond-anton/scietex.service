@@ -105,6 +105,12 @@ documents the true ordering: section hooks run **before** the core swap
 (validate-before-swap), matching the reloader's actual behavior. The code was
 already correct; this is a documentation-accuracy fix.
 
+**Follow-up (v4.5.0):** AR-119 — `LoggingLifecycle.statuses` is now keyed by
+handler identity (the `AsyncLoggingHandler` instance) instead of `handler.name`
+or `__class__.__name__`, and non-async handlers are skipped in both
+`start_handlers` and `shut_down_handlers` (never inserted into `statuses`);
+three new tests pin the identity keying and the non-async skip.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

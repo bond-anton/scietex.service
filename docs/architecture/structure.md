@@ -99,7 +99,7 @@ Layout of the repository and the Python package.
 - **Package ⇄ external `scietex.logging`**: `basic_worker.py`,
   `valkey/worker.py`, and `mqtt/worker.py` attach external logging handlers.
   The worker treats them uniformly through `start_logging()`/`stop_logging()`
-  + `handler.name` (via `LoggingLifecycle`).
+  + handler identity (via `LoggingLifecycle`).
 - **Stale artifacts present in the tree** (not source): `build/`
   (`build/lib/scietex/service/` still contains `logo.py` — a historical flat
   copy of the logo module, no longer present in source — `valkey/valkey_async_worker_messaging.py`, and

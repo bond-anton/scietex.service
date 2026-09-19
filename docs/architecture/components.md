@@ -145,14 +145,14 @@ owning worker and owns the `statuses` dict (35).
 - `register_logger_handler(handler)` (37) — sets the handler level and
   attaches it to the worker logger; the handler is registered once and reused
   across start/stop cycles. The unused `name` parameter was removed (AR-070);
-  statuses are keyed by `handler.name` or `handler.__class__.__name__`
-  (lifecycle.py:64).
+  statuses are keyed by handler identity (the handler instance)
+  (lifecycle.py:38).
 - `start_handlers()` (51) — starts each `AsyncLoggingHandler` whose recorded
   status is not RUNNING, with `logger_handler_timeout`; sets status RUNNING on
   success, FAILED on timeout/exception so it is retried on the next start
   (AR-020).
-- `shut_down_handlers()` (93) — stops each handler (idempotent
-  `stop_logging()`), sets status STOPPED.
+- `shut_down_handlers()` (93) — stops each attached async handler (idempotent
+  `stop_logging()`), sets status STOPPED; non-async handlers are not tracked.
 
 **Dependencies:** `.log_handlers` (`LoggerStatus`), external
 `scietex.logging.AsyncLoggingHandler`.
