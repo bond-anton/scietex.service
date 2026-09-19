@@ -644,7 +644,7 @@ concurrent processing by a peer replica.
 `class TaskLeaseManager(*, service_name, consumer_name, lease_ttl,
 client_provider, logger, report_failure=None)` with `key(task_id)`
 (`scietex:{service}:lease:{id}`), `write(task_id)` (SET with consumer name +
-TTL), `acquire(task_id)` (SET NX; `True` on error, fail-safe), `delete(task_id)`
+TTL), `acquire(task_id)` (SET NX; `False` on error, defer), `delete(task_id)`
 (DEL), `refresh(task_ids)` (write per id over a snapshot).
 
 **Dependencies:** `._glide` (`ClientProvider`, glide error classes).

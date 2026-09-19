@@ -561,8 +561,10 @@ Lifecycle:
   (`ConditionalChange.ONLY_IF_DOES_NOT_EXIST`) so two replicas booting
   concurrently cannot both reclaim the same pending entry. It returns `True`
   when this worker holds (or already held) the lease and `False` when another
-  holder owns it. On a glide error it returns `True` — fail-open, because an
-  uncertain state must not block reclaim. `fetch()` still uses the plain
+   holder owns it. On a glide error it returns `False` (defer) — an
+   unverifiable claim is treated as not won, so recovery leaves the entry
+   pending and retries on the next poll rather than risking an enqueue this
+   worker never claimed (AR-121). `fetch()` still uses the plain
   `TaskLeaseManager.write()`, since `XREADGROUP ">"` delivers each new entry to
   exactly one consumer, so there is no concurrent claimant to race.
 - **Consulted as an ownership guard** in `recover_pending_tasks()`. A

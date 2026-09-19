@@ -119,6 +119,13 @@ two transports: a shared `RecoverableTransport` mixin
 are deleted), and `MqttWorker.initialize()` no longer recovers eagerly — recovery
 runs on the first `fetch` for both transports.
 
+**Follow-up (v4.5.0):** AR-121 — `TaskLeaseManager.acquire` now returns `False`
+(defer) on a glide connection error instead of `True`, so
+`ValkeyTransport.recover_pending_tasks` leaves the entry pending and reports
+recovery incomplete rather than enqueuing an entry this worker never claimed;
+the AR-120 `RecoverableTransport.ensure_recovered` guard then retries on the
+next `fetch`.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
