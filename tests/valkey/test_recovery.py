@@ -231,11 +231,11 @@ async def test_recover_pending_tasks_incomplete_when_lease_held_leaves_recovered
 
 
 @pytest.mark.asyncio
-async def test_recover_pending_tasks_lease_acquire_error_fails_safe():
-    """A glide error during atomic lease acquisition is fail-safe: the entry is
-    still reclaimed (enqueued) and recovery reports complete. The atomic
-    ``SET ... NX`` cannot distinguish "held" from "transport failed", so it
-    defaults to proceeding rather than risking a stuck pending entry (AR-060)."""
+async def test_recover_pending_tasks_lease_acquire_error_defers():
+    """A glide error during atomic lease acquisition is treated as not won: the
+    entry is not enqueued or recorded, and recovery reports incomplete so the
+    next poll retries the claim rather than risking an enqueue this worker
+    never claimed (AR-121)."""
     task_data = TaskData(task="dummy", payload=b"{}")
     payload = encode_task_envelope(task_data)
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
@@ -251,10 +251,32 @@ async def test_recover_pending_tasks_lease_acquire_error_fails_safe():
 
     recovery_complete, enqueued = await worker._transport.recover_pending_tasks(worker)
 
-    assert recovery_complete is True
-    assert enqueued is True
-    dequeued_id, _data = worker.dequeue_task()
-    assert dequeued_id == UUID("22222222-2222-2222-2222-222222222222")
+    assert (recovery_complete, enqueued) == (False, False)
+    assert worker.task_queue_empty()
+    assert UUID("22222222-2222-2222-2222-222222222222") not in worker._task_entry_ids
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_acquire_error_leaves_recovered_false_for_retry():
+    """fetch_tasks must not mark _recovered done when a lease-acquire error left
+    the entry pending, so the next poll retries the claim (AR-121)."""
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
+    client = DummyClient(
+        xautoclaim_result=[
+            b"0-0",
+            {b"9-0": [[b"22222222-2222-2222-2222-222222222222", payload]]},
+            [],
+        ],
+        set_error=mod.RequestError("acquire failed"),
+    )
+    worker._client = client
+    assert worker._transport.recovered is False
+
+    await worker.fetch_tasks()
+
+    assert worker._transport.recovered is False
 
 
 @pytest.mark.asyncio

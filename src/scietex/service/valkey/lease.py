@@ -102,7 +102,9 @@ class TaskLeaseManager:
         concurrently, exactly one wins the claim and the other defers. Returns
         ``True`` when this worker claimed the lease, ``False`` when the key
         already exists — whether another holder owns it or this worker already
-        holds it.
+        holds it, and ``False`` on a lease-store error: an unverifiable claim is
+        treated as not won, so recovery leaves the entry pending and retries
+        rather than risking an enqueue this worker never claimed (AR-121).
         """
         client = self._client_provider()
         if client is None:
@@ -118,7 +120,7 @@ class TaskLeaseManager:
             self._logger.log(logging.WARNING, "Failed to acquire lease for task %s: %s", task_id, exc)
             if self._report_failure is not None:
                 self._report_failure(exc)
-            return True
+            return False
         return result is not None
 
     async def delete(self, task_id: UUID) -> None:

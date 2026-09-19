@@ -249,9 +249,10 @@ async def test_acquire_task_lease_returns_true_when_absent():
 
 
 @pytest.mark.asyncio
-async def test_acquire_task_lease_fail_safe_on_error():
-    """A glide error during SET ... NX is fail-safe: ``TaskLeaseManager.acquire``
-    returns True (proceed) rather than raising."""
+async def test_acquire_task_lease_defers_on_error():
+    """A glide error during SET ... NX is not treated as a won claim:
+    ``TaskLeaseManager.acquire`` returns False (defer) rather than raising or
+    proceeding (AR-121)."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     client = DummyClient(set_error=mod.RequestError("set failed"))
@@ -259,4 +260,4 @@ async def test_acquire_task_lease_fail_safe_on_error():
 
     acquired = await worker._task_lease.acquire(t_id)
 
-    assert acquired is True
+    assert acquired is False
