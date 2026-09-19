@@ -577,6 +577,39 @@ async def test_watchdog_logs_critical_report(caplog):
 
 
 @pytest.mark.asyncio
+async def test_watchdog_prunes_inbox_once_per_interval(tmp_path, monkeypatch):
+    """watchdog calls inbox.prune_expired() on its first tick, throttled to one
+    call per INBOX_PRUNE_INTERVAL so the tombstone scan does not run every
+    1s watchdog tick (AR-115)."""
+    worker = _make_worker(tmp_path)
+    calls = []
+
+    async def prune_expired():
+        calls.append("prune")
+
+    monkeypatch.setattr(worker._inbox, "prune_expired", prune_expired)
+    worker._next_inbox_prune = 0.0
+
+    await worker.watchdog()
+    await worker.watchdog()
+
+    assert calls == ["prune"]
+    assert worker._next_inbox_prune > 0.0
+
+
+@pytest.mark.asyncio
+async def test_watchdog_prunes_not_without_durable_inbox(tmp_path):
+    """inbox_backend="none" (worker._inbox is None) never attempts a prune: the
+    at-most-once opt-out has no durable files to reclaim (AR-115)."""
+    worker = _make_worker(tmp_path, inbox_backend="none")
+
+    await worker.watchdog()
+
+    assert worker._inbox is None
+    assert worker._next_inbox_prune == 0.0
+
+
+@pytest.mark.asyncio
 async def test_cleanup_stops_loop_handler_and_disconnects(monkeypatch):
     """cleanup stops the message loop, stops the log handler, and disconnects."""
     _patch_handler(monkeypatch)

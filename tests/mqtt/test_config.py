@@ -22,10 +22,21 @@ def test_worker_config_status_ttl_default():
     assert MqttWorkerConfig().status_ttl == 86400
 
 
+def test_worker_config_inbox_ttl_default():
+    """inbox_ttl defaults to 86400 seconds (one day)."""
+    assert MqttWorkerConfig().inbox_ttl == 86400
+
+
 @pytest.mark.parametrize("status_ttl", [None, 1, 2592000])
 def test_worker_config_status_ttl_bounds_accept(status_ttl):
     """status_ttl=None and the [1, 2592000] bounds construct successfully."""
     assert MqttWorkerConfig(status_ttl=status_ttl).status_ttl == status_ttl
+
+
+@pytest.mark.parametrize("inbox_ttl", [None, 1, 2592000])
+def test_worker_config_inbox_ttl_bounds_accept(inbox_ttl):
+    """inbox_ttl=None and the [1, 2592000] bounds construct successfully."""
+    assert MqttWorkerConfig(inbox_ttl=inbox_ttl).inbox_ttl == inbox_ttl
 
 
 @pytest.mark.parametrize(
@@ -37,6 +48,8 @@ def test_worker_config_status_ttl_bounds_accept(status_ttl):
         ("progress_min_delta", 101),
         ("status_ttl", 0),
         ("status_ttl", 2592001),
+        ("inbox_ttl", 0),
+        ("inbox_ttl", 2592001),
     ],
 )
 def test_worker_config_status_fields_out_of_range_raises(field_name, value):

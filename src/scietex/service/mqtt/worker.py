@@ -34,6 +34,11 @@ from .transport import TASK_ID_PROPERTY, MqttTransport
 #: be at-least-once so the marker is reliably set; each beat refreshes it.
 _REGISTRY_QOS: int = 1
 
+#: Minimum seconds between inbox maintenance passes (AR-115). Pruning scans the
+#: tombstone set, so it is throttled well below the watchdog's default 1s tick;
+#: it only needs to keep tombstone growth bounded, not react instantly.
+INBOX_PRUNE_INTERVAL: float = 60.0
+
 # Client-construction injection seam (AR-074): connect() builds its client by
 # awaiting this callable with the resolved MqttConfig, so tests and embedders
 # can supply a fake or externally-built client without a live broker.
@@ -202,6 +207,11 @@ class MqttWorker(TransportWorker):
         # refuses to start when a real inbox was expected but could not be built.
         self._inbox: MqttInbox | None = self._build_inbox(cfg)
 
+        # Next monotonic timestamp at which the watchdog may prune the inbox
+        # (AR-115). Zero so the first watchdog tick reclaims tombstones left by
+        # a previous run.
+        self._next_inbox_prune: float = 0.0
+
         # The transport always receives a non-None inbox: the real one, or the
         # in-memory backend for the at-most-once opt-out. ``_intake_inbox`` is
         # that effective target, so the message loop persists through the same
@@ -249,6 +259,28 @@ class MqttWorker(TransportWorker):
         except OSError as exc:
             self.logger.error("Failed to build the MQTT inbox at %s: %s", path, exc)
             return None
+
+    async def watchdog(self) -> None:
+        """Run the shared watchdog, then maintain the durable inbox (AR-115).
+
+        Pruning is throttled to :data:`INBOX_PRUNE_INTERVAL`: the watchdog fires
+        every ``watchdog_interval`` (default 1s), but the tombstone scan is
+        O(files), so one maintenance pass runs per interval. This decouples
+        tombstone/entry expiry from the fetch poll, so the inbox self-bounds
+        even when no task arrives.
+        """
+        await super().watchdog()
+        await self._maybe_prune_inbox()
+
+    async def _maybe_prune_inbox(self) -> None:
+        """Prune the file inbox at most once per :data:`INBOX_PRUNE_INTERVAL`."""
+        if self._inbox is None:
+            return  # at-most-once opt-out: no durable files to prune
+        now = time.monotonic()
+        if now < self._next_inbox_prune:
+            return
+        self._next_inbox_prune = now + INBOX_PRUNE_INTERVAL
+        await self._inbox.prune_expired()
 
     @property
     def mqtt_config(self) -> MqttConfig | None:

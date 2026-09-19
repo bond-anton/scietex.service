@@ -43,7 +43,8 @@ class MqttInbox(Protocol):
     ``in-flight`` (:meth:`mark_in_flight`) to ``terminal``
     (:meth:`mark_terminal`). Only non-terminal entries are ever replayed
     (:meth:`recover`) or reported (:meth:`pending`), so a task that completed
-    is never re-processed.
+    is never re-processed. :meth:`prune_expired` is the maintenance hook the
+    worker schedules to bound on-disk growth.
     """
 
     async def put(self, task_id: UUID, task_data: TaskData) -> None: ...
@@ -55,6 +56,8 @@ class MqttInbox(Protocol):
     async def pending(self) -> list[tuple[UUID, TaskData]]: ...
 
     async def recover(self) -> list[tuple[UUID, TaskData]]: ...
+
+    async def prune_expired(self) -> None: ...
 
 
 class MemoryInbox:
@@ -87,6 +90,10 @@ class MemoryInbox:
 
     async def recover(self) -> list[tuple[UUID, TaskData]]:
         return []
+
+    async def prune_expired(self) -> None:
+        """No-op: the in-memory backend keeps no tombstones or durable files."""
+        return None
 
 
 class FileMqttInbox:
@@ -164,6 +171,26 @@ class FileMqttInbox:
             if isinstance(completed_at, (int, float)) and now - completed_at > self._ttl:
                 self._unlink_quietly(path)
 
+    def _prune_expired_entries(self, now: float) -> None:
+        """Delete entry files whose ``created_at`` predates the TTL window."""
+        if self._ttl is None:
+            return
+        for path in self._path.glob("*.json"):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            created_at = raw.get("created_at")
+            if isinstance(created_at, (int, float)) and now - created_at > self._ttl:
+                self._unlink_quietly(path)
+
+    def _prune_sync(self) -> None:
+        """One maintenance pass: expire tombstones and entries (AR-115)."""
+        self._path.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        self._prune_expired_tombstones(now)
+        self._prune_expired_entries(now)
+
     def _decode_envelope(self, envelope: str, entry_path: Path) -> TaskData | None:
         try:
             payload = base64.b64decode(envelope, validate=True)
@@ -215,12 +242,11 @@ class FileMqttInbox:
         """Scan the inbox and return non-terminal entries (``created_at``, id, data).
 
         Runs synchronously (called via ``asyncio.to_thread``). Corrupt, expired,
-        and tombstoned entries are skipped; expired files are pruned so the
-        directory does not grow without bound.
+        and tombstoned entries are skipped; expired files are unlinked inline
+        until the next :meth:`prune_expired` maintenance pass bounds growth.
         """
         self._path.mkdir(parents=True, exist_ok=True)
         now = time.time()
-        self._prune_expired_tombstones(now)
         entries: list[tuple[float, UUID, TaskData]] = []
         for entry_path in self._path.glob("*.json"):
             try:
@@ -271,6 +297,17 @@ class FileMqttInbox:
         """Record that ``task_id`` completed (success, error, or cancellation)."""
         async with self._lock:
             await asyncio.to_thread(self._mark_terminal_sync, task_id)
+
+    async def prune_expired(self) -> None:
+        """Delete tombstones and entries whose TTL window has elapsed (AR-115).
+
+        Decoupled from :meth:`_load_entries` so pruning is a maintenance pass
+        the worker schedules, not a side effect of a fetch poll: the fetch scan
+        no longer walks the ever-growing tombstone set. A no-op when ``ttl`` is
+        ``None`` (the explicit unbounded-dedup opt-out).
+        """
+        async with self._lock:
+            await asyncio.to_thread(self._prune_sync)
 
     async def pending(self) -> list[tuple[UUID, TaskData]]:
         """Return all non-terminal entries, oldest first (diagnostics/tests)."""

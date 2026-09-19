@@ -21,6 +21,7 @@ MIN_LOG_QOS: int = 0
 MAX_LOG_QOS: int = 2
 MIN_INBOX_TTL: int = 1
 MAX_INBOX_TTL: int = 30 * 24 * 3600
+DEFAULT_INBOX_TTL: int = 24 * 3600
 MIN_STATUS_QOS: int = 0
 MAX_STATUS_QOS: int = 2
 MIN_STATUS_TTL: int = 1
@@ -103,8 +104,9 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
             ``"none"`` is the explicit at-most-once opt-out.
         inbox_path: Optional path to the inbox store. ``None`` derives it from
             the config directory.
-        inbox_ttl: TTL in seconds for inbox entries (``[1, 2592000]``).
-            ``None`` disables expiry.
+        inbox_ttl: TTL in seconds for inbox entries and tombstones
+            (``[1, 2592000]``), defaulting to one day. ``None`` disables expiry
+            (an explicit unbounded-growth opt-out).
         log_topic: MQTT topic worker logs are published to. ``{service}`` is
             replaced with the service name.
         log_qos: QoS level for log messages (``[0, 2]``).
@@ -137,7 +139,7 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     task_qos: int = 2
     inbox_backend: Literal["file", "memory", "none"] = "file"
     inbox_path: str | None = None
-    inbox_ttl: int | None = None
+    inbox_ttl: int | None = DEFAULT_INBOX_TTL
     log_topic: str = "scietex/{service}/log"
     log_qos: int = 0
     log_retain: bool = False
