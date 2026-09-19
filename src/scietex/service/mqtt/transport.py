@@ -20,8 +20,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Literal, Protocol
+from typing import Protocol
 from uuid import UUID
 
 import msgspec
@@ -29,6 +28,7 @@ import msgspec
 from ..health import TransportHealth
 from ..task_handler.schemas import CancelReason, TaskData, TaskProgress, TaskResult, TaskStatus
 from ..task_handler.wire import encode_task_envelope
+from ..task_status import build_running_status, build_terminal_status
 from ..transport import TaskSink
 from ._aiomqtt import PacketTypes, Properties
 from .config import MqttWorkerConfig
@@ -61,10 +61,6 @@ class MqttPublish(Protocol):
         retain: bool = False,
         properties: Properties | None = None,
     ) -> None: ...
-
-
-#: ``TaskStatus.status`` values this transport emits.
-_StatusValue = Literal["queued", "running", "completed", "failed", "cancelled"]
 
 
 @dataclass
@@ -147,41 +143,17 @@ class MqttTransport:
         # restart also resets the in-flight task set.
         self._progress: dict[UUID, _ProgressThrottle] = {}
 
-    async def _publish_status(
-        self,
-        task_id: UUID,
-        task_data: TaskData,
-        status: _StatusValue,
-        *,
-        result: bytes | None = None,
-        data: TaskData | None = None,
-        error: str = "",
-        error_code: str = "",
-    ) -> None:
+    async def _publish_status(self, record: TaskStatus) -> None:
         """Publish a retained ``TaskStatus`` to the task's status topic.
 
-        Builds the record with the same field semantics as
-        ``TaskStatusStore.record_running``/``record_terminal`` (design §13.3),
-        then publishes it at ``status_qos`` with ``retain=True`` so the broker
-        keeps the latest status per task. A failure is logged at WARNING and
+        The record is built by the shared core builders
+        (:mod:`scietex.service.task_status`), so both transports populate exactly
+        the same fields (AR-114); this method only owns the publish. Publishes at
+        ``status_qos`` with ``retain=True``. A failure is logged at WARNING and
         reported to the health supervisor, never raised.
         """
         if not self._config.status_publish_enabled:
             return
-        now = datetime.now(timezone.utc)
-        record = TaskStatus(
-            task_id=str(task_id),
-            service=self._service_name,
-            task=task_data.task,
-            status=status,
-            progress=TaskProgress(),
-            result=result,
-            data=data,
-            error=error,
-            error_code=error_code,
-            created_at=now,
-            updated_at=now,
-        )
         # Build the expiry property per publish: a retained status with no TTL
         # (status_ttl=None) publishes no properties, exactly as before this
         # feature. The property is a fresh instance each publish because paho
@@ -192,7 +164,7 @@ class MqttTransport:
             properties.MessageExpiryInterval = self._config.status_ttl
         try:
             await self._publish(
-                f"{self._status_topic_prefix}/{task_id}/status",
+                f"{self._status_topic_prefix}/{record.task_id}/status",
                 self._encoder.encode(record),
                 self._config.status_qos,
                 retain=True,
@@ -202,8 +174,8 @@ class MqttTransport:
             self._logger.log(
                 logging.WARNING,
                 "Failed to publish %s status for task %s: %s",
-                status,
-                task_id,
+                record.status,
+                record.task_id,
                 exc,
             )
             self._health.report_failure(exc)
@@ -264,7 +236,7 @@ class MqttTransport:
                 self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", task_id)
                 break
             self._enqueued.add(task_id)
-            await self._publish_status(task_id, task_data, "queued")
+            await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
             enqueued = True
         return enqueued
 
@@ -301,7 +273,7 @@ class MqttTransport:
                 )
                 return False, enqueued
             self._enqueued.add(task_id)
-            await self._publish_status(task_id, task_data, "queued")
+            await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
             enqueued = True
         return True, enqueued
 
@@ -331,7 +303,7 @@ class MqttTransport:
             properties=properties,
         )
         self._progress.pop(task_id, None)
-        await self._publish_status(task_id, task_data, "queued")
+        await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
 
     async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
         """Record that a task began processing (the inbox entry is in-flight).
@@ -341,7 +313,7 @@ class MqttTransport:
         """
         await self._inbox.mark_in_flight(task_id)
         self._progress.pop(task_id, None)
-        await self._publish_status(task_id, task_data, "running")
+        await self._publish_status(build_running_status(task_id, self._service_name, task_data))
 
     async def ack(
         self,
@@ -378,27 +350,9 @@ class MqttTransport:
         throttle = self._progress.get(task_id)
         if throttle is not None and throttle.pending is not None:
             await self._publish_progress(task_id, throttle.pending)
-        if task_result is None:
-            # Mirrors TaskStatusStore.record_terminal: a None result means the
-            # task was cancelled; a deliberate cancel embeds the original
-            # TaskData, while timeout/shutdown stay ``failed`` (design §13.3).
-            deliberate = cancel_reason == "deliberate"
-            await self._publish_status(
-                task_id,
-                task_data,
-                "cancelled" if deliberate else "failed",
-                data=task_data if deliberate else None,
-                error="canceled",
-            )
-        else:
-            await self._publish_status(
-                task_id,
-                task_data,
-                "completed" if task_result.status == "success" else "failed",
-                result=task_result.payload if task_result.status == "success" else None,
-                error=task_result.error,
-                error_code=task_result.error_code,
-            )
+        await self._publish_status(
+            build_terminal_status(task_id, self._service_name, task_data, task_result, cancel_reason)
+        )
         self._progress.pop(task_id, None)
         # Mark terminal (persist the tombstone) before releasing the in-process
         # claim, so a crash mid-ack redelivers rather than loses the task.

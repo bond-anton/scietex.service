@@ -16,6 +16,7 @@ import msgspec
 import msgspec.structs
 
 from ..task_handler import CancelReason, TaskData, TaskProgress, TaskResult, TaskStatus
+from ..task_status import build_running_status, build_terminal_status
 from ._glide import (
     ClientProvider,
     ExpirySet,
@@ -78,18 +79,7 @@ class TaskStatusStore:
 
     async def record_running(self, task_id: UUID, task_data: TaskData) -> None:
         """Publish a ``running`` tracking record when a task begins."""
-        now = datetime.now(timezone.utc)
-        await self._write(
-            TaskStatus(
-                task_id=str(task_id),
-                service=self._service_name,
-                task=task_data.task,
-                status="running",
-                progress=TaskProgress(),
-                created_at=now,
-                updated_at=now,
-            )
-        )
+        await self._write(build_running_status(task_id, self._service_name, task_data))
 
     async def record_terminal(
         self,
@@ -100,43 +90,10 @@ class TaskStatusStore:
     ) -> None:
         """Publish a terminal tracking record for a completed task.
 
-        ``task_data`` is ``None`` only in unit tests that exercise the ack path
-        in isolation, so fall back to an empty task name. ``task_result`` is
-        ``None`` when the task was cancelled before producing a result. A
-        deliberate ``cancel_task`` (``cancel_reason == "deliberate"``) writes
-        ``status="cancelled"`` and embeds the original ``TaskData`` in the
-        record; timeout/shutdown cancellations keep the ``failed`` status.
+        The field-population matrix is shared with the MQTT status publisher;
+        see :func:`scietex.service.task_status.build_terminal_status` (AR-114).
         """
-        now = datetime.now(timezone.utc)
-        task_name = task_data.task if task_data is not None else ""
-        if task_result is None:
-            deliberate = cancel_reason == "deliberate"
-            await self._write(
-                TaskStatus(
-                    task_id=str(task_id),
-                    service=self._service_name,
-                    task=task_name,
-                    status="cancelled" if deliberate else "failed",
-                    data=task_data if deliberate else None,
-                    error="canceled",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-        else:
-            await self._write(
-                TaskStatus(
-                    task_id=str(task_id),
-                    service=self._service_name,
-                    task=task_name,
-                    status="completed" if task_result.status == "success" else "failed",
-                    result=task_result.payload if task_result.status == "success" else None,
-                    error=task_result.error,
-                    error_code=task_result.error_code,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
+        await self._write(build_terminal_status(task_id, self._service_name, task_data, task_result, cancel_reason))
 
     async def update_progress(self, task_id: UUID, value: float) -> None:
         """Update the tracking record's progress for a running task.

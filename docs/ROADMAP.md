@@ -42,6 +42,12 @@ methods: the dead `release` method is removed and `refresh_leases()`/
 `recover_pending_tasks(sink)` are promoted to required Protocol members, so
 workers stay protocol-typed with no concrete down-cast.
 
+**Follow-up (v4.5.0):** AR-114 — the per-task `TaskStatus` field-population
+matrix now lives once in the core module `src/scietex/service/task_status.py`
+(`build_running_status`/`build_terminal_status`); `TaskStatusStore` and
+`MqttTransport` both delegate to it, so the two transports can no longer drift.
+A parametrized cross-transport equivalence test pins the invariant.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
