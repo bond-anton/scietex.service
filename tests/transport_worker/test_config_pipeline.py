@@ -40,7 +40,7 @@ async def test_apply_local_config_applies_revision_one(tmp_path):
 
     await worker._apply_local_config()
 
-    assert worker._config_reloader.revision == 1
+    assert worker._config_manager.revision == 1
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,7 @@ async def test_apply_local_config_skipped_when_disabled(tmp_path):
 
     await worker._apply_local_config()
 
-    assert worker._config_reloader.revision == 0
+    assert worker._config_manager.revision == 0
 
 
 @pytest.mark.asyncio

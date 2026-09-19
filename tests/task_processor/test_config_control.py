@@ -458,10 +458,10 @@ def test_config_handlers_supported_tasks_is_single(handler_cls, task_type, kwarg
 
 
 @pytest.mark.asyncio
-async def test_processor_registers_all_three_config_handlers():
-    """The processor registers apply/store/show handlers that dispatch on their
-    task types."""
-    proc = TaskProcessor()
+async def test_enabled_processor_registers_config_handlers():
+    """An enabled processor registers apply/store/show handlers that dispatch on
+    their task types."""
+    proc = TaskProcessor(TaskProcessorConfig(remote_config_enabled=True))
     await proc._start_task_handler("ConfigApplyHandler")
     await proc._start_task_handler("ConfigStoreHandler")
     await proc._start_task_handler("ConfigShowHandler")
@@ -472,11 +472,25 @@ async def test_processor_registers_all_three_config_handlers():
 
 
 @pytest.mark.asyncio
+async def test_disabled_processor_does_not_register_config_handlers():
+    """A disabled processor registers no config:* handlers, so none of the three
+    task types resolves to an active handler."""
+    proc = TaskProcessor()
+    await proc._start_task_handler("ConfigApplyHandler")
+    await proc._start_task_handler("ConfigStoreHandler")
+    await proc._start_task_handler("ConfigShowHandler")
+
+    assert proc._find_task_handler(CONFIG_APPLY_TASK_TYPE) is None
+    assert proc._find_task_handler(CONFIG_STORE_TASK_TYPE) is None
+    assert proc._find_task_handler(CONFIG_SHOW_TASK_TYPE) is None
+
+
+@pytest.mark.asyncio
 async def test_remote_config_disabled_apply_returns_disabled(tmp_path):
     """With the master switch off, an inline apply is rejected with
     REMOTE_CONFIG_DISABLED."""
     proc = make_processor(tmp_path)
-    outcome = await proc._config_apply(make_envelope(revision=1), False)
+    outcome = await proc._config_manager.apply_config(make_envelope(revision=1), False)
 
     assert outcome.applied is False
     assert outcome.error_code == REMOTE_CONFIG_DISABLED
@@ -487,7 +501,7 @@ async def test_remote_config_disabled_show_reports_disabled(tmp_path):
     """With the master switch off, ``config:show`` reports
     REMOTE_CONFIG_DISABLED rather than the effective settings."""
     proc = make_processor(tmp_path)
-    response = proc._config_show(True)
+    response = proc._config_manager.show_config(True)
 
     assert response.error_code == REMOTE_CONFIG_DISABLED
     assert response.error == "remote config is disabled"
@@ -503,9 +517,9 @@ async def test_remote_config_disabled_store_remote_is_gated(tmp_path):
     REMOTE_CONFIG_DISABLED rather than publishing to the source."""
     proc = make_processor(tmp_path)
     source = FakeConfigSource()
-    proc._config_source = source
+    proc._config_manager.attach_source(source)
 
-    outcome = await proc._config_store("remote")
+    outcome = await proc._config_manager.store_config("remote")
 
     assert outcome.stored is False
     assert outcome.error_code == REMOTE_CONFIG_DISABLED
@@ -517,7 +531,7 @@ async def test_apply_with_no_source_and_none_payload_returns_source_unavailable(
     """``payload=None`` with no attached source of truth is
     CONFIG_SOURCE_UNAVAILABLE."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
-    outcome = await proc._config_apply(None, False)
+    outcome = await proc._config_manager.apply_config(None, False)
 
     assert outcome.applied is False
     assert outcome.error_code == CONFIG_SOURCE_UNAVAILABLE
@@ -528,9 +542,9 @@ async def test_apply_reload_from_source_updates_revision_and_source(tmp_path):
     """``payload=None`` with an attached source reloads and records the applied
     revision and ``remote`` source label."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
-    proc._config_source = FakeConfigSource(payload=make_envelope(revision=5))
+    proc._config_manager.attach_source(FakeConfigSource(payload=make_envelope(revision=5)))
 
-    outcome = await proc._config_apply(None, False)
+    outcome = await proc._config_manager.apply_config(None, False)
 
     assert outcome.applied is True
     assert outcome.revision == 5
@@ -542,7 +556,7 @@ async def test_apply_reload_from_source_updates_revision_and_source(tmp_path):
 async def test_apply_inline_payload_sets_source_inline(tmp_path):
     """An inline envelope applies with the ``inline`` source label."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
-    outcome = await proc._config_apply(make_envelope(revision=1), False)
+    outcome = await proc._config_manager.apply_config(make_envelope(revision=1), False)
 
     assert outcome.applied is True
     assert proc.config_source == "inline"
@@ -552,7 +566,7 @@ async def test_apply_inline_payload_sets_source_inline(tmp_path):
 async def test_apply_persist_writes_config_yml(tmp_path):
     """``persist=True`` writes the local snapshot after a successful apply."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
-    outcome = await proc._config_apply(make_envelope(revision=1), True)
+    outcome = await proc._config_manager.apply_config(make_envelope(revision=1), True)
 
     assert outcome.applied is True
     assert (tmp_path / "config.yml").exists()
@@ -562,7 +576,7 @@ async def test_apply_persist_writes_config_yml(tmp_path):
 async def test_store_disk_writes_file(tmp_path):
     """``config:store`` to disk writes ``<conf_dir>/config.yml``."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
-    outcome = await proc._config_store("disk")
+    outcome = await proc._config_manager.store_config("disk")
 
     assert outcome.stored is True
     assert (tmp_path / "config.yml").exists()
@@ -573,9 +587,9 @@ async def test_store_remote_calls_source_store(tmp_path):
     """``config:store`` to remote publishes to the attached source."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
     source = FakeConfigSource()
-    proc._config_source = source
+    proc._config_manager.attach_source(source)
 
-    outcome = await proc._config_store("remote")
+    outcome = await proc._config_manager.store_config("remote")
 
     assert outcome.stored is True
     assert len(source.stored) == 1
@@ -586,9 +600,9 @@ async def test_store_both_writes_disk_and_source(tmp_path):
     """``config:store`` to both writes the file and publishes to the source."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
     source = FakeConfigSource()
-    proc._config_source = source
+    proc._config_manager.attach_source(source)
 
-    outcome = await proc._config_store("both")
+    outcome = await proc._config_manager.store_config("both")
 
     assert outcome.stored is True
     assert (tmp_path / "config.yml").exists()
@@ -599,15 +613,15 @@ def test_show_restart_required_fields_gated_on_request(tmp_path):
     """``restart_required_fields`` is populated only when requested."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
 
-    assert proc._config_show(True).restart_required_fields
-    assert proc._config_show(False).restart_required_fields == []
+    assert proc._config_manager.show_config(True).restart_required_fields
+    assert proc._config_manager.show_config(False).restart_required_fields == []
 
 
 def test_show_never_contains_connection_config(tmp_path):
     """The show payload exposes only core + registered services and never a
     connection-config field name."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
-    response = proc._config_show(True)
+    response = proc._config_manager.show_config(True)
 
     sections = msgspec.msgpack.decode(response.settings, type=ConfigSections)
     assert sections.services == {}
@@ -686,7 +700,7 @@ async def test_register_config_settings_registered_section_calls_hook(tmp_path):
         core=make_settings(),
         services={"my_service": msgspec.msgpack.encode(MyServiceSettings(batch_size=42))},
     )
-    outcome = await proc._config_apply(make_envelope(sections, revision=1), False)
+    outcome = await proc._config_manager.apply_config(make_envelope(sections, revision=1), False)
 
     assert outcome.applied is True
     assert len(applied) == 1
@@ -700,7 +714,7 @@ async def test_apply_unknown_section_rejected(tmp_path):
     proc = make_processor(tmp_path, remote_config_enabled=True)
     sections = ConfigSections(core=make_settings(), services={"unknown": msgspec.msgpack.encode({"x": 1})})
 
-    outcome = await proc._config_apply(make_envelope(sections, revision=1), False)
+    outcome = await proc._config_manager.apply_config(make_envelope(sections, revision=1), False)
 
     assert outcome.applied is False
     assert outcome.error_code == UNKNOWN_CONFIG_SECTION
@@ -736,7 +750,7 @@ def test_reload_updates_every_read_path_atomically(tmp_path):
     assert eff.task_handler_start_timeout == proc.task_handler_start_timeout
     assert eff.task_handler_stop_timeout == proc.task_handler_stop_timeout
 
-    decoded = msgspec.msgpack.decode(proc._config_show(False).settings, type=ConfigSections)
+    decoded = msgspec.msgpack.decode(proc._config_manager.show_config(False).settings, type=ConfigSections)
     assert decoded.core == proc._current_reloadable_settings()
     assert decoded.core == eff
 
@@ -750,7 +764,7 @@ def test_auto_tune_effective_matches_show(tmp_path):
         auto_tune=True,
         max_concurrent_tasks=None,
     )
-    decoded = msgspec.msgpack.decode(proc._config_show(False).settings, type=ConfigSections)
+    decoded = msgspec.msgpack.decode(proc._config_manager.show_config(False).settings, type=ConfigSections)
 
     assert proc.max_concurrent_tasks == proc._current_reloadable_settings().max_concurrent_tasks
     assert proc._current_reloadable_settings().max_concurrent_tasks == decoded.core.max_concurrent_tasks

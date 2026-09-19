@@ -185,7 +185,7 @@ class MqttWorker(TransportWorker):
         self._status_topic_prefix = cfg.status_topic_prefix.format(service=self.service_name)
         # Retained desired-state topic for remote config (design §2), resolved
         # like task_topic. The source records snapshots from this topic and is
-        # attached to the processor's `_config_source` seam below.
+        # attached to the processor's config-manager source seam below.
         self._config_topic = cfg.config_topic.format(service=self.service_name)
         self._mqtt_config_source = MqttConfigSource(
             topic=self._config_topic,
@@ -194,7 +194,7 @@ class MqttWorker(TransportWorker):
             publish=self._publish,
             logger=self.logger,
         )
-        self._config_source = self._mqtt_config_source
+        self._config_manager.attach_source(self._mqtt_config_source)
 
         # Durable inbox (design §10 #3). ``None`` for the "none" opt-out or a
         # failed file-inbox build; the transport receives a non-None inbox via
@@ -549,7 +549,7 @@ class MqttWorker(TransportWorker):
         if snapshot is None:
             return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
         try:
-            return await self._config_reloader.apply_envelope(snapshot, source="remote")
+            return await self._config_manager.apply_envelope(snapshot, source="remote")
         except Exception as exc:
             self.logger.error("Failed to apply remote config: %s", exc)
             return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)

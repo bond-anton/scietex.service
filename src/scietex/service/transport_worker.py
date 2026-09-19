@@ -8,7 +8,7 @@ the transport itself stay in the concrete worker.
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from .config import TaskProcessorConfig
 from .config_reload import (
@@ -16,8 +16,6 @@ from .config_reload import (
     REMOTE_CONFIG_DISABLED,
     STALE_CONFIG,
     ConfigApplyOutcome,
-    encode_config_envelope,
-    read_local_config,
 )
 from .health import TransportHealth
 from .task_processor import TaskProcessor
@@ -94,19 +92,9 @@ class TransportWorker(TaskProcessor):
         remote source stays authoritative. A disabled feature skips the file
         without logging an error.
         """
-        if not self._config_reloader.enabled:
-            return
-        cfg = cast(TaskProcessorConfig, self._config)
-        sections = read_local_config(self.conf_dir / cfg.config_file)
-        if sections is None:
-            return
-        try:
-            payload = encode_config_envelope(sections, revision=1)
-            outcome = await self._config_reloader.apply_envelope(payload, source="file")
-        except Exception as exc:
-            self.logger.error("Failed to apply local config: %s", exc)
-            return
-        self._log_config_outcome(outcome, "file")
+        outcome = await self._config_manager.apply_local_file()
+        if outcome is not None:
+            self._log_config_outcome(outcome, "file")
 
     async def _reload_remote_config(self) -> None:
         """Apply the remote desired state, then log its outcome.

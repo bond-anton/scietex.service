@@ -431,10 +431,12 @@ class ValkeyWorker(TransportWorker):
         # Attach the durable-key source now that the client exists, then apply
         # the local snapshot and the remote source of truth. Startup must not
         # fail on a bad or unreachable remote config (availability-first).
-        self._config_source = ValkeyConfigSource(
-            client_provider=lambda: self._client,
-            key=self._config_key,
-            logger=self.logger,
+        self._config_manager.attach_source(
+            ValkeyConfigSource(
+                client_provider=lambda: self._client,
+                key=self._config_key,
+                logger=self.logger,
+            )
         )
         await self._apply_local_config()
         await self._reload_remote_config()
@@ -461,11 +463,8 @@ class ValkeyWorker(TransportWorker):
         source maps to ``CONFIG_SOURCE_UNAVAILABLE``, so the base pipeline logs
         the "no config available" fallback instead of an error.
         """
-        source = self._config_source
-        if source is None:
-            return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
         try:
-            return await self._config_reloader.reload(source)
+            return await self._config_manager.reload_remote()
         except Exception as exc:
             self.logger.error("Failed to reload remote config: %s", exc)
             return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
