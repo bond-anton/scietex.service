@@ -100,6 +100,11 @@ as `RETRYABLE_ERROR_CODES = frozenset({CONFIG_SOURCE_UNAVAILABLE})`, and
 `CONFIG_SOURCE_UNAVAILABLE` (retryable during a network blip) while
 `CONFIG_STORE_FAILED` is local-disk-only.
 
+**Follow-up (v4.5.0):** AR-118 — the `register_config_settings` docstring now
+documents the true ordering: section hooks run **before** the core swap
+(validate-before-swap), matching the reloader's actual behavior. The code was
+already correct; this is a documentation-accuracy fix.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
