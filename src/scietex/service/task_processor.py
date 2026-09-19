@@ -229,14 +229,18 @@ class TaskProcessor(BasicWorker):
         Extension point for custom services: the reloadable surface grows with
         service-specific fields without the core knowing them. The registered
         struct is decoded against ``forbid_unknown_fields`` and its ``apply``
-        hook is called (in registration order) after the core swap succeeds.
+        hook is invoked with the decoded struct during an apply, before the
+        core swap (validate-before-swap). Hooks run in the order the sections
+        appear in the envelope. If a hook raises, the apply aborts with
+        ``INVALID_CONFIG`` and the core settings are left unchanged.
         Delegates to the config manager.
 
         Args:
             name: Section name used as the key in ``ConfigSections.services``.
             struct_type: The ``msgspec.Struct`` type to decode the section
                 bytes against.
-            apply: Hook called with the decoded struct during an apply.
+            apply: Hook called with the decoded struct during an apply, before
+                the core swap.
         """
         self._config_manager.register_section(name, struct_type, apply=apply)
 

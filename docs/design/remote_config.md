@@ -207,7 +207,7 @@ class ConfigSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
   section against its registered struct. An unregistered section name is
   rejected (`UNKNOWN_CONFIG_SECTION`).
 - Each section's `apply` hook is called **before** the core swap, in
-  registration order (`config_reload.py:434-439`). A hook that raises aborts
+  registration order (`config_reload.py:470-482`). A hook that raises aborts
   the whole apply with no state change (validate-before-swap: the core swap
   runs only after every hook passes).
 - Registration is additive and idempotent per section name; re-registering the
