@@ -126,6 +126,12 @@ recovery incomplete rather than enqueuing an entry this worker never claimed;
 the AR-120 `RecoverableTransport.ensure_recovered` guard then retries on the
 next `fetch`.
 
+**Follow-up (v4.5.0):** AR-122 — `TaskExecutor.cancel`'s queued branch now pops
+`_retry_attempts[target_id]` (symmetrically with the existing AR-104
+`_timeout_requeues` pop) before acking, so a task requeued for retry and then
+cancelled while still queued no longer leaks its error-path retry budget; a
+regression test pins that only the target's budget is cleared.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
