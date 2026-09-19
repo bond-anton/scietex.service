@@ -236,6 +236,40 @@ async def test_initialize_none_backend_proceeds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_initialize_defers_recovery_to_first_fetch(monkeypatch, tmp_path):
+    """Recovery of a previous run's non-terminal inbox entries no longer runs
+    eagerly in initialize(): the shared RecoverableTransport guard owns it and
+    runs on the first fetch, so initialize leaves the inbox untouched."""
+    _patch_handler(monkeypatch)
+    fake = FakeClient()
+
+    async def factory(cfg):
+        return fake
+
+    worker = MqttWorker(
+        MqttWorkerConfig(
+            service_name="svc",
+            mqtt_config=MqttConfig(),
+            inbox_backend="file",
+            inbox_path=str(tmp_path / "inbox"),
+            config_startup_timeout=0.0,
+        ),
+        client_factory=factory,
+    )
+    task_id = uuid4()
+    task_data = TaskData(task="send_email")
+    await worker._inbox.put(task_id, task_data)
+
+    assert await worker.initialize() is True
+    assert worker.dequeue_task() is None
+
+    assert await worker.fetch_tasks() is True
+    assert worker.dequeue_task() == (task_id, task_data)
+
+    await worker.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_message_persists_without_enqueueing(tmp_path):
     """A message carrying the task-id user property is persisted to the inbox
     but NOT enqueued directly; the transport's fetch() drains it (design §3.2)."""

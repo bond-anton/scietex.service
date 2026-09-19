@@ -768,9 +768,10 @@ tombstone so the requeued copy is accepted — AR-077b mirror), `on_progress`
 (no-op), `on_drain` (drops the marker, leaving the entry pending for recovery),
 and `refresh_leases()` (no-op parity with `ValkeyTransport`).
 
-**State owned:** the `recovered` flag (one-time pending recovery) and the
-`_enqueued` set (task ids handed to the sink but not yet terminal, so the
-inbox snapshot is not re-enqueued on every poll).
+**State owned:** the `_enqueued` set (task ids handed to the sink but not yet
+terminal, so the inbox snapshot is not re-enqueued on every poll). The
+`recovered` flag and the recovery-once guard are inherited from the shared
+`RecoverableTransport` scaffold (`transport.py`), not owned here.
 
 `TASK_ID_PROPERTY` (`"scietex-task-id"`, `mqtt/transport.py:45`, exported in
 `__all__` at `:37`) carries the task id as an MQTT 5 user property;

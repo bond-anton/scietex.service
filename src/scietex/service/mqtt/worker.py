@@ -508,15 +508,17 @@ class MqttWorker(TransportWorker):
                 self._health.report_failure(exc)
 
     async def initialize(self) -> bool:
-        """Initialize the worker, connect, and replay the inbox.
+        """Initialize the worker and connect.
 
         Calls the parent ``TaskProcessor.initialize()`` to start registered
-        task handlers, then connects to the broker (``connect`` now subscribes
-        to the task and config topics and starts the background message loop via
-        :meth:`_start_intake`) and replays any non-terminal inbox entries left
-        by a previous run. The at-least-once guard runs first: when a durable
-        inbox was expected (``inbox_backend == "file"``) but none could be
-        built, the worker refuses to start rather than silently degrading to
+        task handlers, then connects to the broker (``connect`` subscribes to
+        the task and config topics and starts the background message loop via
+        :meth:`_start_intake`). Recovery of non-terminal inbox entries left by a
+        previous run is not performed here: it is owned by the shared
+        :class:`~scietex.service.transport.RecoverableTransport` guard and runs
+        on the first :meth:`fetch`. The at-least-once guard runs first: when a
+        durable inbox was expected (``inbox_backend == "file"``) but none could
+        be built, the worker refuses to start rather than silently degrading to
         at-most-once (design §3.3).
 
         After a successful connect (and subscription) the local ``config.yml``
@@ -526,10 +528,10 @@ class MqttWorker(TransportWorker):
         timed-out remote config never fails startup.
 
         Returns:
-            ``True`` if the parent initialization, connection (including
-            subscription and loop start), and inbox replay succeed. ``False``
-            if the parent initialization fails, the at-least-once guard trips,
-            or the connection (or its subscription) fails.
+            ``True`` if the parent initialization and connection (including
+            subscription and loop start) succeed. ``False`` if the parent
+            initialization fails, the at-least-once guard trips, or the
+            connection (or its subscription) fails.
         """
         cfg = cast(MqttWorkerConfig, self._config)
         # At-least-once guard (design §10 #3): refuse before starting handlers
@@ -553,12 +555,6 @@ class MqttWorker(TransportWorker):
         self._mqtt_config_source.reset()
         await self._apply_local_config()
         await self._reload_remote_config()
-        # Replay non-terminal inbox entries from a previous run before managers
-        # start. The first fetch() re-runs recovery if this was interrupted, so
-        # marking recovered here only skips that redundant re-scan.
-        recovered, _ = await self._transport.recover_pending_tasks(self)
-        if recovered:
-            self._mqtt_transport.recovered = True
         return True
 
     async def _read_remote_outcome(self) -> ConfigApplyOutcome:

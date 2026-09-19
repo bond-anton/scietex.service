@@ -91,7 +91,7 @@ Implements the eight `TaskTransport` methods. Mapping from MQTT semantics:
 | `on_progress(task_id, value)` | Publish a throttled `TaskProgress` message to the per-task progress topic (addendum §13); a no-op when status publishing is disabled. Progress also stays in-process via `TaskCapabilities`. |
 | `on_drain(task_id, task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. No status is published. |
 | `refresh_leases()` | No-op: the file-backed inbox holds no per-entry lease to renew (kept for parity with `ValkeyTransport`). |
-| `recover_pending_tasks(sink)` | Replay non-terminal inbox entries on startup, returning `(recovery_complete, enqueued)`. |
+| `recover_pending_tasks(sink)` | Replay non-terminal inbox entries on the first `fetch` (shared `RecoverableTransport` guard), returning `(recovery_complete, enqueued)`. |
 
 Every lifecycle hook additionally publishes a status message when status
 publishing is enabled; the table above lists delivery behavior only. See
@@ -99,8 +99,8 @@ addendum §13 for the publishing contract.
 
 `recover_pending_tasks` and `refresh_leases` are now Protocol members
 (AR-113), not MQTT-specific extras: `recover_pending_tasks(sink)` replays
-non-terminal inbox entries on startup, and `refresh_leases()` is a no-op for
-the file-backed inbox (kept for parity with `ValkeyTransport`).
+non-terminal inbox entries on the first `fetch`, and `refresh_leases()` is a
+no-op for the file-backed inbox (kept for parity with `ValkeyTransport`).
 
 ### 2.3 `MqttWorker`
 
@@ -120,7 +120,7 @@ Lifecycle overrides mirror `ValkeyWorker`:
 | Override | Behavior |
 |---|---|
 | `_connect_locked` / `_disconnect_locked` | Build/enter and exit/tear-down the aiomqtt client (the lock is held by the base `connect()`/`disconnect()`). |
-| `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task and config topics → apply local/remote config → replay the inbox. |
+| `initialize` | `super().initialize()` → connect the MQTT client → subscribe to the task and config topics → apply local/remote config (recovery is deferred to the first `fetch`). |
 | `cleanup` | `super().cleanup()` → stop the message loop → stop the log handler → disconnect → flush the inbox. |
 | `_read_remote_outcome` | Await the retained config snapshot (bounded `config_startup_timeout`) and apply it. |
 | `heartbeat` | Publish a retained heartbeat message on `scietex/{service}/workers/{instance_id}` (§10 #6). |
@@ -221,8 +221,9 @@ Flow:
 3. The processor runs the handler.
 4. On terminal completion, `ack` marks the inbox entry terminal and removes it
    (or writes a tombstone for dedupe).
-5. On startup, `recover_pending_tasks` replays every non-terminal inbox entry
-   back into the queue.
+5. On the first `fetch` (shared `RecoverableTransport` guard),
+   `recover_pending_tasks` replays every non-terminal inbox entry back into the
+   queue.
 
 Dedupe: a task id that is already terminal (or already in-flight) is skipped on
 replay. The inbox is the source of truth for "has this task been processed".
