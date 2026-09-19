@@ -80,6 +80,17 @@ STOPPED) instead of the 100 ms poll. `ManagerRuntime.stop_managers(reverse=True)
 handlers) unwind managers in reverse start order before forcing STOPPED, so a
 cancelled orchestrator no longer strands running managers under STOPPED.
 
+**Follow-up (v4.5.0):** AR-107 — manager registration now converges on one
+path. The descriptor-free `ManagerDefinition` value (`__slots__ = ("name",
+"method", "cleanup", "owner", "attribute_name")`) is the only type stored in
+`MANAGER_REGISTRY_ATTR`, produced by the single private `_record_definition`
+primitive that both `Manager.__set_name__` and `register_manager` funnel
+through; `Manager` keeps its decorator + descriptor roles and
+`ManagerRuntime.iter_manager_definitions()` yields `(name, ManagerDefinition)`.
+`BasicWorker`'s built-in Heartbeat/Watchdog managers are now `@Manager`-decorated
+methods (`_heartbeat_manager`/`_watchdog_manager`) on the class, and
+`register_manager` is a compatibility shim with no in-tree production caller.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

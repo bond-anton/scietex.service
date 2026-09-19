@@ -497,7 +497,7 @@ guide](docs/remote_config.md) and `examples/remote_config.py`.
 | `BasicWorker` | Base async daemon worker |
 | `TaskProcessor` | Concurrent task processor |
 | `Manager` | Decorator for creating managed async loop methods |
-| `register_manager` | Explicit post-creation manager registration (`register_manager(owner, method, *, name, ...)`) |
+| `register_manager` | Explicit post-creation manager registration (`register_manager(owner, method, *, name, ...)`); compatibility shim with no in-tree production caller |
 | `TaskTransport` | Protocol for the task-delivery backend (`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`) |
 | `TaskSink` | Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`) |
 | `InMemoryTransport` | Default in-process transport (deque-backed; `submit()` feeds it) |

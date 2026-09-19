@@ -138,8 +138,8 @@ a class's per-instance task sets must not overlap.
 
 ## F5. Heartbeat flow
 
-**Source:** `_heartbeat_manager` (`basic_worker.py:692`, registered via
-`register_manager(..., name="Heartbeat")` at 712) — sleeps
+**Source:** `_heartbeat_manager` (`basic_worker.py:654`, a
+`@Manager(name="Heartbeat")`-decorated method) — sleeps
 `heartbeat_interval`, calls `self.heartbeat()`, repeats.
 `ValkeyWorker.heartbeat` (415) is the only concrete override.
 

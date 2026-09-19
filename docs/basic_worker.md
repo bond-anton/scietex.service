@@ -128,8 +128,10 @@ the terminal `FAILED` state (AR-063) — the watchdog logs CRITICAL when a
 manager has failed, but the worker does not auto-shutdown (the degradation
 stays observable via `worker.failed_managers`).
 
-Managers are recorded in a per-class registry (`__manager_registry__`),
-populated by `Manager.__set_name__` when the class is created. Discovery
+Managers are recorded as descriptor-free `ManagerDefinition` values in a
+per-class registry (`__manager_registry__`), populated by a single
+`_record_definition` primitive that both `Manager.__set_name__` and
+`register_manager` funnel through. Discovery
 walks the class MRO (most-derived to base classes) reading each class's own
 registry, and runs each manager as a named `asyncio.Task` object.
 
@@ -219,15 +221,13 @@ append, letting the discovery-time collision warning report a duplicate
 
 ### Built-in Managers
 
-`BasicWorker` provides two built-in managers. They are module-level async
-functions registered via `register_manager(BasicWorker, ...)` (AR-087) — not
-`@Manager`-decorated methods — with the optional `attribute_name` binding them
-as `_heartbeat_manager`/`_watchdog_manager`:
+`BasicWorker` provides two built-in managers, both `@Manager`-decorated
+methods on the class:
 
 | Manager | Method | Interval | Description |
 |---|---|---|---|
-| `Heartbeat` | `_heartbeat_manager` (module function) | `heartbeat_interval` | Periodically calls `heartbeat()` |
-| `Watchdog` | `_watchdog_manager` (module function) | `watchdog_interval` | Periodically calls `watchdog()` |
+| `Heartbeat` | `_heartbeat_manager` (method) | `heartbeat_interval` | Periodically calls `heartbeat()` |
+| `Watchdog` | `_watchdog_manager` (method) | `watchdog_interval` | Periodically calls `watchdog()` |
 
 Discovery order is unchanged: `TaskManager → TaskQueueManager → Heartbeat →
 Watchdog`. Subclasses can override `heartbeat()` and `watchdog()` to define

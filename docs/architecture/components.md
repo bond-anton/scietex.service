@@ -51,11 +51,9 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
   managers under STOPPED)
 - Hooks: `initialize` 389, `heartbeat` 593, `watchdog` 605, `cleanup` 625,
   `_register_instance` 634, `_unregister_instance` 644
-- Built-in managers: module-level `_heartbeat_manager` 692 and
-  `_watchdog_manager` 702, registered via `register_manager(BasicWorker, ...)`
-  (712, 718) with `name="Heartbeat"`/`"Watchdog"` and
-  `attribute_name="_heartbeat_manager"`/`"_watchdog_manager"` — no longer
-  `@Manager`-decorated methods (AR-087)
+- Built-in managers: `@Manager(name="Heartbeat")`-decorated
+  `_heartbeat_manager` 653 and `@Manager(name="Watchdog")`-decorated
+  `_watchdog_manager` 663 (AR-107)
 - `_setup_signal_handlers` called from `start()` (479), not `__init__`;
   `_remove_signal_handlers` called from `stop()` (561)
 
@@ -79,7 +77,7 @@ managers stop and before `cleanup()` teardown. Both are no-ops in the base;
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
 (`LoggingLifecycle`), `.lifecycle` (`WorkerLifecycle`), `.signal_handler`
-(`SignalHandler`), `.manager` (`register_manager`), `.log_handlers`
+(`SignalHandler`), `.manager` (`Manager`), `.log_handlers`
 (`parse_logging_level`), `.config` (`prepare_conf_dir`), `.version`
 (`__version__`, for the logo); external `scietex.logging.ConsoleHandler`.
 
@@ -100,8 +98,10 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 (37).
 - `iter_manager_definitions()` (49) — walks `type(self.worker).__mro__`
   **most-derived-first** (79), reading each class's own
-  `__manager_registry__` list (populated by `Manager.__set_name__` and
-  `register_manager`) and de-duplicating names via a `seen` set so a
+  `__manager_registry__` list of `ManagerDefinition` values (populated by the
+  single `_record_definition` primitive, shared by `Manager.__set_name__` and
+  `register_manager`) and yielding `(name, ManagerDefinition)`, de-duplicating
+  names via a `seen` set so a
   subclass override shadows the base definition. When two managers
   independently pick the same `name=`, a WARNING is logged naming the
   colliding manager and the class it was found on (AR-068); the first
@@ -110,7 +110,7 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
   name without re-decorating it also logs an advisory WARNING (AR-086
   failure mode 2), because the plain attribute produces no registry entry and
   discovery falls through to the base manager.
-- `run_manager(name, manager)` (138) — runs `manager.method(self.worker)` in a
+- `run_manager(name, manager: ManagerDefinition)` (138) — runs `manager.method(self.worker)` in a
   `while True` loop (168); on a non-`CancelledError` exception records the error
   (177) and retries after `manager_restart_backoff` (196), giving up when
   `consecutive_failures > manager_max_retries` — i.e. on the
@@ -130,7 +130,7 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 
 **Public interface:** methods above; constructor takes `worker`.
 
-**Dependencies:** `.manager` (`Manager`, `ManagerStatus`); stdlib.
+**Dependencies:** `.manager` (`Manager`, `ManagerDefinition`, `ManagerStatus`); stdlib.
 **Depended on by:** `BasicWorker` (constructs and forwards to it).
 
 ## 3. Logging lifecycle — `LoggingLifecycle`
@@ -158,20 +158,30 @@ owning worker and owns the `statuses` dict (35).
 `scietex.logging.AsyncLoggingHandler`.
 **Depended on by:** `BasicWorker` (constructs and forwards to it).
 
-## 4. Manager decorator — `Manager` / `ManagerStatus`
+## 4. Manager decorator — `Manager` / `ManagerDefinition` / `ManagerStatus`
 
 **File:** `src/scietex/service/manager/__init__.py`
 
 **Purpose:** A class-based decorator turning an async method into a "managed
-loop". The worker (via `ManagerRuntime`) reads the managers recorded in each
-class's `__manager_registry__` across the MRO, runs their `method` in an
-infinite loop under an `asyncio.Task`, restarts
+loop". `Manager` keeps the decorator + descriptor roles; the registry-entry
+role moved to the descriptor-free `ManagerDefinition` value, the only type
+stored in `MANAGER_REGISTRY_ATTR`. The worker (via `ManagerRuntime`) reads the
+definitions recorded in each class's `__manager_registry__` across the MRO,
+runs their `method` in an infinite loop under an `asyncio.Task`, restarts
 on error, and invokes an optional `cleanup` callable on stop.
 
-**Main symbols:** `ManagerStatus` (16), `Manager` (26). Attributes: `name`,
-`cleanup`, `method`. `Manager.__call__` (91) returns `self` (decorator
-identity); `Manager.__get__` (108) binds the wrapped method to the instance
-(descriptor protocol). `ManagerStatus` values: `STARTING`, `RUNNING`,
+**Main symbols:** `ManagerStatus` (17), `ManagerDefinition` (27), `Manager`
+(67). `ManagerDefinition` is a plain data holder (`__slots__ = ("name",
+"method", "cleanup", "owner", "attribute_name")`) produced only by the private
+`_record_definition(owner, definition, *, replace)` primitive (175) — the
+single mutation point for `MANAGER_REGISTRY_ATTR`, shared by
+`Manager.__set_name__` and `register_manager`. `Manager` attributes: `name`,
+`cleanup`, `method`. `Manager.__call__` (136) returns `self` (decorator
+identity); `Manager.__set_name__` (111) builds a `ManagerDefinition` and
+records it via `_record_definition`; `Manager.__get__` (153) binds the wrapped
+method to the instance (descriptor protocol). `register_manager` (204) is the
+explicit post-creation registration path, now a compatibility shim with no
+in-tree production caller. `ManagerStatus` values: `STARTING`, `RUNNING`,
 `STOPPING`, `STOPPED`, and terminal `FAILED` (AR-063) — set when a manager
 exhausts its retry budget instead of stopping cleanly.
 
