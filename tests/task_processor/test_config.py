@@ -3,6 +3,8 @@
 import os
 from typing import cast
 
+import pytest
+
 from scietex.service.config import (
     DEFAULT_MANAGER_SLEEP_TIME,
     DEFAULT_MAX_CONCURRENT_TASKS,
@@ -14,7 +16,7 @@ from scietex.service.config import (
     DEFAULT_TASK_TIMEOUT,
     TaskProcessorConfig,
 )
-from scietex.service.config_reload import ReloadableSettings
+from scietex.service.config_reload import ConfigSections, ReloadableSettings, encode_config_envelope
 from scietex.service.task_processor import TaskProcessor
 
 from ._helpers import DemoProcessor
@@ -80,3 +82,36 @@ def test_default_and_explicit_max_timeout_requeues():
     an explicit value is respected (AR-104)."""
     assert TaskProcessor().max_timeout_requeues == DEFAULT_MAX_TIMEOUT_REQUEUES
     assert DemoProcessor(TaskProcessorConfig(max_timeout_requeues=7)).max_timeout_requeues == 7
+
+
+@pytest.mark.asyncio
+async def test_initialize_resets_config_replay_state():
+    """A second ``initialize()`` clears the apply bookkeeping left by a previous
+    start cycle, so a fresh run starts from revision 0 / ``default`` source and
+    the revision-1 local snapshot is not rejected as stale (AR-111)."""
+    proc = TaskProcessor(TaskProcessorConfig(remote_config_enabled=True))
+    envelope = encode_config_envelope(
+        ConfigSections(
+            core=ReloadableSettings(
+                max_concurrent_tasks=DEFAULT_MAX_CONCURRENT_TASKS,
+                task_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
+                task_queue_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
+                task_handler_start_timeout=DEFAULT_TASK_HANDLER_START_TIMEOUT,
+                task_handler_stop_timeout=DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+                task_timeout=DEFAULT_TASK_TIMEOUT,
+                task_queue_fetch_timeout=DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
+                task_cancellation_timeout=DEFAULT_TASK_CANCELLATION_TIMEOUT,
+            )
+        ),
+        revision=5,
+    )
+
+    outcome = await proc._config_manager.apply_envelope(envelope, source="remote")
+    assert outcome.applied is True
+    assert proc.config_revision == 5
+    assert proc.config_source == "remote"
+
+    assert await proc.initialize() is True
+
+    assert proc.config_revision == 0
+    assert proc.config_source == "default"

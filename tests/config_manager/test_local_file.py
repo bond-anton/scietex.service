@@ -4,7 +4,7 @@ import pytest
 
 from scietex.service.config_reload import ConfigSections, read_local_config, write_local_config
 
-from ._helpers import build_manager, make_settings
+from ._helpers import build_manager, make_envelope, make_settings
 
 
 @pytest.mark.asyncio
@@ -59,6 +59,41 @@ async def test_apply_local_file_error_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(manager._reloader, "apply_envelope", boom)
 
     assert await manager.apply_local_file() is None
+
+
+@pytest.mark.asyncio
+async def test_apply_local_file_after_remote_revision_applies(tmp_path):
+    """A local snapshot still applies after a higher remote revision because
+    ``reset()`` clears run-scoped replay state (AR-111)."""
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings(task_timeout=9.0)))
+    manager = build_manager(tmp_path, enabled=True)
+
+    remote = await manager.apply_envelope(make_envelope(revision=5), source="remote")
+    assert remote.applied is True
+    assert manager.revision == 5
+
+    manager.reset()
+
+    outcome = await manager.apply_local_file()
+    assert outcome is not None
+    assert outcome.applied is True
+    assert manager.source == "file"
+    assert manager.revision == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_local_file_with_signing_key_applies(tmp_path):
+    """A local snapshot applies as a trusted unsigned envelope even when
+    signing is enabled (the signature check is skipped for the trusted file)."""
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings(task_timeout=9.0)))
+    manager = build_manager(tmp_path, enabled=True, signing_key="secret")
+
+    outcome = await manager.apply_local_file()
+
+    assert outcome is not None
+    assert outcome.applied is True
+    assert manager.source == "file"
+    assert manager.revision == 1
 
 
 def test_write_local_round_trips_atomically(tmp_path):

@@ -258,6 +258,38 @@ async def test_unsigned_envelope_accepted_without_key():
     assert outcome.applied is True
 
 
+@pytest.mark.asyncio
+async def test_trusted_skips_signature_but_not_replay():
+    reloader = _reloader(signing_key="secret")
+
+    # A trusted unsigned envelope bypasses signature verification.
+    outcome = await reloader.apply_envelope(
+        encode_config_envelope(_sections(), revision=1), source="file", trusted=True
+    )
+    assert outcome.applied is True
+    assert reloader.revision == 1
+
+    # The same unsigned envelope over the untrusted path is rejected.
+    outcome = await reloader.apply_envelope(encode_config_envelope(_sections(), revision=2), source="remote")
+    assert outcome.applied is False
+    assert outcome.error_code == BAD_SIGNATURE
+
+    # Advance the applied revision so a stale replay can be detected.
+    outcome = await reloader.apply_envelope(
+        encode_config_envelope(_sections(), revision=3, signing_key="secret"),
+        source="remote",
+    )
+    assert outcome.applied is True
+    assert reloader.revision == 3
+
+    # The replay guard still applies to trusted input.
+    outcome = await reloader.apply_envelope(
+        encode_config_envelope(_sections(), revision=2), source="file", trusted=True
+    )
+    assert outcome.applied is False
+    assert outcome.error_code == STALE_CONFIG
+
+
 # --- revision / replay ------------------------------------------------------
 
 
@@ -313,6 +345,29 @@ async def test_equal_revision_different_hash_stale():
     assert outcome.applied is False
     assert outcome.error_code == STALE_CONFIG
     assert reloader.revision == 3
+
+
+@pytest.mark.asyncio
+async def test_reset_restores_initial_replay_state():
+    reloader = _reloader()
+    reloader.register_section("svc", _ServiceA, lambda value: None)
+    section = _ServiceA(a=1)
+    sections = _sections(services={"svc": msgspec.msgpack.encode(section)})
+    outcome = await reloader.apply_envelope(encode_config_envelope(sections, revision=5), source="remote")
+    assert outcome.applied is True
+    assert reloader.revision == 5
+    assert reloader.source == "remote"
+    assert reloader.show().services == {"svc": msgspec.msgpack.encode(section)}
+
+    reloader.reset()
+
+    assert reloader.revision == 0
+    assert reloader.hash == ""
+    assert reloader.source == "default"
+    assert reloader.show().services == {}
+
+    outcome = await reloader.apply_envelope(encode_config_envelope(_sections(), revision=1), source="remote")
+    assert outcome.applied is True
 
 
 # --- settings validation ----------------------------------------------------

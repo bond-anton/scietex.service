@@ -518,6 +518,7 @@ class MqttWorker(TransportWorker):
         # Apply the persisted snapshot first, then the retained remote snapshot
         # (which arrives via the message loop started by connect). Startup must
         # not fail on a bad or absent remote config (availability-first).
+        self._mqtt_config_source.reset()
         await self._apply_local_config()
         await self._reload_remote_config()
         # Replay non-terminal inbox entries from a previous run before managers

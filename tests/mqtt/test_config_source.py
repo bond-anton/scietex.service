@@ -146,6 +146,34 @@ async def test_wait_for_snapshot_times_out_cleanly():
 
 
 @pytest.mark.asyncio
+async def test_reset_clears_snapshot_and_event():
+    """``reset`` drops a recorded snapshot and clears the delivery event, so a
+    fresh run does not observe the previous run's retained message (AR-111)."""
+    source, _ = _source()
+    source.record(b"envelope-bytes")
+    assert await source.load() == b"envelope-bytes"
+
+    source.reset()
+
+    assert await source.load() is None
+    assert await source.wait_for_snapshot(0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_second_initialize_awaits_fresh_snapshot():
+    """After ``reset``, ``wait_for_snapshot`` does not return the cleared
+    payload: a fresh run waits for this run's retained delivery (AR-111)."""
+    source, _ = _source()
+    source.record(b"old-envelope")
+
+    source.reset()
+
+    snapshot = await source.wait_for_snapshot(0.01)
+    assert snapshot is None
+    assert snapshot != b"old-envelope"
+
+
+@pytest.mark.asyncio
 async def test_store_publishes_retained_with_ttl():
     """``store`` publishes retained at ``qos`` with a message-expiry equal to
     ``ttl`` (mirroring the status_ttl pattern)."""
@@ -227,6 +255,41 @@ async def test_initialize_applies_remote_config(monkeypatch, tmp_path):
     assert worker.config_revision == 5
     assert worker.config_source == "remote"
     assert cast(TaskProcessorConfig, worker._config).task_timeout == 7.0
+
+    await worker._stop_message_loop()
+    await worker.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_second_initialize_reapplies_local_config(monkeypatch, tmp_path):
+    """A second ``initialize()`` of the same worker re-applies the local
+    ``config.yml`` when no fresh retained snapshot is delivered, instead of
+    re-using the previous run's retained message (AR-111 step 4)."""
+    _patch_handler(monkeypatch)
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=_settings(task_timeout=9.0)))
+    fake = FakeClient()
+    envelope = encode_config_envelope(
+        ConfigSections(core=_settings(task_timeout=7.0)),
+        revision=5,
+    )
+    fake.feed(_FakeMessage(envelope, topic=_CONFIG_TOPIC))
+    worker = _make_worker(tmp_path, fake, config_startup_timeout=0.05)
+
+    ok = await worker.initialize()
+    assert ok is True
+    assert worker.config_source == "remote"
+    assert cast(TaskProcessorConfig, worker._config).task_timeout == 7.0
+
+    # Simulate the stop half of a stop->start cycle on the same worker.
+    await worker._stop_message_loop()
+    await worker.disconnect()
+
+    # Second start: no fresh retained delivery, so the previous run's in-memory
+    # snapshot must not be re-applied; the local file wins instead.
+    ok = await worker.initialize()
+    assert ok is True
+    assert worker.config_source == "file"
+    assert cast(TaskProcessorConfig, worker._config).task_timeout == 9.0
 
     await worker._stop_message_loop()
     await worker.disconnect()

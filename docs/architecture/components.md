@@ -855,10 +855,16 @@ private to `TaskProcessor`.
   + swap the core, returning changed names), `current` (snapshot the effective
   core), `restart_required` (non-reloadable field names), `logger`,
   `signing_key`, and `enabled`. `register_section(name, struct_type, apply)`
-  (322) is the additive/idempotent service-section registry.
-  `apply_envelope(payload, *, source)` (343) runs decode → version → hash →
-  optional signature → replay → decode sections → run section hooks → swap the
-  core; a raising hook aborts before any state change. `reload(source)` (472)
+  (322) is the additive/idempotent service-section registry. `reset()` (343)
+  clears the run-scoped apply bookkeeping (`_applied_revision`/`_applied_hash`/
+  `_source`/`_section_raw`) while preserving registered sections and injected
+  callbacks — the run-boundary contract, called before any startup apply.
+  `apply_envelope(payload, *, source, trusted=False)` (360) runs decode →
+  version → hash → optional signature → replay → decode sections → run section
+  hooks → swap the core; `trusted=True` skips signature verification for a
+  trusted local artifact (the replay guard still applies, and the flag must
+  never be set for remote or inline input); a raising hook aborts before any
+  state change. `reload(source)` (472)
   loads the desired-state envelope and applies it (a `None` payload or a `load`
   exception maps to `CONFIG_SOURCE_UNAVAILABLE`). `store(source, *,
   target="remote")` (496) persists the effective config back. `show()` (549)

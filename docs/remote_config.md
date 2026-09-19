@@ -293,9 +293,16 @@ constructor config  <  config.yml  <  remote source
 
 1. The constructor config is the base.
 2. `config.yml` (if present) is applied as a trusted, unsigned snapshot
-   (revision `1`, below any remote revision).
+   (revision `1`, below any remote revision); signature verification is waived
+   for this local file only — remote and inline envelopes are still verified.
 3. The remote source is read and applied last, so it stays authoritative when
    present.
+
+This precedence is re-established on **every** run of the same worker instance:
+each run starts from the constructor/default baseline (the run boundary resets
+apply state via `ConfigReloader.reset()`), so the local file and the remote
+source are re-applied from scratch rather than replaying the previous run's
+revision.
 
 **Valkey**: `ValkeyWorker.initialize()` connects, attaches a
 `ValkeyConfigSource` on the operational client, applies the local snapshot,

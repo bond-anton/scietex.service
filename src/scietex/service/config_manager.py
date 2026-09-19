@@ -110,6 +110,10 @@ class ConfigManager:
         """Register a service settings struct and its apply hook with the reloader."""
         self._reloader.register_section(name, struct_type, apply)
 
+    def reset(self) -> None:
+        """Reset run-scoped replay state for a fresh run start (AR-111)."""
+        self._reloader.reset()
+
     def attach_source(self, source: ConfigSource | None) -> None:
         """Attach (or clear) the transport's desired-state ``ConfigSource``."""
         self._source = source
@@ -224,7 +228,7 @@ class ConfigManager:
             return None
         try:
             payload = encode_config_envelope(sections, revision=1)
-            outcome = await self._reloader.apply_envelope(payload, source="file")
+            outcome = await self._reloader.apply_envelope(payload, source="file", trusted=True)
         except Exception as exc:
             self._logger.error("Failed to apply local config: %s", exc)
             return None

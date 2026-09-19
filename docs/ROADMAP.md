@@ -62,6 +62,14 @@ caps the watchdog's timeout requeue loop through a distinct
 `TaskExecutor._timeout_requeues` budget; on reaching the ceiling the entry is
 acked terminal instead of redelivered indefinitely.
 
+**Follow-up (v4.5.0):** AR-111 — reloader state now resets per run: the new
+`ConfigReloader.reset()` clears the run-scoped apply bookkeeping,
+`apply_envelope(trusted=True)` skips signature verification for the trusted
+local artifact, and `ConfigManager.reset()` (delegating to the reloader) is
+called from `TaskProcessor.initialize()` at the run boundary, with
+`MqttConfigSource.reset()` clearing the MQTT snapshot — so a reused worker
+instance no longer drops the persisted `config.yml` on a second `start()`.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

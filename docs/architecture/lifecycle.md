@@ -39,7 +39,12 @@ Public: `worker.start()` (454). It:
 3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
    running, with `logger_handler_timeout`.
 4. `initialize()` (389) — subclass hook; must return truthy.
-   - `TaskProcessor.initialize` (823) starts every registered task handler
+   - `TaskProcessor.initialize` (621) resets the run-scoped remote-config
+     replay/apply bookkeeping (`_config_manager.reset()` →
+     `ConfigReloader.reset()`) before starting any handler, so each run begins
+     from the constructor/default baseline (`config_revision == 0`,
+     `config_source == "default"`) rather than replaying the previous run's
+     state; it then starts every registered task handler
      (`_start_task_handler`, awaited per handler).
    - `ValkeyWorker.initialize` (461) calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows

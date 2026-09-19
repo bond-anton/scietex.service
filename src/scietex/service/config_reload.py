@@ -340,7 +340,24 @@ class ConfigReloader:
         """
         self._sections[name] = (struct_type, apply)
 
-    async def apply_envelope(self, payload: bytes, *, source: str) -> ConfigApplyOutcome:
+    def reset(self) -> None:
+        """Clear run-scoped apply bookkeeping for a fresh run start (AR-111).
+
+        ``_applied_revision``/``_applied_hash``/``_source``/``_section_raw`` are
+        instance-lifetime otherwise, so a second ``start()`` of the same worker
+        would reject the revision-1 local snapshot as ``STALE_CONFIG`` and keep
+        the previous run's shadow config. Registered sections (configuration)
+        and the injected callbacks are intentionally left untouched, and the
+        replay guard still applies to every envelope within a run.
+
+        Must be called at the run boundary, before any startup apply.
+        """
+        self._applied_revision = 0
+        self._applied_hash = ""
+        self._source = "default"
+        self._section_raw = {}
+
+    async def apply_envelope(self, payload: bytes, *, source: str, trusted: bool = False) -> ConfigApplyOutcome:
         """Apply a remote config envelope under the reloader's lock.
 
         Runs the full pipeline: decode, version, hash, optional signature,
@@ -352,6 +369,11 @@ class ConfigReloader:
             payload: The msgpack-encoded :class:`ConfigEnvelope` bytes.
             source: Label recorded on success (e.g. ``"remote"`` or
                 ``"inline"``).
+            trusted: When ``True``, signature verification is skipped because
+                the envelope is a trusted local artifact (the persisted
+                ``config.yml`` snapshot) rather than input read off a
+                transport. The replay guard still applies. Must never be set
+                for remote or inline input, which is untrusted.
 
         Returns:
             A :class:`ConfigApplyOutcome` describing the result.
@@ -373,9 +395,13 @@ class ConfigReloader:
             if hashlib.sha256(envelope.settings).hexdigest() != envelope.hash:
                 self._logger.error("Config apply rejected: settings hash mismatch")
                 return ConfigApplyOutcome(applied=False, error_code=HASH_MISMATCH)
-            if self._signing_key is not None and not hmac.compare_digest(
-                _compute_signature(self._signing_key, envelope.revision, envelope.settings),
-                envelope.signature,
+            if (
+                not trusted
+                and self._signing_key is not None
+                and not hmac.compare_digest(
+                    _compute_signature(self._signing_key, envelope.revision, envelope.settings),
+                    envelope.signature,
+                )
             ):
                 self._logger.error("Config apply rejected: bad signature")
                 return ConfigApplyOutcome(applied=False, error_code=BAD_SIGNATURE)

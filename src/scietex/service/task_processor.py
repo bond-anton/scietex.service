@@ -631,6 +631,11 @@ class TaskProcessor(BasicWorker):
             so the worker fails fast instead of running with a handler
             that never became ready.
         """
+        # Run-scoped reset (AR-111): clear replay/apply bookkeeping left by a
+        # previous start cycle so this run's config.yml snapshot is not treated
+        # as stale and no stale section/remote shadow survives. Registered
+        # sections and handlers are preserved.
+        self._config_manager.reset()
         for handler_name in self.__task_handlers_map:
             if not await self._start_task_handler(handler_name):
                 return False

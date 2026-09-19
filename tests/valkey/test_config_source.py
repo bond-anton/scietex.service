@@ -233,6 +233,43 @@ async def test_initialize_applies_local_config(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_second_initialize_reapplies_local_config(monkeypatch, tmp_path):
+    """A second ``initialize()`` on the same worker re-applies the revision-1
+    local snapshot rather than rejecting it as stale (AR-111)."""
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=_settings(task_timeout=9.0)))
+    client = DummyClient(ping_ok=True, get_value=None)  # no remote key
+    _patch_glide_and_handler(monkeypatch)
+    worker = _make_worker(tmp_path, client)
+
+    assert await worker.initialize() is True
+    assert worker.config_source == "file"
+    assert worker.config_revision == 1
+    assert cast(TaskProcessorConfig, worker._config).task_timeout == 9.0
+
+    assert await worker.initialize() is True
+    assert worker.config_source == "file"
+    assert worker.config_revision == 1
+    assert cast(TaskProcessorConfig, worker._config).task_timeout == 9.0
+
+
+@pytest.mark.asyncio
+async def test_initialize_with_signing_key_applies_local_config(monkeypatch, tmp_path):
+    """A local ``config.yml`` applies at startup even with signing enabled: the
+    trusted local file skips signature verification (AR-111/D2)."""
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=_settings(task_timeout=9.0)))
+    client = DummyClient(ping_ok=True, get_value=None)  # no remote key
+    _patch_glide_and_handler(monkeypatch)
+    worker = _make_worker(tmp_path, client, config_signing_key="secret")
+
+    ok = await worker.initialize()
+
+    assert ok is True
+    assert worker.config_source == "file"
+    assert worker.config_revision == 1
+    assert cast(TaskProcessorConfig, worker._config).task_timeout == 9.0
+
+
+@pytest.mark.asyncio
 async def test_initialize_remote_overrides_local(monkeypatch, tmp_path):
     """The remote source stays authoritative over a local snapshot (design §5:
     constructor < config.yml < remote)."""

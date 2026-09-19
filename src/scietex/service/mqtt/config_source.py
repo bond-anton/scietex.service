@@ -62,6 +62,15 @@ class MqttConfigSource:
         self._snapshot = payload
         self._event.set()
 
+    def reset(self) -> None:
+        """Drop the recorded snapshot for a fresh run start (AR-111 adjacency).
+
+        ``_event`` stays set after a previous run, so a second start would
+        return the old snapshot instead of awaiting this run's retained message.
+        """
+        self._snapshot = None
+        self._event.clear()
+
     async def wait_for_snapshot(self, timeout: float) -> bytes | None:
         """Await the retained snapshot for at most ``timeout`` seconds.
 

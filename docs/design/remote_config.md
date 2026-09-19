@@ -447,7 +447,13 @@ write-free (unlike `read_valkey_config(create_default=True)`, which creates
 defaults — `valkey/config.py:361-381`). Missing file ⇒ `None`, no creation.
 Invalid file ⇒ log ERROR, ignore, use defaults. Precedence at startup:
 **constructor config < `config.yml` < remote source**. The local file is the
-persisted snapshot; the remote source stays authoritative when present.
+persisted snapshot; the remote source stays authoritative when present. This
+precedence holds on **every** run of the same worker instance — each run begins
+from the constructor/default baseline (the run boundary resets apply state, §9)
+— and the local file is applied as a **trusted, unsigned** snapshot: signature
+verification is waived for the local source only, so the unsigned `config.yml`
+still applies even when `config_signing_key` is set (remote and inline
+envelopes remain verified).
 
 **Decision — `config:store` writes the reloadable snapshot only.** Storing the
 full transport config (with credentials/TLS) to disk is out of scope and a
@@ -510,8 +516,12 @@ mechanism.
 - **No enforcement of restart for restart-required changes** beyond preventing
   them from being expressed remotely. An operator who edits `valkey.yml` and
   expects a hot reload gets no such thing.
-- **Replay window** is bounded only by the persisted revision (and `config.yml`
-  seeding `_applied_revision` across restarts).
+- **Replay window** is run-scoped, not persisted. The apply/replay bookkeeping
+  (`_applied_revision`/`_applied_hash`/`_source`/`_section_raw`) is reset at
+  each run boundary, so the monotonic revision guard is enforced within a
+  single run; across runs the authoritative remote source re-seeds the window.
+  There is no persisted revision, and `config.yml` does **not** seed
+  `_applied_revision` across restarts.
 
 ---
 
@@ -591,11 +601,20 @@ class ConfigSource(Protocol):
 class ConfigReloader:
     # lock, _applied_revision/_hash/_source, signing key, apply callback,
     # registered sections
+    def reset(self) -> None: ...   # clear run-scoped apply bookkeeping (AR-111)
     async def reload(self, source: ConfigSource) -> ConfigApplyOutcome: ...
-    async def apply_envelope(self, payload: bytes, *, source: str) -> ConfigApplyOutcome: ...
+    async def apply_envelope(self, payload: bytes, *, source: str, trusted: bool = False) -> ConfigApplyOutcome: ...
     async def store(self, ...) -> ConfigStoreOutcome: ...
     def show(self, ...) -> ConfigSections: ...
 ```
+
+`reset()` (the run-boundary contract) clears the run-scoped apply bookkeeping
+(`_applied_revision`/`_applied_hash`/`_source`/`_section_raw`) while preserving
+registered sections and injected callbacks; it is called at the run boundary
+before any startup apply. `apply_envelope(..., trusted=True)` skips signature
+verification for a trusted local artifact (the persisted `config.yml`
+snapshot); the replay guard still applies, and the flag must never be set for
+remote or inline input.
 
 `ConfigReloader` never imports a transport package; the `ConfigSource` Protocol
 lives in core so both transports implement it without a feature→feature
