@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from scietex.service.task_handler.schemas import TaskData
-from scietex.service.transport import InMemoryTransport
+from scietex.service.transport import InMemoryTransport, RecoverableTransport, TaskSink
 
 
 def _logger() -> logging.Logger:
@@ -148,3 +148,53 @@ async def test_recover_pending_tasks_returns_complete_empty():
 
     assert recovered is True
     assert enqueued is False
+
+
+class _CountedRecoveryTransport(RecoverableTransport):
+    """A ``RecoverableTransport`` double that pops one scripted result per call."""
+
+    def __init__(self, *results: tuple[bool, bool]) -> None:
+        self._results: list[tuple[bool, bool]] = list(results)
+        self.calls: int = 0
+
+    async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:
+        self.calls += 1
+        return self._results.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_ensure_recovered_runs_once_and_sets_flag():
+    """ensure_recovered returns the enqueued signal and sets recovered on a
+    complete recovery; a second call is a no-op."""
+    transport = _CountedRecoveryTransport((True, True))
+    sink = FakeSink()
+
+    assert await transport.ensure_recovered(sink) is True
+    assert transport.recovered is True
+    assert await transport.ensure_recovered(sink) is False
+    assert transport.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_recovered_retries_when_incomplete():
+    """An incomplete recovery leaves recovered unset; the next call retries and
+    completes it."""
+    transport = _CountedRecoveryTransport((False, False), (True, True))
+    sink = FakeSink()
+
+    assert await transport.ensure_recovered(sink) is False
+    assert transport.recovered is False
+    assert await transport.ensure_recovered(sink) is True
+    assert transport.recovered is True
+    assert transport.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_ensure_recovered_returns_enqueued_on_incomplete():
+    """An incomplete recovery still reports its enqueued signal without setting
+    the recovered flag."""
+    transport = _CountedRecoveryTransport((False, True))
+    sink = FakeSink()
+
+    assert await transport.ensure_recovered(sink) is True
+    assert transport.recovered is False

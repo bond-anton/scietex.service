@@ -82,6 +82,43 @@ class TaskTransport(Protocol):
         ...
 
 
+class RecoverableTransport:
+    """Shared recovery-once orchestration for broker-backed transports (AR-120).
+
+    Owning the ``recovered`` flag and the "mark recovery complete only when the
+    pending list was fully drained" guard here defines that behavior once: a
+    concrete transport supplies only its transport-specific
+    :meth:`recover_pending_tasks` scan and calls :meth:`ensure_recovered` from
+    the start of ``fetch``. Not part of the ``TaskTransport`` Protocol; an
+    implementation scaffold for transports that have a recovery step.
+    """
+
+    #: True once pending-entry recovery has fully drained the pending list.
+    recovered: bool = False
+
+    async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:
+        """Re-deliver entries left pending by a previous run (transport-owned).
+
+        Returns ``(recovery_complete, enqueued)``; ``recovery_complete`` is
+        ``False`` when a full sink interrupted recovery so the next poll retries.
+        """
+        raise NotImplementedError
+
+    async def ensure_recovered(self, sink: TaskSink) -> bool:
+        """Run recovery at most once to completion; return its enqueued signal.
+
+        Idempotent: after a complete recovery the flag is set and later calls
+        are no-ops returning ``False``. An incomplete recovery (full sink) is
+        retried on the next call, matching AR-051.
+        """
+        if self.recovered:
+            return False
+        recovery_complete, enqueued = await self.recover_pending_tasks(sink)
+        if recovery_complete:
+            self.recovered = True
+        return enqueued
+
+
 class InMemoryTransport:
     """A working in-memory transport backed by a ``deque``.
 

@@ -29,7 +29,7 @@ from ..health import TransportHealth
 from ..task_handler.schemas import CancelReason, TaskData, TaskProgress, TaskResult, TaskStatus
 from ..task_handler.wire import encode_task_envelope
 from ..task_status import build_running_status, build_terminal_status
-from ..transport import TaskSink
+from ..transport import RecoverableTransport, TaskSink
 from ._aiomqtt import PacketTypes, Properties
 from .config import MqttWorkerConfig
 from .inbox import MqttInbox
@@ -80,7 +80,7 @@ class _ProgressThrottle:
     pending: float | None = None
 
 
-class MqttTransport:
+class MqttTransport(RecoverableTransport):
     """MQTT implementation of the core ``TaskTransport`` contract.
 
     Drains the durable inbox into the processor's queue, re-publishes tasks
@@ -130,9 +130,6 @@ class MqttTransport:
         self._clock = clock
         self._encoder = msgspec.msgpack.Encoder()
 
-        # True once pending-entry recovery has run (start of the first fetch),
-        # so a crash's unacked entries are redelivered exactly once.
-        self.recovered: bool = False
         # Task ids handed to the sink but not yet terminal. The inbox snapshot
         # returns every non-terminal entry, so without this the drain would
         # re-enqueue an already-queued task on every poll. An id is added on
@@ -217,14 +214,7 @@ class MqttTransport:
             ``True`` if at least one task was enqueued (from recovery or the
             drain), ``False`` otherwise.
         """
-        enqueued = False
-        if not self.recovered:
-            # Only mark recovery done when the pending list was fully drained;
-            # a queue-full interruption is retried on the next poll (AR-051).
-            recovery_complete, recovered_enqueued = await self.recover_pending_tasks(sink)
-            if recovery_complete:
-                self.recovered = True
-            enqueued = recovered_enqueued
+        enqueued = await self.ensure_recovered(sink)
         for task_id, task_data in await self._inbox.pending():
             if task_id in self._enqueued:
                 continue

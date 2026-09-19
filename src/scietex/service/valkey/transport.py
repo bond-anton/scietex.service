@@ -17,7 +17,7 @@ from uuid import UUID
 from ..health import TransportHealth
 from ..task_handler.schemas import CancelReason, TaskData, TaskResult
 from ..task_handler.wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
-from ..transport import TaskSink
+from ..transport import RecoverableTransport, TaskSink
 from ._glide import (
     ClientProvider,
     GlideConnectionError,
@@ -30,7 +30,7 @@ from .lease import TaskLeaseManager
 from .tracking import TaskStatusStore
 
 
-class ValkeyTransport:
+class ValkeyTransport(RecoverableTransport):
     """Valkey-stream implementation of the core ``TaskTransport`` contract.
 
     Reads new entries with ``XREADGROUP``, recovers a crashed run's pending
@@ -65,9 +65,6 @@ class ValkeyTransport:
         self._entry_ids = entry_ids
         self._logger = logger
 
-        # True once pending-entry recovery has run (start of the first fetch),
-        # so a crash's unacked entries are redelivered once.
-        self.recovered: bool = False
         # Idle floor (ms) before XAUTOCLAIM reclaims a pending entry. With 0, a
         # replica's startup recovery can claim an entry a slow-but-alive handler
         # on another replica is still processing, causing double-processing.
@@ -94,14 +91,7 @@ class ValkeyTransport:
         client = self._client_provider()
         if client is None:
             return False
-        enqueued = False
-        if not self.recovered:
-            # Only mark recovery done when the pending list was fully drained;
-            # a queue-full/error interruption is retried on the next poll (AR-051).
-            recovery_complete, recovered_enqueued = await self.recover_pending_tasks(sink)
-            if recovery_complete:
-                self.recovered = True
-            enqueued = recovered_enqueued
+        enqueued = await self.ensure_recovered(sink)
         try:
             res = await client.xreadgroup(
                 {self._stream_name: ">"},
