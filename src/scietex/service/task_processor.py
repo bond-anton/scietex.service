@@ -36,6 +36,7 @@ from .task_handler import (
     TaskHandlerContext,
     TaskResult,
     TaskTracker,
+    is_control_task,
 )
 from .task_lifecycle import TaskLifecycle
 from .transport import InMemoryTransport, TaskTransport
@@ -122,12 +123,14 @@ class TaskProcessor(BasicWorker):
         self._effective: ReloadableSettings = resolve_reloadable_settings(cfg, self.logger)
 
         self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
+        self.__control_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
 
         # Task execution loop (AR-101): the executor owns the dequeue -> track
         # -> dispatch -> retry -> ack machinery but shares the processor's
         # queue, lifecycle, and retry budget by reference.
         self._executor = TaskExecutor(
             queue=self.__task_queue,
+            control_queue=self.__control_queue,
             lifecycle=self._task_lifecycle,
             retry_attempts=self._retry_attempts,
             process_task=self.process_task,
@@ -199,7 +202,12 @@ class TaskProcessor(BasicWorker):
 
     @property
     def max_concurrent_tasks(self) -> int:
-        """Maximum number of tasks that can be processed concurrently."""
+        """Maximum number of data-plane tasks processed concurrently.
+
+        Bounds the data plane only: control-plane commands (``cancel_task`` and
+        the ``config:*`` types) run on a reserved priority lane with their own
+        concurrency ceiling, so they are never blocked behind data-plane work.
+        """
         return self._effective.max_concurrent_tasks
 
     @property
@@ -308,12 +316,14 @@ class TaskProcessor(BasicWorker):
     def enqueue_task(self, task_id: UUID, task_data: TaskData) -> bool:
         """Enqueue a task for processing without blocking.
 
-        Non-blocking: if the bounded queue is full the task is not enqueued
-        and ``False`` is returned so the caller can retry later (e.g. on the
-        next intake poll). Returns ``True`` on success.
+        Control-plane commands (AR-108) are routed to the priority control lane
+        so they are never blocked behind data-plane work; all other tasks go to
+        the data queue. Non-blocking: returns ``False`` when the target lane is
+        full, so the caller can retry on the next intake poll.
         """
+        queue = self.__control_queue if is_control_task(task_data) else self.__task_queue
         try:
-            self.__task_queue.put_nowait((task_id, task_data))
+            queue.put_nowait((task_id, task_data))
         except asyncio.QueueFull:
             return False
         return True
@@ -325,6 +335,14 @@ class TaskProcessor(BasicWorker):
     def task_queue_full(self) -> bool:
         """Whether the internal task queue has reached its maximum size."""
         return self.__task_queue.full()
+
+    def control_queue_empty(self) -> bool:
+        """Whether the control-plane lane has no pending commands."""
+        return self.__control_queue.empty()
+
+    def control_queue_full(self) -> bool:
+        """Whether the control-plane lane has reached its maximum size."""
+        return self.__control_queue.full()
 
     def dequeue_task(self) -> tuple[UUID, TaskData] | None:
         """Remove and return the next pending task without blocking.
@@ -777,7 +795,7 @@ class TaskProcessor(BasicWorker):
         This method is decorated with ``@Manager`` and runs as an
         infinite loop managed by ``BasicWorker``.
         """
-        if not self.__task_queue.full():
+        if not self.__task_queue.full() or not self.__control_queue.full():
             fetched = await self.fetch_tasks()
             if not fetched:
                 await asyncio.sleep(self.task_queue_manager_sleep_time)

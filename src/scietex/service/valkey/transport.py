@@ -11,6 +11,7 @@ remain the worker's and are only reached through here.
 """
 
 import logging
+from collections import deque
 from collections.abc import Mapping
 from uuid import UUID
 
@@ -72,6 +73,14 @@ class ValkeyTransport(RecoverableTransport):
             config.claim_min_idle_ms if config.claim_min_idle_ms is not None else DEFAULT_CLAIM_MIN_IDLE_MS
         )
 
+        # Bounded buffer for entries claimed by XREADGROUP but not yet enqueued
+        # because the data lane was full. ``XREADGROUP ">"`` never redelivers a
+        # claimed-but-unenqueued entry and ``ensure_recovered`` runs only once,
+        # so without this the entry would be stranded. Flushed before each read
+        # and capped at ``task_fetch_batch_size`` so a saturated data plane
+        # cannot grow it without bound.
+        self._deferred: deque[tuple[UUID, TaskData, str | bytes]] = deque()
+
     async def fetch(self, sink: TaskSink) -> bool:
         """Fetch new tasks from the Valkey task stream and enqueue them.
 
@@ -84,14 +93,28 @@ class ValkeyTransport(RecoverableTransport):
         a peer's recovery for its whole queue wait. On read errors, disconnects
         and reconnects.
 
+        Before reading, entries deferred by a previously full data lane are
+        flushed first: ``XREADGROUP ">"`` never redelivers a claimed-but-
+        unenqueued entry and recovery runs only once, so those entries would
+        otherwise be stranded. An entry that cannot be enqueued (data lane, or
+        rarely control lane, full) is held in the bounded deferred buffer and
+        retried on the next poll instead of being dropped; its entry id and
+        lease are recorded only on successful enqueue.
+
         Returns:
-            ``True`` if at least one task was enqueued (from recovery or this
-            read), ``False`` otherwise.
+            ``True`` if at least one task was enqueued (from recovery, the
+            deferred buffer, or this read), ``False`` otherwise.
         """
         client = self._client_provider()
         if client is None:
             return False
         enqueued = await self.ensure_recovered(sink)
+        enqueued = await self._flush_deferred(sink) or enqueued
+        # Backpressure: do not claim more entries than the deferred buffer holds,
+        # or a full data plane would let unprocessable entries accumulate without
+        # bound.
+        if len(self._deferred) >= self._config.task_fetch_batch_size:
+            return enqueued
         try:
             res = await client.xreadgroup(
                 {self._stream_name: ">"},
@@ -117,27 +140,45 @@ class ValkeyTransport(RecoverableTransport):
                                     version if version is not None else "malformed",
                                 )
                                 continue
-                            if not sink.enqueue_task(UUID(task_id), task_data):
-                                # Queue is full; leave the stream entry pending
-                                # (do not record its id) so the next poll
-                                # redelivers it. Never block the intake manager.
-                                self._logger.log(
-                                    logging.DEBUG,
-                                    "Task queue full; deferring task %s",
-                                    task_id,
-                                )
-                                continue
-                            self._entry_ids[UUID(task_id)] = entry_id
-                            # The entry id is recorded before the lease write so
-                            # the local ownership guard is active from the same
-                            # synchronous moment and this worker's own recovery
-                            # can never re-enqueue the entry during the await.
-                            await self._lease.write(UUID(task_id))
-                            enqueued = True
+                            uuid = UUID(task_id)
+                            if sink.enqueue_task(uuid, task_data):
+                                self._entry_ids[uuid] = entry_id
+                                # The entry id is recorded before the lease write so
+                                # the local ownership guard is active from the same
+                                # synchronous moment and this worker's own recovery
+                                # can never re-enqueue the entry during the await.
+                                await self._lease.write(uuid)
+                                enqueued = True
+                            else:
+                                # Data lane (or, rarely, control lane) full: hold the
+                                # claimed entry and retry next poll. Entry id/lease are
+                                # recorded only on successful enqueue, preserving the
+                                # existing "full queue leaves no lease" policy.
+                                self._deferred.append((uuid, task_data, entry_id))
+                                self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", task_id)
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
             self._health.report_failure(exc)
             await self._health.recover()
+        return enqueued
+
+    async def _flush_deferred(self, sink: TaskSink) -> bool:
+        """Re-attempt enqueueing of entries held in the deferred buffer.
+
+        Preserves the "full queue leaves no lease" policy: an entry is only
+        recorded in the shared entry-id map and given a lease once the sink
+        accepts it. The first entry that is still rejected stops the flush, so
+        ordering is preserved and a saturated lane never reorders the backlog.
+        """
+        enqueued = False
+        while self._deferred:
+            task_id, task_data, entry_id = self._deferred[0]
+            if not sink.enqueue_task(task_id, task_data):
+                break
+            self._deferred.popleft()
+            self._entry_ids[task_id] = entry_id
+            await self._lease.write(task_id)
+            enqueued = True
         return enqueued
 
     async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:

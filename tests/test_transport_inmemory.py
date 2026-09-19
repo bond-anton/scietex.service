@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from scietex.service.task_handler import CANCEL_TASK_TYPE
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.transport import InMemoryTransport, RecoverableTransport, TaskSink
 
@@ -198,3 +199,37 @@ async def test_ensure_recovered_returns_enqueued_on_incomplete():
 
     assert await transport.ensure_recovered(sink) is True
     assert transport.recovered is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_delivers_control_behind_full_data_lane():
+    """A control command queued behind a full data lane is still delivered,
+    while the data tasks stay pending (AR-108)."""
+    transport = InMemoryTransport(logger=_logger())
+    t1, t2 = uuid4(), uuid4()
+    data = TaskData(task="a")
+    control = TaskData(task=CANCEL_TASK_TYPE)
+    transport.submit(t1, data)
+    transport.submit(t2, control)
+
+    sink = FakeSink(full=True)
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t2, control)]
+    assert list(transport._pending) == [(t1, data)]
+
+
+@pytest.mark.asyncio
+async def test_fetch_preserves_data_fifo_when_control_interleaved():
+    """With pending order [d1, c1, d2] and a full data lane, fetch delivers c1
+    and leaves data FIFO order [d1, d2] intact (AR-108)."""
+    transport = InMemoryTransport(logger=_logger())
+    t1, t2, t3 = uuid4(), uuid4(), uuid4()
+    d1, c1, d2 = TaskData(task="a"), TaskData(task=CANCEL_TASK_TYPE), TaskData(task="b")
+    transport.submit(t1, d1)
+    transport.submit(t2, c1)
+    transport.submit(t3, d2)
+
+    sink = FakeSink(full=True)
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t2, c1)]
+    assert list(transport._pending) == [(t1, d1), (t3, d2)]

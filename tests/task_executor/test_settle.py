@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import TaskData, TaskResult
+from scietex.service.task_handler.schemas import CANCEL_TASK_TYPE, TaskData, TaskResult
 from scietex.service.task_lifecycle import TaskLifecycle
 
 from ._helpers import Recording, build_executor, register_finished
@@ -112,3 +112,23 @@ async def test_execute_propagates_cancelled_error():
         await executor._handle_task(task_id, task_data)
 
     assert recording.completed == [(task_id, task_data, None, None)]
+
+
+@pytest.mark.asyncio
+async def test_settle_balances_control_lane():
+    """_settle calls task_done on the control lane, not the data lane (AR-108)."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    control_queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    executor = build_executor(recording, queue=queue, control_queue=control_queue, lifecycle=lifecycle)
+    task_id = uuid4()
+    task_data = TaskData(task=CANCEL_TASK_TYPE)
+    control_queue.put_nowait((task_id, task_data))
+    await register_finished(lifecycle, task_id, task_data)
+    executor._control_running.add(task_id)
+
+    await executor._settle(task_id, task_data, TaskResult(status="success"))
+
+    await asyncio.wait_for(control_queue.join(), timeout=0.1)
+    assert task_id not in executor._control_running

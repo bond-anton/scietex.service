@@ -5,7 +5,7 @@ import logging
 from uuid import UUID
 
 from scietex.service.config_reload import ReloadableSettings
-from scietex.service.task_executor import TaskExecutor
+from scietex.service.task_executor import DEFAULT_CONTROL_CONCURRENCY, TaskExecutor
 from scietex.service.task_handler.runtime import TaskTracker
 from scietex.service.task_handler.schemas import TaskData, TaskResult
 from scietex.service.task_lifecycle import TaskLifecycle
@@ -73,6 +73,8 @@ def build_executor(
     settings=None,
     max_retries=1,
     max_timeout_requeues=1,
+    control_queue=None,
+    control_concurrency=DEFAULT_CONTROL_CONCURRENCY,
 ) -> TaskExecutor:
     """Wire a TaskExecutor to a Recording and caller-provided storage."""
     return TaskExecutor(
@@ -88,6 +90,8 @@ def build_executor(
         logger=_logger,
         max_retries=max_retries,
         max_timeout_requeues=max_timeout_requeues,
+        control_queue=control_queue,
+        control_concurrency=control_concurrency,
     )
 
 

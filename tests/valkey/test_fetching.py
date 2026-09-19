@@ -6,6 +6,7 @@ import pytest
 
 import scietex.service.valkey.worker as mod
 from scietex.service import ValkeyWorker
+from scietex.service.task_handler import CANCEL_TASK_TYPE
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.task_handler.wire import encode_task_envelope
 from scietex.service.valkey._glide import ExpirySet, ExpiryType
@@ -151,3 +152,100 @@ async def test_fetch_tasks_queue_full_does_not_write_lease():
     assert client.sets == []
     assert t_id not in worker._task_entry_ids
     assert client.acked == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_defers_then_flushes_when_room():
+    """A full data lane defers a claimed entry instead of dropping it (no lease
+    written, entry id not recorded); once the lane has room, the next fetch
+    flushes it (enqueued, entry id recorded, lease written)."""
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    task_data = TaskData(task="dummy", payload=b"{}")
+    payload = encode_task_envelope(task_data)
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", str(t_id), payload))
+    worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
+    filler = UUID("99999999-9999-9999-9999-999999999999")
+    assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
+
+    enqueued = await worker.fetch_tasks()
+
+    # The claimed entry is held, not dropped: no lease, no entry id, one deferred.
+    assert enqueued is False
+    assert client.sets == []
+    assert t_id not in worker._task_entry_ids
+    assert len(worker._transport._deferred) == 1
+
+    # Make room in the data lane; the next fetch flushes the deferred entry.
+    assert worker.dequeue_task() is not None
+    client.xreadgroup_result = None  # no new entries on the follow-up read
+    enqueued = await worker.fetch_tasks()
+
+    assert enqueued is True
+    assert len(worker._transport._deferred) == 0
+    assert worker._task_entry_ids[t_id] == b"1-0"
+    assert len(client.sets) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_stops_reading_when_deferred_full():
+    """With the deferred buffer at task_fetch_batch_size, fetch returns without
+    issuing a new XREADGROUP so unprocessable entries cannot accumulate without
+    bound."""
+    client = DummyClient(xreadgroup_result=None)
+    worker = ValkeyWorker(
+        ValkeyWorkerConfig(
+            queue_size=1,
+            max_concurrent_tasks=1,
+            task_fetch_batch_size=2,
+            valkey_config=ValkeyConfig(),
+        )
+    )
+    worker._client = client
+    worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
+    filler = UUID("99999999-9999-9999-9999-999999999999")
+    assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
+    # Seed the deferred buffer to capacity; the full data lane keeps the flush
+    # from draining it, so the backpressure guard is what short-circuits the read.
+    for i in range(2):
+        worker._transport._deferred.append(
+            (UUID(f"aaaaaaaa-aaaa-aaaa-aaaa-{i:012d}"), TaskData(task="dummy", payload=b"{}"), b"1-0")
+        )
+
+    enqueued = await worker.fetch_tasks()
+
+    assert enqueued is False
+    assert client.xreadgroup_calls == [], "fetch must not XREADGROUP while the deferred buffer is full"
+    assert len(worker._transport._deferred) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_tasks_delivers_control_from_batch_when_data_full():
+    """A read batch containing a control task while the data lane is full
+    delivers the control task even though the data entries are deferred."""
+    data_id = UUID("11111111-1111-1111-1111-111111111111")
+    control_id = UUID("22222222-2222-2222-2222-222222222222")
+    data_payload = encode_task_envelope(TaskData(task="dummy", payload=b"{}"))
+    control_payload = encode_task_envelope(TaskData(task=CANCEL_TASK_TYPE))
+    result = {
+        b"stream": {
+            b"1-0": [[str(data_id).encode("utf-8"), data_payload]],
+            b"2-0": [[str(control_id).encode("utf-8"), control_payload]],
+        }
+    }
+    client = DummyClient(xreadgroup_result=result)
+    worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
+    filler = UUID("99999999-9999-9999-9999-999999999999")
+    assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
+
+    enqueued = await worker.fetch_tasks()
+
+    assert enqueued is True
+    assert not worker.control_queue_empty(), "control task must be delivered despite a full data lane"
+    assert control_id in worker._task_entry_ids
+    assert data_id not in worker._task_entry_ids
+    assert len(worker._transport._deferred) == 1
+    assert len(client.sets) == 1, "only the control entry may write a lease"

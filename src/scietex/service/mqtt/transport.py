@@ -26,7 +26,14 @@ from uuid import UUID
 import msgspec
 
 from ..health import TransportHealth
-from ..task_handler.schemas import CancelReason, TaskData, TaskProgress, TaskResult, TaskStatus
+from ..task_handler.schemas import (
+    CancelReason,
+    TaskData,
+    TaskProgress,
+    TaskResult,
+    TaskStatus,
+    is_control_task,
+)
 from ..task_handler.wire import encode_task_envelope
 from ..task_status import build_running_status, build_terminal_status
 from ..transport import RecoverableTransport, TaskSink
@@ -206,25 +213,36 @@ class MqttTransport(RecoverableTransport):
         (:meth:`recover_pending_tasks`) before draining, so tasks persisted by a
         previous run are redelivered exactly once. The drain then walks the
         inbox's non-terminal snapshot, skipping task ids already handed over
-        this run and stopping on backpressure: a rejected task is left pending
-        in the inbox (not recorded as enqueued), so it is redelivered, never
-        lost. Each accepted task is advertised as ``queued`` (design §13.4).
+        this run. Data tasks stop at backpressure: a rejected data task is left
+        pending in the inbox (not recorded as enqueued), so it is redelivered,
+        never lost, while the scan keeps walking so a control-plane command
+        queued behind it still bypasses the full data lane (AR-108). Each
+        accepted task is advertised as ``queued`` (design §13.4).
 
         Returns:
             ``True`` if at least one task was enqueued (from recovery or the
             drain), ``False`` otherwise.
         """
         enqueued = await self.ensure_recovered(sink)
+        data_blocked = False
         for task_id, task_data in await self._inbox.pending():
             if task_id in self._enqueued:
                 continue
-            if sink.task_queue_full():
-                break
+            if is_control_task(task_data):
+                if not sink.enqueue_task(task_id, task_data):
+                    continue  # control lane full; retry next poll
+                self._enqueued.add(task_id)
+                await self._publish_status(
+                    build_running_status(task_id, self._service_name, task_data, status="queued")
+                )
+                enqueued = True
+                continue
+            if data_blocked or sink.task_queue_full():
+                data_blocked = True
+                continue
             if not sink.enqueue_task(task_id, task_data):
-                # Queue is full; leave the inbox entry pending (not recorded as
-                # enqueued) so the next poll redelivers it. Never block intake.
-                self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", task_id)
-                break
+                data_blocked = True
+                continue
             self._enqueued.add(task_id)
             await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
             enqueued = True
@@ -239,33 +257,40 @@ class MqttTransport(RecoverableTransport):
         first :meth:`fetch`, before any new drain, when no tasks are in flight.
 
         A task id already enqueued this run is skipped, so an interrupted
-        recovery (a queue-full stop leaves earlier accepted entries in the
-        enqueued set and later ones still pending) retries only the remainder.
-        When the queue is full the stop is immediate and recovery reports
-        incomplete, so the next poll retries. Each accepted task is advertised
-        as ``queued`` (design §13.4), so a task redelivered after a restart
-        re-advertises itself.
+        recovery retries only the remainder. When the data lane is full the
+        stop is immediate for data tasks and recovery reports incomplete, so
+        the next poll retries, but a control-plane command still bypasses the
+        full data lane and is enqueued (AR-108). Each accepted task is
+        advertised as ``queued`` (design §13.4), so a task redelivered after a
+        restart re-advertises itself.
 
         Returns:
             A ``(recovery_complete, enqueued)`` tuple.
         """
         enqueued = False
+        data_blocked = False
         for task_id, task_data in await self._inbox.recover():
             if task_id in self._enqueued:
                 continue
-            if sink.task_queue_full():
-                return False, enqueued
-            if not sink.enqueue_task(task_id, task_data):
-                self._logger.log(
-                    logging.DEBUG,
-                    "Task queue full during recovery; deferring task %s",
-                    task_id,
+            if is_control_task(task_data):
+                if not sink.enqueue_task(task_id, task_data):
+                    continue
+                self._enqueued.add(task_id)
+                await self._publish_status(
+                    build_running_status(task_id, self._service_name, task_data, status="queued")
                 )
-                return False, enqueued
+                enqueued = True
+                continue
+            if data_blocked or sink.task_queue_full():
+                data_blocked = True
+                continue
+            if not sink.enqueue_task(task_id, task_data):
+                data_blocked = True
+                continue
             self._enqueued.add(task_id)
             await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
             enqueued = True
-        return True, enqueued
+        return (not data_blocked), enqueued
 
     async def requeue(self, task_id: UUID, task_data: TaskData) -> None:
         """Re-queue a task by re-publishing it to the task topic.

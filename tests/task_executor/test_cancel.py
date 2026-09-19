@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import TaskData
+from scietex.service.task_handler.schemas import CANCEL_TASK_TYPE, TaskData
 from scietex.service.task_lifecycle import TaskLifecycle
 
 from ._helpers import Recording, build_executor, make_settings, register_running
@@ -109,6 +109,30 @@ async def test_cancel_unknown_target_returns_not_running():
 
 
 @pytest.mark.asyncio
+async def test_cancel_removes_queued_control_task():
+    """cancel removes a control-lane task and acks it terminal (AR-108)."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    control_queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    executor = build_executor(
+        recording,
+        queue=queue,
+        control_queue=control_queue,
+        lifecycle=lifecycle,
+    )
+    target_id = uuid4()
+    task_data = TaskData(task=CANCEL_TASK_TYPE)
+    await control_queue.put((target_id, task_data))
+
+    outcome = await executor.cancel(target_id)
+
+    assert outcome == "cancelled"
+    assert control_queue.empty()
+    assert recording.completed == [(target_id, task_data, None, "deliberate")]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_drains_cancels_and_clears_budget():
     """shutdown drains queued tasks, cancels+requeues running tasks, and clears
     the retry budget."""
@@ -158,3 +182,26 @@ async def test_shutdown_does_not_requeue_discarded_running_task():
 
     assert running_tracker.worker_task.done()
     assert not recording.requeued
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_control_lane():
+    """shutdown drains a queued control-lane task through on_drain (AR-108)."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    control_queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    executor = build_executor(
+        recording,
+        queue=queue,
+        control_queue=control_queue,
+        lifecycle=lifecycle,
+    )
+    control_id = uuid4()
+    control_data = TaskData(task=CANCEL_TASK_TYPE)
+    await control_queue.put((control_id, control_data))
+
+    await executor.shutdown()
+
+    assert control_queue.empty()
+    assert recording.drained == [(control_id, control_data)]

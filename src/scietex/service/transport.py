@@ -13,7 +13,7 @@ from collections import deque
 from typing import Protocol
 from uuid import UUID
 
-from .task_handler.schemas import CancelReason, TaskData, TaskResult
+from .task_handler.schemas import CancelReason, TaskData, TaskResult, is_control_task
 
 
 class TaskSink(Protocol):
@@ -137,18 +137,31 @@ class InMemoryTransport:
         self._pending.append((task_id, task_data))
 
     async def fetch(self, sink: TaskSink) -> bool:
-        """Drain pending tasks into ``sink`` until it reports full.
+        """Drain pending tasks into ``sink``, preferring control-plane commands.
 
-        A task the sink rejects is put back at the front and the drain stops,
-        preserving delivery order for the next fetch.
+        Data delivery stops at the first rejected data task (backpressure, order
+        preserved); the scan continues so a control command queued behind it can
+        still be delivered (AR-108).
         """
         enqueued = False
-        while self._pending and not sink.task_queue_full():
+        data_blocked = False
+        for _ in range(len(self._pending)):
             task_id, task_data = self._pending.popleft()
-            if not sink.enqueue_task(task_id, task_data):
-                self._pending.appendleft((task_id, task_data))
-                break
-            enqueued = True
+            if is_control_task(task_data):
+                if sink.enqueue_task(task_id, task_data):
+                    enqueued = True
+                else:
+                    self._pending.append((task_id, task_data))
+                continue
+            if data_blocked or sink.task_queue_full():
+                self._pending.append((task_id, task_data))
+                data_blocked = True
+                continue
+            if sink.enqueue_task(task_id, task_data):
+                enqueued = True
+            else:
+                self._pending.append((task_id, task_data))
+                data_blocked = True
         return enqueued
 
     async def requeue(self, task_id: UUID, task_data: TaskData) -> None:

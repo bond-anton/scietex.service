@@ -10,12 +10,25 @@ import msgspec
 
 from .config import DEFAULT_MAX_TIMEOUT_REQUEUES
 from .config_reload import ReloadableSettings
-from .task_handler import CancelOutcome, CancelReason, TaskData, TaskResult, TaskTracker
+from .task_handler import (
+    CancelOutcome,
+    CancelReason,
+    TaskData,
+    TaskResult,
+    TaskTracker,
+    is_control_task,
+)
 from .task_lifecycle import TaskLifecycle
 
 #: AR-022 v4: the framework grants exactly one error-path retry per task id.
 #: Moved from task_processor._MAX_TASK_RETRIES (AR-101).
 DEFAULT_MAX_TASK_RETRIES: int = 1
+
+#: AR-108: control-plane commands run on a reserved priority lane so a
+#: data-plane backlog can never starve them. This bounds how many control
+#: commands execute concurrently; data concurrency stays bounded by
+#: ``max_concurrent_tasks`` and is counted separately.
+DEFAULT_CONTROL_CONCURRENCY: int = 4
 
 
 class TaskExecutor:
@@ -48,6 +61,8 @@ class TaskExecutor:
         logger: logging.Logger,
         max_retries: int = DEFAULT_MAX_TASK_RETRIES,
         max_timeout_requeues: int = DEFAULT_MAX_TIMEOUT_REQUEUES,
+        control_queue: asyncio.Queue[tuple[UUID, TaskData]] | None = None,
+        control_concurrency: int = DEFAULT_CONTROL_CONCURRENCY,
     ) -> None:
         self._queue = queue
         self._lifecycle = lifecycle
@@ -61,25 +76,54 @@ class TaskExecutor:
         self._logger = logger
         self._max_retries = max_retries
         self._max_timeout_requeues = max_timeout_requeues
+        self._control_queue = control_queue
+        self._control_concurrency = control_concurrency
+        self._control_running: set[UUID] = set()
         # Timeout-requeue budget, distinct from the error-path retry budget:
         # a timeout cancel has no TaskResult, so the two cannot share a key.
         self._timeout_requeues: dict[UUID, int] = {}
 
     async def run_once(self) -> None:
-        """Run one task-manager iteration: dequeue, dispatch, and track a task."""
-        if len(self._lifecycle.trackers()) < self._settings().max_concurrent_tasks:
+        """Run one task-manager iteration: dequeue, dispatch, and track a task.
+
+        Control-plane work (AR-108) is admitted first on its own priority lane
+        with its own concurrency ceiling, so a saturated data plane cannot starve
+        a ``cancel_task`` or ``config:*`` command. Data-plane work then uses the
+        remaining budget.
+        """
+        if self._admit_control():
+            return
+        if self._data_running() < self._settings().max_concurrent_tasks:
             try:
                 task_id, task_data = await asyncio.wait_for(
                     self._queue.get(), timeout=self._settings().task_queue_fetch_timeout
                 )
-                task = asyncio.create_task(self._handle_task(task_id, task_data))
-                self._lifecycle.register(
-                    task_id, TaskTracker(worker_task=task, data=task_data, started=time.monotonic())
-                )
+                self._dispatch(task_id, task_data, control=False)
             except asyncio.TimeoutError:
                 pass
         else:
             await asyncio.sleep(self._settings().task_manager_sleep_time)
+
+    def _admit_control(self) -> bool:
+        """Dequeue and dispatch one control command when the lane has capacity."""
+        if self._control_queue is None or len(self._control_running) >= self._control_concurrency:
+            return False
+        try:
+            task_id, task_data = self._control_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return False
+        self._dispatch(task_id, task_data, control=True)
+        return True
+
+    def _data_running(self) -> int:
+        """Running data-plane tasks (control commands are excluded from the budget)."""
+        return len(self._lifecycle.trackers()) - len(self._control_running)
+
+    def _dispatch(self, task_id: UUID, task_data: TaskData, *, control: bool) -> None:
+        task = asyncio.create_task(self._handle_task(task_id, task_data))
+        self._lifecycle.register(task_id, TaskTracker(worker_task=task, data=task_data, started=time.monotonic()))
+        if control:
+            self._control_running.add(task_id)
 
     async def _handle_task(self, task_id: UUID, task_data: TaskData) -> None:
         """Execute a single task, then settle its transport entry exactly once."""
@@ -124,7 +168,11 @@ class TaskExecutor:
     async def _settle(self, task_id: UUID, task_data: TaskData, result: TaskResult | None) -> None:
         """Drop the tracker, balance the queue, apply retry policy, then ack."""
         self._lifecycle.remove_tracker(task_id)
-        self._queue.task_done()
+        if self._control_queue is not None and is_control_task(task_data):
+            self._control_running.discard(task_id)
+            self._control_queue.task_done()
+        else:
+            self._queue.task_done()
         cancel_reason = self._lifecycle.take_cancel_reason(task_id)
         ack_result = await self._apply_retry_policy(task_id, task_data, result, cancel_reason)
         try:
@@ -267,29 +315,38 @@ class TaskExecutor:
         return "not_running"
 
     async def _remove_queued(self, task_id: UUID) -> TaskData | None:
-        """Remove a queued-but-undispatched task from the internal queue.
+        """Remove a queued-but-undispatched task from the internal queues.
 
-        Drains the queue with the synchronous ``get_nowait``/``put_nowait`` pair
+        Drains each lane with the synchronous ``get_nowait``/``put_nowait`` pair
         and re-enqueues everything except the target. There is no ``await``
         between the drain and the re-enqueue, so the operation is atomic with
         respect to the event loop: no task can be dispatched mid-drain.
         """
+        removed = self._drain_queue(self._queue, task_id)
+        if removed is None and self._control_queue is not None:
+            removed = self._drain_queue(self._control_queue, task_id)
+        return removed
+
+    def _drain_queue(self, queue: asyncio.Queue, task_id: UUID) -> TaskData | None:
+        """Remove ``task_id`` from one lane atomically (no await between drain/re-put)."""
         removed: TaskData | None = None
         pending: list[tuple[UUID, TaskData]] = []
-        while not self._queue.empty():
-            item = self._queue.get_nowait()
+        while not queue.empty():
+            item = queue.get_nowait()
             if item[0] == task_id and removed is None:
                 removed = item[1]
+                queue.task_done()
             else:
                 pending.append(item)
         for item in pending:
-            self._queue.put_nowait(item)
-        if removed is not None:
-            # The removed item was counted by the queue's unfinished-task
-            # counter when it was put; balance it here since handle_task will
-            # never run for it.
-            self._queue.task_done()
+            queue.put_nowait(item)
         return removed
+
+    async def _drain_lane(self, queue: asyncio.Queue) -> None:
+        while not queue.empty():
+            task_id, task_data = queue.get_nowait()
+            await self._on_drain(task_id, task_data)
+            queue.task_done()
 
     async def watchdog(self) -> None:
         """Detect timed-out running tasks and cancel/requeue them by timeout_action."""
@@ -374,10 +431,9 @@ class TaskExecutor:
         # silently lose it on shutdown). A durable transport (e.g. a Valkey
         # stream) keeps entries pending and redelivers them on restart, so its
         # subclass overrides the hook to a no-op to avoid duplicating them.
-        while not self._queue.empty():
-            task_id, task_data = self._queue.get_nowait()
-            await self._on_drain(task_id, task_data)
-            self._queue.task_done()
+        await self._drain_lane(self._queue)
+        if self._control_queue is not None:
+            await self._drain_lane(self._control_queue)
         self._logger.debug("Task queue is empty")
 
         # Cancel and requeue running tasks. A task is requeued only after its
@@ -404,3 +460,4 @@ class TaskExecutor:
         # leave its retry budget behind; the budget is per-execution state.
         self._retry_attempts.clear()
         self._timeout_requeues.clear()
+        self._control_running.clear()

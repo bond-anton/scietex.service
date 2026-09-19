@@ -163,8 +163,10 @@ async def test_cancel_task_removes_queued_target():
         proc.enqueue_task(target_id, TaskData(task="slow", payload=b"{}"))
         assert not proc.task_queue_empty()
 
-        # Cancel the queued target directly through the callback (the cancel
-        # task itself would also queue behind the blocker).
+        # Cancel the queued target directly through the callback. With the
+        # control lane (AR-108), an enqueued cancel_task no longer queues
+        # behind the blocker; the direct callback is exercised here to isolate
+        # the queued-removal path.
         outcome = await proc._cancel_task(target_id)
         assert outcome == "cancelled"
         assert proc.task_queue_empty()

@@ -23,6 +23,20 @@ CONFIG_STORE_TASK_TYPE: str = "config:store"
 #: Task type string that selects the built-in remote-config show handler.
 CONFIG_SHOW_TASK_TYPE: str = "config:show"
 
+#: Task types that form the control plane and bypass the data-plane queue and
+#: concurrency budget (AR-108). ``cancel_task`` is always registered; the
+#: ``config:*`` handlers exist only when remote config is enabled, but routing
+#: them here is harmless when disabled (dispatch yields the permanent
+#: no-handler result).
+CONTROL_TASK_TYPES: frozenset[str] = frozenset(
+    {
+        CANCEL_TASK_TYPE,
+        CONFIG_APPLY_TASK_TYPE,
+        CONFIG_STORE_TASK_TYPE,
+        CONFIG_SHOW_TASK_TYPE,
+    }
+)
+
 #: Why a running task was cancelled. Only ``"deliberate"`` (an explicit
 #: ``cancel_task`` request) produces a ``cancelled`` status; ``"timeout"`` and
 #: ``"shutdown"`` keep the existing ``failed`` status.
@@ -61,6 +75,11 @@ class TaskData(msgspec.Struct, frozen=True):
     timeout: TaskTimeout = TaskTimeout(timeout=None, timeout_action="requeue")
     canceled_action: Literal["requeue", "discard"] = "requeue"
     payload: bytes = b""
+
+
+def is_control_task(task_data: TaskData) -> bool:
+    """Whether ``task_data`` is a control-plane command (AR-108)."""
+    return task_data.task in CONTROL_TASK_TYPES
 
 
 class TaskEnvelope(msgspec.Struct, frozen=True):
