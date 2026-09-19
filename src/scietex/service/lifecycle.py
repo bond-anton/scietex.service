@@ -13,7 +13,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .basic_worker import BasicWorker, ServiceStatus
 
-WAIT_FOR_SERVICE_STOPPED_DELAY: float = 0.1
+
+class InvalidStateTransition(Exception):
+    """Raised when a lifecycle transition violates the state machine (AR-106).
+
+    Not a ``RuntimeError`` subclass: ``BasicWorker._startup`` catches
+    ``RuntimeError`` as "initialization failed" and would otherwise mask a
+    programming error as a normal shutdown.
+    """
 
 
 class WorkerLifecycle:
@@ -43,6 +50,24 @@ class WorkerLifecycle:
         }
         self._stop_task: asyncio.Task | None = None
 
+        # Set exactly while the lifecycle is STOPPED. It is the awaitable
+        # replacement for the previous 0.1 s poll and the barrier a start uses
+        # to wait out an in-flight shutdown (AR-106).
+        self._stopped: asyncio.Event = asyncio.Event()
+        self._stopped.set()
+
+        # Allowed (current, next) edges. force_stopped() is the unguarded
+        # terminal escape and deliberately has no entry here.
+        self._allowed_transitions: frozenset[tuple[ServiceStatus, ServiceStatus]] = frozenset(
+            {
+                (ServiceStatus.STOPPED, ServiceStatus.STARTING),
+                (ServiceStatus.STARTING, ServiceStatus.RUNNING),
+                (ServiceStatus.STARTING, ServiceStatus.STOPPING),
+                (ServiceStatus.RUNNING, ServiceStatus.STOPPING),
+                (ServiceStatus.STOPPING, ServiceStatus.STOPPED),
+            }
+        )
+
     @property
     def state(self) -> "ServiceStatus":
         """Current lifecycle state of the service (read-only).
@@ -53,15 +78,42 @@ class WorkerLifecycle:
         """
         return self._state
 
-    @state.setter
-    def state(self, value: "ServiceStatus") -> None:
-        """Update the lifecycle state.
+    def transition(self, new_state: "ServiceStatus") -> None:
+        """Validate and apply a lifecycle state transition.
 
-        Written by the worker's orchestrators (``_startup``/``_shutdown``) as
-        they drive the service through STARTING -> RUNNING -> STOPPING ->
-        STOPPED.
+        The only way to move the lifecycle forward. An illegal edge raises a
+        programming error instead of silently overwriting the current state.
+
+        Args:
+            new_state: The state to transition to.
+
+        Raises:
+            InvalidStateTransition: If ``(current, new_state)`` is not an
+                allowed edge. Use :meth:`force_stopped` for the unguarded
+                terminal escape used by cancellation handling.
         """
-        self._state = value
+        from .basic_worker import ServiceStatus
+
+        current = self._state
+        if current is ServiceStatus.STOPPED and new_state is ServiceStatus.STOPPED:
+            return
+        if (current, new_state) not in self._allowed_transitions:
+            raise InvalidStateTransition(f"Invalid lifecycle transition {current.name} -> {new_state.name}")
+        self._set_state(new_state)
+
+    def _set_state(self, new_state: "ServiceStatus") -> None:
+        """Apply ``new_state`` and keep the stopped-wait event consistent.
+
+        The event is set iff the state is STOPPED, so a waiter resumed by it
+        always observes STOPPED.
+        """
+        from .basic_worker import ServiceStatus
+
+        self._state = new_state
+        if new_state is ServiceStatus.STOPPED:
+            self._stopped.set()
+        else:
+            self._stopped.clear()
 
     @property
     def start_time(self) -> datetime | None:
@@ -121,7 +173,7 @@ class WorkerLifecycle:
         """
         from .basic_worker import ServiceStatus
 
-        self._state = ServiceStatus.STOPPED
+        self._set_state(ServiceStatus.STOPPED)
         self._start_time = None
         if self.events["exit_requested"].is_set():
             self._events["exit_requested"].clear()
@@ -130,10 +182,8 @@ class WorkerLifecycle:
     async def _wait_until_stopped(self) -> None:
         """Block until a previous shutdown has fully completed.
 
-        A startup must not begin while a prior stop is still in flight, so the
-        worker polls the state until it reaches STOPPED before proceeding.
+        Awaiting the ``_stopped`` event replaces the previous 100 ms poll: the
+        event is set iff the state is STOPPED, so this returns exactly when a
+        start may proceed, with a single wakeup.
         """
-        from .basic_worker import ServiceStatus
-
-        while not self._state == ServiceStatus.STOPPED:
-            await asyncio.sleep(WAIT_FOR_SERVICE_STOPPED_DELAY)
+        await self._stopped.wait()

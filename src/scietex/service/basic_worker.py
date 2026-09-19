@@ -417,7 +417,7 @@ class BasicWorker:
             self.logger.log(logging.INFO, "Service is starting up.")
             await self._lifecycle._wait_until_stopped()
             self.logger.log(logging.INFO, "Service is starting up.")
-            self._lifecycle.state = ServiceStatus.STARTING
+            self._lifecycle.transition(ServiceStatus.STARTING)
             print_scietex_logo(service_name=self.service_name, version=self.version)
             # Init Logging Handlers
             await self._logging_lifecycle.start_handlers()
@@ -441,10 +441,21 @@ class BasicWorker:
             # Start managers
             await self._manager_runtime.start_managers()
 
+            # A concurrent stop() may have moved the lifecycle to STOPPING
+            # while managers were starting (AR-106). The shutdown path now owns
+            # teardown; do not overwrite its state with RUNNING.
+            if self._lifecycle.state is not ServiceStatus.STARTING:
+                self.logger.log(
+                    logging.INFO,
+                    "Startup superseded by a concurrent shutdown; yielding teardown to it.",
+                )
+                return
+
             self.logger.log(logging.DEBUG, "Worker %s:%s started", self.service_name, self.instance_id)
-            self._lifecycle.state = ServiceStatus.RUNNING
+            self._lifecycle.transition(ServiceStatus.RUNNING)
         except asyncio.CancelledError:
             self.logger.log(logging.INFO, "Startup task canceled.")
+            await self._stop_managers_best_effort()
             self._force_stopped()
             raise
         except RuntimeError as e:
@@ -489,6 +500,22 @@ class BasicWorker:
         """
         self._lifecycle.force_stopped()
 
+    async def _stop_managers_best_effort(self) -> None:
+        """Stop running managers in reverse start order, tolerating cancellation.
+
+        Called by the cancellation handlers in ``_startup``/``_shutdown``
+        (AR-106): a cancelled orchestrator must not strand running managers
+        under a terminal STOPPED state. A second cancellation raised while
+        unwinding is swallowed so the caller's own re-raise still wins and the
+        terminal transition still runs.
+        """
+        try:
+            await self._manager_runtime.stop_managers(reverse=True)
+        except asyncio.CancelledError:
+            self.logger.log(logging.DEBUG, "Manager teardown interrupted by a second cancellation.")
+        except Exception as exc:
+            self.logger.log(logging.ERROR, "Error stopping managers during cancellation: %s", exc)
+
     async def _shutdown(self) -> None:
         """
         Stop the worker gracefully.
@@ -503,7 +530,7 @@ class BasicWorker:
         """
         try:
             self.logger.debug("Stopping worker gracefully...")
-            self._lifecycle.state = ServiceStatus.STOPPING
+            self._lifecycle.transition(ServiceStatus.STOPPING)
             self.logger.log(logging.DEBUG, "Worker stopped.")
             await self._manager_runtime.stop_managers()
             # Unregister while the transport is still open (cleanup() may
@@ -526,13 +553,14 @@ class BasicWorker:
                     print("Error shutting down logging handlers:", e)
             self._lifecycle.start_time = None
 
-            self._lifecycle.state = ServiceStatus.STOPPED
+            self._lifecycle.transition(ServiceStatus.STOPPED)
 
             if self._lifecycle.events["exit_requested"].is_set():
                 self._lifecycle.events["exit_requested"].clear()
                 self._lifecycle.events["exit"].set()
         except asyncio.CancelledError:
             self.logger.log(logging.ERROR, "Shutdown task cancelled")
+            await self._stop_managers_best_effort()
             self._force_stopped()
             raise
 

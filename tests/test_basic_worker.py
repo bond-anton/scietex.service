@@ -302,3 +302,62 @@ async def test_exit_sets_exit_event_from_running():
     assert worker.events["exit"].is_set()
     assert worker.state == ServiceStatus.STOPPED
     assert not worker.events["exit_requested"].is_set()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_startup_after_managers_start_unwinds_them():
+    """A cancelled startup after managers spawned must unwind them (AR-106).
+
+    Regression test: if the Start task is cancelled after start_managers()
+    has spawned manager tasks, the worker must stop those managers before
+    forcing STOPPED. Without the unwind, the managers keep running under a
+    terminal STOPPED state.
+    """
+
+    class RaceWorker(BasicWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.manager_started = asyncio.Event()
+            self.manager_cleaned = asyncio.Event()
+
+        @Manager(name="Race")
+        async def _race_manager(self):
+            self.manager_started.set()
+            try:
+                await asyncio.sleep(3600)
+            finally:
+                self.manager_cleaned.set()
+
+        async def _startup(self):
+            orig_start_managers = self._manager_runtime.start_managers
+
+            async def _cancel_after_start():
+                await orig_start_managers()
+                # _startup has no await after start_managers(), so a bare
+                # cancel() would be deferred until _startup returns and never
+                # reach its cancellation handler. Cancel, then yield once so
+                # the cancellation is delivered at this await point, still
+                # inside _startup's try block (AR-106).
+                task = asyncio.current_task()
+                assert task is not None
+                task.cancel()
+                await asyncio.sleep(0)
+
+            self._manager_runtime.start_managers = _cancel_after_start
+            await super()._startup()
+
+    worker = RaceWorker(WorkerConfig(service_name="test_service", version="1.0.0"))
+
+    await worker.start()
+    await asyncio.wait_for(worker.manager_started.wait(), timeout=1.0)
+    await asyncio.wait_for(worker.manager_cleaned.wait(), timeout=1.0)
+
+    # _force_stopped() runs in the cancelled Start task after the unwind
+    # completes; poll until the terminal state lands before asserting.
+    for _ in range(50):
+        if worker.state is ServiceStatus.STOPPED:
+            break
+        await asyncio.sleep(0.01)
+
+    assert worker.state is ServiceStatus.STOPPED
+    assert "Race" not in worker.manager_runtime.tasks

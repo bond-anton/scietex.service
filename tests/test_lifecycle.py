@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from scietex.service.basic_worker import BasicWorker, ServiceStatus
-from scietex.service.lifecycle import WorkerLifecycle
+from scietex.service.lifecycle import InvalidStateTransition, WorkerLifecycle
 
 
 class _StubWorker:
@@ -45,7 +45,8 @@ def test_state_and_start_time_reflect_internal_values():
     lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))
 
     start = datetime.now(timezone.utc)
-    lifecycle._state = ServiceStatus.RUNNING
+    lifecycle.transition(ServiceStatus.STARTING)
+    lifecycle.transition(ServiceStatus.RUNNING)
     lifecycle._start_time = start
 
     assert lifecycle.state == ServiceStatus.RUNNING
@@ -56,7 +57,8 @@ def test_force_stopped_clears_state_and_events():
     """force_stopped() lands the lifecycle in STOPPED and finalizes exit events."""
     lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))
 
-    lifecycle._state = ServiceStatus.RUNNING
+    lifecycle.transition(ServiceStatus.STARTING)
+    lifecycle.transition(ServiceStatus.RUNNING)
     lifecycle._start_time = datetime.now(timezone.utc)
     lifecycle._events["exit_requested"].set()
 
@@ -72,7 +74,8 @@ def test_force_stopped_without_exit_leaves_exit_unset():
     """Without a requested exit, force_stopped() must not set the exit event."""
     lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))
 
-    lifecycle._state = ServiceStatus.STOPPING
+    lifecycle.transition(ServiceStatus.STARTING)
+    lifecycle.transition(ServiceStatus.STOPPING)
     lifecycle.force_stopped()
 
     assert lifecycle.state == ServiceStatus.STOPPED
@@ -115,15 +118,43 @@ async def test_request_exit_spawns_single_stop_task():
 
 @pytest.mark.asyncio
 async def test_wait_until_stopped_returns_once_stopped():
-    """The poll loop returns only after the state reaches STOPPED."""
+    """The stopped-wait event returns only after the state reaches STOPPED."""
     lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))
 
-    lifecycle._state = ServiceStatus.STOPPING
+    lifecycle.transition(ServiceStatus.STARTING)
+    lifecycle.transition(ServiceStatus.RUNNING)
+    lifecycle.transition(ServiceStatus.STOPPING)
     wait_task = asyncio.create_task(lifecycle._wait_until_stopped())
 
     # The task must still be pending while the state is not STOPPED.
     await asyncio.sleep(0)
     assert not wait_task.done()
 
-    lifecycle._state = ServiceStatus.STOPPED
+    lifecycle.transition(ServiceStatus.STOPPED)
+    await asyncio.wait_for(wait_task, timeout=1.0)
+
+
+def test_transition_rejects_illegal_edge():
+    """An illegal edge raises InvalidStateTransition and leaves state unchanged."""
+    lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))
+
+    with pytest.raises(InvalidStateTransition):
+        lifecycle.transition(ServiceStatus.RUNNING)
+
+    assert lifecycle.state is ServiceStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_transition_to_stopped_wakes_waiters():
+    """transition(STOPPED) wakes a waiter blocked in _wait_until_stopped()."""
+    lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))
+
+    lifecycle.transition(ServiceStatus.STARTING)
+    lifecycle.transition(ServiceStatus.RUNNING)
+    lifecycle.transition(ServiceStatus.STOPPING)
+    wait_task = asyncio.create_task(lifecycle._wait_until_stopped())
+    await asyncio.sleep(0)
+    assert not wait_task.done()
+
+    lifecycle.transition(ServiceStatus.STOPPED)
     await asyncio.wait_for(wait_task, timeout=1.0)

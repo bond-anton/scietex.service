@@ -275,12 +275,16 @@ class ManagerRuntime:
         for name, manager in self.iter_manager_definitions():
             await self.start_manager(name, manager)
 
-    async def stop_managers(self) -> None:
+    async def stop_managers(self, *, reverse: bool = False) -> None:
         """Stop all registered managers in order.
 
-        Iterates over all ``Manager``-decorated methods found in the
-        class MRO and stops each one, waiting up to
-        ``manager_shutdown_timeout`` seconds per manager.
+        Args:
+            reverse: When ``True``, stop managers in reverse discovery order
+                (last-started first). The cancellation unwind in
+                ``BasicWorker`` uses this so teardown mirrors startup (AR-106).
         """
-        for name, _ in self.iter_manager_definitions():
+        definitions = list(self.iter_manager_definitions())
+        if reverse:
+            definitions.reverse()
+        for name, _ in definitions:
             await self.stop_manager(name)
