@@ -9,7 +9,7 @@ import logging
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
-from . import MANAGER_REGISTRY_ATTR, Manager, ManagerStatus
+from . import MANAGER_REGISTRY_ATTR, Manager, ManagerDefinition, ManagerStatus
 
 if TYPE_CHECKING:
     from ..basic_worker import BasicWorker
@@ -46,7 +46,7 @@ class ManagerRuntime:
         """
         return [name for name, status in self.statuses.items() if status is ManagerStatus.FAILED]
 
-    def iter_manager_definitions(self) -> Generator[tuple[str, Manager]]:
+    def iter_manager_definitions(self) -> Generator[tuple[str, ManagerDefinition]]:
         """
         Iterate over all registered managers from the worker's class MRO.
 
@@ -57,10 +57,10 @@ class ManagerRuntime:
         definition wins; the later one is skipped, never silently dropped.
 
         Discovery reads each class's own ``MANAGER_REGISTRY_ATTR`` registry
-        (populated by ``Manager.__set_name__`` and ``register_manager``), so a
-        manager's identity is its explicit ``name``. Reading from the class's
-        own ``__dict__`` only means a subclass never inherits or mutates a base
-        class's registry list.
+        (populated by ``_record_definition``, shared by ``Manager.__set_name__``
+        and ``register_manager``), so a manager's identity is its explicit
+        ``name``. Reading from the class's own ``__dict__`` only means a
+        subclass never inherits or mutates a base class's registry list.
 
         A WARNING is also logged when a class redefines a name that a base
         class bound as a manager attribute without re-decorating it (AR-086
@@ -84,15 +84,15 @@ class ManagerRuntime:
         # registry entry on the subclass, and discovery silently runs the
         # base manager. Index the registered managers and their bound
         # attribute names so the shadow can be reported below.
-        manager_attributes: dict[str, Manager] = {}
+        manager_attributes: dict[str, ManagerDefinition] = {}
         registered_methods: set[int] = set()
         for cls in mro:
-            for manager in cls.__dict__.get(MANAGER_REGISTRY_ATTR, ()):
-                if manager.method is not None:
-                    registered_methods.add(id(manager.method))
-                attribute_name = manager.attribute_name
+            for definition in cls.__dict__.get(MANAGER_REGISTRY_ATTR, ()):
+                if definition.method is not None:
+                    registered_methods.add(id(definition.method))
+                attribute_name = definition.attribute_name
                 if attribute_name is not None:
-                    manager_attributes.setdefault(attribute_name, manager)
+                    manager_attributes.setdefault(attribute_name, definition)
 
         for cls in mro:
             for attribute_name, value in cls.__dict__.items():
@@ -120,8 +120,8 @@ class ManagerRuntime:
 
         seen: set[str] = set()
         for cls in mro:
-            for manager in cls.__dict__.get(MANAGER_REGISTRY_ATTR, ()):
-                manager_name = manager.name
+            for definition in cls.__dict__.get(MANAGER_REGISTRY_ATTR, ()):
+                manager_name = definition.name
                 if manager_name in seen:
                     self.worker.logger.warning(
                         "Manager name %r collides with an already-registered manager "
@@ -129,13 +129,13 @@ class ManagerRuntime:
                         "and this one is skipped.",
                         manager_name,
                         cls.__name__,
-                        manager.attribute_name,
+                        definition.attribute_name,
                     )
                     continue
                 seen.add(manager_name)
-                yield manager_name, manager
+                yield manager_name, definition
 
-    async def run_manager(self, name: str, manager: Manager) -> None:
+    async def run_manager(self, name: str, manager: ManagerDefinition) -> None:
         """
         Execute a manager's lifecycle loop with automatic restart on error.
 
@@ -151,7 +151,7 @@ class ManagerRuntime:
 
         Args:
             name: Human-readable name for the manager
-            manager: The Manager instance whose method will be executed
+            manager: The ManagerDefinition whose method will be executed
         """
         self.worker.logger.info("[START] Manager %s started", name)
         # Mark RUNNING as soon as the loop starts; it stays RUNNING through
@@ -217,13 +217,13 @@ class ManagerRuntime:
                 if gave_up:
                     self.statuses[name] = ManagerStatus.FAILED
 
-    async def start_manager(self, name: str, manager: Manager) -> None:
+    async def start_manager(self, name: str, manager: ManagerDefinition) -> None:
         """
         Start a named manager as an asyncio task.
 
         Args:
             name: Identifier for the manager
-            manager: The Manager instance to execute
+            manager: The ManagerDefinition to execute
         """
         if self.statuses.get(name) in (ManagerStatus.STARTING, ManagerStatus.RUNNING):
             self.worker.logger.log(logging.DEBUG, "%s is already running", name)
@@ -272,8 +272,8 @@ class ManagerRuntime:
         class MRO (from most-derived to base classes) and starts each
         one as a named ``asyncio.Task``.
         """
-        for name, manager in self.iter_manager_definitions():
-            await self.start_manager(name, manager)
+        for name, definition in self.iter_manager_definitions():
+            await self.start_manager(name, definition)
 
     async def stop_managers(self, *, reverse: bool = False) -> None:
         """Stop all registered managers in order.

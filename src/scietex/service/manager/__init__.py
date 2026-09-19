@@ -1,7 +1,8 @@
 """Manager decorator and lifecycle utilities for ``scietex.service``.
 
 Provides the ``@Manager`` class decorator that wraps async methods
-into managed loops with automatic restart on error, and
+into managed loops with automatic restart on error, the descriptor-free
+``ManagerDefinition`` value stored in the per-class registry, and
 ``ManagerStatus`` for tracking manager lifecycle states.
 """
 
@@ -21,6 +22,46 @@ class ManagerStatus(Enum):
     STOPPING = "Stopping"
     STOPPED = "Stopped"
     FAILED = "Failed"
+
+
+class ManagerDefinition:
+    """Descriptor-free value stored in a class's manager registry.
+
+    A plain data holder describing one registered manager: its ``name``,
+    the ``method`` it runs, its optional ``cleanup`` callable, and the
+    ``owner``/``attribute_name`` it was bound under for diagnostics. Unlike
+    ``Manager``, it implements neither the descriptor protocol nor decorator
+    behaviour — it is only ever produced by ``_record_definition`` callers
+    (``Manager.__set_name__`` and ``register_manager``) and read back by
+    ``ManagerRuntime.iter_manager_definitions``.
+    """
+
+    __slots__ = ("name", "method", "cleanup", "owner", "attribute_name")
+
+    def __init__(
+        self,
+        name: str,
+        method: Callable[[Any], Coroutine[None, None, None]] | None = None,
+        cleanup: Callable[[Any], Coroutine[None, None, None]] | None = None,
+        owner: type | None = None,
+        attribute_name: str | None = None,
+    ) -> None:
+        """Initialize a manager definition.
+
+        Args:
+            name: Human-readable name for the manager (its discovery identity).
+            method: The async callable the manager executes, or ``None`` if not
+                yet bound.
+            cleanup: Optional async callable that runs when the manager stops.
+            owner: The class the manager is registered on, or ``None``.
+            attribute_name: The attribute name the manager is bound under, or
+                ``None`` when not bound to a class attribute.
+        """
+        self.name: str = name
+        self.method: Callable[[Any], Coroutine[None, None, None]] | None = method
+        self.cleanup: Callable[[Any], Coroutine[None, None, None]] | None = cleanup
+        self.owner: type | None = owner
+        self.attribute_name: str | None = attribute_name
 
 
 class Manager:
@@ -64,16 +105,20 @@ class Manager:
         self.method: Callable[[Any], Coroutine[None, None, None]] | None = None
         self.owner: type | None = None
         self.attribute_name: str | None = None
+        self.definition: ManagerDefinition | None = None
+        self._registered_owners: set[int] = set()
 
     def __set_name__(self, owner: type, name: str) -> None:
         """Record the manager on its owning class when the class is created.
 
         Stores the owning class and attribute name for diagnostics, then
-        appends ``self`` to the class's manager registry
-        (``MANAGER_REGISTRY_ATTR``). The registry is read and created from
-        the class's own ``__dict__`` only, so a subclass never mutates or
-        inherits a base class's registry list. Identity deduplication makes
-        the same ``Manager`` aliased under two attribute names safe.
+        builds a ``ManagerDefinition`` from ``self`` and records it in the
+        class's manager registry via ``_record_definition``. A ``Manager``
+        aliased under two attribute names yields exactly one definition: the
+        ``_registered_owners`` set makes the second ``__set_name__`` call for
+        the same owner a no-op. The registry is read and created from the
+        class's own ``__dict__`` only, so a subclass never mutates or inherits
+        a base class's registry list.
 
         Args:
             owner: The class the manager is being assigned to.
@@ -81,12 +126,12 @@ class Manager:
         """
         self.owner = owner
         self.attribute_name = name
-        registry = owner.__dict__.get(MANAGER_REGISTRY_ATTR)
-        if registry is None:
-            registry = []
-            setattr(owner, MANAGER_REGISTRY_ATTR, registry)
-        if not any(entry is self for entry in registry):
-            registry.append(self)
+        if id(owner) in self._registered_owners:
+            return
+        self._registered_owners.add(id(owner))
+        definition = ManagerDefinition(self.name, self.method, self.cleanup, owner, name)
+        self.definition = definition
+        _record_definition(owner, definition, replace=False)
 
     def __call__(self, method: Callable[[Any], Coroutine[None, None, None]]) -> "Manager":
         """Apply the decorator to an async method.
@@ -127,6 +172,35 @@ class Manager:
         return MethodType(self.method, instance)
 
 
+def _record_definition(owner: type, definition: ManagerDefinition, *, replace: bool) -> ManagerDefinition:
+    """Record ``definition`` in ``owner``'s manager registry.
+
+    The single mutation point for ``MANAGER_REGISTRY_ATTR``, used by both
+    ``Manager.__set_name__`` and ``register_manager``. The registry is read
+    and created from ``owner.__dict__`` only, so a subclass never mutates or
+    inherits a base class's registry list. When ``replace`` is ``True``, an
+    entry with the same ``name`` is replaced in place (preserving order);
+    otherwise the definition is appended. Re-recording the identical
+    definition object is a no-op (the identity guard), preserving deduplication
+    when the same definition is submitted twice.
+    """
+    registry = owner.__dict__.get(MANAGER_REGISTRY_ATTR)
+    if registry is None:
+        registry = []
+        setattr(owner, MANAGER_REGISTRY_ATTR, registry)
+    if replace:
+        for index, entry in enumerate(registry):
+            if entry.name == definition.name:
+                registry[index] = definition
+                return definition
+        registry.append(definition)
+    else:
+        if any(entry is definition for entry in registry):
+            return definition
+        registry.append(definition)
+    return definition
+
+
 def register_manager(
     owner: type,
     method: Callable[[Any], Coroutine[None, None, None]],
@@ -142,7 +216,9 @@ def register_manager(
     unavailable (e.g. a manager assembled dynamically or defined outside the
     class body). The manager is recorded in the class's manager registry
     (``MANAGER_REGISTRY_ATTR``) so ``ManagerRuntime.iter_manager_definitions``
-    discovers it alongside ``@Manager``-decorated methods.
+    discovers it alongside ``@Manager``-decorated methods. It is a
+    compatibility entry point producing registry entries identical to those
+    the decorator produces (a ``ManagerDefinition`` per manager).
 
     Args:
         owner: The class to register the manager on.
@@ -175,26 +251,16 @@ def register_manager(
     if attribute_name is not None:
         setattr(owner, attribute_name, manager)
 
-    registry = owner.__dict__.get(MANAGER_REGISTRY_ATTR)
-    if registry is None:
-        registry = []
-        setattr(owner, MANAGER_REGISTRY_ATTR, registry)
-
-    if replace:
-        for index, entry in enumerate(registry):
-            if entry.name == name:
-                registry[index] = manager
-                break
-        else:
-            registry.append(manager)
-    else:
-        registry.append(manager)
+    definition = ManagerDefinition(name, method, cleanup, owner, attribute_name)
+    manager.definition = definition
+    _record_definition(owner, definition, replace=replace)
 
     return manager
 
 
 __all__ = [
     "Manager",
+    "ManagerDefinition",
     "ManagerStatus",
     "register_manager",
 ]

@@ -8,7 +8,13 @@ import pytest
 
 from scietex.service.basic_worker import BasicWorker, ServiceStatus
 from scietex.service.config import WorkerConfig
-from scietex.service.manager import MANAGER_REGISTRY_ATTR, Manager, ManagerStatus, register_manager
+from scietex.service.manager import (
+    MANAGER_REGISTRY_ATTR,
+    Manager,
+    ManagerDefinition,
+    ManagerStatus,
+    register_manager,
+)
 
 
 class FlakyWorker(BasicWorker):
@@ -508,11 +514,11 @@ def test_manager_metadata_captured_on_basic_worker():
     assert manager.name == "Heartbeat"
 
 
-def test_registry_entries_are_managers_with_yielded_names():
-    """Each discovered entry must be a Manager whose name matches the yielded name (AR-086)."""
+def test_registry_entries_are_definitions_with_yielded_names():
+    """Each discovered entry must be a ManagerDefinition whose name matches the yielded name (AR-086)."""
     worker = BasicWorker()
     for name, manager in worker.manager_runtime.iter_manager_definitions():
-        assert isinstance(manager, Manager)
+        assert isinstance(manager, ManagerDefinition)
         assert manager.name == name
 
 
@@ -528,7 +534,7 @@ def test_manager_alias_dedup_in_registry():
 
     registry = Aliased.__dict__[MANAGER_REGISTRY_ATTR]
     assert len(registry) == 1
-    assert registry[0] is manager
+    assert isinstance(registry[0], ManagerDefinition)
     assert Aliased.__dict__["_first"] is manager and Aliased.__dict__["_second"] is manager
     names = [name for name, _ in Aliased().manager_runtime.iter_manager_definitions()]
     assert names.count("Aliased") == 1
@@ -640,7 +646,7 @@ def test_register_manager_on_base_does_not_shadow_subclass(caplog):
         pairs = list(worker.manager_runtime.iter_manager_definitions())
     names = [name for name, _ in pairs]
     assert names.count("Shared") == 1
-    assert pairs[names.index("Shared")][1] is Derived.__dict__["_derived_shared"]
+    assert pairs[names.index("Shared")][1] is Derived.__dict__["_derived_shared"].definition
     assert any("collides" in record.getMessage() and "Shared" in record.getMessage() for record in caplog.records)
 
 
@@ -667,7 +673,7 @@ def test_register_manager_entry_lives_in_owner_registry():
             await asyncio.sleep(0.05)
 
     manager = register_manager(W, W._extra, name="Custom")
-    assert manager in W.__dict__[MANAGER_REGISTRY_ATTR]
+    assert manager.definition in W.__dict__[MANAGER_REGISTRY_ATTR]
     names = [name for name, _ in W().manager_runtime.iter_manager_definitions()]
     assert "Decorated" in names and "Custom" in names
 
@@ -695,7 +701,7 @@ def test_exact_name_shadows_and_typo_yields_two(caplog):
     pairs = list(exact.manager_runtime.iter_manager_definitions())
     names = [name for name, _ in pairs]
     assert names.count("Exact") == 1
-    assert pairs[names.index("Exact")][1] is Exact.__dict__["_derived"]
+    assert pairs[names.index("Exact")][1] is Exact.__dict__["_derived"].definition
 
     # Typo: two distinct managers with no collision warning.
     caplog.clear()
@@ -786,7 +792,7 @@ def test_plain_manager_shadow_does_not_change_discovery(caplog):
     names = [name for name, _ in pairs]
     # The base manager still runs: exactly one "Shadow" yield, the base definition.
     assert names.count("Shadow") == 1
-    assert pairs[names.index("Shadow")][1] is ShadowBase.__dict__["_shared_manager"]
+    assert pairs[names.index("Shadow")][1] is ShadowBase.__dict__["_shared_manager"].definition
 
 
 def test_shadow_then_register_manager_does_not_warn(caplog):
@@ -797,7 +803,7 @@ def test_shadow_then_register_manager_does_not_warn(caplog):
     names = [name for name, _ in pairs]
     assert not any("shadows" in record.getMessage() for record in caplog.records)
     assert names.count("Shadow") == 1
-    assert pairs[names.index("Shadow")][1] is shadow_registered_manager
+    assert pairs[names.index("Shadow")][1] is shadow_registered_manager.definition
 
 
 def test_shadow_then_register_manager_with_attribute_name_does_not_warn(caplog):
@@ -808,7 +814,7 @@ def test_shadow_then_register_manager_with_attribute_name_does_not_warn(caplog):
     names = [name for name, _ in pairs]
     assert not any("shadows" in record.getMessage() for record in caplog.records)
     assert names.count("Shadow") == 1
-    assert pairs[names.index("Shadow")][1] is shadow_registered_bound_manager
+    assert pairs[names.index("Shadow")][1] is shadow_registered_bound_manager.definition
 
 
 def test_plain_manager_none_assignment_warns(caplog):
@@ -822,7 +828,7 @@ def test_plain_manager_none_assignment_warns(caplog):
     )
     # None does not disable the base manager: it still runs.
     assert names.count("Shadow") == 1
-    assert pairs[names.index("Shadow")][1] is ShadowBase.__dict__["_shared_manager"]
+    assert pairs[names.index("Shadow")][1] is ShadowBase.__dict__["_shared_manager"].definition
 
 
 def test_manager_attribute_name_coincidence_warns(caplog):
@@ -840,3 +846,86 @@ def test_decorated_manager_override_still_warns_nothing(caplog):
         names = [name for name, _ in worker.manager_runtime.iter_manager_definitions()]
     assert not any("shadows" in record.getMessage() for record in caplog.records)
     assert names.count("Shared") == 1
+
+
+def test_registry_holds_manager_definition_values():
+    """The registry stores ManagerDefinition values, never Manager instances (AR-107)."""
+
+    class W(BasicWorker):
+        @Manager(name="Decorated")
+        async def _decorated(self) -> None:
+            await asyncio.sleep(0.05)
+
+    registry = W.__dict__[MANAGER_REGISTRY_ATTR]
+    assert registry, "expected at least one registry entry"
+    assert all(isinstance(entry, ManagerDefinition) for entry in registry)
+    assert all(not isinstance(entry, Manager) for entry in registry)
+
+
+def test_decorator_and_register_manager_produce_equivalent_definitions():
+    """Both registration paths produce equivalent ManagerDefinition values (AR-107)."""
+
+    async def _impl(self) -> None:
+        await asyncio.sleep(0.05)
+
+    async def _cleanup(worker) -> None:
+        await asyncio.sleep(0.05)
+
+    # Decorator path: build the Manager and let type.__new__ trigger __set_name__.
+    decorator = Manager(name="Eq", cleanup=_cleanup)
+    decorator(_impl)
+    Decorated = type("Decorated", (BasicWorker,), {"_impl": decorator})
+
+    # register_manager path: an explicit entry on an otherwise empty class.
+    Registered = type("Registered", (BasicWorker,), {})
+    registered = register_manager(Registered, _impl, name="Eq", cleanup=_cleanup, attribute_name="_impl")
+
+    decorated = Decorated.__dict__["_impl"].definition
+    explicit = registered.definition
+
+    assert isinstance(decorated, ManagerDefinition)
+    assert isinstance(explicit, ManagerDefinition)
+    assert decorated.name == explicit.name == "Eq"
+    assert decorated.method is explicit.method is _impl
+    assert decorated.cleanup is explicit.cleanup is _cleanup
+    assert decorated.attribute_name == explicit.attribute_name == "_impl"
+    assert decorated.owner is Decorated
+    assert explicit.owner is Registered
+
+
+def test_manager_alias_yields_exactly_one_definition():
+    """A Manager aliased under two attribute names yields exactly one ManagerDefinition (AR-107)."""
+
+    async def _loop(self) -> None:
+        await asyncio.sleep(0.05)
+
+    manager = Manager(name="Aliased")
+    manager(_loop)
+    Aliased = type("Aliased", (BasicWorker,), {"_first": manager, "_second": manager})
+
+    registry = Aliased.__dict__[MANAGER_REGISTRY_ATTR]
+    assert len(registry) == 1
+    assert isinstance(registry[0], ManagerDefinition)
+    assert registry[0] is manager.definition
+
+
+def test_subclass_does_not_mutate_or_inherit_base_registry():
+    """A subclass must not mutate or inherit a base class's registry (AR-107)."""
+
+    class Base(BasicWorker):
+        @Manager(name="BaseOnly")
+        async def _base(self) -> None:
+            await asyncio.sleep(0.05)
+
+    class Sub(Base):
+        @Manager(name="SubOnly")
+        async def _sub(self) -> None:
+            await asyncio.sleep(0.05)
+
+    base_registry = Base.__dict__[MANAGER_REGISTRY_ATTR]
+    sub_registry = Sub.__dict__[MANAGER_REGISTRY_ATTR]
+
+    assert sub_registry is not base_registry
+    assert [entry.name for entry in base_registry] == ["BaseOnly"]
+    assert [entry.name for entry in sub_registry] == ["SubOnly"]
+    assert "BaseOnly" not in [entry.name for entry in sub_registry]

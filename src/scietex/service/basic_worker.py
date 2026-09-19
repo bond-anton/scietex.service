@@ -30,7 +30,7 @@ from .config import (
 from .lifecycle import WorkerLifecycle
 from .log_handlers import parse_logging_level
 from .log_handlers.lifecycle import LoggingLifecycle
-from .manager import register_manager
+from .manager import Manager
 from .manager.runtime import ManagerRuntime
 from .signal_handler import SignalHandler
 from .version import __version__
@@ -650,6 +650,26 @@ class BasicWorker:
                 ", ".join(failed),
             )
 
+    @Manager(name="Heartbeat")
+    async def _heartbeat_manager(self) -> None:
+        """Manager body that invokes ``heartbeat()`` once per iteration.
+
+        Calls ``heartbeat()`` immediately, then sleeps for ``heartbeat_interval``
+        seconds. ``ManagerRuntime.run_manager`` repeats this body until cancelled.
+        """
+        await self.heartbeat()
+        await asyncio.sleep(self.heartbeat_interval)
+
+    @Manager(name="Watchdog")
+    async def _watchdog_manager(self) -> None:
+        """Manager body that invokes ``watchdog()`` once per iteration.
+
+        Calls ``watchdog()`` immediately, then sleeps for ``watchdog_interval``
+        seconds. ``ManagerRuntime.run_manager`` repeats this body until cancelled.
+        """
+        await self.watchdog()
+        await asyncio.sleep(self.watchdog_interval)
+
     async def cleanup(self):
         """
         Cleanup everything before exit.
@@ -715,37 +735,3 @@ def print_scietex_logo(service_name: str, version: str) -> None:
     ``.version.__version__`` at call time.
     """
     print(LOGO.format(service_name=service_name, version=version, scietex_version=__version__))
-
-
-async def _heartbeat_manager(worker: BasicWorker) -> None:
-    """Manager body that invokes ``worker.heartbeat()`` once.
-
-    Calls ``heartbeat()`` immediately, then sleeps for ``heartbeat_interval``
-    seconds. ``ManagerRuntime.run_manager`` repeats this body until cancelled.
-    """
-    await worker.heartbeat()
-    await asyncio.sleep(worker.heartbeat_interval)
-
-
-async def _watchdog_manager(worker: BasicWorker) -> None:
-    """Manager body that invokes ``worker.watchdog()`` once.
-
-    Calls ``watchdog()`` immediately, then sleeps for ``watchdog_interval``
-    seconds. ``ManagerRuntime.run_manager`` repeats this body until cancelled.
-    """
-    await worker.watchdog()
-    await asyncio.sleep(worker.watchdog_interval)
-
-
-register_manager(
-    BasicWorker,
-    _heartbeat_manager,
-    name="Heartbeat",
-    attribute_name="_heartbeat_manager",
-)
-register_manager(
-    BasicWorker,
-    _watchdog_manager,
-    name="Watchdog",
-    attribute_name="_watchdog_manager",
-)
