@@ -89,3 +89,67 @@ async def test_watchdog_ignores_non_positive_timeout():
     # Clean up the still-running blocker task.
     tracker.worker_task.cancel()
     await asyncio.gather(tracker.worker_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_requeues_until_ceiling_then_terminates():
+    """A max_timeout_requeues=2 budget requeues a task twice, then terminates
+    it on the third timeout without redelivering and pops the budget key."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    settings = make_settings(task_cancellation_timeout=0.1)
+    executor = build_executor(
+        recording,
+        queue=queue,
+        lifecycle=lifecycle,
+        settings=settings,
+        max_timeout_requeues=2,
+    )
+    task_id = uuid4()
+    task_data = TaskData(task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
+
+    # First redelivery: under budget, requeue and bump to 1.
+    register_running(lifecycle, task_id, task_data, started=-100.0)
+    await executor.watchdog()
+    assert len(recording.requeued) == 1
+    assert executor._timeout_requeues == {task_id: 1}
+
+    # Second redelivery: still under budget, requeue and bump to 2.
+    register_running(lifecycle, task_id, task_data, started=-100.0)
+    await executor.watchdog()
+    assert len(recording.requeued) == 2
+    assert executor._timeout_requeues == {task_id: 2}
+
+    # Third redelivery: ceiling hit, no requeue, budget key popped.
+    register_running(lifecycle, task_id, task_data, started=-100.0)
+    await executor.watchdog()
+    assert len(recording.requeued) == 2
+    assert executor._timeout_requeues == {}
+
+
+@pytest.mark.asyncio
+async def test_watchdog_zero_ceiling_never_requeues():
+    """max_timeout_requeues=0 disables timeout requeue: the task is not
+    redelivered and the budget stays empty."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    settings = make_settings(task_cancellation_timeout=0.1)
+    executor = build_executor(
+        recording,
+        queue=queue,
+        lifecycle=lifecycle,
+        settings=settings,
+        max_timeout_requeues=0,
+    )
+    task_id = uuid4()
+    task_data = TaskData(task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
+    tracker = register_running(lifecycle, task_id, task_data, started=-100.0)
+
+    await executor.watchdog()
+
+    assert tracker.worker_task.done()
+    assert not recording.requeued
+    assert executor._timeout_requeues == {}
+    assert task_id not in lifecycle.trackers()

@@ -144,6 +144,10 @@ MIN_TASK_CANCELLATION_TIMEOUT: float = 0.1
 MAX_TASK_CANCELLATION_TIMEOUT: float = 60
 DEFAULT_TASK_CANCELLATION_TIMEOUT: float = 5
 
+DEFAULT_MAX_TIMEOUT_REQUEUES: int = 1
+MIN_MAX_TIMEOUT_REQUEUES: int = 0
+MAX_MAX_TIMEOUT_REQUEUES: int = 100
+
 MIN_CONFIG_STARTUP_TIMEOUT: float = 0.0
 MAX_CONFIG_STARTUP_TIMEOUT: float = 60.0
 DEFAULT_CONFIG_STARTUP_TIMEOUT: float = 2.0
@@ -263,6 +267,10 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
         task_cancellation_timeout: Timeout in seconds for waiting on a
             cancelled task to actually stop during cleanup/watchdog
             (``[0.1, 60]``).
+        max_timeout_requeues: Ceiling on timeout-driven requeues per task id;
+            ``None`` resolves to ``DEFAULT_MAX_TIMEOUT_REQUEUES``; ``0``
+            disables timeout requeue (behaves like ``timeout_action="discard"``).
+            Restart-required (not hot-reloadable).
         remote_config_enabled: Opt-in master switch for the remote
             configuration channel. ``False`` (default) disables the ``config:*``
             command handlers and the startup read.
@@ -285,6 +293,7 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
     task_timeout: float | None = None
     task_queue_fetch_timeout: float | None = None
     task_cancellation_timeout: float | None = None
+    max_timeout_requeues: int | None = None
     remote_config_enabled: bool = False
     config_file: str = "config.yml"
     config_signing_key: str | None = None
@@ -337,6 +346,12 @@ class TaskProcessorConfig(WorkerConfig, frozen=True):
             "task_cancellation_timeout",
             minimum=MIN_TASK_CANCELLATION_TIMEOUT,
             maximum=MAX_TASK_CANCELLATION_TIMEOUT,
+        )
+        validate_range(
+            self.max_timeout_requeues,
+            "max_timeout_requeues",
+            minimum=MIN_MAX_TIMEOUT_REQUEUES,
+            maximum=MAX_MAX_TIMEOUT_REQUEUES,
         )
         validate_range(
             self.config_startup_timeout,

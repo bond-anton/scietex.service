@@ -18,6 +18,7 @@ import msgspec
 from .basic_worker import BasicWorker, ServiceStatus
 from .config import (
     DEFAULT_MAX_TASKS_QUEUE_SIZE,
+    DEFAULT_MAX_TIMEOUT_REQUEUES,
     TaskProcessorConfig,
     resolve_reloadable_settings,
 )
@@ -107,6 +108,13 @@ class TaskProcessor(BasicWorker):
         # Initialize queues and tracking structures
         self.__queue_size: int = cfg.queue_size if cfg.queue_size is not None else DEFAULT_MAX_TASKS_QUEUE_SIZE
 
+        # Ceiling on timeout-driven requeues per task id (AR-104). Restart-
+        # required: resolved once here and never reloaded. Passed to the
+        # executor, which owns the timeout-requeue budget in the watchdog.
+        self.__max_timeout_requeues: int = (
+            cfg.max_timeout_requeues if cfg.max_timeout_requeues is not None else DEFAULT_MAX_TIMEOUT_REQUEUES
+        )
+
         # The effective config is the single resolved snapshot of the eight
         # hot-reloadable fields (None -> DEFAULT_*, auto_tune -> CPU count).
         # `_config` (written by BasicWorker) and `_effective` are written
@@ -129,6 +137,7 @@ class TaskProcessor(BasicWorker):
             on_drain=self._on_queue_drain_task_processing,
             settings=self._current_reloadable_settings,
             logger=self.logger,
+            max_timeout_requeues=self.__max_timeout_requeues,
         )
 
         # Built-in cancellation handler. Registered here so every processor can
@@ -182,6 +191,11 @@ class TaskProcessor(BasicWorker):
     def queue_size(self) -> int:
         """Maximum size of the internal task queue."""
         return self.__queue_size
+
+    @property
+    def max_timeout_requeues(self) -> int:
+        """Ceiling on timeout-driven requeues per task id (read-only)."""
+        return self.__max_timeout_requeues
 
     @property
     def max_concurrent_tasks(self) -> int:

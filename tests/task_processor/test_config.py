@@ -6,6 +6,7 @@ from typing import cast
 from scietex.service.config import (
     DEFAULT_MANAGER_SLEEP_TIME,
     DEFAULT_MAX_CONCURRENT_TASKS,
+    DEFAULT_MAX_TIMEOUT_REQUEUES,
     DEFAULT_TASK_CANCELLATION_TIMEOUT,
     DEFAULT_TASK_HANDLER_START_TIMEOUT,
     DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
@@ -72,3 +73,10 @@ def test_reloadable_fields_have_no_shadow_attributes():
     assert not hasattr(proc, "_TaskProcessor__task_timeout")
     assert not hasattr(proc, "_TaskProcessor__task_queue_fetch_timeout")
     assert not hasattr(proc, "_TaskProcessor__task_cancellation_timeout")
+
+
+def test_default_and_explicit_max_timeout_requeues():
+    """The default config resolves the property to DEFAULT_MAX_TIMEOUT_REQUEUES;
+    an explicit value is respected (AR-104)."""
+    assert TaskProcessor().max_timeout_requeues == DEFAULT_MAX_TIMEOUT_REQUEUES
+    assert DemoProcessor(TaskProcessorConfig(max_timeout_requeues=7)).max_timeout_requeues == 7

@@ -12,6 +12,7 @@ from ._helpers import (
     CancelRecordingProcessor,
     DemoProcessor,
     NeverFinishesHandler,
+    RetryCycleProcessor,
     SlowHandler,
     StubbornHandler,
 )
@@ -198,6 +199,51 @@ async def test_watchdog_ignores_non_positive_configured_task_timeout():
         await asyncio.sleep(0.3)
         assert t_id in proc.running_tasks
         assert not any(tid == t_id for tid, _ in proc.requeued)
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_bounds_timeout_requeue_loop():
+    """A task whose handler hangs forever is requeued exactly once by the
+    watchdog, then terminated without redelivery (AR-104): the timeout-driven
+    requeue loop is bounded end to end through the full manager pipeline.
+
+    The first timeout requeues (budget 0 -> 1) and the transport redelivers;
+    the second timeout hits the max_timeout_requeues=1 ceiling and terminates
+    without redelivering. Two on_task_completed calls prove the redelivery
+    round-trip actually ran, so the test would fail under an unbounded loop."""
+    proc = RetryCycleProcessor(
+        TaskProcessorConfig(
+            task_timeout=0.1,
+            watchdog_interval=0.05,
+            task_cancellation_timeout=0.1,
+            max_timeout_requeues=1,
+        )
+    )
+    proc.add_task_handler(NeverFinishesHandler)
+    await proc.start()
+    try:
+        t_id = uuid4()
+        proc.enqueue_task(
+            t_id,
+            TaskData(
+                task="never",
+                payload=b"{}",
+                timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
+            ),
+        )
+        # Wait for the redelivery round-trip to complete (two completions), then
+        # a generous extra window so a buggy third redelivery would surface.
+        for _ in range(500):
+            if len(proc.completed) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(1.0)
+        assert len(proc.requeued) == 1
+        assert proc.requeued[0][0] == t_id
+        assert len(proc.completed) == 2
     finally:
         await proc.exit()
         await proc.events["exit"].wait()

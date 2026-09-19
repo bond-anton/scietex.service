@@ -8,8 +8,9 @@ from uuid import UUID
 
 import msgspec
 
+from .config import DEFAULT_MAX_TIMEOUT_REQUEUES
 from .config_reload import ReloadableSettings
-from .task_handler import CancelOutcome, TaskData, TaskResult, TaskTracker
+from .task_handler import CancelOutcome, CancelReason, TaskData, TaskResult, TaskTracker
 from .task_lifecycle import TaskLifecycle
 
 #: AR-022 v4: the framework grants exactly one error-path retry per task id.
@@ -46,6 +47,7 @@ class TaskExecutor:
         settings: Callable[[], ReloadableSettings],
         logger: logging.Logger,
         max_retries: int = DEFAULT_MAX_TASK_RETRIES,
+        max_timeout_requeues: int = DEFAULT_MAX_TIMEOUT_REQUEUES,
     ) -> None:
         self._queue = queue
         self._lifecycle = lifecycle
@@ -58,6 +60,10 @@ class TaskExecutor:
         self._settings = settings
         self._logger = logger
         self._max_retries = max_retries
+        self._max_timeout_requeues = max_timeout_requeues
+        # Timeout-requeue budget, distinct from the error-path retry budget:
+        # a timeout cancel has no TaskResult, so the two cannot share a key.
+        self._timeout_requeues: dict[UUID, int] = {}
 
     async def run_once(self) -> None:
         """Run one task-manager iteration: dequeue, dispatch, and track a task."""
@@ -119,7 +125,8 @@ class TaskExecutor:
         """Drop the tracker, balance the queue, apply retry policy, then ack."""
         self._lifecycle.remove_tracker(task_id)
         self._queue.task_done()
-        ack_result = await self._apply_retry_policy(task_id, task_data, result)
+        cancel_reason = self._lifecycle.take_cancel_reason(task_id)
+        ack_result = await self._apply_retry_policy(task_id, task_data, result, cancel_reason)
         try:
             # Ack the transport entry exactly when the handler's work on it
             # ends (success, error, or cancellation). On CancelledError, result
@@ -130,7 +137,7 @@ class TaskExecutor:
                 task_id,
                 task_data,
                 ack_result,
-                cancel_reason=self._lifecycle.take_cancel_reason(task_id),
+                cancel_reason=cancel_reason,
             )
         except Exception as exc:
             # A transport ack failure must never crash handle_task or leak into
@@ -145,7 +152,11 @@ class TaskExecutor:
             )
 
     async def _apply_retry_policy(
-        self, task_id: UUID, task_data: TaskData, result: TaskResult | None
+        self,
+        task_id: UUID,
+        task_data: TaskData,
+        result: TaskResult | None,
+        cancel_reason: CancelReason | None = None,
     ) -> TaskResult | None:
         """Requeue a retryable error once, and return the result to ack.
 
@@ -157,10 +168,18 @@ class TaskExecutor:
         requeue. A requeue failure is logged and the task is still acked (the
         retry copy is lost, but the entry must not stay pending forever).
         """
+        if result is None and cancel_reason == "timeout":
+            # The timeout watchdog owns `_timeout_requeues` and bumps it only
+            # after the handler has stopped; clearing it here would reset the
+            # budget on every redelivery and reintroduce the unbounded loop.
+            self._retry_attempts.pop(task_id, None)
+            return result
+
         if result is None or result.status != "error" or not result.retryable:
             # Terminal for this id: drop the budget so the dict cannot grow
             # without bound.
             self._retry_attempts.pop(task_id, None)
+            self._timeout_requeues.pop(task_id, None)
             return result
 
         attempts = self._retry_attempts.get(task_id, 0)
@@ -186,6 +205,7 @@ class TaskExecutor:
         # the entry would wait for a retry that never comes.
         ack_result = msgspec.structs.replace(result, retryable=False)
         self._retry_attempts.pop(task_id, None)
+        self._timeout_requeues.pop(task_id, None)
         self._logger.log(
             logging.WARNING,
             "Task %s (%s) exhausted its single retry; acking as terminal.",
@@ -237,6 +257,7 @@ class TaskExecutor:
         if queued_data is not None:
             # The target never started, so no handle_task will run for it:
             # write the terminal status directly.
+            self._timeout_requeues.pop(target_id, None)
             await self._on_completed(target_id, queued_data, None, cancel_reason="deliberate")
             return "cancelled"
 
@@ -300,13 +321,29 @@ class TaskExecutor:
                     # delivery only now, so a handler that ignores cancellation
                     # cannot cause the task to run twice.
                     if task_tracker.data.timeout.timeout_action == "requeue":
-                        self._logger.log(
-                            logging.WARNING,
-                            "Task %s (%s) will be returned to queue.",
-                            task_tracker.data.task,
-                            task_id,
-                        )
-                        await self._requeue(task_id, task_tracker.data)
+                        attempts = self._timeout_requeues.get(task_id, 0)
+                        if attempts < self._max_timeout_requeues:
+                            self._timeout_requeues[task_id] = attempts + 1
+                            self._logger.log(
+                                logging.WARNING,
+                                "Task %s (%s) will be returned to queue (timeout requeue %d/%d).",
+                                task_tracker.data.task,
+                                task_id,
+                                attempts + 1,
+                                self._max_timeout_requeues,
+                            )
+                            await self._requeue(task_id, task_tracker.data)
+                        else:
+                            # Ceiling hit: the original entry was already acked
+                            # as failed/timeout above; do not redeliver.
+                            self._timeout_requeues.pop(task_id, None)
+                            self._logger.log(
+                                logging.WARNING,
+                                "Task %s (%s) exhausted its %d timeout requeue(s); acking as terminal.",
+                                task_tracker.data.task,
+                                task_id,
+                                self._max_timeout_requeues,
+                            )
                 else:
                     # The handler ignored cancellation and is still running. It
                     # will acknowledge its entry when it eventually finishes;
@@ -363,3 +400,4 @@ class TaskExecutor:
         # A task requeued but never re-handled before shutdown would otherwise
         # leave its retry budget behind; the budget is per-execution state.
         self._retry_attempts.clear()
+        self._timeout_requeues.clear()

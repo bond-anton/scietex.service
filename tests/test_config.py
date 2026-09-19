@@ -171,6 +171,20 @@ def test_task_timeout_unbounded_sentinel_accepted(value):
     assert cfg.task_timeout == value
 
 
+@pytest.mark.parametrize("value", [-1, 101])
+def test_task_processor_config_max_timeout_requeues_out_of_range_raises(value):
+    """max_timeout_requeues outside [0, 100] is rejected at construction."""
+    with pytest.raises(msgspec.ValidationError):
+        TaskProcessorConfig(max_timeout_requeues=value)
+
+
+@pytest.mark.parametrize("value", [0, 100, None])
+def test_task_processor_config_max_timeout_requeues_accepted(value):
+    """max_timeout_requeues accepts the bounds 0/100 and the None default."""
+    cfg = TaskProcessorConfig(max_timeout_requeues=value)
+    assert cfg.max_timeout_requeues == value
+
+
 @pytest.mark.parametrize("value", [0.0, 60.0])
 def test_config_startup_timeout_boundaries_accepted(value):
     cfg = TaskProcessorConfig(config_startup_timeout=value)

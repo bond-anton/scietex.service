@@ -129,3 +129,40 @@ async def test_requeue_failure_pops_budget_and_returns_result():
     assert ack.retryable is True
     assert retry_attempts == {}
     assert recording.requeued == [(task_id, task_data)]
+
+
+@pytest.mark.asyncio
+async def test_timeout_cancel_preserves_timeout_budget():
+    """A timeout cancel (result None) leaves the watchdog-owned timeout budget
+    intact so the redelivery cycle keeps its count, while clearing the
+    error-path retry budget."""
+    recording = Recording()
+    task_id = uuid4()
+    retry_attempts = {task_id: 1}
+    executor = build_executor(recording, retry_attempts=retry_attempts)
+    executor._timeout_requeues = {task_id: 2}
+    task_data = TaskData(task="timeout")
+
+    ack = await executor._apply_retry_policy(task_id, task_data, None, cancel_reason="timeout")
+
+    assert ack is None
+    assert executor._timeout_requeues == {task_id: 2}
+    assert retry_attempts == {}
+
+
+@pytest.mark.asyncio
+async def test_non_timeout_cancel_clears_timeout_budget():
+    """A deliberate or shutdown cancel (result None) clears both budgets."""
+    for reason in ("deliberate", "shutdown"):
+        recording = Recording()
+        task_id = uuid4()
+        retry_attempts = {task_id: 1}
+        executor = build_executor(recording, retry_attempts=retry_attempts)
+        executor._timeout_requeues = {task_id: 2}
+        task_data = TaskData(task="cancelled")
+
+        ack = await executor._apply_retry_policy(task_id, task_data, None, cancel_reason=reason)
+
+        assert ack is None
+        assert executor._timeout_requeues == {}
+        assert retry_attempts == {}

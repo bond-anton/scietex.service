@@ -72,6 +72,7 @@ def build_executor(
     retry_attempts=None,
     settings=None,
     max_retries=1,
+    max_timeout_requeues=1,
 ) -> TaskExecutor:
     """Wire a TaskExecutor to a Recording and caller-provided storage."""
     return TaskExecutor(
@@ -86,6 +87,7 @@ def build_executor(
         settings=(lambda: settings) if settings is not None else (lambda: make_settings()),
         logger=_logger,
         max_retries=max_retries,
+        max_timeout_requeues=max_timeout_requeues,
     )
 
 

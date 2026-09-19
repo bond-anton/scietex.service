@@ -49,6 +49,24 @@ async def test_cancel_queued_target_returns_cancelled():
 
 
 @pytest.mark.asyncio
+async def test_queued_cancel_clears_timeout_budget():
+    """cancel of a queued target clears any seeded timeout-requeue budget."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
+    target_id = uuid4()
+    task_data = TaskData(task="dummy")
+    await queue.put((target_id, task_data))
+    executor._timeout_requeues = {target_id: 3}
+
+    outcome = await executor.cancel(target_id)
+
+    assert outcome == "cancelled"
+    assert executor._timeout_requeues == {}
+
+
+@pytest.mark.asyncio
 async def test_cancel_unknown_target_returns_not_running():
     """cancel of an unknown id yields not_running with no ack."""
     recording = Recording()
