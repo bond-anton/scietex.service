@@ -118,6 +118,7 @@ the same `{service}` substitution; see
 | `MIN_MQTT_KEEPALIVE` / `MAX_MQTT_KEEPALIVE` | `0` / `65535` | Bounds of `MqttConfig.keepalive` |
 | `MIN_SESSION_EXPIRY_INTERVAL` / `MAX_SESSION_EXPIRY_INTERVAL` | `0` / `4294967295` | Bounds of `MqttConfig.session_expiry_interval` |
 | `MIN_INBOX_TTL` / `MAX_INBOX_TTL` | `1` / `2592000` | Bounds of `MqttWorkerConfig.inbox_ttl` (30 days) |
+| `DEFAULT_INBOX_TTL` | `86400` | Default `MqttWorkerConfig.inbox_ttl` (one day) |
 | `MIN_STATUS_QOS` / `MAX_STATUS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.status_qos` |
 | `MIN_STATUS_TTL` / `MAX_STATUS_TTL` | `1` / `2592000` | Bounds of `MqttWorkerConfig.status_ttl` (30 days) |
 | `MIN_PROGRESS_QOS` / `MAX_PROGRESS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.progress_qos` |
@@ -214,7 +215,7 @@ worker = MqttWorker(
         task_qos=2,
         inbox_backend="file",
         inbox_path=None,
-        inbox_ttl=None,
+        inbox_ttl=86400,
         log_topic="scietex/{service}/log",
         log_qos=0,
         log_retain=False,
@@ -258,7 +259,7 @@ preserved.
 | `task_qos` | `2` | QoS for task messages; valid range `[0, 2]` |
 | `inbox_backend` | `"file"` | Durable inbox backend (`"file"`, `"memory"`, or `"none"`); `"memory"`/`"none"` is the explicit at-most-once opt-out |
 | `inbox_path` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
-| `inbox_ttl` | `None` | TTL in seconds for inbox entries; `None` disables expiry. Valid range `[1, 2592000]` |
+| `inbox_ttl` | `86400` | TTL in seconds for inbox entries and tombstones (one day); valid range `[1, 2592000]`; `None` disables expiry (the explicit unbounded-growth opt-out) |
 | `log_topic` | `"scietex/{service}/log"` | Topic worker logs are published to; `{service}` is replaced with the service name |
 | `log_qos` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `False` | If `True`, log messages are published with the retained flag |
@@ -541,11 +542,15 @@ JSON file per entry under `<conf_dir>/inbox` (overridable with
 - `{task_id}.done` — a tombstone written by `mark_terminal` so a
   re-delivered duplicate of an already-terminal task is skipped.
 
-`inbox_ttl` (seconds) governs tombstone dedupe and entry expiry; `None`
-disables expiry. Tombstones and expired entries are pruned on load. The
-store is **single-process**: it does not coordinate across replicas.
-Multi-replica deployments need a shared backend, which the `MqttInbox`
-Protocol preserves as a future option.
+`inbox_ttl` (seconds, default one day) governs tombstone dedupe and entry
+expiry; `None` disables expiry (the explicit unbounded-growth opt-out).
+Pruning is a periodic watchdog maintenance pass, throttled to 60 s, not a
+side effect of load: expired tombstones and entries are removed by
+`MqttInbox.prune_expired()`, which the worker's watchdog invokes at most once
+per `INBOX_PRUNE_INTERVAL`. The bounded horizon caps dedup memory to one day
+by default. The store is **single-process**: it does not coordinate across
+replicas. Multi-replica deployments need a shared backend, which the
+`MqttInbox` Protocol preserves as a future option.
 
 `inbox_backend="memory"` (or its alias `"none"`) is the explicit at-most-once
 opt-out: the worker uses a `MemoryInbox` that buffers entries in process only,
@@ -877,7 +882,7 @@ fields).
 | `task_qos` | `int` | `2` | QoS for task messages; valid range `[0, 2]` |
 | `inbox_backend` | `Literal["file", "memory", "none"]` | `"file"` | Durable inbox backend; `"memory"`/`"none"` is the explicit at-most-once opt-out |
 | `inbox_path` | `str \| None` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
-| `inbox_ttl` | `int \| None` | `None` | TTL in seconds for inbox entries; valid range `[1, 2592000]` |
+| `inbox_ttl` | `int \| None` | `86400` | TTL in seconds for inbox entries and tombstones (one day); valid range `[1, 2592000]`; `None` disables expiry |
 | `log_topic` | `str` | `"scietex/{service}/log"` | Topic worker logs are published to |
 | `log_qos` | `int` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `bool` | `False` | Publish log messages with the retained flag |
