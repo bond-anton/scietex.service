@@ -12,11 +12,11 @@ from scietex.service.config_reload import (
     BAD_SIGNATURE,
     CONFIG_ENVELOPE_VERSION,
     CONFIG_SOURCE_UNAVAILABLE,
-    CONFIG_STORE_FAILED,
     HASH_MISMATCH,
     INVALID_CONFIG,
     INVALID_CONFIG_PAYLOAD,
     REMOTE_CONFIG_DISABLED,
+    RETRYABLE_ERROR_CODES,
     STALE_CONFIG,
     UNKNOWN_CONFIG_SECTION,
     ConfigEnvelope,
@@ -531,10 +531,16 @@ async def test_store_writes_decodable_envelope():
 
 @pytest.mark.asyncio
 async def test_store_source_raises():
+    """A source store failure maps to CONFIG_SOURCE_UNAVAILABLE (transient)."""
     reloader = _reloader()
     outcome = await reloader.store(_FakeSource(store_error=RuntimeError("boom")))
     assert outcome.stored is False
-    assert outcome.error_code == CONFIG_STORE_FAILED
+    assert outcome.error_code == CONFIG_SOURCE_UNAVAILABLE
+
+
+def test_retryable_error_codes_contains_only_source_unavailable():
+    """RETRYABLE_ERROR_CODES is exactly {CONFIG_SOURCE_UNAVAILABLE}."""
+    assert RETRYABLE_ERROR_CODES == {CONFIG_SOURCE_UNAVAILABLE}
 
 
 def test_show_returns_current_core_settings():

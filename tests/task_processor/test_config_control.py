@@ -11,6 +11,7 @@ import pytest
 
 from scietex.service.config import TaskProcessorConfig
 from scietex.service.config_reload import (
+    CONFIG_SOURCE_NOT_CONFIGURED,
     CONFIG_SOURCE_UNAVAILABLE,
     CONFIG_STORE_FAILED,
     INVALID_CONFIG,
@@ -225,6 +226,24 @@ async def test_apply_handler_source_unavailable_is_retryable():
 
 
 @pytest.mark.asyncio
+async def test_apply_handler_not_configured_is_not_retryable():
+    """A not-configured-source outcome is permanent, not retryable."""
+
+    async def apply(payload: bytes | None, persist: bool) -> ConfigApplyOutcome:
+        return ConfigApplyOutcome(applied=False, error="no source", error_code=CONFIG_SOURCE_NOT_CONFIGURED)
+
+    handler = ConfigApplyHandler("apply", make_context(), apply=apply)
+    result = await handler.handle(
+        _task(CONFIG_APPLY_TASK_TYPE, msgspec.msgpack.encode(ConfigApplyRequest(payload=None))),
+        capabilities=make_capabilities(),
+    )
+
+    assert result.status == "error"
+    assert result.error_code == CONFIG_SOURCE_NOT_CONFIGURED
+    assert result.retryable is False
+
+
+@pytest.mark.asyncio
 async def test_apply_handler_invalid_config_is_not_retryable():
     """A validation failure is permanent, not retryable."""
 
@@ -326,8 +345,8 @@ async def test_store_handler_store_failed_is_not_retryable():
 
 
 @pytest.mark.asyncio
-async def test_store_handler_source_unavailable_is_retryable():
-    """A source-unavailable store outcome opts into the single retry."""
+async def test_store_handler_remote_source_failure_is_retryable():
+    """A remote store source-unavailable outcome opts into the single retry."""
 
     async def store(target: str) -> ConfigStoreOutcome:
         return ConfigStoreOutcome(stored=False, target=target, error_code=CONFIG_SOURCE_UNAVAILABLE)
@@ -527,14 +546,14 @@ async def test_remote_config_disabled_store_remote_is_gated(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_apply_with_no_source_and_none_payload_returns_source_unavailable(tmp_path):
+async def test_apply_with_no_source_and_none_payload_returns_source_not_configured(tmp_path):
     """``payload=None`` with no attached source of truth is
-    CONFIG_SOURCE_UNAVAILABLE."""
+    CONFIG_SOURCE_NOT_CONFIGURED."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
     outcome = await proc._config_manager.apply_config(None, False)
 
     assert outcome.applied is False
-    assert outcome.error_code == CONFIG_SOURCE_UNAVAILABLE
+    assert outcome.error_code == CONFIG_SOURCE_NOT_CONFIGURED
 
 
 @pytest.mark.asyncio

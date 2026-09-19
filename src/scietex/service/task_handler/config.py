@@ -13,9 +13,9 @@ from typing import Literal
 import msgspec
 
 from ..config_reload import (
-    CONFIG_SOURCE_UNAVAILABLE,
     INVALID_CONFIG,
     INVALID_CONFIG_PAYLOAD,
+    RETRYABLE_ERROR_CODES,
     ConfigApplyOutcome,
     ConfigStoreOutcome,
 )
@@ -184,8 +184,9 @@ class ConfigApplyHandler(TaskHandler):
         Returns:
             A ``TaskResult``: ``success`` with a msgpack-encoded
             :class:`ConfigApplyResponse` when the envelope applied, or an
-            ``error`` otherwise. A source-unavailable outcome is retryable;
-            every other failure is non-retryable.
+            ``error`` otherwise. A transient source-unavailable outcome is
+            retryable; every other failure (including a not-configured source)
+            is non-retryable.
         """
         try:
             request = msgspec.msgpack.decode(task_data.payload, type=ConfigApplyRequest)
@@ -224,7 +225,7 @@ class ConfigApplyHandler(TaskHandler):
             status="error",
             error=outcome.error,
             error_code=outcome.error_code,
-            retryable=outcome.error_code == CONFIG_SOURCE_UNAVAILABLE,
+            retryable=outcome.error_code in RETRYABLE_ERROR_CODES,
         )
 
 
@@ -271,8 +272,9 @@ class ConfigStoreHandler(TaskHandler):
         Returns:
             A ``TaskResult``: ``success`` with a msgpack-encoded
             :class:`ConfigStoreResponse` when the config was stored, or an
-            ``error`` otherwise. A source-unavailable outcome is retryable;
-            every other failure is non-retryable.
+            ``error`` otherwise. A transient source-unavailable outcome is
+            retryable; every other failure (including a not-configured source)
+            is non-retryable.
         """
         try:
             request = msgspec.msgpack.decode(task_data.payload, type=ConfigStoreRequest)
@@ -311,7 +313,7 @@ class ConfigStoreHandler(TaskHandler):
             status="error",
             error=outcome.error,
             error_code=outcome.error_code,
-            retryable=outcome.error_code == CONFIG_SOURCE_UNAVAILABLE,
+            retryable=outcome.error_code in RETRYABLE_ERROR_CODES,
         )
 
 
@@ -359,8 +361,9 @@ class ConfigShowHandler(TaskHandler):
             A ``TaskResult``: ``success`` with a msgpack-encoded
             :class:`ConfigShowResponse` when the config is inspectable, or an
             ``error`` on a malformed payload, a raising callback, or a
-            response carrying a non-empty ``error_code``. A source-unavailable
-            outcome is retryable; every other failure is non-retryable.
+            response carrying a non-empty ``error_code``. A transient
+            source-unavailable outcome is retryable; every other failure
+            (including a not-configured source) is non-retryable.
         """
         try:
             request = msgspec.msgpack.decode(task_data.payload, type=ConfigShowRequest)
@@ -387,7 +390,7 @@ class ConfigShowHandler(TaskHandler):
                 status="error",
                 error=response.error,
                 error_code=response.error_code,
-                retryable=response.error_code == CONFIG_SOURCE_UNAVAILABLE,
+                retryable=response.error_code in RETRYABLE_ERROR_CODES,
             )
 
         return TaskResult(

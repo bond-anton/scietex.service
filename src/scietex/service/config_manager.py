@@ -23,7 +23,7 @@ from typing import Any, cast
 import msgspec
 
 from .config_reload import (
-    CONFIG_SOURCE_UNAVAILABLE,
+    CONFIG_SOURCE_NOT_CONFIGURED,
     CONFIG_STORE_FAILED,
     REMOTE_CONFIG_DISABLED,
     ConfigApplyOutcome,
@@ -129,7 +129,7 @@ class ConfigManager:
 
         Injected into ``ConfigApplyHandler``. A present ``payload`` is applied
         inline; ``payload=None`` re-reads the transport source, which requires
-        a source to be attached (``CONFIG_SOURCE_UNAVAILABLE`` otherwise).
+        a source to be attached (``CONFIG_SOURCE_NOT_CONFIGURED`` otherwise).
         ``persist`` additionally writes the local snapshot after a successful
         apply.
         """
@@ -138,7 +138,7 @@ class ConfigManager:
         else:
             source = self._source
             if source is None:
-                return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
+                return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_NOT_CONFIGURED)
             outcome = await self._reloader.reload(source)
         if persist and outcome.applied:
             self.write_local()
@@ -150,13 +150,13 @@ class ConfigManager:
         Injected into ``ConfigStoreHandler``. ``disk`` writes the local
         snapshot; ``remote`` publishes back to the transport source; ``both``
         does both. A remote target without an attached source is
-        ``CONFIG_SOURCE_UNAVAILABLE``.
+        ``CONFIG_SOURCE_NOT_CONFIGURED``.
         """
         if target == "disk":
             return self.write_local()
         source = self._source
         if source is None:
-            return ConfigStoreOutcome(stored=False, target=target, error_code=CONFIG_SOURCE_UNAVAILABLE)
+            return ConfigStoreOutcome(stored=False, target=target, error_code=CONFIG_SOURCE_NOT_CONFIGURED)
         if target == "both":
             disk_outcome = self.write_local()
             if not disk_outcome.stored:
@@ -237,11 +237,11 @@ class ConfigManager:
     async def reload_remote(self) -> ConfigApplyOutcome:
         """Load and apply the desired-state envelope from the attached source.
 
-        A missing source maps to ``CONFIG_SOURCE_UNAVAILABLE``; otherwise the
-        reloader reads and applies the source's envelope.
+        A missing source maps to ``CONFIG_SOURCE_NOT_CONFIGURED``; otherwise
+        the reloader reads and applies the source's envelope.
         """
         if self._source is None:
-            return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
+            return ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_NOT_CONFIGURED)
         return await self._reloader.reload(self._source)
 
     async def apply_envelope(self, payload: bytes, *, source: str) -> ConfigApplyOutcome:

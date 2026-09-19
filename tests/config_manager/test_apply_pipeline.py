@@ -3,7 +3,7 @@
 import pytest
 
 from scietex.service.config_reload import (
-    CONFIG_SOURCE_UNAVAILABLE,
+    CONFIG_SOURCE_NOT_CONFIGURED,
     REMOTE_CONFIG_DISABLED,
 )
 
@@ -37,15 +37,15 @@ async def test_apply_none_payload_reloads_attached_source(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_apply_none_payload_without_source_is_unavailable(tmp_path):
+async def test_apply_none_payload_without_source_is_not_configured(tmp_path):
     """``payload=None`` with no attached source of truth is
-    CONFIG_SOURCE_UNAVAILABLE."""
+    CONFIG_SOURCE_NOT_CONFIGURED."""
     manager = build_manager(tmp_path, enabled=True)
 
     outcome = await manager.apply_config(None, False)
 
     assert outcome.applied is False
-    assert outcome.error_code == CONFIG_SOURCE_UNAVAILABLE
+    assert outcome.error_code == CONFIG_SOURCE_NOT_CONFIGURED
 
 
 @pytest.mark.asyncio

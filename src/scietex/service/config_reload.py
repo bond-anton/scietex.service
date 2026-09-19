@@ -47,16 +47,26 @@ CONFIG_ENVELOPE_VERSION: int = 1
 
 # Outcome taxonomy. These exact strings are surfaced in ``ConfigApplyOutcome``
 # and ``ConfigStoreOutcome`` so callers (task handlers, transports) can branch
-# on a stable code instead of parsing free-text error messages.
+# on a stable code instead of parsing free-text error messages. Exactly one
+# code (``CONFIG_SOURCE_UNAVAILABLE``, see ``RETRYABLE_ERROR_CODES``) describes
+# a transient condition that may succeed on retry; every other code is a
+# permanent condition a retry cannot fix.
 INVALID_CONFIG_PAYLOAD: str = "INVALID_CONFIG_PAYLOAD"
 INVALID_CONFIG: str = "INVALID_CONFIG"
 UNKNOWN_CONFIG_SECTION: str = "UNKNOWN_CONFIG_SECTION"
 HASH_MISMATCH: str = "HASH_MISMATCH"
 BAD_SIGNATURE: str = "BAD_SIGNATURE"
 STALE_CONFIG: str = "STALE_CONFIG"
+CONFIG_SOURCE_NOT_CONFIGURED: str = "CONFIG_SOURCE_NOT_CONFIGURED"
 CONFIG_SOURCE_UNAVAILABLE: str = "CONFIG_SOURCE_UNAVAILABLE"
 CONFIG_STORE_FAILED: str = "CONFIG_STORE_FAILED"
 REMOTE_CONFIG_DISABLED: str = "REMOTE_CONFIG_DISABLED"
+
+#: Outcome codes describing a transient condition that may succeed on retry:
+#: an *attached* source that is momentarily unreachable on read or write.
+#: ``CONFIG_SOURCE_NOT_CONFIGURED`` (no source attached) is permanent, as is
+#: every validation/hash/signature/disabled outcome.
+RETRYABLE_ERROR_CODES: frozenset[str] = frozenset({CONFIG_SOURCE_UNAVAILABLE})
 
 RELOADABLE_FIELDS: frozenset[str] = frozenset(
     {
@@ -525,7 +535,9 @@ class ConfigReloader:
         Builds a :class:`ConfigSections` snapshot from the current core
         settings plus the last-applied raw section bytes, wraps it in a
         signed envelope at the current revision, and hands it to
-        ``source.store``. A store failure maps to ``CONFIG_STORE_FAILED``.
+        ``source.store``. A source store failure maps to
+        ``CONFIG_SOURCE_UNAVAILABLE`` (transient); a local disk write failure
+        is ``CONFIG_STORE_FAILED`` (`ConfigManager.write_local`).
 
         Args:
             source: The :class:`ConfigSource` to write the envelope to.
@@ -556,14 +568,14 @@ class ConfigReloader:
         try:
             await source.store(msgspec.msgpack.encode(envelope))
         except Exception as exc:
-            self._logger.error("Failed to store config to %s: %s", target, exc)
+            self._logger.error("Config source store failed: %s", exc)
             return ConfigStoreOutcome(
                 stored=False,
                 target=target,
                 revision=self._applied_revision,
                 hash=digest,
                 error=str(exc),
-                error_code=CONFIG_STORE_FAILED,
+                error_code=CONFIG_SOURCE_UNAVAILABLE,
             )
         return ConfigStoreOutcome(
             stored=True,
@@ -673,6 +685,7 @@ def write_local_config(path: Path, sections: ConfigSections) -> None:
 __all__ = [
     "BAD_SIGNATURE",
     "CONFIG_ENVELOPE_VERSION",
+    "CONFIG_SOURCE_NOT_CONFIGURED",
     "CONFIG_SOURCE_UNAVAILABLE",
     "CONFIG_STORE_FAILED",
     "ConfigApplyOutcome",
@@ -686,6 +699,7 @@ __all__ = [
     "INVALID_CONFIG_PAYLOAD",
     "RELOADABLE_FIELDS",
     "REMOTE_CONFIG_DISABLED",
+    "RETRYABLE_ERROR_CODES",
     "ReloadableSettings",
     "STALE_CONFIG",
     "UNKNOWN_CONFIG_SECTION",

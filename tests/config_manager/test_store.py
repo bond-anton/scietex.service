@@ -2,8 +2,11 @@
 
 import pytest
 
+from scietex.service import config_manager as config_manager_module
 from scietex.service.config_reload import (
+    CONFIG_SOURCE_NOT_CONFIGURED,
     CONFIG_SOURCE_UNAVAILABLE,
+    CONFIG_STORE_FAILED,
     REMOTE_CONFIG_DISABLED,
 )
 
@@ -49,14 +52,14 @@ async def test_store_both_writes_disk_and_source(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_store_remote_without_source_is_unavailable(tmp_path):
-    """A remote target without an attached source is CONFIG_SOURCE_UNAVAILABLE."""
+async def test_store_remote_without_source_is_not_configured(tmp_path):
+    """A remote target without an attached source is CONFIG_SOURCE_NOT_CONFIGURED."""
     manager = build_manager(tmp_path, enabled=True)
 
     outcome = await manager.store_config("remote")
 
     assert outcome.stored is False
-    assert outcome.error_code == CONFIG_SOURCE_UNAVAILABLE
+    assert outcome.error_code == CONFIG_SOURCE_NOT_CONFIGURED
 
 
 @pytest.mark.asyncio
@@ -72,3 +75,32 @@ async def test_store_disabled_returns_disabled(tmp_path):
     assert outcome.stored is False
     assert outcome.error_code == REMOTE_CONFIG_DISABLED
     assert source.stored == []
+
+
+@pytest.mark.asyncio
+async def test_store_remote_source_failure_is_unavailable(tmp_path):
+    """A remote store failure maps to CONFIG_SOURCE_UNAVAILABLE (transient)."""
+    manager = build_manager(tmp_path, enabled=True)
+    source = FakeConfigSource(store_error=RuntimeError("boom"))
+    manager.attach_source(source)
+
+    outcome = await manager.store_config("remote")
+
+    assert outcome.stored is False
+    assert outcome.error_code == CONFIG_SOURCE_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_write_local_failure_is_store_failed(tmp_path, monkeypatch):
+    """A local disk write failure maps to CONFIG_STORE_FAILED (local-disk only)."""
+
+    def boom(path, sections):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config_manager_module, "write_local_config", boom)
+    manager = build_manager(tmp_path, enabled=True)
+
+    outcome = await manager.store_config("disk")
+
+    assert outcome.stored is False
+    assert outcome.error_code == CONFIG_STORE_FAILED

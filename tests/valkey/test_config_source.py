@@ -136,7 +136,7 @@ async def test_load_returns_none_when_disconnected():
 @pytest.mark.asyncio
 async def test_store_raises_when_disconnected():
     """``store`` cannot silently no-op while disconnected; it raises so the
-    reloader maps the failure to ``CONFIG_STORE_FAILED``."""
+    reloader maps the failure to ``CONFIG_SOURCE_UNAVAILABLE``."""
     source = ValkeyConfigSource(
         client_provider=lambda: None,
         key=_CONFIG_KEY,
