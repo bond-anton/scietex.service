@@ -42,8 +42,9 @@ processor = TaskProcessor(
 )
 ```
 
-When the switch is off (the default), the three `config:*` command handlers
-return `REMOTE_CONFIG_DISABLED` and no startup read occurs.
+When the switch is off (the default), the three `config:*` handlers are not
+registered, so a `config:*` task is answered with the permanent "No handler
+found" result and no startup read occurs.
 
 ### Config surface
 
@@ -51,7 +52,7 @@ All fields introduced by the feature, across the three config structs:
 
 | Config class | Field | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|---|
-| `TaskProcessorConfig` | `remote_config_enabled` | `bool` | `False` | — | Opt-in master switch. `False` ⇒ commands return `REMOTE_CONFIG_DISABLED`, no startup read |
+| `TaskProcessorConfig` | `remote_config_enabled` | `bool` | `False` | — | Opt-in master switch. `False` ⇒ the three `config:*` handlers are not registered (a `config:*` task is answered "No handler found"), no startup read |
 | `TaskProcessorConfig` | `config_file` | `str` | `"config.yml"` | — | Filename of the local reloadable-snapshot file, resolved under `conf_dir` |
 | `TaskProcessorConfig` | `config_signing_key` | `str \| None` | `None` | — | HMAC key for envelope authenticity. `None` disables signature enforcement. Runtime-only secret, never read from the remote payload |
 | `TaskProcessorConfig` | `config_startup_timeout` | `float \| None` | `None` (→ `2.0`) | `[0.0, 60.0]` | Bounded wait in seconds for the MQTT retained snapshot at startup; ignored by Valkey |
@@ -189,8 +190,9 @@ construction), and the connection configs `valkey_config`/`mqtt_config`
 
 ## Commands
 
-Three task types, registered exactly like the built-in `cancel_task` handler,
-with async callbacks injected at construction:
+Three task types, registered exactly like the built-in `cancel_task` handler
+(but only when `remote_config_enabled=True`), with async callbacks injected at
+construction:
 
 ```python
 CONFIG_APPLY_TASK_TYPE: str = "config:apply"
@@ -275,7 +277,7 @@ structs where applicable):
 | `STALE_CONFIG` | Revision not newer than the applied one (with a different hash) | no |
 | `CONFIG_SOURCE_UNAVAILABLE` | Source absent or unreachable | **yes** |
 | `CONFIG_STORE_FAILED` | `config:store` write failed | no |
-| `REMOTE_CONFIG_DISABLED` | Master switch off | no |
+| `REMOTE_CONFIG_DISABLED` | Master switch off — only reachable via a direct `ConfigManager.show_config` call; a `config:*` task on a disabled worker is answered "No handler found" | no |
 
 Only `CONFIG_SOURCE_UNAVAILABLE` is retryable: it opts into the framework's
 single retry. Every other failure is permanent — a malformed or invalid

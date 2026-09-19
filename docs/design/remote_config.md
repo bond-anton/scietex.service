@@ -232,6 +232,11 @@ service field is rejected by `forbid_unknown_fields`, not silently ignored.
 
 Three task types, registered exactly like `cancel_task`
 (`task_processor.py:186-188`), with async callbacks injected at construction.
+The three handlers are registered **only when `remote_config_enabled=True`**; on a
+disabled worker they are absent from the dispatch table, so a `config:*` task
+yields the permanent "No handler found for task type 'config:...'" result
+instead of a `REMOTE_CONFIG_DISABLED` outcome (`ConfigManager.show_config`
+retains its `REMOTE_CONFIG_DISABLED` guard for direct calls).
 
 ```python
 CONFIG_APPLY_TASK_TYPE: str = "config:apply"
@@ -301,7 +306,10 @@ unreachable ⇒ `CONFIG_SOURCE_UNAVAILABLE`, `retryable=True` (opts into the
 framework's single retry, enforced as a per-task-id budget in
 `handle_task`'s `finally` — `task_processor.py:1004-1046`; a second consecutive
 retryable failure is acked terminal with `retryable=False`); remote config
-disabled ⇒ `REMOTE_CONFIG_DISABLED`, `retryable=False`.
+disabled ⇒ the three handlers are not registered, so a `config:*` task is
+answered with the permanent "No handler found" result (a direct
+`ConfigManager.show_config` call still returns `REMOTE_CONFIG_DISABLED`,
+`retryable=False`).
 
 ---
 
@@ -513,7 +521,7 @@ mechanism.
 
 | Field | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `remote_config_enabled` | `bool` | `False` | — | Opt-in master switch. `False` ⇒ commands return `REMOTE_CONFIG_DISABLED`, no startup read. |
+| `remote_config_enabled` | `bool` | `False` | — | Opt-in master switch. `False` ⇒ the three `config:*` handlers are not registered (a `config:*` task is answered "No handler found"), no startup read. |
 | `config_file` | `str` | `"config.yml"` | — | Local reloadable-snapshot filename, resolved under `conf_dir`. |
 | `config_signing_key` | `str \| None` | `None` | — | HMAC key. `None` disables signature enforcement. Runtime-only secret; treated as secret in docs. |
 | `config_startup_timeout` | `float` | `2.0` | `[0.0, 60.0]` | MQTT bounded wait for the retained snapshot at startup; ignored by Valkey. |
@@ -629,7 +637,9 @@ Broker-free unit tests follow existing patterns; integration tests use the
 - `config:store` target disk/remote/both; `config:show` returns settings,
   source, and `restart_required_fields`; never contains connection config.
 - malformed payload ⇒ `INVALID_CONFIG_PAYLOAD`, non-retryable.
-- `remote_config_enabled=False` ⇒ `REMOTE_CONFIG_DISABLED` for all three.
+- `remote_config_enabled=False` ⇒ the three handlers are absent; a `config:*`
+  task is answered "No handler found" (direct `ConfigManager.show_config` calls
+  still return `REMOTE_CONFIG_DISABLED`).
 
 **Valkey — `tests/valkey/test_config_source.py`** (shared `DummyClient`,
 `tests/valkey/_helpers.py`)

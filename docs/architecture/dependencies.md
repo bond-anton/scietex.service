@@ -41,9 +41,11 @@ The two sources — `valkey/config_source.py` (`ValkeyConfigSource`) and
 `mqtt/config_source.py` (`MqttConfigSource`) — implement `ConfigSource`
 **structurally** (no `config_reload` import; they only need their own transport
 names). The transport *workers* import `..config_reload` for the startup
-helpers (`encode_config_envelope`/`read_local_config`) and outcome constants,
-and `task_processor` imports `config_reload` + `task_handler.config` to build
-the reloader and register the three handlers.
+helpers (`encode_config_envelope`/`read_local_config`) and outcome constants;
+the `ConfigManager` collaborator (`config_manager.py`, AR-105) imports
+`config_reload` + `task_handler` to build the reloader and register the three
+handlers, and `task_processor` composes a `ConfigManager` and delegates its
+config surface to it.
 
 ## Edge table
 
@@ -62,7 +64,10 @@ the reloader and register the three handlers.
 | `task_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `task_processor` | `.manager` | import | for `@Manager` decorators |
 | `task_processor` | `.task_handler` | import | `TaskData`, `TaskHandler`, `TaskHandlerContext`, `TaskResult`, `TaskTracker`, `TaskCapabilities`, `CancelReason`, `CancelOutcome`, `CancelTaskHandler`, `ConfigApplyHandler`, `ConfigShowHandler`, `ConfigShowResponse`, `ConfigSourceLabel`, `ConfigStoreHandler` |
-| `task_processor` | `.config_reload` | import | `ConfigReloader`, `ConfigSource`, `ReloadableSettings`, `CONFIG_SOURCE_UNAVAILABLE`, `CONFIG_STORE_FAILED`, `RELOADABLE_FIELDS`, `REMOTE_CONFIG_DISABLED`, `ConfigApplyOutcome`/`ConfigStoreOutcome`, `write_local_config` — builds the reloader and wires the three `config:*` handlers |
+| `task_processor` | `.config_reload` | import | `RELOADABLE_FIELDS`, `ReloadableSettings` — the eight-field allowlist and snapshot type for `_apply_reloadable_config` |
+| `task_processor` | `.config_manager` | import | `ConfigManager` — the remote-config lifecycle owner it composes (reloader, local file, source, handler callbacks) |
+| `config_manager` | `.config_reload` | import | `ConfigReloader`, `ConfigSource`, `ReloadableSettings`, outcome constants, `encode_config_envelope`/`read_local_config`/`write_local_config` — builds the reloader and wires the three `config:*` handlers |
+| `config_manager` | `.task_handler` | import | `ConfigApplyHandler`/`ConfigStoreHandler`/`ConfigShowHandler` + `ConfigShowResponse`/`ConfigSourceLabel` — registers the three `config:*` handlers when `remote_config_enabled=True` |
 | `config_reload` | `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`, `msgspec` | import | core machinery; imports no transport package and no processor type (the dependency-inversion anchor for the `ConfigSource` Protocol) |
 | `task_handler.config` | `..config_reload` | import | `ConfigApplyOutcome`, `ConfigStoreOutcome`, `CONFIG_SOURCE_UNAVAILABLE`, `INVALID_CONFIG`, `INVALID_CONFIG_PAYLOAD` |
 | `task_processor` | `.transport` | import | `TaskTransport`, `InMemoryTransport` (default transport) |
@@ -72,7 +77,7 @@ the reloader and register the three handlers.
 | `valkey.worker` | `task_processor` | inheritance | `ValkeyWorker(TaskProcessor)` |
 | `valkey.worker` | `.task_handler`, `.task_handler.wire` | import | `TaskData`, `TaskResult`, `encode_task_envelope`/`decode_task_envelope` |
 | `valkey.worker` | `.config`, `.schemas` | import | `.config` supplies `ValkeyWorkerConfig` and `generate_glide_config` |
-| `valkey.worker` | `.transport`, `.health`, `.lease`, `.tracking`, `.config_source` | import | composes `ValkeyTransport` + the health/lease/status collaborators + the `ValkeyConfigSource` (attached to `_config_source`) |
+| `valkey.worker` | `.transport`, `.health`, `.lease`, `.tracking`, `.config_source` | import | composes `ValkeyTransport` + the health/lease/status collaborators + the `ValkeyConfigSource` (attached via `ConfigManager.attach_source`) |
 | `valkey.worker` | `..config_reload` | import | `encode_config_envelope`, `read_local_config`, `CONFIG_SOURCE_UNAVAILABLE`, `STALE_CONFIG`, `ConfigApplyOutcome` — startup local/remote apply |
 | `valkey.config_source` | `._glide` | import | `GlideClient` (GET/SET the durable key); implements the core `ConfigSource` Protocol structurally — no `config_reload` import |
 | `valkey.worker` | `scietex.logging` | import (external) | `AsyncValkeyHandler` |

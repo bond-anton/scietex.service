@@ -21,7 +21,7 @@ is a library whose entry point is the consumer's own `main()`.
 | Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (composes `ValkeyTransport` + `TransportHealth`/`TaskLeaseManager`/`TaskStatusStore`), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`/`ValkeyPubSubConfig`), `Heartbeat` schema |
 | MQTT integration | `src/scietex/service/mqtt/` | `MqttWorker` (composes `MqttTransport` + `TransportHealth` + `FileMqttInbox`), typed MQTT config schema + YAML loader (`config.py`, incl. `MqttConfig`/`MqttWorkerConfig`), guarded `_aiomqtt.py` import, logging-handler translator (`logging.py`). MQTT 5 only; a durable inbox restores at-least-once delivery that aiomqtt v2.5.1's premature broker ack would otherwise lose |
 | Transport health (core) | `src/scietex/service/health.py` | `TransportHealth` (AR-075) — transport-agnostic connection-health supervisor; hoisted to core (AR-089) so Valkey and MQTT share it; re-exported from `valkey/health.py` for back-compat |
-| Remote configuration (core) | `src/scietex/service/config_reload.py` | `ConfigReloader` + the `ConfigSource` Protocol + the `ConfigEnvelope`/`ConfigSections`/`ReloadableSettings` structs: a transport-delivered reloadable-behaviour envelope (a durable Valkey key or an MQTT retained topic) applied at startup and via the `config:apply`/`config:store`/`config:show` commands; `TaskProcessor` builds the reloader and registers the three `config:*` handlers, and each transport supplies its `ConfigSource` (`ValkeyConfigSource` / `MqttConfigSource`) |
+| Remote configuration (core) | `src/scietex/service/config_reload.py` | `ConfigReloader` + the `ConfigSource` Protocol + the `ConfigEnvelope`/`ConfigSections`/`ReloadableSettings` structs: a transport-delivered reloadable-behaviour envelope (a durable Valkey key or an MQTT retained topic) applied at startup and via the `config:apply`/`config:store`/`config:show` commands; `TaskProcessor` composes a `ConfigManager` (`config_manager.py`) that builds the reloader and registers the three `config:*` handlers when remote config is enabled, and each transport supplies its `ConfigSource` (`ValkeyConfigSource` / `MqttConfigSource`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional imports of Valkey and MQTT exports (`VALKEY_AVAILABLE`/`MQTT_AVAILABLE`) |
 | Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
 
@@ -87,11 +87,13 @@ Interaction notes:
 - **Remote config reuses the task pipeline.** The core `ConfigReloader` is
   transport-agnostic: it reads/writes envelopes through a `ConfigSource`
   Protocol and mutates the processor through injected callables. `TaskProcessor`
-  builds the reloader and registers the three `config:*` handlers; `ValkeyWorker`
-  attaches a `ValkeyConfigSource` (durable key `GET`/`SET`) and `MqttWorker`
-  attaches an `MqttConfigSource` (retained-topic snapshot + publish) to the same
-  `_config_source` seam. Commands travel as ordinary tasks, and their replies
-  ride `TaskResult.payload` — no new control channel.
+  delegates the config lifecycle to a `ConfigManager`, which builds the reloader
+  and registers the three `config:*` handlers when remote config is enabled;
+  `ValkeyWorker` attaches a `ValkeyConfigSource` (durable key `GET`/`SET`) and
+  `MqttWorker` attaches an `MqttConfigSource` (retained-topic snapshot +
+  publish) to the same `ConfigManager` seam (`attach_source`). Commands travel
+  as ordinary tasks, and their replies ride `TaskResult.payload` — no new
+  control channel.
 
 ## Application entry points
 

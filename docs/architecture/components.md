@@ -327,19 +327,21 @@ task_manager hot loops; no processor-local timing constants remain.
 asyncio workload and does not reflect container CPU limits, so I/O-bound
 services should set `max_concurrent_tasks` explicitly.
 
-**Remote configuration** (see §24–§27): `__init__` builds a `ConfigReloader`
-and registers the three `config:*` handlers (186–188); the `_config_source` seam
-(177) is attached by a transport subclass (`ValkeyWorker`/`MqttWorker`).
-Extension point `register_config_settings(name, struct_type, *, apply)` (239)
-delegates to the reloader's `register_section`; the read-only observability
-properties `config_revision` (225), `config_hash` (230), and `config_source`
-(235) delegate to the reloader. The private apply/validate logic lives in
-`_apply_reloadable_config` (285) — validate-then-swap, overlaying the eight
-reloadable values onto a shallow copy of the current config and re-constructing
-`type(current)(**merged)` so `__post_init__`/`validate_range` reject a bad
-candidate before any mutation — plus `_config_apply` (375), `_config_store`
-(395), and `_config_show` (414), the callbacks injected into the three
-handlers.
+**Remote configuration** (see §24–§27): `__init__` composes a `ConfigManager`
+collaborator (`config_manager.py`, AR-105), which builds the `ConfigReloader`
+and registers the three `config:*` handlers — only when
+`remote_config_enabled=True` (144–155); the source seam is attached by a
+transport subclass (`ValkeyWorker`/`MqttWorker`) through
+`ConfigManager.attach_source`. Extension point `register_config_settings(name,
+struct_type, *, apply)` (206) delegates to `ConfigManager.register_section`; the
+read-only observability properties `config_revision` (192), `config_hash` (197),
+and `config_source` (202) delegate to `ConfigManager`. The private
+apply/validate logic lives in `_apply_reloadable_config` (242) —
+validate-then-swap, overlaying the eight reloadable values onto a shallow copy
+of the current config and re-constructing `type(current)(**merged)` so
+`__post_init__`/`validate_range` reject a bad candidate before any mutation —
+while the three handler callbacks (`apply_config`/`store_config`/`show_config`)
+live on `ConfigManager` and are injected into the three handlers.
 
 **Public interface:** constructor takes a single immutable
 `TaskProcessorConfig` (`config.py`, extends `WorkerConfig`) or `None`; no
@@ -488,8 +490,8 @@ removed the raw-`GlideClientConfiguration` fallback).
 `scietex:{service}:{instance_id}`, registry set
 `scietex:{service}:workers`, and the remote-config key
 `scietex:{service}:config` (`config_key`, defined at `valkey/config.py:293`,
-resolved at `valkey/worker.py:150`; the `ValkeyConfigSource` is attached to
-`_config_source` in `initialize()` at `valkey/worker.py:492`). The stream and
+resolved at `valkey/worker.py:150`; the `ValkeyConfigSource` is attached via
+`ConfigManager.attach_source` in `initialize()` at `valkey/worker.py:434`). The stream and
 group are service-scoped so replicas share one queue; the consumer/status keys
 are worker-scoped per
 auto-generated `instance_id`. The entry-id map and `recovered` flag now live
@@ -868,8 +870,8 @@ private to `TaskProcessor`.
 
 **Dependencies:** `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`,
 `msgspec`; stdlib `Protocol`/`Callable`. No transport or processor imports.
-**Depended on by:** `TaskProcessor` (builds and calls the reloader),
-`task_handler/config.py` (outcome constants), `valkey/worker.py` and
+**Depended on by:** `ConfigManager` (`config_manager.py`, builds and calls the
+reloader), `task_handler/config.py` (outcome constants), `valkey/worker.py` and
 `mqtt/worker.py` (encode/local-read helpers), the transport sources.
 
 ## 25. Remote-config task handlers — `task_handler/config.py`
@@ -878,8 +880,9 @@ private to `TaskProcessor`.
 
 **Purpose:** The three built-in `config:*` handlers, mirroring the `cancel_task`
 control path. Each decodes its request struct and delegates the work to a
-callback injected by the owning processor (which owns the `ConfigReloader` and
-the transport source), so the handlers never reach into processor internals.
+callback injected by the owning `ConfigManager` (which owns the
+`ConfigReloader` and the transport source), so the handlers never reach into
+processor internals.
 
 **Main symbols:**
 - `ConfigSourceLabel = Literal["default", "file", "remote", "inline"]` (29).
@@ -906,8 +909,8 @@ the transport source), so the handlers never reach into processor internals.
 
 **Dependencies:** `..config_reload` (outcome structs + the source-unavailable
 code), `.basic`/`.capabilities`/`.context`/`.schemas`. **Depended on by:**
-`TaskProcessor` (registers all three and injects the callbacks),
-`task_handler/__init__.py`.
+`ConfigManager` (`config_manager.py`, registers all three and injects the
+callbacks when remote config is enabled), `task_handler/__init__.py`.
 
 ## 26. Valkey config source — `valkey/config_source.py`
 
@@ -927,7 +930,7 @@ Connection errors are not swallowed — they propagate to the reloader, which
 maps them to `CONFIG_SOURCE_UNAVAILABLE`.
 
 **Dependencies:** `._glide` (`GlideClient`). **Depended on by:** `ValkeyWorker`
-(built in `initialize()` and attached to `_config_source`),
+(built in `initialize()` and attached via `ConfigManager.attach_source`),
 `valkey/__init__.py`.
 
 ## 27. MQTT config source — `mqtt/config_source.py`
@@ -955,5 +958,5 @@ raises, so a broker without a retained config cannot fail startup. `load()`
 
 **Dependencies:** `._aiomqtt` (`PacketTypes`, `Properties`), `.transport`
 (`MqttPublish`). **Depended on by:** `MqttWorker` (built in `__init__` and
-attached to `_config_source`; `record` is driven by `_handle_message`'s topic
-dispatch), `mqtt/__init__.py`.
+attached via `ConfigManager.attach_source`; `record` is driven by
+`_handle_message`'s topic dispatch), `mqtt/__init__.py`.

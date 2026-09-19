@@ -48,6 +48,14 @@ matrix now lives once in the core module `src/scietex/service/task_status.py`
 `MqttTransport` both delegate to it, so the two transports can no longer drift.
 A parametrized cross-transport equivalence test pins the invariant.
 
+**Follow-up (v4.5.0):** AR-105 — a `ConfigManager` collaborator
+(`src/scietex/service/config_manager.py`, internal, not exported) now owns the
+`ConfigReloader`, the local `config.yml` path/reads/writes, the attached
+`ConfigSource`, and the three `config:*` handler callbacks; `TaskProcessor`
+delegates the config lifecycle to it. The three `config:*` handlers are
+registered only when `remote_config_enabled=True` — on a disabled worker a
+`config:*` task is answered with the permanent "No handler found" result.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
