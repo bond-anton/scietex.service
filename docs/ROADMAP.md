@@ -111,6 +111,14 @@ or `__class__.__name__`, and non-async handlers are skipped in both
 `start_handlers` and `shut_down_handlers` (never inserted into `statuses`);
 three new tests pin the identity keying and the non-async skip.
 
+**Follow-up (v4.5.0):** AR-120 — recovery orchestration is now uniform across the
+two transports: a shared `RecoverableTransport` mixin
+(`src/scietex/service/transport.py`) owns the `recovered` class attribute and the
+`ensure_recovered(sink) -> bool` recovery-once guard, `ValkeyTransport` and
+`MqttTransport` inherit it (their duplicated `recovered` flags and inline guards
+are deleted), and `MqttWorker.initialize()` no longer recovers eagerly — recovery
+runs on the first `fetch` for both transports.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
