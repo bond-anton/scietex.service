@@ -69,7 +69,7 @@ config surface to it.
 | `config_manager` | `.config_reload` | import | `ConfigReloader`, `ConfigSource`, `ReloadableSettings`, outcome constants, `encode_config_envelope`/`read_local_config`/`write_local_config` — builds the reloader and wires the three `config:*` handlers |
 | `config_manager` | `.task_handler` | import | `ConfigApplyHandler`/`ConfigStoreHandler`/`ConfigShowHandler` + `ConfigShowResponse`/`ConfigSourceLabel` — registers the three `config:*` handlers when `remote_config_enabled=True` |
 | `config_reload` | `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`, `msgspec` | import | core machinery; imports no transport package and no processor type (the dependency-inversion anchor for the `ConfigSource` Protocol) |
-| `task_handler.config` | `..config_reload` | import | `ConfigApplyOutcome`, `ConfigStoreOutcome`, `CONFIG_SOURCE_UNAVAILABLE`, `INVALID_CONFIG`, `INVALID_CONFIG_PAYLOAD` |
+| `task_handler.config` | `..config_reload` | import | `ConfigApplyOutcome`, `ConfigStoreOutcome`, `RETRYABLE_ERROR_CODES`, `INVALID_CONFIG`, `INVALID_CONFIG_PAYLOAD` |
 | `task_processor` | `.transport` | import | `TaskTransport`, `InMemoryTransport` (default transport) |
 | `transport` | `.task_handler.schemas` | import | `TaskData`, `TaskResult`, `CancelReason` (no `glide` dependency) |
 | `task_handler.basic` | `.schemas` | import | runtime |

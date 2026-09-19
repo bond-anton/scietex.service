@@ -91,6 +91,15 @@ through; `Manager` keeps its decorator + descriptor roles and
 methods (`_heartbeat_manager`/`_watchdog_manager`) on the class, and
 `register_manager` is a compatibility shim with no in-tree production caller.
 
+**Follow-up (v4.5.0):** AR-116 — the config error taxonomy is now symmetric: a
+new permanent `CONFIG_SOURCE_NOT_CONFIGURED` code represents "no source
+attached", so the transient "transport down / no config yet" condition is
+carried solely by `CONFIG_SOURCE_UNAVAILABLE`; the retryable set is centralized
+as `RETRYABLE_ERROR_CODES = frozenset({CONFIG_SOURCE_UNAVAILABLE})`, and
+`ConfigReloader.store` now maps a remote store failure to
+`CONFIG_SOURCE_UNAVAILABLE` (retryable during a network blip) while
+`CONFIG_STORE_FAILED` is local-disk-only.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

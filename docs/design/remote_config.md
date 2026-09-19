@@ -301,9 +301,10 @@ channel is introduced.
 
 **Error taxonomy:** malformed payload ⇒ `INVALID_CONFIG_PAYLOAD`,
 `retryable=False`; validation failure ⇒ `INVALID_CONFIG`, `retryable=False`;
-unknown section ⇒ `UNKNOWN_CONFIG_SECTION`, `retryable=False`; source
-unreachable ⇒ `CONFIG_SOURCE_UNAVAILABLE`, `retryable=True` (opts into the
-framework's single retry, enforced as a per-task-id budget in
+unknown section ⇒ `UNKNOWN_CONFIG_SECTION`, `retryable=False`; no source
+attached ⇒ `CONFIG_SOURCE_NOT_CONFIGURED`, `retryable=False`; an attached
+source momentarily unreachable ⇒ `CONFIG_SOURCE_UNAVAILABLE`, `retryable=True`
+(opts into the framework's single retry, enforced as a per-task-id budget in
 `handle_task`'s `finally` — `task_processor.py:1004-1046`; a second consecutive
 retryable failure is acked terminal with `retryable=False`); remote config
 disabled ⇒ the three handlers are not registered, so a `config:*` task is
@@ -434,8 +435,9 @@ code-constructed only today; only `valkey.yml`/`mqtt.yml` are loaded,
 
 **Atomic write:** encode to bytes, write to a temp file in the same directory,
 `os.replace(tmp, target)` (atomic on POSIX and Windows), no partial file ever
-visible. A failure leaves the previous file intact and returns
-`CONFIG_STORE_FAILED`.
+visible. A local disk-write failure leaves the previous file intact and returns
+`CONFIG_STORE_FAILED` (local-disk only); a remote store failure maps to
+`CONFIG_SOURCE_UNAVAILABLE` (transient).
 
 **Gated behind validation:** `config:store` serializes only settings that were
 themselves validated (constructed through the full config struct) — it never
@@ -652,7 +654,7 @@ Broker-free unit tests follow existing patterns; integration tests use the
 
 **Task handlers — `tests/task_processor/test_config_control.py`**
 - `config:apply` with inline payload applies; with `payload=None` calls
-  `source.load`; source `None` ⇒ `CONFIG_SOURCE_UNAVAILABLE` retryable.
+  `source.load`; source `None` ⇒ `CONFIG_SOURCE_NOT_CONFIGURED` non-retryable.
 - `config:store` target disk/remote/both; `config:show` returns settings,
   source, and `restart_required_fields`; never contains connection config.
 - malformed payload ⇒ `INVALID_CONFIG_PAYLOAD`, non-retryable.

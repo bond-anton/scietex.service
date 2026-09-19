@@ -848,9 +848,11 @@ private to `TaskProcessor`.
 **Main symbols:**
 - Constants: `CONFIG_ENVELOPE_VERSION = 1` (46); the outcome taxonomy
   `INVALID_CONFIG_PAYLOAD`/`INVALID_CONFIG`/`UNKNOWN_CONFIG_SECTION`/
-  `HASH_MISMATCH`/`BAD_SIGNATURE`/`STALE_CONFIG`/`CONFIG_SOURCE_UNAVAILABLE`/
-  `CONFIG_STORE_FAILED`/`REMOTE_CONFIG_DISABLED` (51–59); `RELOADABLE_FIELDS`
-  (61), the eight-field allowlist.
+  `HASH_MISMATCH`/`BAD_SIGNATURE`/`STALE_CONFIG`/`CONFIG_SOURCE_NOT_CONFIGURED`/
+  `CONFIG_SOURCE_UNAVAILABLE`/`CONFIG_STORE_FAILED`/`REMOTE_CONFIG_DISABLED`
+  (54–63); `RETRYABLE_ERROR_CODES` (69), the transient-outcome retry set
+  (currently `{CONFIG_SOURCE_UNAVAILABLE}`); `RELOADABLE_FIELDS` (71), the
+  eight-field allowlist.
 - Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings`
   (77) — the complete snapshot of the eight reloadable core fields, all
   required; `ConfigSections` (95) — `core: ReloadableSettings` +
@@ -924,9 +926,10 @@ processor internals.
 - Handlers: `ConfigApplyHandler` (144), `ConfigStoreHandler` (231),
   `ConfigShowHandler` (318). Each decodes its request with
   `msgspec.msgpack.decode(..., type=...)`; a `DecodeError` returns a
-  non-retryable `INVALID_CONFIG_PAYLOAD` `TaskResult` rather than raising. A
-  `CONFIG_SOURCE_UNAVAILABLE` outcome is returned as `retryable=True`; every
-  other failure is `retryable=False`. Success returns a msgpack-encoded
+  non-retryable `INVALID_CONFIG_PAYLOAD` `TaskResult` rather than raising. An
+  outcome whose `error_code` is in `RETRYABLE_ERROR_CODES` (currently only
+  `CONFIG_SOURCE_UNAVAILABLE`) is returned as `retryable=True`; every other
+  failure is `retryable=False`. Success returns a msgpack-encoded
   response struct as `TaskResult.payload`.
 
 **Dependencies:** `..config_reload` (outcome structs + the source-unavailable

@@ -275,13 +275,15 @@ structs where applicable):
 | `HASH_MISMATCH` | `sha256(settings)` != envelope `hash` | no |
 | `BAD_SIGNATURE` | HMAC mismatch with signing enabled | no |
 | `STALE_CONFIG` | Revision not newer than the applied one (with a different hash) | no |
-| `CONFIG_SOURCE_UNAVAILABLE` | Source absent or unreachable | **yes** |
-| `CONFIG_STORE_FAILED` | `config:store` write failed | no |
+| `CONFIG_SOURCE_NOT_CONFIGURED` | No transport source is attached (e.g. a bare `TaskProcessor`) | no |
+| `CONFIG_SOURCE_UNAVAILABLE` | Attached source unreachable on read or write | **yes** |
+| `CONFIG_STORE_FAILED` | Local `config.yml` write failed | no |
 | `REMOTE_CONFIG_DISABLED` | Master switch off — only reachable via a direct `ConfigManager.show_config` call; a `config:*` task on a disabled worker is answered "No handler found" | no |
 
-Only `CONFIG_SOURCE_UNAVAILABLE` is retryable: it opts into the framework's
-single retry. Every other failure is permanent — a malformed or invalid
-payload must not create a requeue loop.
+`RETRYABLE_ERROR_CODES` is the single source of truth for the retryable set;
+it currently contains only `CONFIG_SOURCE_UNAVAILABLE`, which opts into the
+framework's single retry. Every other failure is permanent — a malformed or
+invalid payload, or a not-configured source, must not create a requeue loop.
 
 ## Startup Behavior
 
