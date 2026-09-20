@@ -143,6 +143,12 @@ data plane only. The transport drains are control-aware — `InMemoryTransport.f
 bounded `_deferred` buffer + `_flush_deferred`) deliver control commands past a
 full data lane while preserving data FIFO/backpressure.
 
+**Follow-up (v4.5.0):** AR-109 — `TaskTracker` is now a
+`@dataclass(frozen=True, slots=True)` instead of a `msgspec.Struct`, so the
+process-local runtime handle (which holds a live `asyncio.Task` and is never
+serialized) can no longer be mistaken for a serializable value type. The
+constructor, fields, equality, and the `task_handler` re-export are unchanged.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

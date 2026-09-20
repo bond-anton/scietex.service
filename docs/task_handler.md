@@ -340,10 +340,12 @@ class TaskTimeout(msgspec.Struct, frozen=True):
 
 Internal structure used by `TaskProcessor` to monitor running tasks. It is a
 runtime handle (defined in `task_handler/runtime.py`), not a wire schema — it
-holds a live `asyncio.Task` and is never serialized.
+holds a live `asyncio.Task` and is never serialized. It is a frozen dataclass,
+not a `msgspec.Struct`, so it cannot be mistaken for a serializable type.
 
 ```python
-class TaskTracker(msgspec.Struct, frozen=True):
+@dataclass(frozen=True, slots=True)
+class TaskTracker:
     worker_task: asyncio.Task
     data: TaskData
     started: int | float  # Monotonic timestamp
