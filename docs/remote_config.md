@@ -82,6 +82,12 @@ location read at startup and on `config:apply`; commands travel as tasks.
 Key names use transport-native separators, matching the existing scheme:
 colon-separated for Valkey, slash-separated for MQTT.
 
+> **Note:** the three `config:*` commands are single-consumer tasks. A command
+> affects only the worker that reads it — it does not fan out across a
+> multi-worker fleet. The durable desired state is shared, so the other workers
+> pick up a `config:apply`/`config:store` change on their own next
+> startup/reload. Cross-worker broadcast is planned for v5.0.0.
+
 ### Read semantics (`ConfigSource.load`)
 
 `load()` is **best-effort current desired state, without waiting for delivery**:

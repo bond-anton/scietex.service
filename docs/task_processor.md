@@ -320,6 +320,11 @@ target (the same `cancel()` plus bounded `asyncio.wait` pattern as
 format and result contract; reliable cancellation needs
 `max_concurrent_tasks >= 2`.
 
+Cancellation is **worker-local**: a `cancel_task` only cancels a task running on
+the worker that reads the command. The handler resolves the target against that
+worker's own running/queued tasks, so a target owned by another worker returns
+`TASK_NOT_RUNNING`. Cross-worker cancel routing is planned for v5.0.0.
+
 ## Task Processing
 
 ### Flow

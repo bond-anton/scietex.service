@@ -4,6 +4,27 @@ Planned work for future major versions. Items here are **not** committed to a
 release date; they are tracked so architectural decisions made in earlier
 versions are not lost. Each entry cites the review finding that motivated it.
 
+## v5.0.0 — Cross-worker control plane
+
+**Motivation:** AR-123 (docs/reviews/architecture/2026-09-20-1.md) — control-plane
+commands are single-worker-scoped. `cancel_task` cancels only a task running on
+the worker that reads the command (a target on another worker returns
+`TASK_NOT_RUNNING`); `config:apply`/`config:store`/`config:show` affect only the
+reading worker. With a fleet sharing one task source, a cancel silently no-ops
+when it lands on the wrong worker, and a config change reaches one worker while
+the rest converge only on their next startup/reload. The constraint is
+documented as a scope boundary (D0).
+
+**Planned change (D4):** add a durable unified control stream per transport — a
+separate stream/topic with its own consumer semantics — carrying all control
+commands. Cancel is delivered with per-worker addressing (targeted to the owning
+worker); config commands are delivered with broadcast addressing (fan out to
+every worker). The dedicated control stream also removes the control/data
+head-of-line residual that AR-108's intra-process priority lane leaves at the
+transport level.
+
+**Status: planned** (not implemented). Reference: AR-123.
+
 ## v4.5.0 — Remote configuration
 
 **Motivation:** operators change worker behaviour by editing `valkey.yml`/
