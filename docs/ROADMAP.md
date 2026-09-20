@@ -168,6 +168,15 @@ precedence. A new `tests/task_processor/test_extension_seam.py` pins the seam,
 the precedence, and the docstring guidance. `docs/valkey_worker.md` no longer
 falsely claims `ValkeyWorker` overrides the hooks (it injects `ValkeyTransport`).
 
+**Follow-up (v4.5.0):** AR-117 — `config:store`/`config:show`/local-file
+persistence no longer destroy `None`-means-default and `auto_tune` intent. A
+separate declarative view (`DeclarativeSettings`/`DeclarativeSections` +
+`to_declarative` in `config_reload.py`) is written to the local `config.yml`
+and exposed as `config:show.declarative_settings`, so a store→restart cycle
+preserves the operator's declarative config; `config:show.settings` stays the
+effective snapshot (AR-100 preserved) and the remote desired-state envelope
+stays concrete by design (no `CONFIG_ENVELOPE_VERSION` bump).
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

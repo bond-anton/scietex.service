@@ -13,6 +13,18 @@ built-in `cancel_task` control path (`task_handler/cancel.py:59-133`).
 
 ---
 
+> **Post-implementation note (AR-117).** As originally specified, the
+> persistence and inspection surface emitted *resolved* runtime values, which
+> destroyed `None`-means-default and `auto_tune` intent on a store→restart
+> cycle. AR-117 added a separate **declarative** view — `DeclarativeSettings` /
+> `DeclarativeSections` (every field required but each may be `None`) plus
+> `to_declarative(...)`. The **remote** envelope stays effective (unchanged wire
+> format, no `CONFIG_ENVELOPE_VERSION` bump), while the local `config.yml` and
+> the `config:show` `declarative_settings` field carry the declarative view.
+> `docs/remote_config.md` documents the current behaviour.
+
+---
+
 ## 1. Scope & non-goals
 
 ### Goals

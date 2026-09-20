@@ -22,7 +22,7 @@ worker = MqttWorker(MqttWorkerConfig(service_name="svc", remote_config_enabled=T
 | Transport-delivered config | One durable "desired state" location per transport: a Valkey key or an MQTT retained topic |
 | Startup read | The desired state is applied at startup (availability-first: an absent or invalid config never fails startup) |
 | Three commands | `config:apply`, `config:store`, `config:show` travel as tasks through the existing pipeline and reply in their `TaskResult.payload` |
-| Disk snapshot | `config:store` persists the effective reloadable settings to a dedicated `config.yml` |
+| Disk snapshot | `config:store` persists the **declarative** reloadable settings to a dedicated `config.yml`, preserving `None`/`auto_tune` intent |
 | Extensible surface | A service registers its own settings struct + apply hook via `register_config_settings` |
 | Security by construction | Restart-required and secret fields are *unrepresentable* in the payload; optional HMAC signing |
 
@@ -149,6 +149,40 @@ class ReloadableSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     task_cancellation_timeout: float
 ```
 
+### Declarative view (local persistence and inspection)
+
+`ReloadableSettings` is the **effective** runtime snapshot — every field is
+concrete, with `None`-means-default and `auto_tune` already resolved. The
+**remote** desired-state envelope carries this effective view: a remote config
+is a self-contained explicit desired state, so its wire format is unchanged and
+`CONFIG_ENVELOPE_VERSION` stays `1`.
+
+Two *other* surfaces carry a **declarative** view, which keeps every field
+explicit but permits `None` to mean "use the library default" (and, for
+`max_concurrent_tasks`, "auto-tune from the CPU count when the worker is built
+with `auto_tune=True`"):
+
+```python
+class DeclarativeSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    max_concurrent_tasks: int | None
+    task_manager_sleep_time: float | None
+    task_queue_manager_sleep_time: float | None
+    task_handler_start_timeout: float | None
+    task_handler_stop_timeout: float | None
+    task_timeout: float | None
+    task_queue_fetch_timeout: float | None
+    task_cancellation_timeout: float | None
+
+class DeclarativeSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    core: DeclarativeSettings
+    services: dict[str, bytes] = msgspec.field(default_factory=dict)
+```
+
+The declarative view is what the local `config.yml` stores and what
+`config:show` returns as `declarative_settings`, so a store→restart cycle
+preserves `None`/`auto_tune` intent instead of pinning the values that happened
+to be resolved at store time.
+
 ### Complete snapshot, not a patch
 
 All fields are required: a partial payload fails loudly instead of silently
@@ -251,8 +285,9 @@ exactly as `CancelTaskResponse` does. No reply topic/channel is introduced.
 | `revision` / `hash` | `int` / `str` | Identity of the stored config |
 | `error` | `str` | Error description (empty on success) |
 
-`disk` writes `<conf_dir>/config.yml`; `remote` publishes the effective
-settings back to the source (Valkey `SET` / MQTT retained `PUBLISH`); `both`
+`disk` writes the **declarative** snapshot to `<conf_dir>/config.yml`
+(preserving `None`/`auto_tune` intent); `remote` publishes the **effective**
+snapshot back to the source (Valkey `SET` / MQTT retained `PUBLISH`); `both`
 does both. Only the **reloadable snapshot** is written — never connection
 credentials or TLS material. The disk write is atomic (`os.replace` of a
 temp file in the same directory).
@@ -266,6 +301,7 @@ temp file in the same directory).
 | Response field | Type | Meaning |
 |---|---|---|
 | `settings` | `bytes` | msgpack-encoded effective `ConfigSections`; never secrets |
+| `declarative_settings` | `bytes` | msgpack-encoded declarative `DeclarativeSections`; preserves `None`/`auto_tune` intent |
 | `revision` / `hash` | `int` / `str` | Identity of the effective config |
 | `source` | `"default"\|"file"\|"remote"\|"inline"` | Where the effective config came from |
 | `restart_required_fields` | `list[str]` | Restart-required field names (when requested) |
@@ -308,9 +344,13 @@ constructor config  <  config.yml  <  remote source
 ```
 
 1. The constructor config is the base.
-2. `config.yml` (if present) is applied as a trusted, unsigned snapshot
-   (revision `1`, below any remote revision); signature verification is waived
-   for this local file only — remote and inline envelopes are still verified.
+2. `config.yml` (if present) is applied as a trusted, unsigned **declarative**
+   snapshot (revision `1`, below any remote revision); signature verification is
+   waived for this local file only — remote and inline envelopes are still
+   verified. Because it is declarative, a `config.yml` written by
+   `config:store` preserves `None`-means-default and `auto_tune` intent across a
+   store→restart cycle instead of pinning the resolved values that were
+   effective at store time.
 3. The remote source is read and applied last, so it stays authoritative when
    present.
 
