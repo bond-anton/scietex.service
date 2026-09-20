@@ -33,7 +33,12 @@ class ValkeyConfigSource:
         self._logger = logger
 
     async def load(self) -> bytes | None:
-        """Read the desired-state envelope, or ``None`` when the key is absent."""
+        """Read the desired-state envelope live from the durable key.
+
+        On-demand read: returns the broker's current value, or ``None`` when the
+        key is absent. This is the ``ConfigSource`` best-effort-current-state
+        contract with live provenance.
+        """
         client = self._client_provider()
         if client is None:
             return None

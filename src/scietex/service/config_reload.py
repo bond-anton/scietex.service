@@ -218,11 +218,23 @@ def peek_config_envelope_version(payload: bytes) -> int | None:
 class ConfigSource(Protocol):
     """Delivery backend a :class:`ConfigReloader` reads and writes through.
 
-    A transport implements ``load`` to read the desired-state envelope (a
-    durable Valkey ``GET`` or an MQTT retained snapshot) and ``store`` to
-    write the current effective config back. Keeping this protocol in core
-    lets both transports implement it without a feature-to-feature
-    dependency.
+    ``load`` returns the desired-state envelope **as currently known to this
+    source, without waiting for transport delivery**, or ``None`` when no
+    desired state is known. Freshness provenance is transport-inherent and must
+    not be assumed: an on-demand backend (Valkey) reads the broker live on each
+    call, while a push-only backend (MQTT) returns the last snapshot its
+    delivery path recorded. Callers must treat ``load`` as best-effort current
+    state, never as a guarantee of broker-live state.
+
+    ``store`` writes an envelope back to the backend.
+
+    A transport whose desired state only arrives asynchronously (MQTT's retained
+    message is delivered after SUBACK) exposes the bounded wait as a
+    transport-specific ``wait_for_snapshot(timeout)``. It is deliberately *not*
+    part of this protocol: the reloader's apply path must never block on
+    delivery, and only a transport's own startup hook needs the wait. Keeping
+    this protocol in core lets both transports implement it without a
+    feature-to-feature dependency.
     """
 
     async def load(self) -> bytes | None: ...

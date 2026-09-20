@@ -85,7 +85,13 @@ class MqttConfigSource:
         return self._snapshot
 
     async def load(self) -> bytes | None:
-        """Return the recorded snapshot, or ``None`` if none has arrived yet."""
+        """Return the last recorded snapshot, or ``None`` if none has arrived.
+
+        Does not await delivery: a push-only backend cannot read the broker on
+        demand, so freshness is bounded by the last config-topic message. This
+        is the ``ConfigSource`` best-effort-current-state contract; use
+        :meth:`wait_for_snapshot` for the bounded startup wait.
+        """
         return self._snapshot
 
     async def store(self, envelope: bytes) -> None:

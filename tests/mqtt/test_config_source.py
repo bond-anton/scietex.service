@@ -122,6 +122,24 @@ async def test_load_without_snapshot_is_none():
 
 
 @pytest.mark.asyncio
+async def test_load_does_not_block_or_touch_publish():
+    """``load`` is best-effort current state: no delivery wait, no network (AR-110).
+
+    With a pending ``wait_for_snapshot`` waiter and no ``record``, ``load``
+    returns immediately and never publishes.
+    """
+    source, publish = _source()
+
+    waiter = asyncio.create_task(source.wait_for_snapshot(1.0))
+    assert await source.load() is None
+    assert publish.calls == []
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+
+@pytest.mark.asyncio
 async def test_wait_for_snapshot_returns_on_delivery():
     """``wait_for_snapshot`` resolves as soon as ``record`` signals the event."""
     source, _ = _source()

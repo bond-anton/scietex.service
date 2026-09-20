@@ -192,6 +192,10 @@ class MqttWorker(TransportWorker):
         # like task_topic. The source records snapshots from this topic and is
         # attached to the processor's config-manager source seam below.
         self._config_topic = cfg.config_topic.format(service=self.service_name)
+        # The concrete reference is retained for MQTT-native lifecycle calls
+        # (record on message delivery, reset at the run boundary) and for the
+        # bounded startup wait in _read_remote_outcome; those are outside the
+        # core ConfigSource read/write contract (AR-110).
         self._mqtt_config_source = MqttConfigSource(
             topic=self._config_topic,
             qos=cfg.config_qos,

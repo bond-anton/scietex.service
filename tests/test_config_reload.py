@@ -22,6 +22,7 @@ from scietex.service.config_reload import (
     ConfigEnvelope,
     ConfigReloader,
     ConfigSections,
+    ConfigSource,
     ReloadableSettings,
     decode_config_envelope,
     encode_config_envelope,
@@ -622,3 +623,13 @@ async def test_concurrent_applies_serialize():
     assert reloader.revision == 3
     assert any(outcome.applied and outcome.revision == 3 for outcome in outcomes)
     assert all(outcome.applied or outcome.error_code == STALE_CONFIG for outcome in outcomes)
+
+
+def test_config_source_protocol_surface_is_load_and_store():
+    """The ConfigSource protocol stays exactly {load, store} (AR-110).
+
+    Widening it with a required member (e.g. wait_for_snapshot) would break
+    every external structural implementer, so the surface is pinned here.
+    """
+    members = {name for name in vars(ConfigSource) if not name.startswith("_")}
+    assert members == {"load", "store"}
