@@ -149,6 +149,14 @@ process-local runtime handle (which holds a live `asyncio.Task` and is never
 serialized) can no longer be mistaken for a serializable value type. The
 constructor, fields, equality, and the `task_handler` re-export are unchanged.
 
+**Follow-up (v4.5.0):** AR-110 — the `ConfigSource.load` contract is now
+documented as best-effort current desired state **without waiting for delivery**,
+with freshness provenance explicitly transport-inherent (Valkey live `GET` vs
+MQTT last recorded snapshot). The MQTT `wait_for_snapshot` is documented as an
+intentional transport-specific startup primitive outside the protocol, and the
+protocol surface stays exactly `{load, store}` (pinned by a test) so external
+structural implementers are unaffected.
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic

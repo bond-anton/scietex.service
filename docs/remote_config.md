@@ -82,6 +82,20 @@ location read at startup and on `config:apply`; commands travel as tasks.
 Key names use transport-native separators, matching the existing scheme:
 colon-separated for Valkey, slash-separated for MQTT.
 
+### Read semantics (`ConfigSource.load`)
+
+`load()` is **best-effort current desired state, without waiting for delivery**:
+it returns the last state the source knows, or `None`. Freshness is
+transport-inherent — Valkey `GET`s the broker live on every call; MQTT returns
+the most recent snapshot recorded from the retained topic. Consequently a
+payload-less `config:apply` on MQTT applies the last *received* config, not a
+fresh broker read. Operators needing guaranteed freshness should pass the
+envelope inline in `config:apply` instead of relying on the source re-read.
+
+The MQTT bounded startup wait (`config_startup_timeout`) is exposed as the
+transport-specific `wait_for_snapshot(timeout)`; it is intentionally outside the
+`ConfigSource` protocol because the apply path must never block on delivery.
+
 ### Why not PubSub (Valkey)
 
 The Valkey source of truth is the **durable key, not the PubSub control
