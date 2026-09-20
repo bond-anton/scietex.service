@@ -6,13 +6,13 @@ serialized to the transport.
 """
 
 from asyncio import Task
-
-import msgspec
+from dataclasses import dataclass
 
 from .schemas import TaskData
 
 
-class TaskTracker(msgspec.Struct, frozen=True):
+@dataclass(frozen=True, slots=True)
+class TaskTracker:
     """Tracks a running task's asyncio.Task, data, and start time.
 
     Used by ``TaskProcessor`` to monitor task progress, enforce
