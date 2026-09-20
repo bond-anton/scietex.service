@@ -6,8 +6,10 @@ from pathlib import Path
 from scietex.service.config_manager import ConfigManager
 from scietex.service.config_reload import (
     ConfigSections,
+    DeclarativeSettings,
     ReloadableSettings,
     encode_config_envelope,
+    to_declarative,
 )
 
 logger = logging.getLogger("scietex.service.config_manager.tests")
@@ -80,6 +82,7 @@ def build_manager(
     double (mirrors the ``_reloader`` factory in ``test_config_reload.py``)."""
     state = {"current": make_settings()}
     apply_calls: list[ReloadableSettings] = []
+    declarative_calls: list[DeclarativeSettings] = []
 
     def _apply(settings: ReloadableSettings) -> list[str]:
         apply_calls.append(settings)
@@ -95,6 +98,20 @@ def build_manager(
     def _current() -> ReloadableSettings:
         return state["current"]
 
+    def _declarative() -> DeclarativeSettings:
+        return to_declarative(state["current"])
+
+    def _apply_declarative(settings: DeclarativeSettings) -> list[str]:
+        declarative_calls.append(settings)
+        # Mirror the processor: resolve the declarative values to concrete ones.
+        resolved = ReloadableSettings(
+            **{
+                field: getattr(settings, field) if getattr(settings, field) is not None else _CORE_DEFAULTS[field]
+                for field in ReloadableSettings.__struct_fields__
+            }
+        )
+        return _apply(resolved)
+
     def _restart_required() -> list[str]:
         return ["queue_size", "auto_tune"]
 
@@ -107,6 +124,9 @@ def build_manager(
         logger=logger,
         signing_key=signing_key,
         enabled=enabled,
+        declarative=_declarative,
+        apply_declarative=_apply_declarative,
     )
     manager.apply_calls = apply_calls
+    manager.declarative_calls = declarative_calls
     return manager

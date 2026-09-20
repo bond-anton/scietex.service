@@ -30,8 +30,8 @@ from .config_reload import (
     ConfigReloader,
     ConfigSource,
     ConfigStoreOutcome,
+    DeclarativeSettings,
     ReloadableSettings,
-    encode_config_envelope,
     read_local_config,
     write_local_config,
 )
@@ -65,6 +65,8 @@ class ConfigManager:
         logger: logging.Logger,
         signing_key: str | None = None,
         enabled: bool = False,
+        declarative: Callable[[], DeclarativeSettings] | None = None,
+        apply_declarative: Callable[[DeclarativeSettings], list[str]] | None = None,
     ) -> None:
         self._conf_dir = conf_dir
         self._config_file = config_file
@@ -77,6 +79,8 @@ class ConfigManager:
             logger=logger,
             signing_key=signing_key,
             enabled=enabled,
+            declarative=declarative,
+            apply_declarative=apply_declarative,
         )
         self._source: ConfigSource | None = None
 
@@ -167,10 +171,12 @@ class ConfigManager:
         """Build the effective-config inspection response.
 
         Injected into ``ConfigShowHandler``. ``settings`` is the msgpack
-        encoding of the reloader's ``ConfigSections`` (never secrets);
-        ``restart_required_fields`` is only populated when requested. When the
-        master switch is off, the response carries ``REMOTE_CONFIG_DISABLED``
-        instead of the effective settings.
+        encoding of the reloader's effective ``ConfigSections`` (never
+        secrets); ``declarative_settings`` is the msgpack encoding of the
+        declarative view, which preserves ``None``-means-default and
+        ``auto_tune`` intent (AR-117). ``restart_required_fields`` is only
+        populated when requested. When the master switch is off, the response
+        carries ``REMOTE_CONFIG_DISABLED`` instead of the settings.
         """
         if not self._reloader.enabled:
             return ConfigShowResponse(
@@ -179,6 +185,7 @@ class ConfigManager:
             )
         return ConfigShowResponse(
             settings=msgspec.msgpack.encode(self._reloader.show()),
+            declarative_settings=msgspec.msgpack.encode(self._reloader.show_declarative()),
             revision=self._reloader.revision,
             hash=self._reloader.hash,
             source=cast(ConfigSourceLabel, self._reloader.source),
@@ -186,14 +193,17 @@ class ConfigManager:
         )
 
     def write_local(self) -> ConfigStoreOutcome:
-        """Write the effective config to ``<conf_dir>/<config_file>``.
+        """Write the declarative config to ``<conf_dir>/<config_file>``.
 
-        Uses the reloader's atomic ``write_local_config``; a failure returns
-        ``CONFIG_STORE_FAILED`` and leaves any previous file intact.
+        Writes the reloader's declarative view (AR-117) so a store→restart
+        cycle preserves ``None``-means-default and ``auto_tune`` intent rather
+        than pinning resolved values. Uses the reloader's atomic
+        ``write_local_config``; a failure returns ``CONFIG_STORE_FAILED`` and
+        leaves any previous file intact.
         """
         path = self._conf_dir / self._config_file
         try:
-            write_local_config(path, self._reloader.show())
+            write_local_config(path, self._reloader.show_declarative())
         except Exception as exc:
             self._logger.error("Failed to write local config %s: %s", path, exc)
             return ConfigStoreOutcome(
@@ -214,12 +224,14 @@ class ConfigManager:
         )
 
     async def apply_local_file(self) -> ConfigApplyOutcome | None:
-        """Apply the persisted ``config.yml`` snapshot as a revision-1 envelope.
+        """Apply the persisted ``config.yml`` snapshot as a trusted local artifact.
 
-        Applied ahead of the remote read as a trusted, unsigned envelope; the
-        remote source stays authoritative. Returns ``None`` when the feature is
-        disabled, the file is absent, or the apply fails; otherwise returns the
-        apply outcome for the caller to log.
+        Applied ahead of the remote read as a trusted, unsigned declarative
+        snapshot (AR-117): the declarative view preserves ``None``-means-default
+        and ``auto_tune`` intent, so a store→restart cycle does not pin resolved
+        values. The remote source stays authoritative. Returns ``None`` when the
+        feature is disabled, the file is absent, or the apply fails; otherwise
+        returns the apply outcome for the caller to log.
         """
         if not self._reloader.enabled:
             return None
@@ -227,8 +239,7 @@ class ConfigManager:
         if sections is None:
             return None
         try:
-            payload = encode_config_envelope(sections, revision=1)
-            outcome = await self._reloader.apply_envelope(payload, source="file", trusted=True)
+            outcome = await self._reloader.apply_declarative_sections(sections, source="file", trusted=True)
         except Exception as exc:
             self._logger.error("Failed to apply local config: %s", exc)
             return None

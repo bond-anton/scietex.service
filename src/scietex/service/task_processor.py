@@ -23,7 +23,7 @@ from .config import (
     resolve_reloadable_settings,
 )
 from .config_manager import ConfigManager
-from .config_reload import RELOADABLE_FIELDS, ReloadableSettings
+from .config_reload import RELOADABLE_FIELDS, DeclarativeSettings, ReloadableSettings
 from .manager import Manager
 from .task_executor import TaskExecutor
 from .task_handler import (
@@ -176,6 +176,8 @@ class TaskProcessor(BasicWorker):
             logger=self.logger,
             signing_key=cfg.config_signing_key,
             enabled=cfg.remote_config_enabled,
+            declarative=self._declarative_reloadable_settings,
+            apply_declarative=self._apply_declarative_config,
         )
         if self._config_manager.enabled:
             self._config_manager.register_handlers(self.add_task_handler)
@@ -297,9 +299,7 @@ class TaskProcessor(BasicWorker):
         Returns:
             The names of the reloadable fields whose value changed.
         """
-        current = cast(TaskProcessorConfig, self._config)
-        merged = {f.name: getattr(current, f.name) for f in msgspec.structs.fields(type(current))}
-        merged.update(
+        return self._overlay_reloadable(
             {
                 "max_concurrent_tasks": settings.max_concurrent_tasks,
                 "task_manager_sleep_time": settings.task_manager_sleep_time,
@@ -311,6 +311,46 @@ class TaskProcessor(BasicWorker):
                 "task_cancellation_timeout": settings.task_cancellation_timeout,
             }
         )
+
+    def _declarative_reloadable_settings(self) -> DeclarativeSettings:
+        """Return the declarative reloadable core settings (AR-117).
+
+        Reads the raw ``_config`` fields, so a field left unset stays ``None``
+        (and ``auto_tune`` intent is preserved) rather than being resolved to a
+        concrete default.
+        """
+        cfg = cast(TaskProcessorConfig, self._config)
+        return DeclarativeSettings(**{f: getattr(cfg, f) for f in RELOADABLE_FIELDS})
+
+    def _apply_declarative_config(self, settings: DeclarativeSettings) -> list[str]:
+        """Validate-then-swap declarative reloadable settings into the config.
+
+        The declarative counterpart of :meth:`_apply_reloadable_config`: the
+        overlay may carry ``None`` values, which ``resolve_reloadable_settings``
+        turns into the effective defaults (and the auto-tune branch) when the
+        effective snapshot is rebuilt.
+        """
+        return self._overlay_reloadable(
+            {f.name: getattr(settings, f.name) for f in msgspec.structs.fields(type(settings))}
+        )
+
+    def _overlay_reloadable(self, values: dict[str, object]) -> list[str]:
+        """Overlay reloadable ``values`` onto a copy of the config and swap.
+
+        Shared by the effective and declarative apply paths. Builds a fresh
+        concrete config, validates it via ``type(current)(**merged)``, then
+        swaps ``_config`` and ``_effective`` together (no await between them).
+
+        Args:
+            values: The reloadable field values to overlay (concrete or
+                ``None``-carrying).
+
+        Returns:
+            The names of the reloadable fields whose value changed.
+        """
+        current = cast(TaskProcessorConfig, self._config)
+        merged = {f.name: getattr(current, f.name) for f in msgspec.structs.fields(type(current))}
+        merged.update(values)
         candidate = type(current)(**merged)
         changed = [
             f.name

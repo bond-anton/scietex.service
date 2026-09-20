@@ -2,6 +2,7 @@
 apply semantics for the ``config:apply`` / ``config:store`` / ``config:show``
 task types (design `docs/design/remote_config.md` §4, §12)."""
 
+import asyncio
 import logging
 from typing import Any, cast
 from uuid import uuid4
@@ -22,6 +23,7 @@ from scietex.service.config_reload import (
     ConfigApplyOutcome,
     ConfigSections,
     ConfigStoreOutcome,
+    DeclarativeSections,
     ReloadableSettings,
     encode_config_envelope,
 )
@@ -788,3 +790,54 @@ def test_auto_tune_effective_matches_show(tmp_path):
     assert proc.max_concurrent_tasks == proc._current_reloadable_settings().max_concurrent_tasks
     assert proc._current_reloadable_settings().max_concurrent_tasks == decoded.core.max_concurrent_tasks
     assert cast(TaskProcessorConfig, proc._config).max_concurrent_tasks is None
+
+
+def test_show_declarative_settings_preserve_none_and_auto_tune(tmp_path):
+    """``config:show.declarative_settings`` carries the raw declarative values
+    (``None``/auto_tune intent) while ``settings`` stays effective (AR-117)."""
+    proc = make_processor(
+        tmp_path,
+        remote_config_enabled=True,
+        auto_tune=True,
+        max_concurrent_tasks=None,
+        task_timeout=None,
+    )
+    response = proc._config_manager.show_config(False)
+
+    declarative = msgspec.msgpack.decode(response.declarative_settings, type=DeclarativeSections)
+    assert declarative.core.max_concurrent_tasks is None
+    assert declarative.core.task_timeout is None
+
+    effective = msgspec.msgpack.decode(response.settings, type=ConfigSections)
+    assert effective.core.max_concurrent_tasks == proc.max_concurrent_tasks
+    assert effective.core.task_timeout == proc._current_reloadable_settings().task_timeout
+
+
+def test_store_then_restart_preserves_declarative_intent(tmp_path):
+    """A store→restart cycle keeps ``None``/auto_tune intent: the local file is
+    written declaratively and re-applied without pinning resolved values (AR-117)."""
+    proc = make_processor(
+        tmp_path,
+        remote_config_enabled=True,
+        auto_tune=True,
+        max_concurrent_tasks=None,
+        task_timeout=None,
+    )
+    assert proc._config_manager.write_local().stored is True
+
+    # A fresh processor over the same conf_dir applies the persisted file.
+    restarted = make_processor(
+        tmp_path,
+        remote_config_enabled=True,
+        auto_tune=True,
+        max_concurrent_tasks=None,
+        task_timeout=None,
+    )
+    outcome = asyncio.run(restarted._config_manager.apply_local_file())
+
+    assert outcome is not None and outcome.applied is True
+    assert cast(TaskProcessorConfig, restarted._config).max_concurrent_tasks is None
+    assert cast(TaskProcessorConfig, restarted._config).task_timeout is None
+    # The effective snapshot is still concrete (auto-tuned / defaulted).
+    assert restarted._current_reloadable_settings().max_concurrent_tasks == restarted.max_concurrent_tasks
+    assert restarted._current_reloadable_settings().task_timeout == 3.0

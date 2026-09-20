@@ -110,6 +110,8 @@ class ConfigShowResponse(msgspec.Struct, frozen=True):
 
     Args:
         settings: msgpack-encoded effective ``ConfigSections``; never secrets.
+        declarative_settings: msgpack-encoded declarative ``DeclarativeSections``
+            (AR-117); preserves ``None``-means-default and ``auto_tune`` intent.
         revision: Revision of the effective config.
         hash: Hash of the effective config.
         source: Where the effective config came from.
@@ -120,6 +122,7 @@ class ConfigShowResponse(msgspec.Struct, frozen=True):
     """
 
     settings: bytes = b""
+    declarative_settings: bytes = b""
     revision: int = 0
     hash: str = ""
     source: ConfigSourceLabel = "default"

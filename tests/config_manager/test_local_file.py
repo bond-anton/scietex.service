@@ -2,7 +2,13 @@
 
 import pytest
 
-from scietex.service.config_reload import ConfigSections, read_local_config, write_local_config
+from scietex.service.config_reload import (
+    ConfigSections,
+    DeclarativeSections,
+    read_local_config,
+    to_declarative,
+    write_local_config,
+)
 
 from ._helpers import build_manager, make_envelope, make_settings
 
@@ -53,10 +59,10 @@ async def test_apply_local_file_error_returns_none(tmp_path, monkeypatch):
     write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings()))
     manager = build_manager(tmp_path, enabled=True)
 
-    async def boom(payload, *, source):
+    async def boom(sections, *, source, trusted=False):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(manager._reloader, "apply_envelope", boom)
+    monkeypatch.setattr(manager._reloader, "apply_declarative_sections", boom)
 
     assert await manager.apply_local_file() is None
 
@@ -105,5 +111,5 @@ def test_write_local_round_trips_atomically(tmp_path):
     assert outcome.stored is True
     assert outcome.target == "disk"
     assert outcome.path == str(tmp_path / "config.yml")
-    assert read_local_config(tmp_path / "config.yml") == ConfigSections(core=make_settings())
+    assert read_local_config(tmp_path / "config.yml") == DeclarativeSections(core=to_declarative(make_settings()))
     assert [entry.name for entry in tmp_path.iterdir()] == ["config.yml"]

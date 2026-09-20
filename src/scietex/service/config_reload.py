@@ -102,6 +102,35 @@ class ReloadableSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     task_cancellation_timeout: float
 
 
+class DeclarativeSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Declarative reloadable core settings: every field is required but each
+    may be None, meaning "use the library default" (and, for
+    max_concurrent_tasks, "auto-tune from the CPU count when the worker is
+    built with auto_tune=True"). This is the persistence/inspection view; the
+    runtime snapshot is ReloadableSettings, which is always concrete."""
+
+    max_concurrent_tasks: int | None
+    task_manager_sleep_time: float | None
+    task_queue_manager_sleep_time: float | None
+    task_handler_start_timeout: float | None
+    task_handler_stop_timeout: float | None
+    task_timeout: float | None
+    task_queue_fetch_timeout: float | None
+    task_cancellation_timeout: float | None
+
+
+class DeclarativeSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Local config.yml artifact: declarative core + registered service bytes."""
+
+    core: DeclarativeSettings
+    services: dict[str, bytes] = msgspec.field(default_factory=dict)
+
+
+def to_declarative(settings: ReloadableSettings) -> DeclarativeSettings:
+    """View a resolved snapshot as all-explicit declarative settings."""
+    return DeclarativeSettings(**{f: getattr(settings, f) for f in ReloadableSettings.__struct_fields__})
+
+
 class ConfigSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Named-section payload carried inside a :class:`ConfigEnvelope`.
 
@@ -313,6 +342,13 @@ class ConfigReloader:
         enabled: Master switch. When ``False``, ``apply_envelope``,
             ``reload``, and ``store`` short-circuit with
             ``REMOTE_CONFIG_DISABLED``.
+        declarative: Optional callback returning the declarative core settings
+            (``None`` per field means "use the default"). ``None`` makes
+            ``_declarative`` fall back to ``to_declarative(self._current())``.
+        apply_declarative: Optional callback that validates and swaps the
+            declarative core settings, returning the changed field names.
+            ``None`` makes ``apply_declarative_sections`` reject with
+            ``INVALID_CONFIG``.
     """
 
     def __init__(
@@ -324,6 +360,8 @@ class ConfigReloader:
         logger: logging.Logger,
         signing_key: str | None = None,
         enabled: bool = True,
+        declarative: Callable[[], DeclarativeSettings] | None = None,
+        apply_declarative: Callable[[DeclarativeSettings], list[str]] | None = None,
     ) -> None:
         self._apply = apply
         self._current = current
@@ -331,6 +369,8 @@ class ConfigReloader:
         self._logger = logger
         self._signing_key = signing_key
         self._enabled = enabled
+        self._declarative_settings = declarative
+        self._apply_declarative = apply_declarative
 
         self._lock = asyncio.Lock()
         self._applied_revision: int = 0
@@ -458,40 +498,9 @@ class ConfigReloader:
                 self._logger.error("Config apply rejected: invalid settings payload: %s", exc)
                 return ConfigApplyOutcome(applied=False, error_code=INVALID_CONFIG, error=str(exc))
 
-            decoded: list[tuple[str, msgspec.Struct]] = []
-            for name, raw in sections.services.items():
-                entry = self._sections.get(name)
-                if entry is None:
-                    self._logger.error("Config apply rejected: unknown section %r", name)
-                    return ConfigApplyOutcome(
-                        applied=False,
-                        error_code=UNKNOWN_CONFIG_SECTION,
-                        error=f"unknown config section {name!r}",
-                    )
-                struct_type, _ = entry
-                try:
-                    decoded.append((name, msgspec.msgpack.decode(raw, type=struct_type)))
-                except msgspec.DecodeError as exc:
-                    self._logger.error("Config apply rejected: section %r invalid: %s", name, exc)
-                    return ConfigApplyOutcome(
-                        applied=False,
-                        error_code=INVALID_CONFIG,
-                        error=f"section {name!r}: {exc}",
-                    )
-
-            # Section hooks run before the core swap so a raising hook aborts
-            # the apply with no state change (validate-before-swap).
-            for name, value in decoded:
-                _, hook = self._sections[name]
-                try:
-                    hook(value)
-                except Exception as exc:
-                    self._logger.error("Config apply rejected: section %r hook failed: %s", name, exc)
-                    return ConfigApplyOutcome(
-                        applied=False,
-                        error_code=INVALID_CONFIG,
-                        error=f"section {name!r}: {exc}",
-                    )
+            section_error = self._validate_and_run_sections(sections.services)
+            if section_error is not None:
+                return section_error
 
             try:
                 changed = self._apply(sections.core)
@@ -513,6 +522,105 @@ class ConfigReloader:
                 applied=True,
                 revision=envelope.revision,
                 hash=envelope.hash,
+                changed=changed,
+                restart_required=self._restart_required(),
+            )
+
+    def _validate_and_run_sections(self, services: dict[str, bytes]) -> ConfigApplyOutcome | None:
+        """Decode each registered section and run its hook; return an error
+        outcome on any failure, else None. Validate-before-swap semantics."""
+        decoded: list[tuple[str, msgspec.Struct]] = []
+        for name, raw in services.items():
+            entry = self._sections.get(name)
+            if entry is None:
+                self._logger.error("Config apply rejected: unknown section %r", name)
+                return ConfigApplyOutcome(
+                    applied=False,
+                    error_code=UNKNOWN_CONFIG_SECTION,
+                    error=f"unknown config section {name!r}",
+                )
+            struct_type, _ = entry
+            try:
+                decoded.append((name, msgspec.msgpack.decode(raw, type=struct_type)))
+            except msgspec.DecodeError as exc:
+                self._logger.error("Config apply rejected: section %r invalid: %s", name, exc)
+                return ConfigApplyOutcome(
+                    applied=False,
+                    error_code=INVALID_CONFIG,
+                    error=f"section {name!r}: {exc}",
+                )
+
+        # Section hooks run before the core swap so a raising hook aborts
+        # the apply with no state change (validate-before-swap).
+        for name, value in decoded:
+            _, hook = self._sections[name]
+            try:
+                hook(value)
+            except Exception as exc:
+                self._logger.error("Config apply rejected: section %r hook failed: %s", name, exc)
+                return ConfigApplyOutcome(
+                    applied=False,
+                    error_code=INVALID_CONFIG,
+                    error=f"section {name!r}: {exc}",
+                )
+        return None
+
+    async def apply_declarative_sections(
+        self, sections: DeclarativeSections, *, source: str, trusted: bool = False
+    ) -> ConfigApplyOutcome:
+        """Apply a declarative sections snapshot (the local ``config.yml`` artifact).
+
+        Mirrors ``apply_envelope`` for the declarative persistence view: the
+        core is applied through ``apply_declarative`` (which resolves ``None``
+        fields to their library defaults), while registered service sections
+        run through the same validate-before-swap hook pipeline. The local
+        artifact is revision 1 by contract, so success records revision 1 and
+        the hash of the msgpack-encoded declarative sections.
+
+        The declarative path is inherently trusted (a local artifact, not
+        transport input), so ``trusted`` is accepted only for signature
+        symmetry with ``apply_envelope`` and no signature verification is
+        performed regardless of its value.
+
+        Args:
+            sections: The :class:`DeclarativeSections` snapshot to apply.
+            source: Label recorded on success (e.g. ``"file"``).
+            trusted: Accepted for signature symmetry with ``apply_envelope``;
+                unused, as the declarative path never verifies signatures.
+
+        Returns:
+            A :class:`ConfigApplyOutcome` describing the result.
+        """
+        if not self._enabled:
+            return ConfigApplyOutcome(applied=False, error_code=REMOTE_CONFIG_DISABLED)
+        if self._apply_declarative is None:
+            return ConfigApplyOutcome(
+                applied=False,
+                error_code=INVALID_CONFIG,
+                error="declarative apply not configured",
+            )
+        async with self._lock:
+            section_error = self._validate_and_run_sections(sections.services)
+            if section_error is not None:
+                return section_error
+            try:
+                changed = self._apply_declarative(sections.core)
+            except Exception as exc:
+                self._logger.error("Declarative apply rejected: core settings invalid: %s", exc)
+                return ConfigApplyOutcome(applied=False, error_code=INVALID_CONFIG, error=str(exc))
+            self._applied_revision = 1
+            self._applied_hash = hashlib.sha256(msgspec.msgpack.encode(sections)).hexdigest()
+            self._source = source
+            self._section_raw = dict(sections.services)
+            self._logger.info(
+                "Applied declarative config from %s (%d fields changed)",
+                source,
+                len(changed),
+            )
+            return ConfigApplyOutcome(
+                applied=True,
+                revision=1,
+                hash=self._applied_hash,
                 changed=changed,
                 restart_required=self._restart_required(),
             )
@@ -544,12 +652,17 @@ class ConfigReloader:
     async def store(self, source: ConfigSource, *, target: str = "remote") -> ConfigStoreOutcome:
         """Persist the current effective config back to ``source``.
 
-        Builds a :class:`ConfigSections` snapshot from the current core
-        settings plus the last-applied raw section bytes, wraps it in a
+        Builds a :class:`ConfigSections` snapshot from the current effective
+        core settings plus the last-applied raw section bytes, wraps it in a
         signed envelope at the current revision, and hands it to
-        ``source.store``. A source store failure maps to
-        ``CONFIG_SOURCE_UNAVAILABLE`` (transient); a local disk write failure
-        is ``CONFIG_STORE_FAILED`` (`ConfigManager.write_local`).
+        ``source.store``. The remote desired-state envelope stays concrete
+        (effective) by design: a remote config is a self-contained explicit
+        desired state, and ``None``-means-default is a constructor/local
+        concept (AR-117). The declarative view is exposed separately through
+        :meth:`show_declarative` and the local ``config.yml`` artifact. A
+        source store failure maps to ``CONFIG_SOURCE_UNAVAILABLE`` (transient);
+        a local disk write failure is ``CONFIG_STORE_FAILED``
+        (`ConfigManager.write_local`).
 
         Args:
             source: The :class:`ConfigSource` to write the envelope to.
@@ -607,6 +720,14 @@ class ConfigReloader:
         """
         return ConfigSections(core=self._current(), services=dict(self._section_raw))
 
+    def _declarative(self) -> DeclarativeSettings:
+        if self._declarative_settings is not None:
+            return self._declarative_settings()
+        return to_declarative(self._current())
+
+    def show_declarative(self) -> DeclarativeSections:
+        return DeclarativeSections(core=self._declarative(), services=dict(self._section_raw))
+
     @property
     def enabled(self) -> bool:
         """Whether remote config is enabled (the master switch)."""
@@ -637,7 +758,7 @@ def _compute_signature(signing_key: str, revision: int, settings: bytes) -> str:
     ).hexdigest()
 
 
-def read_local_config(path: Path) -> ConfigSections | None:
+def read_local_config(path: Path) -> DeclarativeSections | None:
     """Read a local config snapshot from ``path``, or ``None`` when absent.
 
     Write-free: a missing file returns ``None`` without creating anything
@@ -649,8 +770,8 @@ def read_local_config(path: Path) -> ConfigSections | None:
         path: Path to the YAML snapshot (``config.yml``).
 
     Returns:
-        The decoded :class:`ConfigSections`, or ``None`` when the file is
-        missing or invalid.
+        The decoded :class:`DeclarativeSections`, or ``None`` when the file
+        is missing or invalid.
     """
     try:
         data = path.read_bytes()
@@ -660,27 +781,32 @@ def read_local_config(path: Path) -> ConfigSections | None:
         _logger.error("Failed to read local config %s: %s", path, exc)
         return None
     try:
-        return msgspec.yaml.decode(data, type=ConfigSections, strict=True)
+        return msgspec.yaml.decode(data, type=DeclarativeSections, strict=True)
     except msgspec.DecodeError as exc:
         _logger.error("Invalid local config %s: %s", path, exc)
         return None
 
 
-def write_local_config(path: Path, sections: ConfigSections) -> None:
+def write_local_config(path: Path, sections: ConfigSections | DeclarativeSections) -> None:
     """Atomically write ``sections`` to ``path`` as YAML.
 
     Encodes the sections with ``msgspec.yaml.encode``, writes to a temporary
     file in the same directory, then ``os.replace``-s it into place so a
     reader never sees a partial file. The parent directory is created if
-    missing, and the temporary file is removed if the write fails.
+    missing, and the temporary file is removed if the write fails. A concrete
+    :class:`ConfigSections` snapshot is normalised to the declarative view
+    before encoding so ``None``-means-default intent survives the round-trip.
 
     Args:
         path: Destination file path (``config.yml``).
-        sections: The validated :class:`ConfigSections` snapshot to persist.
+        sections: The validated :class:`ConfigSections` or
+            :class:`DeclarativeSections` snapshot to persist.
 
     Raises:
         OSError: If the temporary file cannot be created, written, or moved.
     """
+    if isinstance(sections, ConfigSections):
+        sections = DeclarativeSections(core=to_declarative(sections.core), services=sections.services)
     data = msgspec.yaml.encode(sections)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
@@ -706,6 +832,8 @@ __all__ = [
     "ConfigSections",
     "ConfigSource",
     "ConfigStoreOutcome",
+    "DeclarativeSections",
+    "DeclarativeSettings",
     "HASH_MISMATCH",
     "INVALID_CONFIG",
     "INVALID_CONFIG_PAYLOAD",
@@ -719,5 +847,6 @@ __all__ = [
     "encode_config_envelope",
     "peek_config_envelope_version",
     "read_local_config",
+    "to_declarative",
     "write_local_config",
 ]

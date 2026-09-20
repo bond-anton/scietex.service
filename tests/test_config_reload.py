@@ -23,11 +23,13 @@ from scietex.service.config_reload import (
     ConfigReloader,
     ConfigSections,
     ConfigSource,
+    DeclarativeSections,
     ReloadableSettings,
     decode_config_envelope,
     encode_config_envelope,
     peek_config_envelope_version,
     read_local_config,
+    to_declarative,
     write_local_config,
 )
 
@@ -593,7 +595,10 @@ def test_write_then_read_local_config_round_trips(tmp_path: Path):
         services={"svc": msgspec.msgpack.encode(_ServiceA(a=3))},
     )
     write_local_config(path, sections)
-    assert read_local_config(path) == sections
+    # The local artifact is normalised to the declarative view (AR-117).
+    assert read_local_config(path) == DeclarativeSections(
+        core=to_declarative(sections.core), services=sections.services
+    )
 
 
 def test_write_local_config_is_atomic(tmp_path: Path):
