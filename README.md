@@ -106,6 +106,7 @@ class EmailHandler(TaskHandler):
 
 class MyProcessor(TaskProcessor):
     async def fetch_tasks(self) -> bool:
+        # NOTE: fetch_tasks is a compatibility shim; prefer a TaskTransport via transport=.
         # Pull tasks from your source (DB, API, queue, etc.)
         # and enqueue them for processing:
         #     self.enqueue_task(task_id, task_data)
@@ -301,7 +302,9 @@ transport.submit(task_id, task_data)
 The legacy template-method hooks (`fetch_tasks`, `return_task_to_queue`,
 `on_task_started`, `on_task_completed`, `_write_task_progress`,
 `_on_queue_drain_task_processing`) are retained on `TaskProcessor` as thin
-delegators to the transport, so existing subclasses keep working.
+delegators to the transport, so existing subclasses keep working. New code
+should implement a `TaskTransport` and pass it via `transport=` instead; the
+delegators exist only for back-compat.
 
 ### Manager Lifecycle
 

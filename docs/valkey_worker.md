@@ -276,25 +276,31 @@ async def cleanup(self):
 Drains the internal task queue and cancels running tasks via the parent
 `TaskProcessor.cleanup()`, then closes the Valkey connection.
 
-### return_task_to_queue()
+### requeue() (ValkeyTransport)
 
 Re-queue a task by appending it to the Valkey task stream.
 
 ```python
-async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
+async def requeue(self, task_id: UUID, task_data: TaskData) -> None:
     """Encode TaskData into a versioned envelope, append to task stream."""
 ```
 
-Encodes `task_data` into a versioned `TaskEnvelope` (see [Wire Format](#wire-format))
-and appends a new entry to the stream. The entry key is the string
-representation of `task_id`.
+`ValkeyTransport.requeue()` encodes `task_data` into a versioned
+`TaskEnvelope` (see [Wire Format](#wire-format)) and appends a new entry to the
+stream. The entry key is the string representation of `task_id`. It also
+deletes the per-entry lease as part of the requeue: the requeued copy reuses
+the same `task_id`, so leaving this worker's lease in place would block a peer
+from claiming the copy (AR-077b).
 
-### fetch_tasks()
+The legacy `TaskProcessor.return_task_to_queue()` hook is a compatibility
+shim that delegates here; prefer `TaskTransport.requeue`.
+
+### fetch() (ValkeyTransport)
 
 Fetch a batch of tasks from the Valkey task stream and enqueue them.
 
 ```python
-async def fetch_tasks(self) -> bool:
+async def fetch(self, sink: TaskSink) -> bool:
     """XREADGROUP with block_ms=1000, decode envelope, enqueue (non-blocking)."""
 ```
 
@@ -310,30 +316,39 @@ per-entry lease is written at enqueue-accept (ownership begins when the entry
 is recorded), so a task is protected from a peer's recovery for its whole
 queue wait, not just while it runs. The stream entries are NOT acknowledged
 here — they stay in the consumer group's pending list until
-`on_task_completed()` acks them after the handler finishes. If the queue is
+`ack()` acks them after the handler finishes. If the queue is
 full, an entry is left pending (deferred, and its lease not written) and is
 never blocking. On read errors, disconnects and attempts to reconnect to
 Valkey. Returns `True` if at least one task was enqueued, `False` otherwise.
 
-### on_task_completed()
+The legacy `TaskProcessor.fetch_tasks()` hook is a compatibility shim that
+delegates here; prefer `TaskTransport.fetch`.
+
+### ack() (ValkeyTransport)
 
 Acknowledge the stream entry for a completed task.
 
 ```python
-async def on_task_completed(
-    self, task_id, task_data, task_result, *, cancel_reason=None
-):
+async def ack(
+    self,
+    task_id: UUID,
+    task_data: TaskData,
+    task_result: TaskResult | None,
+    *,
+    cancel_reason: CancelReason | None = None,
+) -> None:
     """Publish a terminal tracking record, then XACK + XDEL the entry."""
 ```
 
-Called by the base `TaskProcessor` when a task's processing
-terminates (success, error, or cancellation). Publishes a terminal
-`TaskStatus` tracking record to the task tracking key, then looks up the
-stream entry id recorded at fetch time and `XACK`s + `XDEL`s it, so the entry
-leaves the consumer group's pending list only after the handler's work on it is
-done. `task_result` is `None` when the task was cancelled before
-producing a result, and `cancel_reason` identifies why (`"deliberate"`,
-`"timeout"`, or `"shutdown"`, or `None` for a normal completion).
+Called when a task's processing terminates (success, error, or cancellation),
+via the base `TaskProcessor`'s `on_task_completed()` compatibility shim.
+Publishes a terminal `TaskStatus` tracking record to the task tracking key,
+then looks up the stream entry id recorded at fetch time and `XACK`s +
+`XDEL`s it, so the entry leaves the consumer group's pending list only after
+the handler's work on it is done. `task_result` is `None` when the task was
+cancelled before producing a result, and `cancel_reason` identifies why
+(`"deliberate"`, `"timeout"`, or `"shutdown"`, or `None` for a normal
+completion).
 
 When `task_result` is `None`:
 
@@ -348,20 +363,19 @@ or `status="failed"` otherwise, with the result payload and error-code fields
 carried over. Tracking is observability only — a failed tracking write is
 logged as a WARNING and never fails or requeues the task itself.
 
-### _write_task_progress()
+### on_progress() (ValkeyTransport)
 
 Update the progress of the `running` tracking record for a task.
 
 ```python
-async def _write_task_progress(self, task_id: UUID, value: float) -> None:
+async def on_progress(self, task_id: UUID, value: float) -> None:
     """Update the tracking record's progress for a running task."""
 ```
 
-`ValkeyWorker` overrides the base `TaskProcessor._write_task_progress()`
-hook (which delegates to `transport.on_progress`; invoked via
+`ValkeyTransport.on_progress()` delegates to
+`TaskStatusStore.update_progress()` (invoked via
 `TaskCapabilities.report_progress()`, which clamps
-`value` to `[0.0, 100.0]`) and delegates to
-`TaskStatusStore.update_progress()`. It `GET`s
+`value` to `[0.0, 100.0]`). It `GET`s
 the task tracking key, msgpack-decodes the stored
 `TaskStatus`, replaces `progress` with
 `TaskProgress(progress=True, value=value)` and `updated_at` with the current
@@ -369,6 +383,9 @@ UTC time, then rewrites the record. When the key is missing the progress
 update is dropped and logged at DEBUG; when the stored payload fails to
 decode it returns without writing. A failed read is logged as a WARNING and
 never fails or requeues the task.
+
+The legacy `TaskProcessor._write_task_progress()` hook is a compatibility
+shim that delegates here; prefer `TaskTransport.on_progress`.
 
 ### watchdog()
 
@@ -387,7 +404,7 @@ both queued and running tasks — so a live lease always outlives its refresh
 window even when the base watchdog blocks on a cancellation wait, and a queued
 task's lease stays alive indefinitely regardless of queue wait (as long as the
 event loop is healthy). In normal operation a task leaves the map only in
-`on_task_completed()`, which also deletes the lease, so a cancelled or
+`ValkeyTransport.ack()`, which also deletes the lease, so a cancelled or
 completed task stops being refreshed and its entry becomes reclaimable;
 `cleanup()` clears the map on shutdown (see
 [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)).
@@ -493,7 +510,7 @@ mid-processing redelivers the task on restart.
   task's UUID to the stream entry id it was read from, recorded at
   enqueue-accept time. It lives on the `ValkeyTransport` and doubles as the
   lease-refresh ownership map, so it stays authoritative until
-  `on_task_completed()` pops it.
+  `ValkeyTransport.ack()` pops it.
 - `ValkeyTransport.ack()` — Called when a task's processing terminates.
   Looks up the recorded entry id and `XACK`s + `XDEL`s it, removing the
   entry from the pending list only after the handler's work is done, then
@@ -620,7 +637,7 @@ Guidance:
 
 - **Single-consumer deployments are safe.** A lone `ValkeyWorker` never
   reclaims its own in-flight entry — recovery runs once on the first
-  `fetch_tasks()`, before any task is in flight in that process.
+  `fetch()`, before any task is in flight in that process.
 - **For multi-replica deployments**, `claim_min_idle_ms` is now only an outer
   gate and no longer needs to exceed the maximum handler duration; the lease
   is the authoritative liveness check. Keep handlers idempotent regardless —
@@ -903,7 +920,7 @@ heartbeat interval.
 
 Granular progress reported by a task handler. Embedded in the `progress`
 field of a `TaskStatus` tracking record and updated by
-`ValkeyWorker._write_task_progress()` via `TaskCapabilities.report_progress()`.
+`ValkeyTransport.on_progress()` via `TaskCapabilities.report_progress()`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|

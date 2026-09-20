@@ -447,7 +447,9 @@ A handler can support multiple task types by returning them all from
            TaskTracker for each running task
 ```
 
-### Overriding Task Re-queueing
+### Overriding Task Re-queueing (compatibility shim)
+
+Prefer `TaskTransport.requeue`; this hook is a compatibility shim.
 
 Subclasses can override `return_task_to_queue` to implement custom
 re-queueing logic (e.g., writing timed-out tasks back to a message queue):

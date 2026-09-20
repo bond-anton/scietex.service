@@ -183,7 +183,8 @@ next `fetch`. `ValkeyWorker` injects a `ValkeyTransport` instead (see
 (`fetch_tasks`, `return_task_to_queue`, `on_task_started`,
 `on_task_completed`, `_write_task_progress`, `_on_queue_drain_task_processing`)
 remain on `TaskProcessor` as thin delegators to the transport, so existing
-subclass overrides keep working.
+subclass overrides keep working. New code should implement a `TaskTransport`
+and pass it via `transport=`; the delegators exist only for back-compat.
 
 Fields added by `TaskProcessorConfig` (in addition to `WorkerConfig`):
 
@@ -426,7 +427,9 @@ they now delegate to the composed `TaskTransport`. For new code, prefer
 implementing a `TaskTransport` and passing it via `transport=` — that keeps the
 delivery contract explicit and testable without subclassing the processor.
 
-### fetch_tasks()
+### fetch_tasks() (compatibility override)
+
+Prefer a TaskTransport; this override is a back-compat shim.
 
 Override to retrieve tasks from an external source and enqueue them:
 
@@ -451,7 +454,9 @@ class MyWorker(TaskProcessor):
         return True
 ```
 
-### return_task_to_queue()
+### return_task_to_queue() (compatibility override)
+
+Prefer a TaskTransport; this override is a back-compat shim.
 
 Override to implement custom re-queueing logic for timed-out or
 cancelled tasks:
@@ -527,6 +532,9 @@ async def watchdog(self) -> None:
 ```
 
 ## Example
+
+This example overrides the legacy hooks for illustration; new code should
+implement `TaskTransport` instead.
 
 ```python
 import asyncio

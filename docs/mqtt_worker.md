@@ -373,6 +373,8 @@ and stopping on backpressure: a rejected task is left pending in the inbox,
 so it is redelivered, never lost. Returns `True` if at least one task was
 enqueued, `False` otherwise.
 
+Prefer `MqttTransport`; these hooks are back-compat shims.
+
 The MQTT message loop itself only **persists** messages to the inbox
 (`_handle_message`); `fetch` is the single intake path that drains the inbox
 into the processor queue. Persist-before-enqueue therefore always holds.
@@ -419,6 +421,8 @@ the task path. Granular progress also remains available in-process via
 `TaskCapabilities.report_progress(value)`, which clamps to `[0.0, 100.0]`. With
 `status_publish_enabled=False`, `on_progress` is a no-op and progress stays
 in-process only.
+
+Prefer `MqttTransport`; these hooks are back-compat shims.
 
 ### watchdog()
 

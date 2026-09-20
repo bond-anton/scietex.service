@@ -157,6 +157,17 @@ intentional transport-specific startup primitive outside the protocol, and the
 protocol surface stays exactly `{load, store}` (pinned by a test) so external
 structural implementers are unaffected.
 
+**Follow-up (v4.5.0):** AR-112 — the transport is now declared the sole delivery
+extension seam. The `TaskProcessor` class docstring points subclassers at
+`TaskTransport` (injected via `transport=`) and lists the six legacy hooks
+(`fetch_tasks`, `return_task_to_queue`, `on_task_started`, `on_task_completed`,
+`_write_task_progress`, `_on_queue_drain_task_processing`) under a
+"Compatibility shims" section; each hook docstring carries a "prefer overriding
+`TaskTransport.<method>`" note, and `fetch_tasks` documents the override
+precedence. A new `tests/task_processor/test_extension_seam.py` pins the seam,
+the precedence, and the docstring guidance. `docs/valkey_worker.md` no longer
+falsely claims `ValkeyWorker` overrides the hooks (it injects `ValkeyTransport`).
+
 ## v4.4.0 — MQTT transport
 
 **Motivation:** the framework ships a Valkey transport but no broker-agnostic
