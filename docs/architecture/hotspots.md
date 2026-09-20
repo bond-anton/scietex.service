@@ -269,7 +269,7 @@ value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `task_processor.py:911-963` (`process_task`), 523-676
+- **Location:** `task_processor.py:764-798` (`process_task`), 463-598
   (handler registry).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no
@@ -287,9 +287,9 @@ defaulting to "no extra information" so existing handlers keep working; the
 redundant `retry_count`/`requeue` fields are dropped. `process_task` treats a
 handler that *raises* as permanent (`retryable=False`) and passes a
 handler-returned `TaskResult` through unchanged; framework-level failures
-(empty `task` field, no matching handler) remain permanent. `handle_task`
+(empty `task` field, no matching handler) remain permanent. `TaskExecutor`
 executes at most one error-path retry, tracked by an in-memory per-task-id
-budget (`_MAX_TASK_RETRIES = 1`, `self._retry_attempts`): a first
+budget (`DEFAULT_MAX_TASK_RETRIES = 1`, `self._retry_attempts`): a first
 `retryable=True` error is requeued via `return_task_to_queue` before the
 transport entry is acked (XADD then XACK); a second consecutive retryable
 failure is acked as **terminal** with `retryable=False` (via

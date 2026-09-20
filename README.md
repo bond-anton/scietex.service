@@ -276,7 +276,7 @@ BasicWorker          — Signal handling, async logging, heartbeat &
 ### Transport Layer
 
 Task delivery is abstracted behind the `TaskTransport` protocol
-(`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`).
+(`fetch`/`requeue`/`on_started`/`ack`/`on_progress`/`on_drain`/`refresh_leases`/`recover_pending_tasks`).
 `TaskProcessor` composes a transport rather than inheriting delivery hooks:
 
 - **`InMemoryTransport`** is the default: a deque-backed in-process transport.
@@ -501,7 +501,7 @@ guide](docs/remote_config.md) and `examples/remote_config.py`.
 | `TaskProcessor` | Concurrent task processor |
 | `Manager` | Decorator for creating managed async loop methods |
 | `register_manager` | Explicit post-creation manager registration (`register_manager(owner, method, *, name, ...)`); compatibility shim with no in-tree production caller |
-| `TaskTransport` | Protocol for the task-delivery backend (`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`) |
+| `TaskTransport` | Protocol for the task-delivery backend (`fetch`/`requeue`/`on_started`/`ack`/`on_progress`/`on_drain`/`refresh_leases`/`recover_pending_tasks`) |
 | `TaskSink` | Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`) |
 | `InMemoryTransport` | Default in-process transport (deque-backed; `submit()` feeds it) |
 | `ValkeyWorker` | Valkey-backed distributed worker |

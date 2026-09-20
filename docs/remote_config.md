@@ -215,23 +215,25 @@ None` (mirroring `task_handler.wire`).
 ## Reloadable Allowlist
 
 Only core `TaskProcessor` fields that are read live, or can be safely
-re-shadowed, are reloadable. The worker copies several config fields at
-construction into name-mangled attributes; those are the "re-shadowed" ones.
+re-resolved, are reloadable. The worker resolves the eight reloadable fields
+once into a single `self._effective: ReloadableSettings` snapshot at
+construction and on every apply; the live-read properties and the hot loops
+read that snapshot.
 
 | Field | Reloadable | Mechanism |
 |---|---|---|
-| `max_concurrent_tasks` | yes | re-shadowed (`__max_concurrent_tasks`) |
-| `task_manager_sleep_time` | yes | live property |
-| `task_queue_manager_sleep_time` | yes | live property |
-| `task_handler_start_timeout` | yes | live property |
-| `task_handler_stop_timeout` | yes | live property |
-| `task_timeout` | yes | re-shadowed (`__task_timeout`) |
-| `task_queue_fetch_timeout` | yes | re-shadowed (`__task_queue_fetch_timeout`) |
-| `task_cancellation_timeout` | yes | re-shadowed (`__task_cancellation_timeout`) |
+| `max_concurrent_tasks` | yes | `_effective` snapshot |
+| `task_manager_sleep_time` | yes | `_effective` snapshot |
+| `task_queue_manager_sleep_time` | yes | `_effective` snapshot |
+| `task_handler_start_timeout` | yes | `_effective` snapshot |
+| `task_handler_stop_timeout` | yes | `_effective` snapshot |
+| `task_timeout` | yes | `_effective` snapshot |
+| `task_queue_fetch_timeout` | yes | `_effective` snapshot |
+| `task_cancellation_timeout` | yes | `_effective` snapshot |
 
-The live-read properties read `self._config` at call time, so they need no
-action on apply. The re-shadowed fields are the ones that would otherwise
-silently not apply — the apply path updates them alongside the swapped config.
+The apply path swaps `self._config` (raw/declarative) and `self._effective`
+(resolved) together with no `await` between them, so an observer sees old-or-new,
+never a mix. `_current_reloadable_settings()` returns `self._effective`.
 
 **Restart-required** (cannot be expressed in a remote payload): `queue_size`
 (the `asyncio.Queue` is sized at construction), `auto_tune`, the `WorkerConfig`

@@ -40,7 +40,7 @@ Run all commands (linters, tests, examples) within this environment.
 - `MqttWorker` — Extends processor with MQTT 5 integration via `aiomqtt` client
 
 **Transport layer:**
-- `TaskTransport` — Protocol for the task-delivery backend (`fetch`/`requeue`/`release`/`on_started`/`ack`/`on_progress`/`on_drain`); `TaskProcessor` composes one via the keyword-only `transport=` argument
+- `TaskTransport` — Protocol for the task-delivery backend (`fetch`/`requeue`/`on_started`/`ack`/`on_progress`/`on_drain`/`refresh_leases`/`recover_pending_tasks`); `TaskProcessor` composes one via the keyword-only `transport=` argument
 - `TaskSink` — Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`)
 - `InMemoryTransport` — Default in-process transport (deque-backed; feed it with `submit(task_id, task_data)`)
 - `ValkeyTransport` (`scietex.service.valkey`) — Valkey-stream implementation, injected automatically by `ValkeyWorker`

@@ -36,26 +36,26 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 - Delegators (thin, to the composed components): `_setup_signal_handlers` 359
   → `SignalHandler.setup()` (Windows-safe no-op), `_remove_signal_handlers` 380
   → `SignalHandler.remove()`, `_request_exit` 371 → `WorkerLifecycle.request_exit()`,
-  `_force_stopped` 482 → `WorkerLifecycle.force_stopped()`; properties `state`
+  `_force_stopped` 493 → `WorkerLifecycle.force_stopped()`; properties `state`
   (read-only — transitions go through `WorkerLifecycle.transition()`,
   validated against an allowed-edge table, or the unguarded `force_stopped()`
   terminal escape), `events`, `start_time` read from `WorkerLifecycle`
-- Lifecycle orchestrators: `_startup` 399, `start` 454, `_shutdown` 492,
-  `stop` 539, `exit` 583
-- Cancellation terminal-state helpers: `_force_stopped` 482 (AR-017 — forces
+- Lifecycle orchestrators: `_startup` 399, `start` 465, `_shutdown` 519,
+  `stop` 567, `exit` 611
+- Cancellation terminal-state helpers: `_force_stopped` 493 (AR-017 — forces
   STOPPED + `exit` event on startup/shutdown cancellation; delegated to
   `WorkerLifecycle.force_stopped()`) and `_stop_managers_best_effort` 503
   (stops managers in reverse start order via `stop_managers(reverse=True)`;
   both the `_startup` and `_shutdown` `CancelledError` handlers call it before
   `_force_stopped()`, so a cancelled orchestrator never strands running
   managers under STOPPED)
-- Hooks: `initialize` 389, `heartbeat` 593, `watchdog` 605, `cleanup` 625,
-  `_register_instance` 634, `_unregister_instance` 644
+- Hooks: `initialize` 389, `heartbeat` 621, `watchdog` 633, `cleanup` 673,
+  `_register_instance` 682, `_unregister_instance` 692
 - Built-in managers: `@Manager(name="Heartbeat")`-decorated
-  `_heartbeat_manager` 653 and `@Manager(name="Watchdog")`-decorated
-  `_watchdog_manager` 663 (AR-107)
-- `_setup_signal_handlers` called from `start()` (479), not `__init__`;
-  `_remove_signal_handlers` called from `stop()` (561)
+  `_heartbeat_manager` 654 and `@Manager(name="Watchdog")`-decorated
+  `_watchdog_manager` 664 (AR-107)
+- `_setup_signal_handlers` called from `start()` (465), not `__init__`;
+  `_remove_signal_handlers` called from `stop()` (567)
 
 **Public interface:** constructor takes a single immutable `WorkerConfig`
 (`config.py`) or `None`; all properties are read-only (no runtime setters):
@@ -68,11 +68,11 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 `FAILED` manager names, AR-063).
 Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
-subclass hooks govern registry-set membership: `_register_instance` (634) —
+subclass hooks govern registry-set membership: `_register_instance` (682) —
 called by `_startup()` after `initialize()` succeeds and before managers
-start — and `_unregister_instance` (644) — called by `_shutdown()` after
+start — and `_unregister_instance` (692) — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
-`ValkeyWorker` overrides them (worker.py:597, 622) to `SADD`/
+`ValkeyWorker` overrides them (worker.py:494, 519) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
@@ -211,14 +211,14 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 
 | Schema | Fields |
 |---|---|
-| `TaskTimeout` (32) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
-| `TaskData` (46) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
-| `TaskEnvelope` (66) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
-| `TaskResult` (84) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
-| `TaskStatus` (127) | `task_id: str`, `service: str`, `task: str`, `status: "queued"\|"running"\|"completed"\|"failed"\|"cancelled"`, `progress: TaskProgress`, `result: bytes\|None`, `data: TaskData\|None`, `error: str`, `error_code: str`, `created_at: datetime`, `updated_at: datetime` |
+| `TaskTimeout` (46) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
+| `TaskData` (60) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
+| `TaskEnvelope` (85) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
+| `TaskResult` (103) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
+| `TaskStatus` (146) | `task_id: str`, `service: str`, `task: str`, `status: "queued"\|"running"\|"completed"\|"failed"\|"cancelled"`, `progress: TaskProgress`, `result: bytes\|None`, `data: TaskData\|None`, `error: str`, `error_code: str`, `created_at: datetime`, `updated_at: datetime` |
 
 `TaskResult.processed_at` uses `msgspec.field(default_factory=lambda:
-datetime.now(timezone.utc))` (109) so each instance gets its own timestamp
+datetime.now(timezone.utc))` (128) so each instance gets its own timestamp
 (AR-012). The error-taxonomy fields (`error_code`/`retryable`/`partial`,
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
@@ -227,7 +227,7 @@ handlers that only set `status`/`error` keep working unchanged.
 `CONFIG_APPLY_TASK_TYPE = "config:apply"` (18),
 `CONFIG_STORE_TASK_TYPE = "config:store"` (21),
 `CONFIG_SHOW_TASK_TYPE = "config:show"` (24), and
-`CancelReason` (20). The built-in handler for the cancellation task type lives in
+`CancelReason` (43). The built-in handler for the cancellation task type lives in
 `task_handler/cancel.py`: `CancelTaskHandler` (59), `CancelTaskRequest` (35),
 `CancelTaskResponse` (47), `CancelOutcome` (29), and `CancelCallback` (32).
 `TaskProcessor` auto-registers the handler in `__init__` and injects its own
@@ -285,42 +285,42 @@ and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
 drains/cancels in-flight work. Per-task lifecycle state (the running tracker
 and its cancel reason) is owned by a composed `TaskLifecycle` (AR-088).
 
-**Main symbols:** `class TaskProcessor(BasicWorker)` (69).
-Overrides `_config_type` (96) to `TaskProcessorConfig`, so the base
+**Main symbols:** `class TaskProcessor(BasicWorker)` (45).
+Overrides `_config_type` (86) to `TaskProcessorConfig`, so the base
 instantiates the concrete config when `config=None` and `__init__` reads its
 fields from `self._config` rather than re-storing (AR-069).
-Properties: `task_handlers` 191, `running_tasks` 205 (a snapshot `Mapping`
-delegated to `TaskLifecycle`), `queue_size` 215, `max_concurrent_tasks` 220.
-Registry/dispatch: `add_task_handler` 523 (takes the handler class plus an
+Properties: `task_handlers` 186, `running_tasks` 200 (a snapshot `Mapping`
+delegated to `TaskLifecycle`), `queue_size` 210, `max_concurrent_tasks` 220.
+Registry/dispatch: `add_task_handler` 463 (takes the handler class plus an
 optional keyword-only `name` and arbitrary `**handler_kwargs`; the lifecycle
 key is the resolved name — `name` if given, otherwise `handler_class.__name__`
 — so multiple instances of one class can coexist under distinct keys, a
 duplicate resolved key raises; the map stores a `(class, handler_kwargs)`
 tuple and the kwargs are forwarded to the handler constructor on every
-instantiation), `_start_task_handler` 573
+instantiation), `_start_task_handler` 513
 (unpacks the tuple, builds a `TaskHandlerContext` at 594–598, and calls
 `handler_class(handler_name, context, **handler_kwargs)` at 599),
-`_stop_task_handler` 617, `remove_task_handler` 643, `_find_task_handler` 659,
-`process_task` 911.
-Queue access: `enqueue_task` 436, `dequeue_task` 457, `task_queue_empty` 449,
-`task_queue_full` 453 (the raw `task_queue` attribute is no longer exposed;
+`_stop_task_handler` 557, `remove_task_handler` 583, `_find_task_handler` 599,
+`process_task` 764.
+Queue access: `enqueue_task` 370, `dequeue_task` 401, `task_queue_empty` 385,
+`task_queue_full` 389 (the raw `task_queue` attribute is no longer exposed;
 non-blocking `put_nowait`/`get_nowait` underneath). State:
 `__task_handlers_map`/`__task_handlers` (130–131; the map holds
 `(class, handler_kwargs)` tuples keyed by resolved name), `_task_lifecycle`
-(116, the composed per-task lifecycle state), `__task_queue` (166, bounded
+(116, the composed per-task lifecycle state), `__task_queue` (139, bounded
 `asyncio.Queue[(UUID, TaskData)]`).
-Managers: `@Manager("TaskManager") task_manager` 965 (inner `handle_task`
-wrapper at 977), `@Manager("TaskQueueManager") task_queue_manager` 1104.
-Hooks: `fetch_tasks` 1085, `return_task_to_queue` 678, `on_task_completed` 779
-(transport ack seam), `initialize` 823 (starts handlers), `cleanup` 859
-(drains queue, cancels running tasks, stops handlers), `watchdog` 1123.
+Managers: `@Manager("TaskManager") task_manager` 818,
+`@Manager("TaskQueueManager") task_queue_manager` 850.
+Hooks: `fetch_tasks` 830, `return_task_to_queue` 618, `on_task_completed` 653
+(transport ack seam), `initialize` 703 (starts handlers), `cleanup` 747
+(drains queue, cancels running tasks, stops handlers), `watchdog` 869.
 
-**Retry cap** (v4.4.0): `_MAX_TASK_RETRIES = 1` (module constant,
-`task_processor.py:66`) grants exactly one error-path retry per task id;
-`self._retry_attempts: dict[UUID, int]` (`:120`) tracks the attempt budget. The
-`handle_task` `finally` block (`~1004–1046`) requeues a retryable error only
-while `attempts < _MAX_TASK_RETRIES`; on the second consecutive retryable
-failure it acks the entry terminal with
+**Retry cap** (v4.4.0): `DEFAULT_MAX_TASK_RETRIES = 1` (module constant,
+`task_executor.py:25`) grants exactly one error-path retry per task id;
+`self._retry_attempts: dict[UUID, int]` (`task_processor.py:110`) tracks the
+attempt budget. `TaskExecutor._apply_retry_policy` (`task_executor.py:202-263`)
+requeues a retryable error only while `attempts < max_retries`; on the second
+consecutive retryable failure it acks the entry terminal with
 `msgspec.structs.replace(result, retryable=False)` — load-bearing because
 transports leave a retryable entry pending (AR-077b), so the terminal ack must
 not look retryable or the entry would wait for a retry that never comes.
@@ -332,8 +332,9 @@ not look retryable or the entry would wait for a retry that never comes.
 `TaskProcessorConfig.task_timeout` (default 3, bounds `[0.1, 3600]`; `<= 0`
 means "no timeout"), `task_queue_fetch_timeout` (default 1, `[0.01, 60]`), and
 `task_cancellation_timeout` (default 5, `[0.1, 60]`). Each resolves once in
-`TaskProcessor.__init__` into a private attribute read by the watchdog/
-task_manager hot loops; no processor-local timing constants remain.
+`TaskProcessor.__init__` into the single `self._effective: ReloadableSettings`
+snapshot read by the watchdog/task_manager hot loops; no processor-local timing
+constants remain.
 
 `TaskProcessorConfig.auto_tune` (bool, default `False`) makes the worker derive
 `max_concurrent_tasks` from `os.cpu_count()` at startup when
@@ -346,13 +347,13 @@ services should set `max_concurrent_tasks` explicitly.
 **Remote configuration** (see §24–§27): `__init__` composes a `ConfigManager`
 collaborator (`config_manager.py`, AR-105), which builds the `ConfigReloader`
 and registers the three `config:*` handlers — only when
-`remote_config_enabled=True` (144–155); the source seam is attached by a
+`remote_config_enabled=True` (170–183); the source seam is attached by a
 transport subclass (`ValkeyWorker`/`MqttWorker`) through
 `ConfigManager.attach_source`. Extension point `register_config_settings(name,
-struct_type, *, apply)` (206) delegates to `ConfigManager.register_section`; the
-read-only observability properties `config_revision` (192), `config_hash` (197),
-and `config_source` (202) delegate to `ConfigManager`. The private
-apply/validate logic lives in `_apply_reloadable_config` (242) —
+struct_type, *, apply)` (244) delegates to `ConfigManager.register_section`; the
+read-only observability properties `config_revision` (230), `config_hash` (235),
+and `config_source` (240) delegate to `ConfigManager`. The private
+apply/validate logic lives in `_apply_reloadable_config` (284) —
 validate-then-swap, overlaying the eight reloadable values onto a shallow copy
 of the current config and re-constructing `type(current)(**merged)` so
 `__post_init__`/`validate_range` reject a bad candidate before any mutation —
@@ -506,7 +507,7 @@ removed the raw-`GlideClientConfiguration` fallback).
 `scietex:{service}:{instance_id}`, registry set
 `scietex:{service}:workers`, and the remote-config key
 `scietex:{service}:config` (`config_key`, defined at `valkey/config.py:293`,
-resolved at `valkey/worker.py:150`; the `ValkeyConfigSource` is attached via
+resolved at `valkey/worker.py:146`; the `ValkeyConfigSource` is attached via
 `ConfigManager.attach_source` in `initialize()` at `valkey/worker.py:434`). The stream and
 group are service-scoped so replicas share one queue; the consumer/status keys
 are worker-scoped per
@@ -773,10 +774,10 @@ terminal, so the inbox snapshot is not re-enqueued on every poll). The
 `recovered` flag and the recovery-once guard are inherited from the shared
 `RecoverableTransport` scaffold (`transport.py`), not owned here.
 
-`TASK_ID_PROPERTY` (`"scietex-task-id"`, `mqtt/transport.py:45`, exported in
-`__all__` at `:37`) carries the task id as an MQTT 5 user property;
+`TASK_ID_PROPERTY` (`"scietex-task-id"`, `mqtt/transport.py:52`, exported in
+`__all__` at `:44`) carries the task id as an MQTT 5 user property;
 `MqttTransport.requeue` re-publishes the envelope with that user property set
-(`mqtt/transport.py:326`), so a retried copy is indistinguishable from the
+(`mqtt/transport.py:313`), so a retried copy is indistinguishable from the
 original on the wire.
 
 **Composition:** `MqttWorker` builds `FileMqttInbox` → `MqttTransport`
@@ -843,7 +844,7 @@ reloadable-behaviour config envelope to a running worker over the transport it
 already uses, without the module knowing which transport that is. It is
 deliberately core: it imports no transport package and no processor type —
 transports implement the `ConfigSource` Protocol and the reloader calls back
-into the processor through injected callables, so the private shadows stay
+into the processor through injected callables, so the effective settings stay
 private to `TaskProcessor`.
 
 **Main symbols:**
@@ -855,43 +856,52 @@ private to `TaskProcessor`.
   (currently `{CONFIG_SOURCE_UNAVAILABLE}`); `RELOADABLE_FIELDS` (71), the
   eight-field allowlist.
 - Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings`
-  (77) — the complete snapshot of the eight reloadable core fields, all
-  required; `ConfigSections` (95) — `core: ReloadableSettings` +
-  `services: dict[str, bytes]`; `ConfigEnvelope` (108) — `version`/`revision`/
+  (87) — the complete snapshot of the eight reloadable core fields, all
+  required; `DeclarativeSettings` (105) — the same eight fields, each optional
+  (`None` = "use the default"/auto-tune), the persistence/inspection view;
+  `ConfigSections` (134) — `core: ReloadableSettings` +
+  `services: dict[str, bytes]`; `DeclarativeSections` (122) — `core:
+  DeclarativeSettings` + `services`; `ConfigEnvelope` (147) — `version`/`revision`/
   `hash`/`signature`/`settings`/`created_at`.
 - Wire helpers: `encode_config_envelope(sections, *, revision,
-  signing_key=None, created_at=None)` (130) — msgpack-encodes a hashed,
-  optionally HMAC-signed envelope; `decode_config_envelope(payload)` (166) and
-  `peek_config_envelope_version(payload)` (188) — decode/version-peek, returning
-  `None` on malformed input.
-- `ConfigSource` Protocol (208) — `load() -> bytes | None` and
+  signing_key=None, created_at=None)` (169) — msgpack-encodes a hashed,
+  optionally HMAC-signed envelope; `decode_config_envelope(payload)` (205) and
+  `peek_config_envelope_version(payload)` (227) — decode/version-peek, returning
+  `None` on malformed input; `to_declarative(settings)` (129) — view a resolved
+  snapshot as all-explicit declarative settings.
+- `ConfigSource` Protocol (247) — `load() -> bytes | None` and
   `store(envelope: bytes) -> None`, the delivery backend seam.
-- Outcome structs: `ConfigApplyOutcome` (223) — `applied`/`revision`/`hash`/
-  `changed`/`restart_required`/`error`/`error_code`; `ConfigStoreOutcome` (247)
+- Outcome structs: `ConfigApplyOutcome` (274) — `applied`/`revision`/`hash`/
+  `changed`/`restart_required`/`error`/`error_code`; `ConfigStoreOutcome` (298)
   — `stored`/`target`/`path`/`revision`/`hash`/`error`/`error_code`.
-- `ConfigReloader` (269) — the validate-before-swap apply pipeline, serialized
-  behind an `asyncio.Lock` (313). Constructor takes injected `apply` (validate
+- `ConfigReloader` (320) — the validate-before-swap apply pipeline, serialized
+  behind an `asyncio.Lock`. Constructor takes injected `apply` (validate
   + swap the core, returning changed names), `current` (snapshot the effective
   core), `restart_required` (non-reloadable field names), `logger`,
-  `signing_key`, and `enabled`. `register_section(name, struct_type, apply)`
-  (322) is the additive/idempotent service-section registry. `reset()` (343)
+  `signing_key`, `enabled`, and the optional `declarative`/`apply_declarative`
+  callbacks (AR-117). `register_section(name, struct_type, apply)`
+  (384) is the additive/idempotent service-section registry. `reset()` (405)
   clears the run-scoped apply bookkeeping (`_applied_revision`/`_applied_hash`/
   `_source`/`_section_raw`) while preserving registered sections and injected
   callbacks — the run-boundary contract, called before any startup apply.
-  `apply_envelope(payload, *, source, trusted=False)` (360) runs decode →
+  `apply_envelope(payload, *, source, trusted=False)` (422) runs decode →
   version → hash → optional signature → replay → decode sections → run section
   hooks → swap the core; `trusted=True` skips signature verification for a
   trusted local artifact (the replay guard still applies, and the flag must
   never be set for remote or inline input); a raising hook aborts before any
-  state change. `reload(source)` (472)
+  state change. `apply_declarative_sections(sections, *, source, trusted=False)`
+  applies a `DeclarativeSections` snapshot (the local-file path, AR-117).
+  `reload(source)` (628)
   loads the desired-state envelope and applies it (a `None` payload or a `load`
   exception maps to `CONFIG_SOURCE_UNAVAILABLE`). `store(source, *,
-  target="remote")` (496) persists the effective config back. `show()` (549)
-  returns the effective `ConfigSections`. Read-only properties `enabled` (560),
-  `revision` (566), `hash` (571), `source` (576).
-- Local-file helpers: `read_local_config(path)` (590) — write-free YAML read of
-  the `config.yml` snapshot (`None` on missing/invalid); `write_local_config
-  (path, sections)` (619) — atomic YAML write via `os.replace`.
+  target="remote")` (652) persists the effective config back. `show()` (712)
+  returns the effective `ConfigSections`; `show_declarative()` returns the
+  declarative `DeclarativeSections`. Read-only properties `enabled` (731),
+  `revision` (736), `hash` (741), `source` (746).
+- Local-file helpers: `read_local_config(path)` (761) — write-free YAML read of
+  the `config.yml` snapshot as `DeclarativeSections` (`None` on missing/invalid);
+  `write_local_config(path, sections)` (790) — atomic YAML write via `os.replace`
+  (accepts `ConfigSections` or `DeclarativeSections`, normalising to declarative).
 
 **Dependencies:** `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`,
 `msgspec`; stdlib `Protocol`/`Callable`. No transport or processor imports.
@@ -918,14 +928,14 @@ processor internals.
   `target: Literal["disk", "remote", "both"] = "disk"`),
   `ConfigStoreResponse` (77, `stored`/`target`/`path`/`revision`/`hash`/
   `error`), `ConfigShowRequest` (97, `include_restart_required: bool = True`),
-  `ConfigShowResponse` (108, `settings`/`revision`/`hash`/`source`/
-  `restart_required_fields`/`error`/`error_code`).
-- Callback types: `ConfigApplyCallback` (134) `(bytes | None, bool) ->
-  Awaitable[ConfigApplyOutcome]`; `ConfigStoreCallback` (137) `(str) ->
-  Awaitable[ConfigStoreOutcome]`; `ConfigShowCallback` (141) `(bool) ->
+  `ConfigShowResponse` (108, `settings`/`declarative_settings`/`revision`/`hash`/
+  `source`/`restart_required_fields`/`error`/`error_code`).
+- Callback types: `ConfigApplyCallback` (137) `(bytes | None, bool) ->
+  Awaitable[ConfigApplyOutcome]`; `ConfigStoreCallback` (140) `(str) ->
+  Awaitable[ConfigStoreOutcome]`; `ConfigShowCallback` (144) `(bool) ->
   ConfigShowResponse`.
-- Handlers: `ConfigApplyHandler` (144), `ConfigStoreHandler` (231),
-  `ConfigShowHandler` (318). Each decodes its request with
+- Handlers: `ConfigApplyHandler` (147), `ConfigStoreHandler` (235),
+  `ConfigShowHandler` (323). Each decodes its request with
   `msgspec.msgpack.decode(..., type=...)`; a `DecodeError` returns a
   non-retryable `INVALID_CONFIG_PAYLOAD` `TaskResult` rather than raising. An
   outcome whose `error_code` is in `RETRYABLE_ERROR_CODES` (currently only
@@ -948,7 +958,10 @@ remote config, not PubSub: PubSub is at-most-once and not persisted, so it
 cannot answer "what is the desired state now?" on startup or reconnect.
 
 **Main symbols:** `ValkeyConfigSource` (17), constructed with
-`(*, client, key, logger)`. `load()` (32) does a live `await client.get(key)`
+`(*, client_provider, key, logger)` — the client is late-bound through
+`client_provider` so a reconnect that swaps the underlying `GlideClient` is
+picked up on the next call (AR-103). `load()` (32) does a live
+`await client.get(key)`
 and returns `None` when the key is absent, so the reloader falls back to the
 local/default config. `store(envelope)` (36) writes the envelope back with
 `client.set(key, value=envelope)` (used by `config:store` targeting `remote`).

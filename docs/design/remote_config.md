@@ -137,9 +137,15 @@ version peek for diagnostics (mirrors `decode_task_envelope_version`,
 
 ### 3.2 Reloadable allowlist
 
+> **Post-implementation note (AR-100).** The "re-shadowed" mechanism described
+> below was replaced by a single resolved snapshot: `TaskProcessor` now holds
+> `self._effective: ReloadableSettings`, written only at construction and on
+> core swap (adjacent to `self._config`, no `await` between), and read by the
+> live properties and hot loops. There are no private reloadable shadows.
+
 **Only core `TaskProcessor` fields that are read live or can be safely
-re-shadowed** are reloadable. This is deliberate: the worker copies several
-config fields at construction into name-mangled attributes.
+re-resolved** are reloadable. This is deliberate: the worker resolves the
+reloadable fields once into a single snapshot.
 
 | Field | Source class | Reloadable? | Evidence |
 |---|---|---|---|
@@ -411,24 +417,21 @@ A core `ConfigReloader` (no transport knowledge) owns the whole apply path:
    `__post_init__` in msgspec 0.20.0, silently accepting an out-of-range value.
 8. **Run service hooks.** Each registered `apply` hook is called with its
    decoded struct. A raising hook aborts the apply before any swap.
-9. **Swap.** Only if steps 7–8 succeeded: update the `TaskProcessor` shadows
-   (`self.__max_concurrent_tasks`, `self.__task_timeout`,
-   `self.__task_queue_fetch_timeout`, `self.__task_cancellation_timeout`) with
-   `None`-resolved `DEFAULT_*` values, then assign `self._config = candidate`.
-   Assignment cannot fail, so there is no rollback path — validation happened
-   before any mutation.
+9. **Swap.** Only if steps 7–8 succeeded: assign `self._config = candidate`
+   and `self._effective = resolve_reloadable_settings(candidate)` adjacently
+   (no `await` between them). Assignment cannot fail, so there is no rollback
+   path — validation happened before any mutation.
 10. **Record.** `_applied_revision = envelope.revision`, `_applied_hash`,
     `_source`.
 
-**What "apply" swaps:** the core `_config` reference and the four shadows, plus
-whatever a registered service hook mutates. **What it does not swap:** transport
-collaborators, connection clients, the internal `asyncio.Queue`, task handlers,
-or any transport-specific config. This is the honest boundary of v1 and is
-exactly the allowlist in §3.2.
+**What "apply" swaps:** the core `_config` reference and the `_effective`
+snapshot, plus whatever a registered service hook mutates. **What it does not
+swap:** transport collaborators, connection clients, the internal
+`asyncio.Queue`, task handlers, or any transport-specific config. This is the
+honest boundary of v1 and is exactly the allowlist in §3.2.
 
-The live-read properties (`task_processor.py:469-521`) need no action — they read
-`self._config` at call time. The re-shadowed fields are the ones that would
-otherwise silently not apply.
+The live-read properties and hot loops read `self._effective`; the apply path
+swaps it alongside `self._config`.
 
 Read-only observability: `worker.config_revision`, `worker.config_hash`,
 `worker.config_source` properties, delegating to the reloader.
@@ -557,7 +560,7 @@ New constants in `config.py`: `MIN_CONFIG_STARTUP_TIMEOUT = 0.0`,
 
 | Field | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `config_key` | `str` | `"scietex:{service}:config"` | — | Durable desired-state key; `{service}` substituted at construction like `log_stream_name` (`valkey/worker.py:150`). |
+| `config_key` | `str` | `"scietex:{service}:config"` | — | Durable desired-state key; `{service}` substituted at construction like `log_stream_name` (`valkey/worker.py:146`). |
 
 ### MQTT (`mqtt/config.py`, on `MqttWorkerConfig`)
 
@@ -635,7 +638,7 @@ lives in core so both transports implement it without a feature→feature
 dependency (the same reasoning that hoisted `TransportHealth` to core,
 `mqtt_worker.md` §7). The reloader calls back into the processor through an
 injected `apply: Callable[[ReloadableSettings], list[str]]` (bound to
-`TaskProcessor._apply_reloadable_config`), so the private shadows stay private to
+`TaskProcessor._apply_reloadable_config`), so the effective settings stay private to
 `TaskProcessor`.
 
 ---

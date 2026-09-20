@@ -314,8 +314,8 @@ single retry is left to the transport/handler.
 > **Correction (retry cap now enforced).** The original decision above left the
 > "single retry" as an intent with no enforcement: a handler that kept returning
 > `retryable=True` was requeued forever. The cap is now enforced in
-> `handle_task` as an in-memory per-task-id budget
-> (`_MAX_TASK_RETRIES = 1`, `self._retry_attempts`). A second consecutive
+> `TaskExecutor._apply_retry_policy` as an in-memory per-task-id budget
+> (`DEFAULT_MAX_TASK_RETRIES = 1`, `self._retry_attempts`). A second consecutive
 > retryable failure is acked as terminal with `retryable=False` (so a durable
 > transport does not leave the entry pending for a retry that never comes). The
 > budget adds no schema field and is per-execution: a durable transport

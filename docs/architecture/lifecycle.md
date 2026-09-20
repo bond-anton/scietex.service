@@ -32,7 +32,7 @@ entry with no explicit cleanup.
 
 ### Startup
 
-Public: `worker.start()` (454). It:
+Public: `worker.start()` (465). It:
 1. Guards: if RUNNING or STARTING → warn and return.
 2. If STOPPING/STOPPED → registers signal handlers (`_setup_signal_handlers`,
    359) and spawns task `"Start"` running `_startup()` (399).
@@ -44,17 +44,17 @@ Public: `worker.start()` (454). It:
 3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
    running, with `logger_handler_timeout`.
 4. `initialize()` (389) — subclass hook; must return truthy.
-   - `TaskProcessor.initialize` (621) resets the run-scoped remote-config
+   - `TaskProcessor.initialize` (703) resets the run-scoped remote-config
      replay/apply bookkeeping (`_config_manager.reset()` →
      `ConfigReloader.reset()`) before starting any handler, so each run begins
      from the constructor/default baseline (`config_revision == 0`,
      `config_source == "default"`) rather than replaying the previous run's
      state; it then starts every registered task handler
      (`_start_task_handler`, awaited per handler).
-   - `ValkeyWorker.initialize` (461) calls super then `connect()` and creates
+   - `ValkeyWorker.initialize` (403) calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows
      "already exists" errors).
-5. `_register_instance()` (634) — subclass hook, runs only after
+5. `_register_instance()` (682) — subclass hook, runs only after
    `initialize()` succeeded (transport/client exists) and before managers
    start. Base is a no-op; `ValkeyWorker` overrides it to `SADD` its
    `instance_id` into the worker registry set (best-effort: a failure logs a
@@ -96,35 +96,35 @@ STARTING state or orphaned managers (AR-017).
 
 Signal (`SIGINT`/`SIGTERM`) → `SignalHandler`, which invokes the worker's
 `_request_exit` (371) delegator → `WorkerLifecycle.request_exit()`, which
-spawns a single `"StopTask"` running `exit()` (583); `exit()` sets
+spawns a single `"StopTask"` running `exit()` (611); `exit()` sets
 `exit_requested` and calls `stop()`. Repeat signals are deduplicated: a pending
 stop task or an already-set `exit_requested` short-circuits so only one
 shutdown runs (AR-033). The dedup guard lives in
 `WorkerLifecycle.request_exit()`.
 
-`stop()` (539):
+`stop()` (567):
 - STOPPED → clear/set exit events, remove signal handlers
   (`_remove_signal_handlers`, 380 → `SignalHandler.remove()`), return.
 - STOPPING → set exit event if `exit_requested`, return.
-- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (492).
+- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (519).
 
 `_shutdown()`:
 1. State = STOPPING.
 2. `ManagerRuntime.stop_managers()` — cancel each
    manager task; wait per-manager up to `manager_shutdown_timeout` (default 2 s).
-3. `_unregister_instance()` (644) — subclass hook, runs after managers stop
+3. `_unregister_instance()` (692) — subclass hook, runs after managers stop
    and before `cleanup()` teardown, deliberately while the transport is still
    open (`cleanup()` may disconnect it). Base is a no-op; `ValkeyWorker`
    overrides it to `SREM` its `instance_id` from the worker registry set
    (best-effort: a failure logs a WARNING and does not fail shutdown).
 4. `cleanup()` — subclass hook. Chain:
-   - `TaskProcessor.cleanup` (859): drain `task_queue` (items fetched from
+   - `TaskProcessor.cleanup` (747): drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
      cancel running per-task workers (wait up to the configured
      `task_cancellation_timeout`, default 5 s); requeue only if the handler
      actually stopped and `canceled_action=="requeue"`; stop all task handlers
      (`_stop_task_handler`, per-handler 5 s timeout).
-   - `ValkeyWorker.cleanup` (575): super then `disconnect()` (close glide
+   - `ValkeyWorker.cleanup` (472): super then `disconnect()` (close glide
      client).
 5. `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
    with per-handler timeout; overall `loggers_timeout =
@@ -230,7 +230,7 @@ from a timeout. The task manager consumes the reason with
 | Worker registry-set membership (`SADD`/`SREM`) | worker (via `_register_instance`/`_unregister_instance`) | startup step 5 (`_register_instance`) | shutdown step 3 (`_unregister_instance`) |
 | Logging `AsyncValkeyHandler` worker loop | worker (via `LoggingLifecycle`) | `connect()` → `handler.start_logging()` | shutdown (`stop_logging`) |
 | Signal handlers (SIGINT/SIGTERM) | loop, owned by the last worker to call `setup()` (via `SignalHandler`'s weak-key registry) | `start()` (`_setup_signal_handlers` → `SignalHandler.setup()`) | `stop()` (`_remove_signal_handlers` → `SignalHandler.remove()`, no-op unless owner) |
-| Remote-config reloader (`ConfigReloader`) | `TaskProcessor` | `__init__` | n/a — no teardown (processor lifetime) |
+| Remote-config reloader (`ConfigReloader`) | `ConfigManager` (composed by `TaskProcessor`) | `__init__` | n/a — no teardown (processor lifetime) |
 | Remote-config source (`ValkeyConfigSource`) | `ValkeyWorker` | `initialize` (after `connect`) | n/a — no teardown (holds client ref) |
 | Remote-config source (`MqttConfigSource`) | `MqttWorker` | `__init__` | n/a — no teardown (holds topic/publish refs) |
 

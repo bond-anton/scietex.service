@@ -10,24 +10,25 @@ transformations, and any async boundaries (queues/events/tasks).
 `enqueue_task()` directly.
 
 **Processing chain:**
-1. `TaskProcessor.task_queue_manager` (`task_processor.py:1104`,
+1. `TaskProcessor.task_queue_manager` (`task_processor.py:850`,
    `@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
    subclass/`ValkeyWorker` `fetch_tasks()`; then sleeps
    `task_queue_manager_sleep_time` (default 0.01 s).
-2. `TaskProcessor.task_manager` (`task_processor.py:965`,
+2. `TaskProcessor.task_manager` (`task_processor.py:818`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `(task_id, task_data)` off `task_queue` with a fetch timeout of
    `task_queue_fetch_timeout` (default 1 s),
    wraps `handle_task` in an `asyncio.Task`, and records the tracker via
    `TaskLifecycle.register(task_id, TaskTracker(...))` (the composed lifecycle
    state, AR-088).
-3. `handle_task` (inner, 977) calls `process_task(task_id, task_data)`.
-4. `process_task` (911): guards the empty-`task` case first — an empty
+3. `TaskExecutor._handle_task` (`task_executor.py:128`) calls
+   `process_task(task_id, task_data)`.
+4. `process_task` (764): guards the empty-`task` case first — an empty
    `task_data.task` returns `TaskResult(status="error", error="Task data must
-   contain 'task' field")` (937–945) — then selects a handler with
+   contain 'task' field")` (790–798) — then selects a handler with
    `_find_task_handler` (`handler.supports(task_type)`, first match among
    **active/started** handlers).
-5. Dispatch is gated by `handler.is_ready` (948): only a found **and
+5. Dispatch is gated by `handler.is_ready` (801): only a found **and
    initialized** handler runs `await handler.handle(task_data, capabilities=...)`.
    A `handle()`
    exception is converted into `TaskResult(status="error", error=str(e))` with
@@ -37,12 +38,14 @@ transformations, and any async boundaries (queues/events/tasks).
    loop under retry-once. No handler / not ready → error result
    ("No handler found for task type ...").
 
-**Destination:** the `TaskResult` is returned to `handle_task`, whose `finally`
+**Destination:** the `TaskResult` is returned to `TaskExecutor._handle_task`,
+whose `finally` runs `TaskExecutor._settle` (`task_executor.py:168`), which
 removes the tracker (`TaskLifecycle.remove_tracker`), calls
 `task_queue.task_done()`, and passes the consumed cancel reason
 (`TaskLifecycle.take_cancel_reason`) to the ack. Then: a
 `retryable=True` error result is requeued via
-`return_task_to_queue(task_id, task_data)` **before** acking (1015–1046) — the
+`return_task_to_queue(task_id, task_data)` **before** acking
+(`TaskExecutor._apply_retry_policy`, `task_executor.py:202-263`) — the
 retry copy is made durable (XADD) before the original is dropped (XACK) — and
 then `on_task_completed(task_id, task_data, task_result)` is invoked — the
 transport-agnostic ack/result-sink seam. The base delegates to `transport.ack`;
@@ -92,11 +95,12 @@ handler's work terminates (see F1 destination note).
 **Source/trigger:** (a) watchdog timeout, (b) worker shutdown drain, (c) task
 cancellation during cleanup, (d) capped error-path retry via
 `TaskResult.retryable` (an error result with `retryable=True` is requeued in
-`handle_task`'s `finally` before acking, at most once per task id; a second
+`TaskExecutor._apply_retry_policy` before acking, at most once per task id; a second
 consecutive retryable failure is acked terminal with `retryable=False` — see
 F1).
 
-**Path:** `TaskProcessor.watchdog` (1123) cancels `worker_task` when
+**Path:** `TaskProcessor.watchdog` (869) delegates to `TaskExecutor.watchdog`
+(`task_executor.py:351`), which cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or the configured `task_timeout`, default
 3), waits up to the configured `task_cancellation_timeout` (default 5), and only
 if the handler actually
@@ -127,7 +131,7 @@ not gated by this budget.
 ## F4. Handler dispatch (selection)
 
 **Source:** `TaskData.task` string. **Processing:** `_find_task_handler`
-(659) iterates `task_handlers` dict (active instances) and returns the first
+(599) iterates `task_handlers` dict (active instances) and returns the first
 `handler.supports(task_type)`. **Destination:**
 `handler.handle(task_data, capabilities=...)`.
 Selection is by `supported_tasks` membership, **not** by a registration key
@@ -141,7 +145,7 @@ a class's per-instance task sets must not overlap.
 **Source:** `_heartbeat_manager` (`basic_worker.py:654`, a
 `@Manager(name="Heartbeat")`-decorated method) — sleeps
 `heartbeat_interval`, calls `self.heartbeat()`, repeats.
-`ValkeyWorker.heartbeat` (415) is the only concrete override.
+`ValkeyWorker.heartbeat` (357) is the only concrete override.
 
 **Processing/destination:** encodes `Heartbeat` struct (msgpack) and writes it
 to key `scietex:{service}:{instance_id}:status` with TTL = 2 ×
@@ -162,7 +166,7 @@ heartbeat never surfaces.
   registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
-  `worker.py:301`) — owns its own `GlideClient`, built from a `valkey_config=`
+  `worker.py:272`) — owns its own `GlideClient`, built from a `valkey_config=`
   dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
   longer shares the worker's client; formats records to a dict and `xadd`s to
   the log stream `scietex:{service}:log` (default; `{service}` substituted at
@@ -177,7 +181,7 @@ timeout (`logger_handler_timeout`, default 2 s).
 ## F7. Configuration flow
 
 **Source:** config dir (resolved by `prepare_conf_dir`,
-`config.py:45`), i.e. `valkey.yml` in the chosen dir, or programmatic
+`config.py:46`), i.e. `valkey.yml` in the chosen dir, or programmatic
 `ValkeyConfig`.
 
 **Path:** when `config.valkey_config` is provided, `ValkeyWorker.__init__`

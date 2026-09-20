@@ -366,13 +366,13 @@ async def watchdog(self) -> None:
     for task_id, tracker in list(self.running_tasks.items()):
         timeout = tracker.data.timeout.timeout
         if timeout is None:
-            timeout = self.__task_timeout  # resolved from config task_timeout (default 3 s)
+            timeout = self._settings().task_timeout  # resolved from config task_timeout (default 3 s)
         if 0 < timeout < (now - tracker.started) and not tracker.worker_task.done():
             # Task exceeded its timeout and is still running
             tracker.worker_task.cancel()
             await asyncio.wait(
                 [tracker.worker_task],
-                timeout=self.__task_cancellation_timeout,  # config task_cancellation_timeout (default 5 s)
+                timeout=self._settings().task_cancellation_timeout,  # config task_cancellation_timeout (default 5 s)
             )
             if tracker.worker_task.done():
                 # Handler actually stopped; requeue a fresh delivery only now
