@@ -49,11 +49,25 @@ class TaskProcessor(BasicWorker):
     Extends the base worker with a task queue, handler dispatch, concurrent
     task execution, timeout monitoring via watchdog, and cleanup on shutdown.
 
-    Subclasses should override:
-        - ``fetch_tasks()``: Retrieve tasks from an external source.
-        - ``return_task_to_queue()``: Re-queue tasks on cancellation/timeout.
+    Extension seam: the delivery backend. Every ordering-sensitive delivery
+    concern (fetch, requeue, start, ack, progress, shutdown-drain) is owned by a
+    :class:`~scietex.service.transport.TaskTransport`, injected via the
+    keyword-only ``transport=`` constructor argument. Implement ``TaskTransport``
+    and pass ``transport=MyTransport(...)`` to extend delivery behaviour; this is
+    the intended extension point. Do not subclass-override the delivery hooks
+    listed under *Compatibility shims* below.
+
+    Subclasses still override:
         - ``cleanup()``: Service-specific cleanup logic.
         - ``initialize()``: Service-specific initialization logic.
+
+    Compatibility shims (not for new code): ``fetch_tasks``,
+    ``return_task_to_queue``, ``on_task_started``, ``on_task_completed``,
+    ``_write_task_progress`` and ``_on_queue_drain_task_processing`` remain on
+    this class as thin delegators to the composed transport, so existing
+    subclasses keep working. Overriding one still takes effect — the executor is
+    wired to the bound methods at construction — but it bypasses the transport
+    for that single operation. Prefer overriding the transport instead.
 
     Properties:
         service_name (str): Name of the service (read-only).
@@ -564,10 +578,10 @@ class TaskProcessor(BasicWorker):
     async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
         """Return a task to its external source queue.
 
-        Subclasses should override this method to implement the specific
-        logic for re-queueing tasks when they cannot be processed or
-        need to be retried (e.g., writing back to a message queue). The
-        default delegates to the transport's ``requeue`` hook.
+        Compatibility shim: prefer overriding
+        :meth:`~scietex.service.transport.TaskTransport.requeue` and injecting
+        via ``transport=``; overriding this method bypasses the transport's
+        ``requeue``. The default delegates to the transport's ``requeue`` hook.
 
         Args:
             task_id: The unique identifier of the task.
@@ -606,8 +620,10 @@ class TaskProcessor(BasicWorker):
     ) -> None:
         """Notify the transport that a task's processing has terminated.
 
-        Called by ``handle_task`` when a task's work ends — on success, on
-        a terminal error, or on cancellation — with the final
+        Compatibility shim: prefer overriding
+        :meth:`~scietex.service.transport.TaskTransport.ack` and injecting via
+        ``transport=``. Called by ``handle_task`` when a task's work ends — on
+        success, on a terminal error, or on cancellation — with the final
         ``TaskResult``, or ``None`` when the task was cancelled before
         producing a result. The default delegates to the transport's ``ack``
         hook, which acknowledges the transport entry so it is removed only
@@ -627,16 +643,20 @@ class TaskProcessor(BasicWorker):
     async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
         """Hook invoked when a task begins processing.
 
-        The default delegates to the transport's ``on_started`` hook, which
-        publishes a ``running`` tracking record.
+        Compatibility shim: prefer overriding
+        :meth:`~scietex.service.transport.TaskTransport.on_started` and injecting
+        via ``transport=``. The default delegates to the transport's
+        ``on_started`` hook, which publishes a ``running`` tracking record.
         """
         await self._transport.on_started(task_id, task_data)
 
     async def _write_task_progress(self, task_id: UUID, value: float) -> None:
         """Hook invoked when a handler reports granular progress.
 
-        The default delegates to the transport's ``on_progress`` hook, which
-        updates the tracking record.
+        Compatibility shim: prefer overriding
+        :meth:`~scietex.service.transport.TaskTransport.on_progress` and
+        injecting via ``transport=``. The default delegates to the transport's
+        ``on_progress`` hook, which updates the tracking record.
         """
         await self._transport.on_progress(task_id, value)
 
@@ -666,10 +686,13 @@ class TaskProcessor(BasicWorker):
     async def _on_queue_drain_task_processing(self, task_id: UUID, task_data: TaskData) -> None:
         """Handle a task still queued when the in-process queue is drained on shutdown.
 
-        Called by ``cleanup()`` for every queued-but-undispatched task. The base
-        default returns the task to its external source when ``canceled_action``
-        is ``"requeue"``, so a non-durable transport (whose entries are not kept
-        pending anywhere) does not silently lose work on shutdown (AR-041).
+        Compatibility shim: prefer overriding
+        :meth:`~scietex.service.transport.TaskTransport.on_drain` and injecting
+        via ``transport=``. Called by ``cleanup()`` for every
+        queued-but-undispatched task. The base default returns the task to its
+        external source when ``canceled_action`` is ``"requeue"``, so a
+        non-durable transport (whose entries are not kept pending anywhere) does
+        not silently lose work on shutdown (AR-041).
 
         Subclasses backed by a durable transport (e.g. ``ValkeyWorker``) override
         this to a no-op: their entries stay pending in the transport and are
@@ -767,11 +790,12 @@ class TaskProcessor(BasicWorker):
     async def fetch_tasks(self) -> bool:
         """Fetch tasks from external sources and enqueue them.
 
-        Override this method in subclasses to implement the specific
-        logic for retrieving tasks from external sources such as message
-        queues, databases, or APIs, and enqueuing them via
-        ``enqueue_task()`` as ``(UUID, TaskData)`` tuples. The default
-        delegates to the transport's ``fetch`` hook.
+        Compatibility shim: prefer overriding
+        :meth:`~scietex.service.transport.TaskTransport.fetch` and injecting via
+        ``transport=``. Note precedence — an override here is called by the task
+        queue manager instead of ``transport.fetch``, so the injected transport
+        is bypassed for intake. The default delegates to the transport's
+        ``fetch`` hook.
 
         Returns:
             ``True`` if at least one task was enqueued, ``False`` otherwise.
