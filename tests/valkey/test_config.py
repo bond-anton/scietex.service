@@ -269,3 +269,23 @@ def test_control_stream_names_resolved_at_construction():
     worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
     assert worker._control_stream_name == f"scietex:svc:control:{worker.instance_id}"
     assert worker._control_broadcast_stream_name == "scietex:svc:control"
+
+
+def test_worker_config_heartbeat_key_default_is_templated():
+    """heartbeat_key defaults to a {service}/{instance_id}-templated key."""
+    assert ValkeyWorkerConfig().heartbeat_key == "scietex:{service}:{instance_id}:status"
+
+
+def test_worker_config_task_stream_name_default_is_templated():
+    """task_stream_name defaults to a {service}-templated stream name."""
+    assert ValkeyWorkerConfig().task_stream_name == "scietex:{service}:tasks"
+
+
+def test_worker_config_task_group_name_default_is_templated():
+    """task_group_name defaults to a {service}-templated group name."""
+    assert ValkeyWorkerConfig().task_group_name == "scietex:{service}:task_group"
+
+
+def test_worker_config_consumer_name_default_is_templated():
+    """consumer_name defaults to a {service}/{instance_id}-templated name."""
+    assert ValkeyWorkerConfig().consumer_name == "scietex:{service}:{instance_id}"

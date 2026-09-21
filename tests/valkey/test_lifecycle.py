@@ -38,15 +38,41 @@ def test_construction_without_config_has_no_filesystem_side_effects(tmp_path, mo
 
 
 def test_two_workers_share_stream_group_differ_in_consumer_status():
-    a = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
-    b = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    """Two workers of one service share the task stream and consumer group but
+    differ in their worker-scoped consumer name and heartbeat key. The resolved
+    names derive from the config templates, not hard-coded literals."""
+    cfg = ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig())
+    a = ValkeyWorker(cfg)
+    b = ValkeyWorker(cfg)
 
-    assert a._task_stream_name == b._task_stream_name == "scietex:svc:tasks"
-    assert a._task_group_name == b._task_group_name == "scietex:svc:task_group"
+    assert a._task_stream_name == b._task_stream_name
+    assert a._task_group_name == b._task_group_name
     assert a._consumer_name != b._consumer_name
     assert a._heartbeat_key != b._heartbeat_key
-    assert a._consumer_name == f"scietex:svc:{a.instance_id}"
-    assert a._heartbeat_key == f"scietex:svc:{a.instance_id}:status"
+
+    assert a._task_stream_name == cfg.task_stream_name.format(service="svc")
+    assert a._task_group_name == cfg.task_group_name.format(service="svc")
+    assert a._consumer_name == cfg.consumer_name.format(service="svc", instance_id=a.instance_id)
+    assert a._heartbeat_key == cfg.heartbeat_key.format(service="svc", instance_id=a.instance_id)
+
+
+def test_custom_name_templates_drive_resolution():
+    """A custom template in ValkeyWorkerConfig resolves through .format() at
+    construction instead of the hard-coded defaults."""
+    cfg = ValkeyWorkerConfig(
+        service_name="svc",
+        valkey_config=ValkeyConfig(),
+        heartbeat_key="hb:{service}:{instance_id}",
+        task_stream_name="stream:{service}",
+        task_group_name="group:{service}",
+        consumer_name="consumer:{service}:{instance_id}",
+    )
+    worker = ValkeyWorker(cfg)
+
+    assert worker._heartbeat_key == f"hb:svc:{worker.instance_id}"
+    assert worker._task_stream_name == "stream:svc"
+    assert worker._task_group_name == "group:svc"
+    assert worker._consumer_name == f"consumer:svc:{worker.instance_id}"
 
 
 def test_auto_tune_derives_concurrency_from_cpu_count():

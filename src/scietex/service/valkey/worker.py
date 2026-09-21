@@ -179,10 +179,10 @@ class ValkeyWorker(TransportWorker):
         # Client-construction seam (AR-074): connect() awaits this factory with
         # the resolved client config; defaults to the real GlideClient.create.
         self._client_factory: ClientFactory = factory
-        self._heartbeat_key = f"scietex:{self.service_name}:{self.instance_id}:status"
-        self._task_stream_name = f"scietex:{self.service_name}:tasks"
-        self._task_group_name = f"scietex:{self.service_name}:task_group"
-        self._consumer_name = f"scietex:{self.service_name}:{self.instance_id}"
+        self._heartbeat_key = cfg.heartbeat_key.format(service=self.service_name, instance_id=self.instance_id)
+        self._task_stream_name = cfg.task_stream_name.format(service=self.service_name)
+        self._task_group_name = cfg.task_group_name.format(service=self.service_name)
+        self._consumer_name = cfg.consumer_name.format(service=self.service_name, instance_id=self.instance_id)
         # No registry Set: the heartbeat keys are the enumeration index. A
         # client SCANs ``scietex:{service}:*:status`` and reads each entry's
         # ``ttl``, so a crashed replica's key expires on its own instead of

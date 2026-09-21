@@ -121,6 +121,10 @@ is created.
 - `ValkeyWorkerConfig.task_lease_ttl: int | None = None` — lease lifetime in seconds, bounds `[1, 86400]`; `None` derives `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))`
 - `ValkeyWorkerConfig.log_stream_name` defaults to `scietex:{service}:log`, with `{service}` substituted with `service_name` at construction — a **breaking change** from the previous shared `scietex:log`; explicitly setting `log_stream_name="scietex:log"` pins the old shared stream
 - `ValkeyWorkerConfig.config_key` defaults to `scietex:{service}:config` — the durable desired-state key for remote config, `{service}` substituted at construction
+- `ValkeyWorkerConfig.heartbeat_key` defaults to `scietex:{service}:{instance_id}:status` — the worker heartbeat key, `{service}` and `{instance_id}` substituted at construction; a custom template must keep the `:status` suffix and the `scietex:{service}:` prefix, or the worker-registry `SCAN` (`scietex:{service}:*:status`) will not find it
+- `ValkeyWorkerConfig.task_stream_name` defaults to `scietex:{service}:tasks` — the task stream, `{service}` substituted at construction
+- `ValkeyWorkerConfig.task_group_name` defaults to `scietex:{service}:task_group` — the consumer group, `{service}` substituted at construction
+- `ValkeyWorkerConfig.consumer_name` defaults to `scietex:{service}:{instance_id}` — the consumer identifier, `{service}` and `{instance_id}` substituted at construction
 - Install extras: `uv sync --extra valkey` or `pip install "scietex.service[valkey]"`
 
 **MQTT config:**

@@ -295,6 +295,18 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
             control stream. ``{service}`` is replaced.
         control_stream_maxlen: Maximum number of entries retained per control
             stream via ``XADD ... MAXLEN ~ N`` (``[1, 100000]``).
+        heartbeat_key: Name of the Valkey key holding this worker's heartbeat.
+            Both ``{service}`` and ``{instance_id}`` are replaced. The
+            worker-registry discovery path SCANs ``scietex:{service}:*:status``,
+            so a custom template must keep the ``:status`` suffix and the
+            ``scietex:{service}:`` prefix, or the worker becomes invisible to
+            watchers.
+        task_stream_name: Name of the Valkey stream used for task entries.
+            ``{service}`` is replaced with the service name.
+        task_group_name: Name of the consumer group used for task fetching.
+            ``{service}`` is replaced with the service name.
+        consumer_name: Consumer identifier within the task group. Both
+            ``{service}`` and ``{instance_id}`` are replaced.
     """
 
     valkey_config: "ValkeyConfig | None" = None
@@ -307,6 +319,10 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     control_stream_name: str = "scietex:{service}:control:{instance_id}"
     control_broadcast_stream_name: str = "scietex:{service}:control"
     control_stream_maxlen: int = DEFAULT_CONTROL_STREAM_MAXLEN
+    heartbeat_key: str = "scietex:{service}:{instance_id}:status"
+    task_stream_name: str = "scietex:{service}:tasks"
+    task_group_name: str = "scietex:{service}:task_group"
+    consumer_name: str = "scietex:{service}:{instance_id}"
 
     def __post_init__(self) -> None:
         super().__post_init__()

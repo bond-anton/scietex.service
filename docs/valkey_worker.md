@@ -83,18 +83,21 @@ shared across all replicas of a service; worker-scoped keys are unique per
 
 | Resource | Key Pattern | Scope |
 |---|---|---|
-| Task stream | `scietex:{service_name}:tasks` | service-scoped |
-| Consumer group | `scietex:{service_name}:task_group` | service-scoped |
-| Consumer name | `scietex:{service_name}:{instance_id}` | worker-scoped |
+| Task stream | `scietex:{service_name}:tasks` (configurable via `task_stream_name`) | service-scoped |
+| Consumer group | `scietex:{service_name}:task_group` (configurable via `task_group_name`) | service-scoped |
+| Consumer name | `scietex:{service_name}:{instance_id}` (configurable via `consumer_name`) | worker-scoped |
 | Task tracking key | `scietex:{service_name}:task:{task_id}` | per task |
 | Task lease key | `scietex:{service_name}:lease:{task_id}` | per task |
-| Heartbeat key | `scietex:{service_name}:{instance_id}:status` | worker-scoped |
+| Heartbeat key | `scietex:{service_name}:{instance_id}:status` (configurable via `heartbeat_key`) | worker-scoped |
 | Log stream | `scietex:{service_name}:log` (configurable via `log_stream_name`) | service-scoped |
 
 The heartbeat key is the worker's liveness record and carries its own expiry
 (`active_ttl` while running, `inactive_ttl` after a graceful shutdown). There is
 no separate registry Set: a client enumerates the fleet by `SCAN`-ing
-`scietex:{service_name}:*:status` (see {doc}`worker_registry`).
+`scietex:{service_name}:*:status` (see {doc}`worker_registry`). Because that
+SCAN pattern is not configurable, a custom `heartbeat_key` must keep the
+`:status` suffix and the `scietex:{service}:` prefix, or the worker becomes
+invisible to watchers.
 
 ## Constants
 
@@ -214,6 +217,10 @@ logging-handler construction, connectivity signal) is preserved.
 | `claim_min_idle_ms` | `None` (default `1000`) | Outer idle floor (ms) before `XAUTOCLAIM` considers reclaiming a pending entry during startup recovery; the per-entry lease is the authoritative liveness check (see [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)) |
 | `task_tracking_ttl` | `None` (default `86400`) | Server-side TTL in seconds for task tracking records; `None` resolves to `DEFAULT_TASK_TRACKING_TTL` (`86400` s / 24 h). Valid range `[1, 2592000]` |
 | `task_lease_ttl` | `None` (derived) | Server-side TTL in seconds for per-entry leases; `None` derives `max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))`. Valid range `[1, 86400]` |
+| `heartbeat_key` | `"scietex:{service}:{instance_id}:status"` | Name of the Valkey key holding this worker's heartbeat; `{service}` and `{instance_id}` are substituted at construction. Must keep the `:status` suffix and `scietex:{service}:` prefix, or the worker-registry SCAN (`scietex:{service}:*:status`) will not find it |
+| `task_stream_name` | `"scietex:{service}:tasks"` | Name of the Valkey stream used for task entries; `{service}` is substituted with `service_name` at construction |
+| `task_group_name` | `"scietex:{service}:task_group"` | Name of the consumer group used for task fetching; `{service}` is substituted with `service_name` at construction |
+| `consumer_name` | `"scietex:{service}:{instance_id}"` | Consumer identifier within the task group; `{service}` and `{instance_id}` are substituted at construction |
 
 All `TaskProcessorConfig` and `WorkerConfig` fields are inherited.
 Configuration is immutable: values are fixed at construction, and
