@@ -12,6 +12,7 @@ task_processor
 valkey_worker
 mqtt_worker
 worker_registry
+control_plane
 remote_config
 task_handler
 ```

@@ -82,11 +82,15 @@ location read at startup and on `config:apply`; commands travel as tasks.
 Key names use transport-native separators, matching the existing scheme:
 colon-separated for Valkey, slash-separated for MQTT.
 
-> **Note:** the three `config:*` commands are single-consumer tasks. A command
-> affects only the worker that reads it — it does not fan out across a
-> multi-worker fleet. The durable desired state is shared, so the other workers
-> pick up a `config:apply`/`config:store` change on their own next
-> startup/reload. Cross-worker broadcast is planned for v5.0.0.
+> **Note:** the three `config:*` commands are addressed by channel. A command
+> published to the **broadcast** control channel (`scietex:{service}:control:broadcast`
+> / `scietex/{service}/control`) reaches every worker; a command published to a
+> worker's **directed** control channel reaches only that worker. Submitters
+> address commands through the `ControlPublisher` protocol
+> (`direct`/`broadcast`/`resolve_owner`). The durable desired state is shared, so
+> a worker that misses a broadcast still converges on its own next
+> startup/reload. Control is never retried, and a command published while a
+> worker is down is skipped rather than replayed.
 
 ### Read semantics (`ConfigSource.load`)
 

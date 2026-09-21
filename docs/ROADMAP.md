@@ -52,7 +52,24 @@ every worker). The dedicated control stream also removes the control/data
 head-of-line residual that AR-108's intra-process priority lane leaves at the
 transport level.
 
-**Status: planned** (not implemented). Reference: AR-123.
+**Delivered (v5.0.0):** two control channels per transport — a directed one per
+worker (`scietex:{service}:{instance_id}:control` /
+`scietex/{service}/workers/{instance_id}/control`) and a broadcast one per
+service (`scietex:{service}:control:broadcast` / `scietex/{service}/control`).
+Control is read with plain `XREAD` + a `$`-seeded in-memory cursor (no consumer
+groups, no PEL, no lease), so a command published while a worker is down is
+skipped rather than replayed, and control is never retried. Retention mirrors
+the heartbeat: every control `XADD` uses `MAXLEN ~ control_stream_maxlen`, and
+the directed stream carries an `active_ttl` refreshed on the heartbeat tick, so
+a departed worker's directed stream expires on its own. The producer surface is
+the `ControlPublisher` protocol (`direct`/`broadcast`/`resolve_owner`),
+implemented as `ValkeyControlPublisher`/`MqttControlPublisher`; `resolve_owner`
+reads the Valkey tracking record's `TaskStatus.instance_id` or the MQTT retained
+owner marker `scietex/{service}/tasks/{task_id}/owner`. The MQTT inbox is
+partitioned into data and control stores so a saturated data lane cannot delay a
+control command. The single-worker scope boundary (D0) is lifted.
+
+**Status: implemented** (v5.0.0). Reference: AR-123.
 
 ## v5.0.0 — Worker registry and heartbeat TTL
 
