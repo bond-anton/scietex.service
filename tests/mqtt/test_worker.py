@@ -187,6 +187,15 @@ def test_construction_is_side_effect_free(monkeypatch, tmp_path):
     assert not (tmp_path / "mqtt.yml").exists()
 
 
+def test_control_topics_resolve_placeholders(tmp_path):
+    """The directed control topic substitutes both {service} and {instance_id};
+    the broadcast topic substitutes only {service}."""
+    worker = _make_worker(tmp_path)
+
+    assert worker._control_topic == f"scietex/svc/workers/{worker.instance_id}/control"
+    assert worker._control_broadcast_topic == "scietex/svc/control"
+
+
 @pytest.mark.asyncio
 async def test_initialize_refuses_when_file_inbox_unbuildable(tmp_path):
     """inbox_backend="file" with an unbuildable path (an existing file) must

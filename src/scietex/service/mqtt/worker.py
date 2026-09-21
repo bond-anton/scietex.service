@@ -169,6 +169,10 @@ class MqttWorker(TransportWorker):
                 prefix for the per-task status/progress topics (design §13.2).
             _config_topic (str): Resolved retained desired-state topic for
                 remote config (design §2).
+            _control_topic (str): Resolved directed control topic for this
+                instance, embedding both the service name and instance id.
+            _control_broadcast_topic (str): Resolved service-scoped broadcast
+                control topic.
             _inbox (MqttInbox | None): Durable inbox, or ``None`` for the
                 ``inbox_backend="memory"``/``"none"`` at-most-once opt-out.
         """
@@ -201,6 +205,10 @@ class MqttWorker(TransportWorker):
         # like task_topic. The source records snapshots from this topic and is
         # attached to the processor's config-manager source seam below.
         self._config_topic = cfg.config_topic.format(service=self.service_name)
+        # The directed control topic embeds the instance id, so the topic is the
+        # worker's address; the broadcast topic stays service-scoped (AR-123).
+        self._control_topic = cfg.control_topic.format(service=self.service_name, instance_id=self.instance_id)
+        self._control_broadcast_topic = cfg.control_broadcast_topic.format(service=self.service_name)
         # The concrete reference is retained for MQTT-native lifecycle calls
         # (record on message delivery, reset at the run boundary) and for the
         # bounded startup wait in _read_remote_outcome; those are outside the

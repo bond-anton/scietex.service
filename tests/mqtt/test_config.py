@@ -27,6 +27,15 @@ def test_worker_config_inbox_ttl_default():
     assert MqttWorkerConfig().inbox_ttl == 86400
 
 
+def test_worker_config_control_defaults():
+    """The four control-plane fields default to their documented values."""
+    cfg = MqttWorkerConfig()
+    assert cfg.control_topic == "scietex/{service}/workers/{instance_id}/control"
+    assert cfg.control_broadcast_topic == "scietex/{service}/control"
+    assert cfg.control_qos == 1
+    assert cfg.control_inbox_path is None
+
+
 @pytest.mark.parametrize("status_ttl", [None, 1, 2592000])
 def test_worker_config_status_ttl_bounds_accept(status_ttl):
     """status_ttl=None and the [1, 2592000] bounds construct successfully."""
@@ -50,6 +59,8 @@ def test_worker_config_inbox_ttl_bounds_accept(inbox_ttl):
         ("status_ttl", 2592001),
         ("inbox_ttl", 0),
         ("inbox_ttl", 2592001),
+        ("control_qos", 3),
+        ("control_qos", -1),
     ],
 )
 def test_worker_config_status_fields_out_of_range_raises(field_name, value):

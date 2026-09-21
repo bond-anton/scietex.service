@@ -36,6 +36,8 @@ MIN_CONFIG_QOS: int = 0
 MAX_CONFIG_QOS: int = 2
 MIN_CONFIG_TTL: int = 1
 MAX_CONFIG_TTL: int = 30 * 24 * 3600
+MIN_CONTROL_QOS: int = 0
+MAX_CONTROL_QOS: int = 2
 
 
 class MqttConfig(msgspec.Struct, frozen=True):
@@ -132,6 +134,14 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         config_ttl: MQTT 5 message-expiry interval in seconds applied to the
             retained config publish (``[1, 2592000]``). ``None`` disables
             expiry.
+        control_topic: Per-worker directed control topic. Both ``{service}`` and
+            ``{instance_id}`` are replaced.
+        control_broadcast_topic: Service-scoped broadcast control topic.
+            ``{service}`` is replaced.
+        control_qos: QoS level for control-topic publishes and subscriptions
+            (``[0, 2]``).
+        control_inbox_path: Optional path to the control inbox store. ``None``
+            derives it from the config directory (a sibling of the data inbox).
     """
 
     mqtt_config: "MqttConfig | None" = None
@@ -153,6 +163,10 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     config_topic: str = "scietex/{service}/config"
     config_qos: int = 1
     config_ttl: int | None = 86400
+    control_topic: str = "scietex/{service}/workers/{instance_id}/control"
+    control_broadcast_topic: str = "scietex/{service}/control"
+    control_qos: int = 1
+    control_inbox_path: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -176,6 +190,7 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         )
         validate_range(self.config_qos, "config_qos", minimum=MIN_CONFIG_QOS, maximum=MAX_CONFIG_QOS)
         validate_range(self.config_ttl, "config_ttl", minimum=MIN_CONFIG_TTL, maximum=MAX_CONFIG_TTL)
+        validate_range(self.control_qos, "control_qos", minimum=MIN_CONTROL_QOS, maximum=MAX_CONTROL_QOS)
         if self.mqtt_config is not None:
             validate_range(
                 self.mqtt_config.port,
