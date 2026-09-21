@@ -107,6 +107,7 @@ class MqttTransport(RecoverableTransport):
         health: TransportHealth,
         publish: MqttPublish,
         logger: logging.Logger,
+        instance_id: str,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._config = config
@@ -127,6 +128,7 @@ class MqttTransport(RecoverableTransport):
         self._health = health
         self._publish = publish
         self._logger = logger
+        self._instance_id = instance_id
         self._clock = clock
         self._encoder = msgspec.msgpack.Encoder()
 
@@ -227,7 +229,9 @@ class MqttTransport(RecoverableTransport):
                     continue  # control lane full; retry next poll
                 self._enqueued.add(task_id)
                 await self._publish_status(
-                    build_running_status(task_id, self._service_name, task_data, status="queued")
+                    build_running_status(
+                        task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id
+                    )
                 )
                 enqueued = True
                 continue
@@ -238,7 +242,11 @@ class MqttTransport(RecoverableTransport):
                 data_blocked = True
                 continue
             self._enqueued.add(task_id)
-            await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
+            await self._publish_status(
+                build_running_status(
+                    task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id
+                )
+            )
             enqueued = True
         return enqueued
 
@@ -272,7 +280,9 @@ class MqttTransport(RecoverableTransport):
                     continue
                 self._enqueued.add(task_id)
                 await self._publish_status(
-                    build_running_status(task_id, self._service_name, task_data, status="queued")
+                    build_running_status(
+                        task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id
+                    )
                 )
                 enqueued = True
                 continue
@@ -283,7 +293,11 @@ class MqttTransport(RecoverableTransport):
                 data_blocked = True
                 continue
             self._enqueued.add(task_id)
-            await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
+            await self._publish_status(
+                build_running_status(
+                    task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id
+                )
+            )
             enqueued = True
         return (not data_blocked), enqueued
 
@@ -307,7 +321,9 @@ class MqttTransport(RecoverableTransport):
             self._config.task_qos,
         )
         self._progress.pop(task_id, None)
-        await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
+        await self._publish_status(
+            build_running_status(task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id)
+        )
 
     async def on_started(self, task_data: TaskData) -> None:
         """Record that a task began processing (the inbox entry is in-flight).
@@ -318,7 +334,9 @@ class MqttTransport(RecoverableTransport):
         task_id = task_data_id(task_data)
         await self._inbox.mark_in_flight(task_id)
         self._progress.pop(task_id, None)
-        await self._publish_status(build_running_status(task_id, self._service_name, task_data))
+        await self._publish_status(
+            build_running_status(task_id, self._service_name, task_data, instance_id=self._instance_id)
+        )
 
     async def ack(
         self,
@@ -356,7 +374,9 @@ class MqttTransport(RecoverableTransport):
         if throttle is not None and throttle.pending is not None:
             await self._publish_progress(task_id, throttle.pending)
         await self._publish_status(
-            build_terminal_status(task_id, self._service_name, task_data, task_result, cancel_reason)
+            build_terminal_status(
+                task_id, self._service_name, task_data, task_result, cancel_reason, instance_id=self._instance_id
+            )
         )
         self._progress.pop(task_id, None)
         # Mark terminal (persist the tombstone) before releasing the in-process

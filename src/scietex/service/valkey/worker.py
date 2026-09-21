@@ -196,6 +196,7 @@ class ValkeyWorker(TransportWorker):
             tracking_ttl=cfg.task_tracking_ttl if cfg.task_tracking_ttl is not None else DEFAULT_TASK_TRACKING_TTL,
             client_provider=lambda: self._client,
             logger=self.logger,
+            instance_id=self.instance_id,
             report_failure=self._health.report_failure,
         )
         self.__encoder = msgspec.msgpack.Encoder()

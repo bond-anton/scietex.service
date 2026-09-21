@@ -244,6 +244,7 @@ class MqttWorker(TransportWorker):
             health=self._health,
             publish=self._publish,
             logger=self.logger,
+            instance_id=self.instance_id,
             clock=time.monotonic,
         )
         self._transport = self._mqtt_transport

@@ -44,12 +44,14 @@ class TaskStatusStore:
         tracking_ttl: int,
         client_provider: ClientProvider,
         logger: logging.Logger,
+        instance_id: str,
         report_failure: Callable[[BaseException], None] | None = None,
     ) -> None:
         self._service_name = service_name
         self._tracking_ttl = tracking_ttl
         self._client_provider = client_provider
         self._logger = logger
+        self._instance_id = instance_id
         self._report_failure = report_failure
         self._encoder = msgspec.msgpack.Encoder()
 
@@ -79,7 +81,7 @@ class TaskStatusStore:
 
     async def record_running(self, task_id: UUID, task_data: TaskData) -> None:
         """Publish a ``running`` tracking record when a task begins."""
-        await self._write(build_running_status(task_id, self._service_name, task_data))
+        await self._write(build_running_status(task_id, self._service_name, task_data, instance_id=self._instance_id))
 
     async def record_terminal(
         self,
@@ -93,7 +95,11 @@ class TaskStatusStore:
         The field-population matrix is shared with the MQTT status publisher;
         see :func:`scietex.service.task_status.build_terminal_status` (AR-114).
         """
-        await self._write(build_terminal_status(task_id, self._service_name, task_data, task_result, cancel_reason))
+        await self._write(
+            build_terminal_status(
+                task_id, self._service_name, task_data, task_result, cancel_reason, instance_id=self._instance_id
+            )
+        )
 
     async def update_progress(self, task_id: UUID, value: float) -> None:
         """Update the tracking record's progress for a running task.

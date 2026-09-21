@@ -173,6 +173,9 @@ class TaskStatus(msgspec.Struct, frozen=True):
     finishes. A deliberate ``cancel_task`` request produces ``cancelled`` and
     embeds the original :class:`TaskData` in ``data`` so an external process
     can read it, modify it, and resubmit under a new task id.
+
+    ``instance_id`` is the owning worker's instance id, empty when unknown
+    (e.g. a record built without an owner).
     """
 
     task_id: str
@@ -186,3 +189,4 @@ class TaskStatus(msgspec.Struct, frozen=True):
     error_code: str = ""
     created_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
+    instance_id: str = ""

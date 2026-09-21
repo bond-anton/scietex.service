@@ -172,6 +172,7 @@ def _transport(inbox) -> MqttTransport:
         health=_health(),
         publish=publish,
         logger=logging.getLogger(_LOGGER),
+        instance_id="worker-1",
     )
 
 

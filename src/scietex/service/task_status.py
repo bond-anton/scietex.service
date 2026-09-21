@@ -27,12 +27,14 @@ def build_running_status(
     *,
     status: _NonTerminalStatus = "running",
     now: datetime | None = None,
+    instance_id: str = "",
 ) -> TaskStatus:
     """Build the non-terminal record for a task that is queued or running.
 
     ``queued`` (accepted by the transport) and ``running`` (handler started)
     differ only in ``status``. A single timestamp stamps both ``created_at``
-    and ``updated_at`` so they are equal.
+    and ``updated_at`` so they are equal. ``instance_id`` records the owning
+    worker's instance id, empty when unknown.
     """
     now = now if now is not None else datetime.now(timezone.utc)
     return TaskStatus(
@@ -43,6 +45,7 @@ def build_running_status(
         progress=TaskProgress(),
         created_at=now,
         updated_at=now,
+        instance_id=instance_id,
     )
 
 
@@ -54,6 +57,7 @@ def build_terminal_status(
     cancel_reason: CancelReason | None = None,
     *,
     now: datetime | None = None,
+    instance_id: str = "",
 ) -> TaskStatus:
     """Build the terminal record for a task that finished or was cancelled.
 
@@ -66,7 +70,8 @@ def build_terminal_status(
       ``error``/``error_code``.
 
     ``task_data`` is ``None`` only when a caller exercises the ack path in
-    isolation; the task name then falls back to ``""``.
+    isolation; the task name then falls back to ``""``. ``instance_id`` records
+    the owning worker's instance id, empty when unknown.
     """
     now = now if now is not None else datetime.now(timezone.utc)
     task_name = task_data.task if task_data is not None else ""
@@ -82,6 +87,7 @@ def build_terminal_status(
             error="canceled",
             created_at=now,
             updated_at=now,
+            instance_id=instance_id,
         )
     success = task_result.status == "success"
     return TaskStatus(
@@ -95,4 +101,5 @@ def build_terminal_status(
         error_code=task_result.error_code,
         created_at=now,
         updated_at=now,
+        instance_id=instance_id,
     )

@@ -22,7 +22,20 @@ TASK_ID = UUID("11111111-1111-1111-1111-111111111111")
 # The fields both transports must populate identically for a terminal task
 # (AR-114). ``created_at``/``updated_at`` are stamped per builder call, so the
 # cross-transport comparison excludes them (each is checked separately below).
-_TERMINAL_FIELDS = ("task_id", "service", "task", "status", "progress", "result", "data", "error", "error_code")
+# ``instance_id`` is the transport's own identity, not a shared builder field,
+# so the equivalence assertion excludes it and checks it per-transport instead.
+_TERMINAL_FIELDS = (
+    "task_id",
+    "service",
+    "task",
+    "status",
+    "progress",
+    "result",
+    "data",
+    "error",
+    "error_code",
+    "instance_id",
+)
 
 _TERMINAL_CASES = [
     (TaskResult(status="success", payload=b"done"), None),
@@ -172,6 +185,7 @@ def _mqtt_transport():
         health=_health(),
         publish=record,
         logger=logging.getLogger("test_task_status"),
+        instance_id="mqtt-1",
     )
     return transport, published
 
@@ -194,6 +208,7 @@ async def test_transports_produce_equivalent_terminal_status(task_result, cancel
         tracking_ttl=3600,
         client_provider=lambda: client,
         logger=logging.getLogger("test_task_status"),
+        instance_id="valkey-1",
     )
     await store.record_terminal(TASK_ID, task_data, task_result, cancel_reason)
     assert len(client.sets) == 1
@@ -210,4 +225,8 @@ async def test_transports_produce_equivalent_terminal_status(task_result, cancel
     assert valkey_status.created_at == valkey_status.updated_at
     assert mqtt_status.created_at == mqtt_status.updated_at
 
-    assert _terminal_fields(valkey_status) == _terminal_fields(mqtt_status)
+    # instance_id is the transport's own identity, so it is asserted
+    # per-transport and excluded from the cross-transport equivalence.
+    assert valkey_status.instance_id == "valkey-1"
+    assert mqtt_status.instance_id == "mqtt-1"
+    assert _terminal_fields(valkey_status)[:-1] == _terminal_fields(mqtt_status)[:-1]

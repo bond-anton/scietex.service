@@ -157,6 +157,7 @@ def _transport(
         health=health if health is not None else _health(),
         publish=publish if publish is not None else record,
         logger=logging.getLogger(_LOGGER),
+        instance_id="worker-1",
         clock=clock if clock is not None else time.monotonic,
     )
     return transport, inbox, published
