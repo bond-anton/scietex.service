@@ -45,25 +45,6 @@ class MqttControlPublisher:
     Constructed with an already-connected ``aiomqtt.Client`` and the same
     control-topic names and status-topic prefix the workers use, so a submitter
     can address commands from any process that can reach the broker.
-
-    Args:
-        client: The connected ``aiomqtt.Client`` used for all commands. Passed
-            by reference; the publisher never owns or closes it.
-        control_topic: The per-worker control topic template. It carries an
-            ``{instance_id}`` placeholder formatted per ``direct`` call and has
-            ``{service}`` already substituted (it is the resolved
-            ``MqttWorkerConfig.control_topic``).
-        control_broadcast_topic: The shared broadcast topic, with ``{service}``
-            already substituted.
-        control_qos: QoS for control publishes.
-        status_topic_prefix: The resolved ``{service}``-substituted status
-            prefix (``scietex/{service}/tasks``) the worker's owner markers
-            nest under, so ``resolve_owner`` subscribes to the same topic the
-            transport publishes.
-        resolve_timeout: Seconds ``resolve_owner`` waits for the retained owner
-            marker before returning ``None``. Defaults to
-            :data:`DEFAULT_OWNER_RESOLVE_TIMEOUT`.
-        logger: Logger for diagnostics.
     """
 
     def __init__(
@@ -77,6 +58,27 @@ class MqttControlPublisher:
         logger: logging.Logger,
         resolve_timeout: float = DEFAULT_OWNER_RESOLVE_TIMEOUT,
     ) -> None:
+        """Initialize the publisher.
+
+        Args:
+            client: The connected ``aiomqtt.Client`` used for all commands.
+                Passed by reference; the publisher never owns or closes it.
+            control_topic: The per-worker control topic template. It carries an
+                ``{instance_id}`` placeholder formatted per ``direct`` call and
+                has ``{service}`` already substituted (it is the resolved
+                ``MqttWorkerConfig.control_topic``).
+            control_broadcast_topic: The shared broadcast topic, with
+                ``{service}`` already substituted.
+            control_qos: QoS for control publishes.
+            status_topic_prefix: The resolved ``{service}``-substituted status
+                prefix (``scietex/{service}/tasks``) the worker's owner markers
+                nest under, so ``resolve_owner`` subscribes to the same topic
+                the transport publishes.
+            resolve_timeout: Seconds ``resolve_owner`` waits for the retained
+                owner marker before returning ``None``. Defaults to
+                :data:`DEFAULT_OWNER_RESOLVE_TIMEOUT`.
+            logger: Logger for diagnostics.
+        """
         self._client = client
         self._control_topic = control_topic
         self._control_broadcast_topic = control_broadcast_topic

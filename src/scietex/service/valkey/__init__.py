@@ -21,6 +21,9 @@ Public exports:
     - :class:`ValkeyTlsAdvancedConfiguration` — TLS settings.
     - :class:`ValkeyConfigSource` — Durable-key ``ConfigSource`` (GET/SET
       ``scietex:{service}:config``).
+    - :class:`ValkeyControlPublisher` — Producer surface for Valkey control
+      commands (``direct``/``broadcast``/``resolve_owner``).
+    - :class:`PollingBackend` — Valkey polling backend for the worker watcher.
     - :class:`PurgeResult` — Outcome of :func:`purge_task_stream` (entries
       purged and any errors).
     - :func:`purge_task_stream` — Standalone task-stream purge utility.

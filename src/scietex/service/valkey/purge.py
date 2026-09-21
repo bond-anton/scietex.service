@@ -89,9 +89,6 @@ async def _purge_group_entries(
     Reads entries via ``XREADGROUP`` from ``start``, acknowledges them with
     ``XACK`` so they leave the pending list, then deletes them with ``XDEL``.
     Loops until ``XREADGROUP`` returns no more entries.
-
-    Returns:
-        The number of entries purged.
     """
     purged = 0
     while True:
@@ -108,10 +105,8 @@ async def _purge_stream_entries(client: GlideClient, stream_name: str) -> int:
     """Delete every remaining entry in a task stream.
 
     Reads all stream entries via ``XREAD`` (independent of the consumer group)
-    and deletes them with ``XDEL``. Loops until ``XREAD`` returns no more entries.
-
-    Returns:
-        The number of entries purged.
+    and deletes them with ``XDEL``. Loops until ``XREAD`` returns no more
+    entries.
     """
     purged = 0
     while True:

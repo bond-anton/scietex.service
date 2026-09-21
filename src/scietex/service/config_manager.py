@@ -1,19 +1,4 @@
-"""Remote-configuration lifecycle owner: reloader, local file, and source (AR-105).
-
-Owns the :class:`~scietex.service.config_reload.ConfigReloader`, the local
-``config.yml`` path plus its reads and writes, the attached
-:class:`~scietex.service.config_reload.ConfigSource`, and the three ``config:*``
-handler callbacks. ``TaskProcessor`` composes one instance and delegates its
-``config_revision``/``config_hash``/``config_source``/``register_config_settings``
-surface to it; the transport workers reach it through ``attach_source``,
-``reload_remote``, and ``apply_envelope`` instead of poking the reloader or the
-source attribute directly.
-
-Like :class:`~scietex.service.config_reload.ConfigReloader`, this module imports
-no processor type and no transport package: the reloader calls back through
-injected callables, and a transport only implements the
-:class:`~scietex.service.config_reload.ConfigSource` protocol.
-"""
+"""Remote-configuration lifecycle owner: reloader, local file, and source."""
 
 import logging
 from collections.abc import Callable
@@ -68,6 +53,25 @@ class ConfigManager:
         declarative: Callable[[], DeclarativeSettings] | None = None,
         apply_declarative: Callable[[DeclarativeSettings], list[str]] | None = None,
     ) -> None:
+        """Initialize the manager.
+
+        Args:
+            conf_dir: Directory holding the local ``config_file`` snapshot.
+            config_file: Filename of the local reloadable snapshot, resolved
+                under ``conf_dir``.
+            apply: Callback that validates and swaps the core settings.
+            current: Callback returning the current effective core settings.
+            restart_required: Callback returning the restart-required field
+                names.
+            logger: Logger for configuration diagnostics.
+            signing_key: Optional HMAC key; ``None`` disables signature
+                enforcement.
+            enabled: Master switch for remote config (default ``False``).
+            declarative: Optional callback returning the declarative core
+                settings.
+            apply_declarative: Optional callback that validates and swaps the
+                declarative core settings.
+        """
         self._conf_dir = conf_dir
         self._config_file = config_file
         self._logger = logger

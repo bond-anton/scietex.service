@@ -31,7 +31,7 @@ __all__ = ["Heartbeat"]
 class Heartbeat(msgspec.Struct, frozen=True):
     """Worker liveness marker published by both broker-backed workers.
 
-    Attributes:
+    Args:
         service: Name of the publishing service.
         instance_id: Unique identifier of the worker instance.
         status: Current worker status — ``"active"`` or ``"inactive"``.

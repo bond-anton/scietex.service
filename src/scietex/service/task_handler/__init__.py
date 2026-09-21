@@ -1,14 +1,4 @@
-"""Task handler subsystem for ``scietex.service``.
-
-Provides the abstract ``TaskHandler`` base class, typed schemas
-(``TaskData``, ``TaskResult``, ``TaskTimeout``, ``TaskStatus``,
-``TaskEnvelope``) that define the contract for processing async tasks in the
-service, an in-memory ``TaskTracker`` runtime handle, the built-in
-``CancelTaskHandler`` for the ``task:cancel`` task name, the built-in
-``WorkerControlHandler`` for the ``worker:*`` task names, and the versioned
-transport wire helpers
-(``encode_task_envelope``/``decode_task_envelope``).
-"""
+"""Task handler subsystem: base class, schemas, built-in handlers, and wire helpers."""
 
 from .basic import TaskHandler
 from .cancel import (

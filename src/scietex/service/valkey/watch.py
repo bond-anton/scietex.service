@@ -28,20 +28,28 @@ _SCAN_COUNT: int = 100
 class PollingBackend(WatchBackend):
     """Feeds a watcher by SCAN-ing the Valkey status keys.
 
-    Args:
-        client: A connected ``GlideClient``.
-        service_name: The service whose workers to watch; scopes the SCAN
-            pattern to ``scietex:{service}:*:status``.
+    The SCAN pattern ``scietex:{service}:*:status`` is a fixed enumeration
+    contract, not a configurable knob: it is the discovery path every watcher
+    uses to find live workers, so the ``heartbeat_key`` template must keep the
+    ``:status`` suffix and the ``scietex:{service}:`` prefix or a worker becomes
+    invisible to this backend.
     """
 
     def __init__(self, client: GlideClient, service_name: str) -> None:
+        """Initialize the backend.
+
+        Args:
+            client: A connected ``GlideClient``.
+            service_name: The service whose workers to watch; scopes the SCAN
+                pattern to ``scietex:{service}:*:status``.
+        """
         self._client = client
         self._pattern = f"scietex:{service_name}:*:status"
 
     async def poll(self) -> list[Heartbeat]:
         """SCAN the status keys and return every decodable heartbeat.
 
-        A key that expires between the SCAN and the ``MGET`` is simply absent
+        A key that expires between the SCAN and the ``MGET`` is absent
         from the result, so a worker that died mid-poll is skipped rather than
         raising. Connection errors propagate to the watcher's caller, which
         owns the retry policy.

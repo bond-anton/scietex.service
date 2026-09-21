@@ -70,12 +70,7 @@ class WorkerLifecycle:
 
     @property
     def state(self) -> "ServiceStatus":
-        """Current lifecycle state of the service (read-only).
-
-        Returns:
-            The current ``ServiceStatus`` enum value indicating whether
-            the service is stopped, starting, running, or stopping.
-        """
+        """Current lifecycle state of the service (read-only)."""
         return self._state
 
     def transition(self, new_state: "ServiceStatus") -> None:
@@ -119,10 +114,7 @@ class WorkerLifecycle:
     def start_time(self) -> datetime | None:
         """Timestamp when the service started running (read-only).
 
-        Returns:
-            The UTC ``datetime`` when the service transitioned to
-            ``RUNNING`` state, or ``None`` if the service has not
-            started or has been stopped.
+        UTC; ``None`` until the service has started and after it has been stopped.
         """
         return self._start_time
 
@@ -142,11 +134,6 @@ class WorkerLifecycle:
         Contains two events:
             - ``exit_requested``: Set when an exit is requested (e.g., via signal).
             - ``exit``: Set when the worker has fully stopped.
-
-        Returns:
-            A read-only mapping view of the internal events dictionary. The
-            ``asyncio.Event`` values remain mutable and may be awaited or
-            inspected, but the mapping itself cannot be modified.
         """
         return MappingProxyType(self._events)
 

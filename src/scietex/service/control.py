@@ -34,11 +34,19 @@ class ControlPublisher(Protocol):
     that worker's dedicated control channel); ``broadcast`` targets every
     worker; and ``resolve_owner`` maps a ``task_id`` to the ``instance_id`` of
     the worker that currently owns it, so a submitter can direct a
-    ``task:cancel`` to the right worker (design §3.4).
+    ``task:cancel`` to the right worker (design §3.4). A publish failure is
+    raised, never swallowed or retried: a silently dropped command is a
+    silently scoped one.
     """
 
-    async def direct(self, instance_id: str, task_data: TaskData) -> None: ...
+    async def direct(self, instance_id: str, task_data: TaskData) -> None:
+        """Publish ``task_data`` to ``instance_id``'s dedicated control channel."""
+        ...
 
-    async def broadcast(self, task_data: TaskData) -> None: ...
+    async def broadcast(self, task_data: TaskData) -> None:
+        """Publish ``task_data`` to every worker's control channel."""
+        ...
 
-    async def resolve_owner(self, task_id: str) -> str | None: ...
+    async def resolve_owner(self, task_id: str) -> str | None:
+        """Return the ``instance_id`` of the worker owning ``task_id``, or ``None``."""
+        ...

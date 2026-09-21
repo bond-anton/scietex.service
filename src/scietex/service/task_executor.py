@@ -118,6 +118,7 @@ class TaskExecutor:
         return len(self._lifecycle.trackers()) - len(self._control_running)
 
     def _dispatch(self, task_data: TaskData, *, control: bool) -> None:
+        """Spawn a task's handle task and register its tracker on the lane."""
         task_id = task_data_id(task_data)
         task = asyncio.create_task(self._handle_task(task_data, control=control))
         self._lifecycle.register(
@@ -353,6 +354,7 @@ class TaskExecutor:
         return removed
 
     async def _drain_lane(self, queue: asyncio.Queue) -> None:
+        """Drain one lane, handing each queued task to the drain hook."""
         while not queue.empty():
             task_data = queue.get_nowait()
             await self._on_drain(task_data)

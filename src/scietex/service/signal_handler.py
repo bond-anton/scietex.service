@@ -2,18 +2,6 @@
 
 Provides ``SignalHandler``, which owns SIGINT/SIGTERM registration and
 removal for graceful shutdown, used by ``BasicWorker``.
-
-Ownership registry (AR-087)
----------------------------
-
-``SignalHandler`` maintains a module-level, last-worker-wins ownership
-registry keyed by the running event loop. When two workers share one event
-loop, the second worker's ``setup()`` becomes the new owner of the loop's
-SIGINT/SIGTERM handlers; the first worker's later ``remove()`` is then a
-no-op, so it cannot silently unregister the survivor's graceful-shutdown
-handlers. The registry is a ``weakref.WeakKeyDictionary`` so an entry
-disappears automatically when its loop is garbage-collected, without
-needing an explicit cleanup callback.
 """
 
 import asyncio
@@ -26,10 +14,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .basic_worker import BasicWorker
 
-# Last-worker-wins ownership registry. Keyed by the running loop so two
-# workers on one loop cooperate: only the most recent ``setup()`` owner may
-# remove the shared SIGINT/SIGTERM handlers. Weak keys mean a collected loop
-# drops its entry with no explicit cleanup.
+#: Last-worker-wins ownership registry. Keyed by the running loop so two
+#: workers on one loop cooperate: only the most recent ``setup()`` owner may
+#: remove the shared SIGINT/SIGTERM handlers. Weak keys mean a collected loop
+#: drops its entry with no explicit cleanup.
 _signal_owner: weakref.WeakKeyDictionary[AbstractEventLoop, "SignalHandler"] = weakref.WeakKeyDictionary()
 
 

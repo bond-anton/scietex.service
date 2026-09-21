@@ -29,14 +29,19 @@ _SUBSCRIBE_QOS: int = 1
 class SubscribeBackend(WatchBackend):
     """Feeds a watcher from an MQTT wildcard subscription.
 
-    Args:
-        client: A connected ``aiomqtt.Client``.
-        service_name: The service whose workers to watch; scopes the
-            subscription to ``scietex/{service}/workers/+``.
-        logger: Optional logger for delivery failures.
+    The subscription topic ``scietex/{service}/workers/+`` is a fixed discovery
+    contract matching the retained registry topic each worker publishes to.
     """
 
     def __init__(self, client: Client, service_name: str, *, logger: logging.Logger | None = None) -> None:
+        """Initialize the backend.
+
+        Args:
+            client: A connected ``aiomqtt.Client``.
+            service_name: The service whose workers to watch; scopes the
+                subscription to ``scietex/{service}/workers/+``.
+            logger: Optional logger for delivery failures.
+        """
         self._client = client
         self._topic = f"scietex/{service_name}/workers/+"
         self._logger = logger or logging.getLogger(__name__)
@@ -70,11 +75,7 @@ class SubscribeBackend(WatchBackend):
             self._logger.log(logging.WARNING, "Heartbeat subscription ended: %s", exc)
 
     async def poll(self) -> list[Heartbeat]:
-        """Return the heartbeats buffered since the previous call.
-
-        Returns:
-            The buffered heartbeats, and clears the buffer.
-        """
+        """Return the heartbeats buffered since the previous call, clearing the buffer."""
         buffered, self._buffer = self._buffer, []
         return buffered
 

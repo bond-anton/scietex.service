@@ -40,9 +40,7 @@ class ManagerRuntime:
     def failed_managers(self) -> list[str]:
         """Names of managers that exhausted their retry budget and gave up.
 
-        Returns:
-            List of manager names whose status is ``ManagerStatus.FAILED``.
-            The recorded exception for each is available in ``self.errors``.
+        The recorded exception for each is available in ``self.errors``.
         """
         return [name for name, status in self.statuses.items() if status is ManagerStatus.FAILED]
 
@@ -71,10 +69,6 @@ class ManagerRuntime:
         (so a legitimate re-decorated override or a shadow-then-
         ``register_manager`` is not reported). The warning is advisory: the
         yielded ``(name, manager)`` pairs and their order are unaffected.
-
-        Yields:
-            Tuple of (manager_name, manager) for each Manager recorded in
-            the class hierarchy, processed from most-derived to base classes.
         """
         mro = type(self.worker).__mro__
 
@@ -148,10 +142,6 @@ class ManagerRuntime:
         cancels itself (which previously deadlocked the restart). The
         finally block runs cleanup, marks the manager STOPPED (or FAILED if
         it gave up), and removes the task from internal tracking.
-
-        Args:
-            name: Human-readable name for the manager
-            manager: The ManagerDefinition whose method will be executed
         """
         self.worker.logger.info("[START] Manager %s started", name)
         # Mark RUNNING as soon as the loop starts; it stays RUNNING through
@@ -220,10 +210,6 @@ class ManagerRuntime:
     async def start_manager(self, name: str, manager: ManagerDefinition) -> None:
         """
         Start a named manager as an asyncio task.
-
-        Args:
-            name: Identifier for the manager
-            manager: The ManagerDefinition to execute
         """
         if self.statuses.get(name) in (ManagerStatus.STARTING, ManagerStatus.RUNNING):
             self.worker.logger.log(logging.DEBUG, "%s is already running", name)
@@ -242,13 +228,10 @@ class ManagerRuntime:
         """
         Stop a named manager task with a timeout.
 
-        Cancels the task and waits up to `manager_shutdown_timeout` seconds
+        Cancels the task and waits up to ``manager_shutdown_timeout`` seconds
         for it to complete. Removes the task from internal tracking on
         success; on timeout the still-running task stays tracked so a later
         start cannot double-spawn the same name.
-
-        Args:
-            name: Identifier of the manager to stop
         """
         if name not in self.tasks:
             self.worker.logger.log(logging.DEBUG, "%s is not running", name)

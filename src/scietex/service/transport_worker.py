@@ -43,6 +43,16 @@ class TransportWorker(TaskProcessor):
         *,
         client_factory: Callable[[Any], Awaitable[Any]],
     ) -> None:
+        """Initialize the worker with its broker client factory.
+
+        Args:
+            config: A :class:`~scietex.service.config.TaskProcessorConfig`
+                holding the worker's service identity and task-queue settings.
+                ``None`` uses the struct defaults.
+            client_factory: Async factory that builds the broker client for
+                :meth:`connect`; the concrete worker supplies its own (e.g.
+                ``GlideClient.create`` or an ``aiomqtt.Client`` builder).
+        """
         super().__init__(config)
         self._client_factory = client_factory
         self._client_lock: asyncio.Lock = asyncio.Lock()

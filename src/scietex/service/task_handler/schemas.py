@@ -1,10 +1,4 @@
-"""Typed schemas for the task handler subsystem.
-
-Provides frozen :class:`msgspec.Struct` definitions for task data,
-results, timeout configuration, and task status so handlers and
-processors can use consistent types for ``task_data`` and returned
-results.
-"""
+"""Typed task-data, result, timeout, and status schemas for task handlers."""
 
 from datetime import datetime, timezone
 from typing import Literal

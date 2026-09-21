@@ -9,34 +9,63 @@ import msgspec
 from .._validation import validate_range
 from ..config import TaskProcessorConfig
 
+#: Lower bound for the broker port.
 MIN_MQTT_PORT: int = 1
+#: Upper bound for the broker port.
 MAX_MQTT_PORT: int = 65535
+#: Lower bound (s) for the MQTT keep-alive interval.
 MIN_MQTT_KEEPALIVE: int = 0
+#: Upper bound (s) for the MQTT keep-alive interval.
 MAX_MQTT_KEEPALIVE: int = 65535
+#: Lower bound (s) for ``session_expiry_interval``.
 MIN_SESSION_EXPIRY_INTERVAL: int = 0
+#: Upper bound (s) for ``session_expiry_interval``.
 MAX_SESSION_EXPIRY_INTERVAL: int = 4294967295
+#: Lower bound for ``task_qos``.
 MIN_TASK_QOS: int = 0
+#: Upper bound for ``task_qos``.
 MAX_TASK_QOS: int = 2
+#: Lower bound for ``log_qos``.
 MIN_LOG_QOS: int = 0
+#: Upper bound for ``log_qos``.
 MAX_LOG_QOS: int = 2
+#: Lower bound (s) for ``inbox_ttl``.
 MIN_INBOX_TTL: int = 1
+#: Upper bound (s) for ``inbox_ttl`` (30 days).
 MAX_INBOX_TTL: int = 30 * 24 * 3600
+#: Default inbox-entry TTL in seconds (24 hours).
 DEFAULT_INBOX_TTL: int = 24 * 3600
+#: Lower bound for ``status_qos``.
 MIN_STATUS_QOS: int = 0
+#: Upper bound for ``status_qos``.
 MAX_STATUS_QOS: int = 2
+#: Lower bound (s) for ``status_ttl``.
 MIN_STATUS_TTL: int = 1
+#: Upper bound (s) for ``status_ttl`` (30 days).
 MAX_STATUS_TTL: int = 30 * 24 * 3600
+#: Lower bound for ``progress_qos``.
 MIN_PROGRESS_QOS: int = 0
+#: Upper bound for ``progress_qos``.
 MAX_PROGRESS_QOS: int = 2
+#: Lower bound (s) for ``progress_min_interval``.
 MIN_PROGRESS_MIN_INTERVAL: float = 0.0
+#: Upper bound (s) for ``progress_min_interval``.
 MAX_PROGRESS_MIN_INTERVAL: float = 3600.0
+#: Lower bound for ``progress_min_delta``.
 MIN_PROGRESS_MIN_DELTA: float = 0.0
+#: Upper bound for ``progress_min_delta``.
 MAX_PROGRESS_MIN_DELTA: float = 100.0
+#: Lower bound for ``config_qos``.
 MIN_CONFIG_QOS: int = 0
+#: Upper bound for ``config_qos``.
 MAX_CONFIG_QOS: int = 2
+#: Lower bound (s) for ``config_ttl``.
 MIN_CONFIG_TTL: int = 1
+#: Upper bound (s) for ``config_ttl`` (30 days).
 MAX_CONFIG_TTL: int = 30 * 24 * 3600
+#: Lower bound for ``control_qos``.
 MIN_CONTROL_QOS: int = 0
+#: Upper bound for ``control_qos``.
 MAX_CONTROL_QOS: int = 2
 
 

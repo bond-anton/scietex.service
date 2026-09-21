@@ -72,12 +72,6 @@ class Manager:
     ``BasicWorker`` iterates over all ``Manager`` instances recorded on the
     class and its MRO (via the ``MANAGER_REGISTRY_ATTR`` registry) and
     executes them as ``asyncio.Task`` objects with automatic restart on error.
-
-    Args:
-        name: Human-readable name for the manager. Required; must be a
-            non-empty string.
-        cleanup: Optional async callable that runs when the manager
-            stops. Receives the worker instance as its argument.
     """
 
     def __init__(
@@ -139,13 +133,6 @@ class Manager:
         Stores the method reference and returns ``self`` so the decorated
         method can be used as a ``Manager`` instance by
         ``ManagerRuntime.iter_manager_definitions()``.
-
-        Args:
-            method: The async method to wrap as a manager loop.
-
-        Returns:
-            ``self``, which can be inspected by the worker to discover
-            and execute the manager.
         """
         self.method = method
         return self
@@ -162,10 +149,6 @@ class Manager:
             instance: The worker instance the manager is accessed through,
                 or ``None`` when accessed on the class.
             owner: The owning class.
-
-        Returns:
-            The bound method when accessed through an instance, otherwise
-            ``self`` (the ``Manager`` instance).
         """
         if instance is None or self.method is None:
             return self
@@ -234,9 +217,6 @@ def register_manager(
             the same ``owner`` is replaced in place, preserving order. When
             ``False``, the manager is always appended, allowing duplicate names
             to be reported by the discovery-time collision warning.
-
-    Returns:
-        The registered ``Manager`` instance.
 
     Raises:
         TypeError: If ``owner`` is not a class.

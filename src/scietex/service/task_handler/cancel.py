@@ -1,10 +1,4 @@
-"""Built-in handler for the ``task:cancel`` task name.
-
-The handler is transport-agnostic: it decodes a :class:`CancelTaskRequest`
-from the task payload and delegates the actual cancellation to an async
-callback injected by the owning processor. The processor owns the running
-tasks and the queue, so the handler never reaches into processor internals.
-"""
+"""Built-in handler for the ``task:cancel`` task name."""
 
 from collections.abc import Awaitable, Callable
 from typing import ClassVar, Literal

@@ -1,11 +1,4 @@
-"""Built-in handlers for the ``config:*`` remote-configuration task names.
-
-Three handlers mirror the ``task:cancel`` control path: each decodes a
-request struct from the task payload and delegates the actual work to a
-callback injected by the owning processor. The processor owns the
-:class:`~scietex.service.config_reload.ConfigReloader` and the transport
-source, so the handlers never reach into processor internals.
-"""
+"""Built-in handlers for the ``config:*`` remote-configuration task names."""
 
 from collections.abc import Awaitable, Callable
 from typing import ClassVar, Literal

@@ -55,16 +55,16 @@ class LoggingLifecycle:
         """
         Start all async logging handlers that are not already running.
 
-        Iterates over the logger's handlers and calls start_logging() on each
-        AsyncLoggingHandler whose recorded status is not RUNNING. Statuses are
-        keyed by handler identity, not name/class name, so two unnamed handlers
-        of the same class each get their own entry (AR-119). Non-async handlers
-        have no start/stop lifecycle and are not tracked. Handlers are
-        restartable in place, so no replacement is needed. A handler that fails
-        to start (timeout or exception) is recorded as FAILED so it is retried
-        on the next start_handlers call. Handles timeouts and errors gracefully,
-        falling back to print statements if the logger is in an unrecoverable
-        state.
+        Iterates over the logger's handlers and calls ``start_logging()`` on
+        each ``AsyncLoggingHandler`` whose recorded status is not ``RUNNING``.
+        Statuses are keyed by handler identity, not name/class name, so two
+        unnamed handlers of the same class each get their own entry (AR-119).
+        Non-async handlers have no start/stop lifecycle and are not tracked.
+        Handlers are restartable in place, so no replacement is needed. A
+        handler that fails to start (timeout or exception) is recorded as
+        ``FAILED`` so it is retried on the next ``start_handlers`` call.
+        Handles timeouts and errors gracefully, falling back to print
+        statements if the logger is in an unrecoverable state.
         """
         for handler in list(self.worker.logger.handlers):
             if not isinstance(handler, AsyncLoggingHandler):
@@ -99,13 +99,13 @@ class LoggingLifecycle:
     async def shut_down_handlers(self) -> None:
         """Cleanly shut down all async logging handlers.
 
-        This will attempt to stop each `AsyncLoggingHandler` with a per-handler
-        timeout to avoid hanging shutdowns if a handler blocks. `stop_logging`
-        is idempotent in scietex.logging >= 1.0, so it is safe to call on every
-        handler regardless of its current state. Statuses are keyed by handler
-        identity, not name/class name, so two unnamed handlers of the same class
-        each get their own entry (AR-119). Non-async handlers have no start/stop
-        lifecycle and are not tracked.
+        Attempts to stop each ``AsyncLoggingHandler`` with a per-handler
+        timeout to avoid hanging shutdowns if a handler blocks.
+        ``stop_logging`` is idempotent in scietex.logging >= 1.0, so it is
+        safe to call on every handler regardless of its current state.
+        Statuses are keyed by handler identity, not name/class name, so two
+        unnamed handlers of the same class each get their own entry (AR-119).
+        Non-async handlers have no start/stop lifecycle and are not tracked.
         """
         for handler in self.worker.logger.handlers:
             if not isinstance(handler, AsyncLoggingHandler):

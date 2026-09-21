@@ -12,37 +12,30 @@ DEFAULT_LOGGING_LEVEL: int = logging.DEBUG
 
 
 class LoggerStatus(Enum):
-    """Lifecycle states of an async logging handler.
+    """Lifecycle states of an async logging handler."""
 
-    Attributes:
-        STOPPED: The handler is not running.
-        RUNNING: The handler is actively processing log messages.
-        FAILED: The handler failed to start and will be retried.
-    """
-
+    #: The handler is not running.
     STOPPED = "Stopped"
+    #: The handler is actively processing log messages.
     RUNNING = "Running"
+    #: The handler failed to start and will be retried.
     FAILED = "Failed"
 
 
 def parse_logging_level(level: int | str | None) -> int:
-    """
-    Parse the logging level for the worker.
+    """Parse a logging level specification into a ``logging`` constant.
+
+    ``None`` or an unrecognized value falls back to
+    ``DEFAULT_LOGGING_LEVEL``.
 
     Args:
-        level: Logging level as string or integer. Supported string values:
-            - DEBUG: 'D', 'DBG', 'DEBUG', logging.DEBUG
-            - INFO: 'I', 'INF', 'INFO', 'INFORMATION', logging.INFO
-            - WARNING: 'W', 'WRN', 'WARN', 'WARNING', logging.WARNING
-            - ERROR: 'E', 'ERR', 'ERROR', logging.ERROR
-            - CRITICAL: 'C', 'CRT', 'CRIT', 'CRITICAL', logging.CRITICAL
-            - FATAL: 'F', 'FTL', 'FAT', 'FATAL', logging.FATAL
-
-    Note:
-        If level is None or not recognized, defaults to DEFAULT_LOGGING_LEVEL
-
-    Returns:
-        Parsed logging level as int
+        level: Logging level as a string or integer. Supported string values:
+            - DEBUG: ``'D'``, ``'DBG'``, ``'DEBUG'``, ``logging.DEBUG``
+            - INFO: ``'I'``, ``'INF'``, ``'INFO'``, ``'INFORMATION'``, ``logging.INFO``
+            - WARNING: ``'W'``, ``'WRN'``, ``'WARN'``, ``'WARNING'``, ``logging.WARNING``
+            - ERROR: ``'E'``, ``'ERR'``, ``'ERROR'``, ``logging.ERROR``
+            - CRITICAL: ``'C'``, ``'CRT'``, ``'CRIT'``, ``'CRITICAL'``, ``logging.CRITICAL``
+            - FATAL: ``'F'``, ``'FTL'``, ``'FAT'``, ``'FATAL'``, ``logging.FATAL``
     """
     if level in ("D", "DBG", "DEBUG", logging.DEBUG):
         logging_level = logging.DEBUG

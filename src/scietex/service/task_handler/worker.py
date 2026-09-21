@@ -1,16 +1,4 @@
-"""Built-in handler for the ``worker:*`` control task names.
-
-The handler is transport-agnostic: it decodes a :class:`WorkerControlRequest`
-from the task payload and delegates the lifecycle action to async callbacks
-injected by the owning processor. The processor owns the worker lifecycle, so
-the handler never reaches into processor internals.
-
-A stop, restart, or exit command targets the very worker executing the handler.
-The injected callbacks therefore schedule the lifecycle transition as a
-background task and return immediately, so the handler's ``TaskResult`` is
-produced and acknowledged before shutdown begins. The response reports the
-command as accepted, not as completed.
-"""
+"""Built-in handler for the ``worker:*`` control task names."""
 
 from collections.abc import Awaitable, Callable
 from typing import ClassVar, Literal
@@ -64,8 +52,12 @@ class WorkerControlHandler(TaskHandler):
     """Handler for the built-in ``worker:*`` control task names.
 
     Decodes a :class:`WorkerControlRequest` and calls the injected callback for
-    the requested action. A malformed payload yields a non-retryable error
-    result rather than raising, so a bad request never crashes the task loop.
+    the requested action. A stop, restart, or exit targets the very worker
+    executing the handler, so the callbacks schedule the transition as a
+    background task and return immediately: the handler acks the command with a
+    ``TaskResult`` reporting *acceptance*, not completion, before shutdown
+    begins. A malformed payload yields a non-retryable error result rather
+    than raising, so a bad request never crashes the task loop.
     """
 
     #: Worker lifecycle commands are control-plane: they always arrive on a

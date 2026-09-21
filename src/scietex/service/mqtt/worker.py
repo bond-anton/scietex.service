@@ -40,12 +40,12 @@ _REGISTRY_QOS: int = 1
 #: it only needs to keep tombstone growth bounded, not react instantly.
 INBOX_PRUNE_INTERVAL: float = 60.0
 
-# Client-construction injection seam (AR-074): connect() builds its client by
-# awaiting this callable with the resolved MqttConfig, so tests and embedders
-# can supply a fake or externally-built client without a live broker. The
-# optional ``will`` carries the worker's last-will message (AR-123): the worker
-# owns the identity and TTL policy the Will needs, so it builds the Will and
-# hands it to the factory rather than the factory re-deriving it.
+#: Client-construction injection seam (AR-074): connect() builds its client by
+#: awaiting this callable with the resolved MqttConfig, so tests and embedders
+#: can supply a fake or externally-built client without a live broker. The
+#: optional ``will`` carries the worker's last-will message (AR-123): the worker
+#: owns the identity and TTL policy the Will needs, so it builds the Will and
+#: hands it to the factory rather than the factory re-deriving it.
 ClientFactory = Callable[..., Awaitable[Client]]
 
 
@@ -362,10 +362,6 @@ class MqttWorker(TransportWorker):
         When no explicit config was given at construction, the config is loaded
         lazily from disk at first connect, so this is ``None`` until
         :meth:`connect`/:meth:`initialize` has run (AR-066).
-
-        Returns:
-            The MQTT configuration instance, or ``None`` before the first
-            connect when no explicit config was provided.
         """
         return self._mqtt_config
 
@@ -374,9 +370,6 @@ class MqttWorker(TransportWorker):
         """The :class:`~aiomqtt.Client` instance.
 
         ``None`` until :meth:`initialize` completes successfully.
-
-        Returns:
-            The active aiomqtt client, or ``None`` if not connected.
         """
         return self._client
 
@@ -388,9 +381,6 @@ class MqttWorker(TransportWorker):
         connect, so construction is side-effect-free. Populates ``_mqtt_config``
         the same way ``__init__`` does for an explicitly-provided config, then
         no-ops on later calls.
-
-        Returns:
-            The ``MqttConfig`` used to create the client.
         """
         if self._mqtt_config is not None:
             return self._mqtt_config
@@ -407,7 +397,7 @@ class MqttWorker(TransportWorker):
         ``self._mqtt_config`` is set by ``_ensure_client_config`` (or
         ``__init__``) before this runs, but ``ty`` cannot narrow that
         cross-method guarantee, so a local ``None`` guard documents that the
-        handler is simply unavailable until the config is resolved.
+        handler is unavailable until the config is resolved.
         """
         if self._mqtt_logger_handler is not None:
             return self._mqtt_logger_handler

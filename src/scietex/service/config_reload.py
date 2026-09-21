@@ -1,33 +1,4 @@
-"""Transport-agnostic remote configuration machinery for ``scietex.service``.
-
-Delivers a reloadable-behaviour config envelope to a running worker over the
-transport it already uses (a durable Valkey key or an MQTT retained topic)
-without this module knowing which transport that is. The envelope
-(:class:`ConfigEnvelope`) wraps a versioned, hash-checked, optionally
-HMAC-signed snapshot of the hot-reloadable core settings
-(:class:`ReloadableSettings`) plus optional named service sections
-(:class:`ConfigSections`).
-
-Only the core ``TaskProcessor`` fields on the ``RELOADABLE_FIELDS`` allowlist
-(plus explicitly registered service sections) are reloadable. The structs are
-declared with ``forbid_unknown_fields=True``, so a payload naming
-``queue_size``, credentials, TLS material, or any connection parameter is
-rejected rather than silently ignored — restart-required fields are
-*unrepresentable*, not merely dropped.
-
-:class:`ConfigReloader` owns the apply pipeline and enforces
-validate-before-swap. Every candidate is fully decoded first (including each
-registered section against its own struct), then every section apply hook is
-run, and only then is the core settings snapshot swapped through the injected
-``apply`` callback. A raising hook aborts the apply before any state changes,
-so a partial candidate never becomes effective. Applies are serialized behind
-an ``asyncio.Lock`` and protected against replay by a monotonic ``revision``.
-
-This module deliberately imports no transport package and no processor type:
-transports implement the :class:`ConfigSource` protocol, and the reloader
-calls back into the processor through injected callables, so the private
-shadows stay private to ``TaskProcessor``.
-"""
+"""Transport-agnostic remote configuration: envelope, source, and reloader."""
 
 import asyncio
 import hashlib
@@ -103,11 +74,13 @@ class ReloadableSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 
 
 class DeclarativeSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Declarative reloadable core settings: every field is required but each
-    may be None, meaning "use the library default" (and, for
-    max_concurrent_tasks, "auto-tune from the CPU count when the worker is
-    built with auto_tune=True"). This is the persistence/inspection view; the
-    runtime snapshot is ReloadableSettings, which is always concrete."""
+    """Declarative reloadable core settings: every field is required but may be ``None``.
+
+    ``None`` means "use the library default"; for ``max_concurrent_tasks`` it
+    also means "auto-tune from the CPU count when the worker is built with
+    ``auto_tune=True``". This is the persistence/inspection view; the runtime
+    snapshot is :class:`ReloadableSettings`, which is always concrete.
+    """
 
     max_concurrent_tasks: int | None
     task_manager_sleep_time: float | None
@@ -212,10 +185,6 @@ def decode_config_envelope(payload: bytes) -> ConfigEnvelope | None:
 
     Args:
         payload: The msgpack-encoded envelope bytes read from the transport.
-
-    Returns:
-        The decoded :class:`ConfigEnvelope`, or ``None`` when the payload is
-        not a valid envelope.
     """
     try:
         return msgspec.msgpack.decode(payload, type=ConfigEnvelope)
@@ -232,10 +201,6 @@ def peek_config_envelope_version(payload: bytes) -> int | None:
 
     Args:
         payload: The msgpack-encoded envelope bytes read from the transport.
-
-    Returns:
-        The envelope's version, or ``None`` when the payload is not a valid
-        envelope.
     """
     try:
         envelope = msgspec.msgpack.decode(payload, type=ConfigEnvelope)
@@ -247,23 +212,15 @@ def peek_config_envelope_version(payload: bytes) -> int | None:
 class ConfigSource(Protocol):
     """Delivery backend a :class:`ConfigReloader` reads and writes through.
 
-    ``load`` returns the desired-state envelope **as currently known to this
-    source, without waiting for transport delivery**, or ``None`` when no
-    desired state is known. Freshness provenance is transport-inherent and must
-    not be assumed: an on-demand backend (Valkey) reads the broker live on each
-    call, while a push-only backend (MQTT) returns the last snapshot its
-    delivery path recorded. Callers must treat ``load`` as best-effort current
-    state, never as a guarantee of broker-live state.
-
-    ``store`` writes an envelope back to the backend.
-
-    A transport whose desired state only arrives asynchronously (MQTT's retained
-    message is delivered after SUBACK) exposes the bounded wait as a
-    transport-specific ``wait_for_snapshot(timeout)``. It is deliberately *not*
-    part of this protocol: the reloader's apply path must never block on
-    delivery, and only a transport's own startup hook needs the wait. Keeping
-    this protocol in core lets both transports implement it without a
-    feature-to-feature dependency.
+    ``load`` returns the desired-state envelope as currently known to the
+    source, without waiting for transport delivery, or ``None`` when no desired
+    state is known. Freshness is transport-inherent: an on-demand backend reads
+    live on each call while a push-only backend returns the last snapshot it
+    recorded, so callers must treat it as best-effort current state, never as a
+    guarantee of broker-live state. ``store`` writes an envelope back. A
+    transport whose state only arrives asynchronously exposes a
+    transport-specific ``wait_for_snapshot(timeout)`` outside this protocol, so
+    the reloader's apply path never blocks on delivery.
     """
 
     async def load(self) -> bytes | None: ...
@@ -320,35 +277,14 @@ class ConfigStoreOutcome(msgspec.Struct, frozen=True):
 class ConfigReloader:
     """Owns the remote-config apply, reload, store, and show pipeline.
 
-    The reloader is transport-agnostic: it reads and writes envelopes through
-    a :class:`ConfigSource` and mutates the processor through injected
-    callables. Apply semantics are validate-before-swap — every candidate is
-    fully decoded and validated (including each registered section against its
-    own struct) and every section hook is run *before* the core settings are
-    swapped, so a raising hook aborts the apply with no state change.
-    Applies are serialized behind an ``asyncio.Lock``.
-
-    Args:
-        apply: Callback that validates and swaps the core settings, returning
-            the changed field names. It must validate before mutating and
-            raise on an invalid candidate so the reloader can leave state
-            unchanged.
-        current: Callback returning the current effective core settings.
-        restart_required: Callback returning the field names that exist in the
-            concrete config but are not reloadable.
-        logger: Logger for apply/reload/store diagnostics.
-        signing_key: Optional HMAC key for envelope authenticity. ``None``
-            disables signature enforcement.
-        enabled: Master switch. When ``False``, ``apply_envelope``,
-            ``reload``, and ``store`` short-circuit with
-            ``REMOTE_CONFIG_DISABLED``.
-        declarative: Optional callback returning the declarative core settings
-            (``None`` per field means "use the default"). ``None`` makes
-            ``_declarative`` fall back to ``to_declarative(self._current())``.
-        apply_declarative: Optional callback that validates and swaps the
-            declarative core settings, returning the changed field names.
-            ``None`` makes ``apply_declarative_sections`` reject with
-            ``INVALID_CONFIG``.
+    Transport-agnostic: it reads and writes envelopes through a
+    :class:`ConfigSource` and mutates the processor through injected callables.
+    Apply semantics are validate-before-swap — every candidate is fully decoded
+    and validated (including each registered section against its own struct)
+    and every section hook runs before the core settings are swapped, so a
+    raising hook aborts the apply with no state change. Applies are serialized
+    behind an ``asyncio.Lock`` and protected against replay by a monotonic
+    ``revision``.
     """
 
     def __init__(
@@ -363,6 +299,31 @@ class ConfigReloader:
         declarative: Callable[[], DeclarativeSettings] | None = None,
         apply_declarative: Callable[[DeclarativeSettings], list[str]] | None = None,
     ) -> None:
+        """Initialize the reloader.
+
+        Args:
+            apply: Callback that validates and swaps the core settings,
+                returning the changed field names. It must validate before
+                mutating and raise on an invalid candidate so the reloader can
+                leave state unchanged.
+            current: Callback returning the current effective core settings.
+            restart_required: Callback returning the field names that exist in
+                the concrete config but are not reloadable.
+            logger: Logger for apply/reload/store diagnostics.
+            signing_key: Optional HMAC key for envelope authenticity. ``None``
+                disables signature enforcement.
+            enabled: Master switch. When ``False``, ``apply_envelope``,
+                ``reload``, and ``store`` short-circuit with
+                ``REMOTE_CONFIG_DISABLED``.
+            declarative: Optional callback returning the declarative core
+                settings (``None`` per field means "use the default").
+                ``None`` makes ``_declarative`` fall back to
+                ``to_declarative(self._current())``.
+            apply_declarative: Optional callback that validates and swaps the
+                declarative core settings, returning the changed field names.
+                ``None`` makes ``apply_declarative_sections`` reject with
+                ``INVALID_CONFIG``.
+        """
         self._apply = apply
         self._current = current
         self._restart_required = restart_required
@@ -436,9 +397,6 @@ class ConfigReloader:
                 ``config.yml`` snapshot) rather than input read off a
                 transport. The replay guard still applies. Must never be set
                 for remote or inline input, which is untrusted.
-
-        Returns:
-            A :class:`ConfigApplyOutcome` describing the result.
         """
         if not self._enabled:
             return ConfigApplyOutcome(applied=False, error_code=REMOTE_CONFIG_DISABLED)
@@ -587,9 +545,6 @@ class ConfigReloader:
             source: Label recorded on success (e.g. ``"file"``).
             trusted: Accepted for signature symmetry with ``apply_envelope``;
                 unused, as the declarative path never verifies signatures.
-
-        Returns:
-            A :class:`ConfigApplyOutcome` describing the result.
         """
         if not self._enabled:
             return ConfigApplyOutcome(applied=False, error_code=REMOTE_CONFIG_DISABLED)
@@ -634,9 +589,6 @@ class ConfigReloader:
 
         Args:
             source: The :class:`ConfigSource` to read the envelope from.
-
-        Returns:
-            A :class:`ConfigApplyOutcome` describing the result.
         """
         if not self._enabled:
             return ConfigApplyOutcome(applied=False, error_code=REMOTE_CONFIG_DISABLED)
@@ -667,9 +619,6 @@ class ConfigReloader:
         Args:
             source: The :class:`ConfigSource` to write the envelope to.
             target: Label recorded on the outcome (e.g. ``"remote"``).
-
-        Returns:
-            A :class:`ConfigStoreOutcome` describing the result.
         """
         if not self._enabled:
             return ConfigStoreOutcome(
@@ -714,9 +663,6 @@ class ConfigReloader:
 
         ``core`` comes from the ``current`` callback; ``services`` holds the
         raw bytes captured at the last successful apply.
-
-        Returns:
-            The current effective :class:`ConfigSections`.
         """
         return ConfigSections(core=self._current(), services=dict(self._section_raw))
 
@@ -726,6 +672,7 @@ class ConfigReloader:
         return to_declarative(self._current())
 
     def show_declarative(self) -> DeclarativeSections:
+        """Return the current declarative sections snapshot."""
         return DeclarativeSections(core=self._declarative(), services=dict(self._section_raw))
 
     @property
@@ -768,10 +715,6 @@ def read_local_config(path: Path) -> DeclarativeSections | None:
 
     Args:
         path: Path to the YAML snapshot (``config.yml``).
-
-    Returns:
-        The decoded :class:`DeclarativeSections`, or ``None`` when the file
-        is missing or invalid.
     """
     try:
         data = path.read_bytes()

@@ -26,7 +26,7 @@ __all__ = ["WorkerRecord", "WorkerRegistry"]
 class WorkerRecord:
     """A worker's last-known state, as seen by a client.
 
-    Attributes:
+    Args:
         heartbeat: The most recent :class:`Heartbeat` received for the worker.
         received_at: Monotonic timestamp when the client received it, used for
             local TTL eviction. Monotonic rather than wall-clock so a clock

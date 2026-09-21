@@ -43,9 +43,9 @@ from .lease import TaskLeaseManager, derive_task_lease_ttl
 from .tracking import TaskStatusStore
 from .transport import ValkeyTransport
 
-# Client-construction injection seam (AR-074): connect() builds its client by
-# awaiting this callable with the resolved GlideClientConfiguration, so tests
-# and embedders can supply a fake or externally-built client.
+#: Client-construction injection seam (AR-074): connect() builds its client by
+#: awaiting this callable with the resolved GlideClientConfiguration, so tests
+#: and embedders can supply a fake or externally-built client.
 ClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]
 
 
@@ -121,7 +121,8 @@ class ValkeyWorker(TransportWorker):
                 handler, built lazily on the first successful :meth:`connect`
                 and reused across restarts. Owns its own connection
                 (``valkey_config=`` mode); the worker never shares its client.
-            _heartbeat_key (str): Key for the worker status heartbeat entry.
+            _heartbeat_key (str): Resolved Valkey key holding this worker's
+                heartbeat, with ``{service}`` and ``{instance_id}`` substituted.
             _log_stream_name (str): Resolved Valkey stream name for log entries,
                 with ``{service}`` substituted.
             _config_key (str): Resolved Valkey key holding the desired-state
@@ -130,9 +131,12 @@ class ValkeyWorker(TransportWorker):
                 stream name, with ``{service}`` and ``{instance_id}`` substituted.
             _control_broadcast_stream_name (str): Resolved service-scoped
                 broadcast control stream name, with ``{service}`` substituted.
-            _task_stream_name (str): Valkey stream name for task entries.
-            _task_group_name (str): Consumer group name for task fetching.
-            _consumer_name (str): Consumer identifier within the task group.
+            _task_stream_name (str): Resolved Valkey stream name for task
+                entries, with ``{service}`` substituted.
+            _task_group_name (str): Resolved consumer group name for task
+                fetching, with ``{service}`` substituted.
+            _consumer_name (str): Resolved consumer identifier within the task
+                group, with ``{service}`` and ``{instance_id}`` substituted.
             _control_entry_ids (dict[UUID, tuple[str, str | bytes]]): Maps a
                 control task id to its directed-stream (stream name, entry id);
                 control entries are never leased.
@@ -255,10 +259,6 @@ class ValkeyWorker(TransportWorker):
         with. When no explicit config was given at construction, the config is
         loaded lazily from disk at first connect, so this is ``None`` until
         :meth:`connect`/:meth:`initialize` has run (AR-066).
-
-        Returns:
-            The Valkey configuration instance, or ``None`` before the first
-            connect when no explicit config was provided.
         """
         return self._valkey_config
 
@@ -267,9 +267,6 @@ class ValkeyWorker(TransportWorker):
         """The Valkey :class:`~glide.GlideClient` instance.
 
         ``None`` until :meth:`initialize` completes successfully.
-
-        Returns:
-            The active Valkey client, or ``None`` if not connected.
         """
         return self._client
 
@@ -281,9 +278,6 @@ class ValkeyWorker(TransportWorker):
         connect, so construction is side-effect-free. Populates
         ``_valkey_config`` and ``_client_config`` the same way ``__init__`` does
         for an explicitly-provided config, then no-ops on later calls.
-
-        Returns:
-            The ``GlideClientConfiguration`` used to create the client.
         """
         if self._client_config is not None:
             return self._client_config
@@ -304,7 +298,7 @@ class ValkeyWorker(TransportWorker):
         (AR-059/061). ``self._valkey_config`` is set by ``_ensure_client_config``
         (or ``__init__``) before this runs, but ``ty`` cannot narrow that
         cross-method guarantee, so a local ``None`` guard documents that the
-        handler is simply unavailable until the config is resolved.
+        handler is unavailable until the config is resolved.
         """
         if self._valkey_logger_handler is not None:
             return self._valkey_logger_handler

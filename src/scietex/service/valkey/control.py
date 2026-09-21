@@ -34,26 +34,9 @@ from .transport import TASK_FIELD
 class ValkeyControlPublisher:
     """Publish control commands to the Valkey control streams.
 
-    Constructed with an already-connected ``GlideClient`` (or a callable that
-    returns one) and the same control-stream names and status-key prefix the
-    workers use, so a submitter can address commands from any process that can
-    reach Valkey.
-
-    Args:
-        client: The ``GlideClient`` used for all commands. Passed by reference;
-            the publisher never owns or closes it.
-        control_stream_name: The per-worker control stream name template. It
-            carries a ``{instance_id}`` placeholder formatted per ``direct``
-            call and has ``{service}`` already substituted (it is the resolved
-            ``ValkeyWorkerConfig.control_stream_name``).
-        control_broadcast_stream_name: The shared broadcast stream name, with
-            ``{service}`` already substituted.
-        control_stream_maxlen: Maximum retained entries per control stream,
-            applied as an approximate ``MAXLEN ~ N`` trim on every ``XADD``.
-        status_key_prefix: The resolved tracking-key prefix
-            (``scietex:{service}:task``) that ``TaskStatusStore.key()`` builds
-            on, so ``resolve_owner`` reads the same key the worker writes.
-        logger: Logger for diagnostics.
+    Constructed with an already-connected ``GlideClient`` and the same
+    control-stream names and status-key prefix the workers use, so a submitter
+    can address commands from any process that can reach Valkey.
     """
 
     def __init__(
@@ -66,6 +49,25 @@ class ValkeyControlPublisher:
         status_key_prefix: str,
         logger: logging.Logger,
     ) -> None:
+        """Initialize the publisher.
+
+        Args:
+            client: The ``GlideClient`` used for all commands. Passed by
+                reference; the publisher never owns or closes it.
+            control_stream_name: The per-worker control stream name template.
+                It carries an ``{instance_id}`` placeholder formatted per
+                ``direct`` call and has ``{service}`` already substituted (it is
+                the resolved ``ValkeyWorkerConfig.control_stream_name``).
+            control_broadcast_stream_name: The shared broadcast stream name,
+                with ``{service}`` already substituted.
+            control_stream_maxlen: Maximum retained entries per control stream,
+                applied as an approximate ``MAXLEN ~ N`` trim on every ``XADD``.
+            status_key_prefix: The resolved tracking-key prefix
+                (``scietex:{service}:task``) that ``TaskStatusStore.key()``
+                builds on, so ``resolve_owner`` reads the same key the worker
+                writes.
+            logger: Logger for diagnostics.
+        """
         self._client = client
         self._control_stream_name = control_stream_name
         self._control_broadcast_stream_name = control_broadcast_stream_name

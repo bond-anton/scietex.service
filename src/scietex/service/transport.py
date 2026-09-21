@@ -42,11 +42,21 @@ class TaskTransport(Protocol):
     and shutdown-drain policy; the processor is transport-agnostic.
     """
 
-    async def fetch(self, sink: TaskSink) -> bool: ...
+    async def fetch(self, sink: TaskSink) -> bool:
+        """Fetch pending tasks from the source and enqueue them via ``sink``.
 
-    async def requeue(self, task_data: TaskData) -> None: ...
+        Returns ``True`` when at least one task was enqueued, so the caller can
+        skip its idle backoff after a productive fetch.
+        """
+        ...
 
-    async def on_started(self, task_data: TaskData) -> None: ...
+    async def requeue(self, task_data: TaskData) -> None:
+        """Re-queue a task so a later ``fetch`` re-delivers it."""
+        ...
+
+    async def on_started(self, task_data: TaskData) -> None:
+        """Record that a task's handler has started."""
+        ...
 
     async def ack(
         self,
@@ -54,9 +64,13 @@ class TaskTransport(Protocol):
         task_result: TaskResult | None,
         *,
         cancel_reason: CancelReason | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Acknowledge a task's terminal state so its source entry is dropped."""
+        ...
 
-    async def on_progress(self, task_id: UUID, value: float) -> None: ...
+    async def on_progress(self, task_id: UUID, value: float) -> None:
+        """Record granular progress for a running task."""
+        ...
 
     async def refresh_leases(self) -> None:
         """Renew any per-entry ownership claims held for in-flight tasks.

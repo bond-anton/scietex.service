@@ -91,13 +91,25 @@ class WatchBackend(Protocol):
 class WorkerWatcher:
     """Watches worker heartbeats and emits changes as an async iterator.
 
-    Args:
-        backend: The delivery mechanism feeding heartbeats.
-        poll_interval: Seconds between backend polls. Also bounds how quickly an
-            expired worker is noticed: eviction runs on each poll tick.
+    The client's read API over the worker registry: it owns a
+    :class:`~scietex.service.client.registry.WorkerRegistry` and a backend
+    that feeds it, exposing a :meth:`snapshot` and an async :meth:`watch`
+    change stream. The backend is swappable, so the watcher's contract does
+    not change when the delivery mechanism does; it drives the backend's
+    ``poll`` on its own cadence and evicts expired records between polls, so
+    a worker that stops beating surfaces as a :attr:`WorkerEventKind.EXPIRED`
+    event without the backend reporting anything.
     """
 
     def __init__(self, backend: WatchBackend, *, poll_interval: float = 1.0) -> None:
+        """Initialize the watcher with a backend and poll cadence.
+
+        Args:
+            backend: The delivery mechanism feeding heartbeats.
+            poll_interval: Seconds between backend polls. Also bounds how
+                quickly an expired worker is noticed: eviction runs on each
+                poll tick.
+        """
         self._backend = backend
         self._poll_interval = poll_interval
         self._registry = WorkerRegistry()

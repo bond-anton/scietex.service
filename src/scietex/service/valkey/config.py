@@ -70,12 +70,7 @@ class ValkeyBackoffStrategy(msgspec.Struct, frozen=True):
 
     @property
     def reconnect_strategy(self) -> BackoffStrategy:
-        """Create a :class:`~glide.BackoffStrategy` from these settings.
-
-        Returns:
-            A :class:`~glide.BackoffStrategy` instance configured with
-            the same retry count, factor, exponent base, and jitter.
-        """
+        """Create a :class:`~glide.BackoffStrategy` from these settings."""
         return BackoffStrategy(
             num_of_retries=self.num_of_retries,
             factor=self.factor,
@@ -101,10 +96,6 @@ class ValkeyTlsAdvancedConfiguration(msgspec.Struct, frozen=True):
         """Convert to a :class:`~glide.TlsAdvancedConfiguration` instance.
 
         Encodes ``root_pem_cacerts`` to bytes if provided.
-
-        Returns:
-            A :class:`~glide.TlsAdvancedConfiguration` with matching
-            ``use_insecure_tls`` and ``root_pem_cacerts`` values.
         """
         return TlsAdvancedConfiguration(
             use_insecure_tls=self.use_insecure_tls,
@@ -129,11 +120,6 @@ class ValkeyAdvancedConfig(msgspec.Struct, frozen=True):
         """Convert to an :class:`~glide.AdvancedGlideClientConfiguration` instance.
 
         Recursively converts ``tls_config`` if present.
-
-        Returns:
-            An :class:`~glide.AdvancedGlideClientConfiguration` with
-            matching ``connection_timeout``, ``tcp_nodelay``, and
-            ``tls_config`` values.
         """
         return AdvancedGlideClientConfiguration(
             connection_timeout=self.connection_timeout,
@@ -196,23 +182,15 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
 
     @property
     def addresses(self) -> list[NodeAddress]:
-        """Create :class:`~glide.NodeAddress` instances for all configured nodes.
-
-        Returns:
-            A list of :class:`~glide.NodeAddress` objects, one per node
-            in ``self.nodes``.
-        """
+        """Create :class:`~glide.NodeAddress` instances for all configured nodes."""
         return [NodeAddress(node.host, node.port) for node in self.nodes]
 
     @property
     def credentials(self) -> ServerCredentials | None:
         """Create :class:`~glide.ServerCredentials` from stored user credentials.
 
-        Returns ``None`` if ``user_credentials`` is not set or if
-        credential construction raises a :class:`~glide.ConfigurationError`.
-
-        Returns:
-            A :class:`~glide.ServerCredentials` instance, or ``None``.
+        Returns ``None`` if ``user_credentials`` is not set or if credential
+        construction raises a :class:`~glide.ConfigurationError`.
         """
         if self.user_credentials:
             try:
@@ -229,9 +207,6 @@ class ValkeyBaseConfig(msgspec.Struct, frozen=True):
         """Create a :class:`~glide.BackoffStrategy` from the configured backoff settings.
 
         Returns ``None`` if ``backoff_strategy`` is not set.
-
-        Returns:
-            A :class:`~glide.BackoffStrategy` instance, or ``None``.
         """
         if self.backoff_strategy:
             return self.backoff_strategy.reconnect_strategy
@@ -252,16 +227,27 @@ class ValkeyConfig(msgspec.Struct, frozen=True):
     pubsub_config: ValkeyPubSubConfig = ValkeyPubSubConfig()
 
 
+#: Lower bound (ms) for ``claim_min_idle_ms``.
 MIN_CLAIM_MIN_IDLE_MS: int = 1
+#: Upper bound (ms) for ``claim_min_idle_ms``.
 MAX_CLAIM_MIN_IDLE_MS: int = 3_600_000
+#: Default idle floor (ms) before ``XAUTOCLAIM`` reclaims a pending entry.
 DEFAULT_CLAIM_MIN_IDLE_MS: int = 1000
+#: Lower bound (s) for ``task_tracking_ttl``.
 MIN_TASK_TRACKING_TTL: int = 1
+#: Upper bound (s) for ``task_tracking_ttl`` (30 days).
 MAX_TASK_TRACKING_TTL: int = 30 * 24 * 3600
+#: Default tracking-record TTL in seconds (24 hours).
 DEFAULT_TASK_TRACKING_TTL: int = 24 * 3600
+#: Lower bound (s) for ``task_lease_ttl``.
 MIN_TASK_LEASE_TTL: int = 1
+#: Upper bound (s) for ``task_lease_ttl`` (24 hours).
 MAX_TASK_LEASE_TTL: int = 24 * 3600
+#: Lower bound for ``control_stream_maxlen``.
 MIN_CONTROL_STREAM_MAXLEN: int = 1
+#: Upper bound for ``control_stream_maxlen``.
 MAX_CONTROL_STREAM_MAXLEN: int = 100_000
+#: Default approximate max length per control stream (``MAXLEN ~``).
 DEFAULT_CONTROL_STREAM_MAXLEN: int = 1000
 
 
@@ -442,9 +428,6 @@ def generate_glide_config(
         valkey_config: The typed configuration schema.
         service_name: Service name used for the directed PubSub channel
             (``scietex:{service_name}``).
-
-    Returns:
-        A fully configured ``GlideClientConfiguration`` instance.
 
     Raises:
         ValueError: If ``read_from`` or ``protocol`` contain invalid values.

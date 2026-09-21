@@ -12,12 +12,12 @@ from .schemas import TaskData, TaskResult
 class TaskHandler(ABC):
     """Abstract base class for all task handlers.
 
-    Defines the lifecycle contract (``start``/``stop``), the handler
-    selection mechanism (``supports``), and the task processing method
-    (``handle``) that concrete implementations must provide.
-
-    Subclasses must implement the :attr:`supported_tasks` property and
-    the :meth:`handle` method.
+    Defines the lifecycle contract (``start``/``stop``), the handler selection
+    mechanism (``supports``), and the task processing method (``handle``).
+    Subclasses must implement the :attr:`supported_tasks` property and the
+    :meth:`handle` method. A handler serves exactly one lane — the control lane
+    when :attr:`control` is ``True``, the data lane otherwise — and
+    ``add_task_handler`` files it in the corresponding registry.
     """
 
     #: Which lane the handler serves. A task's lane is a function of the channel
@@ -62,9 +62,6 @@ class TaskHandler(ABC):
 
         Returns:
             A ``TaskResult`` with status, optional error message, and payload.
-
-        Raises:
-            Exception: Any error that occurs during task processing.
         """
         pass
 
@@ -73,10 +70,6 @@ class TaskHandler(ABC):
 
         Args:
             task_type: The task type string to check against.
-
-        Returns:
-            ``True`` if this handler supports the given task type,
-            ``False`` otherwise.
         """
         return task_type in self.supported_tasks
 

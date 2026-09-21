@@ -1,9 +1,4 @@
-"""In-memory runtime handles for the task handler subsystem.
-
-Unlike :mod:`~scietex.service.task_handler.schemas`, the types defined here
-are live process-local objects (holding an ``asyncio.Task``) and are never
-serialized to the transport.
-"""
+"""In-memory runtime handles for the task handler subsystem."""
 
 from asyncio import Task
 from dataclasses import dataclass

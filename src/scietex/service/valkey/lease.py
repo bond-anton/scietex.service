@@ -21,10 +21,10 @@ from ._glide import (
     RequestError,
 )
 
-# Per-entry lease TTL derivation (AR-060): the lease must outlive its refresh
-# cadence (the watchdog tick) with margin, and must be at least as long as the
-# status-key TTL rationale (2 x heartbeat_interval) so a slow-but-alive worker
-# keeps its entry lease alive.
+#: Per-entry lease TTL derivation (AR-060): the lease must outlive its refresh
+#: cadence (the watchdog tick) with margin, and must be at least as long as the
+#: status-key TTL rationale (2 x heartbeat_interval) so a slow-but-alive worker
+#: keeps its entry lease alive.
 LEASE_TTL_HEARTBEAT_MULTIPLIER: int = 2
 LEASE_TTL_WATCHDOG_MULTIPLIER: int = 3
 MIN_TASK_LEASE_TTL_SECONDS: int = 1

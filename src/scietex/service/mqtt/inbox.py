@@ -7,6 +7,10 @@ Persisting every received message to the inbox *before* handing it to the
 processor restores at-least-once delivery: on startup, every non-terminal
 entry is replayed, and a tombstone dedupes tasks that already completed.
 
+A worker runs two independent inbox instances (design §5.1): a data inbox and
+a control inbox at distinct paths, so a saturated data lane cannot delay
+control delivery. Both implement the same :class:`MqttInbox` contract.
+
 The inbox is transitional. aiomqtt v3 exposes manual acknowledgement, which
 removes the need for the durable backend entirely. The :class:`MqttInbox`
 Protocol keeps that migration to an implementation swap: the transport depends
@@ -29,9 +33,9 @@ from ..task_handler.wire import decode_task_envelope, encode_task_envelope
 
 __all__ = ["FileMqttInbox", "MemoryInbox", "MqttInbox"]
 
-# Entry lifecycle states. ``pending`` is a task persisted before it is handed
-# to the processor; ``in-flight`` is one already handed over. Both are
-# non-terminal and therefore replayed on recovery.
+#: Entry lifecycle states. ``pending`` is a task persisted before it is handed
+#: to the processor; ``in-flight`` is one already handed over. Both are
+#: non-terminal and therefore replayed on recovery.
 _STATE_PENDING: str = "pending"
 _STATE_IN_FLIGHT: str = "in-flight"
 

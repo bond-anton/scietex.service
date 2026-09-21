@@ -1,11 +1,4 @@
-"""Versioned transport wire helpers for the task handler subsystem.
-
-The durable on-the-wire format for a task is a versioned
-:class:`~scietex.service.task_handler.schemas.TaskEnvelope`, not a bare
-``TaskData``. These helpers encode and decode that envelope so every
-transport (Valkey now, MQTT/Kafka later) shares one versioned format
-(AR-064).
-"""
+"""Versioned transport wire helpers for task envelopes."""
 
 import msgspec
 
@@ -33,10 +26,6 @@ def decode_task_envelope(payload: bytes) -> TaskData | None:
 
     Args:
         payload: The msgpack-encoded envelope bytes read from the transport.
-
-    Returns:
-        The decoded :class:`TaskData`, or ``None`` on an invalid payload or
-        unknown version.
     """
     try:
         envelope = msgspec.msgpack.decode(payload, type=TaskEnvelope)
@@ -55,10 +44,6 @@ def decode_task_envelope_version(payload: bytes) -> int | None:
 
     Args:
         payload: The msgpack-encoded envelope bytes read from the transport.
-
-    Returns:
-        The envelope's version, or ``None`` when the payload is not a valid
-        envelope.
     """
     try:
         envelope = msgspec.msgpack.decode(payload, type=TaskEnvelope)

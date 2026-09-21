@@ -70,15 +70,6 @@ class TaskProcessor(BasicWorker):
     wired to the bound methods at construction — but it bypasses the transport
     for that single operation. Prefer overriding the transport instead.
 
-    Properties:
-        service_name (str): Name of the service (read-only).
-        instance_id (str): Unique identifier for this worker instance (read-only).
-        version (str): Version string of the service (read-only).
-        logger (logging.Logger): Logger instance for the worker.
-        logging_level (int): Current logging level (read-only).
-        task_handlers (dict): Active handler key to handler instance mappings.
-        queue_size (int): Maximum size of the internal task queue.
-        max_concurrent_tasks (int): Maximum concurrent task count.
     """
 
     # Concrete config struct for this processor. The base stores it into
@@ -199,30 +190,27 @@ class TaskProcessor(BasicWorker):
 
     @property
     def task_handlers(self) -> Mapping[str, TaskHandler]:
-        """Dictionary of currently active (started) data-plane task handlers.
+        """Active data-plane task handlers, keyed by resolved handler key.
 
         Keys are the resolved handler keys — the ``name`` passed to
         ``add_task_handler`` when given, otherwise the handler class name —
-        and values are the corresponding ``TaskHandler`` instances that have
-        been initialized. Control-plane handlers (those with
-        ``control = True``) are exposed separately via
-        :attr:`control_task_handlers`.
-
-        Returns:
-            A read-only mapping view of the active data-plane task handlers.
+        and values are the started ``TaskHandler`` instances. The map is
+        populated during startup (``initialize`` starts every registered
+        handler before the worker reaches RUNNING), not at registration time;
+        a handler added while the worker is RUNNING or STARTING is started
+        immediately by a background task. Control-plane handlers
+        (``control = True``) live in :attr:`control_task_handlers` instead.
         """
         return MappingProxyType(self.__task_handlers)
 
     @property
     def control_task_handlers(self) -> Mapping[str, TaskHandler]:
-        """Dictionary of currently active (started) control-plane task handlers.
+        """Active control-plane task handlers, keyed by resolved handler key.
 
-        The control-registry counterpart of :attr:`task_handlers`: handlers whose
-        class declares ``control = True`` are started into this map and looked up
-        by :meth:`_find_task_handler` when a task arrives on a control channel.
-
-        Returns:
-            A read-only mapping view of the active control-plane task handlers.
+        The control-registry counterpart of :attr:`task_handlers`: handlers
+        whose class declares ``control = True`` are started into this map
+        during startup and looked up by :meth:`_find_task_handler` when a
+        command arrives on a control channel.
         """
         return MappingProxyType(self.__control_handlers)
 
@@ -482,9 +470,6 @@ class TaskProcessor(BasicWorker):
         against
         ``[MIN_TASK_HANDLER_START_TIMEOUT, MAX_TASK_HANDLER_START_TIMEOUT]``
         at construction.
-
-        Returns:
-            The current task handler start timeout in seconds.
         """
         return self._effective.task_handler_start_timeout
 
@@ -497,9 +482,6 @@ class TaskProcessor(BasicWorker):
         against
         ``[MIN_TASK_HANDLER_STOP_TIMEOUT, MAX_TASK_HANDLER_STOP_TIMEOUT]``
         at construction.
-
-        Returns:
-            The current task handler stop timeout in seconds.
         """
         return self._effective.task_handler_stop_timeout
 
@@ -521,7 +503,10 @@ class TaskProcessor(BasicWorker):
         created on start; the optional ``name`` lets multiple instances of a
         single class coexist under distinct keys (e.g. to split one class's
         task types across instances via name-derived ``supported_tasks``).
-        Duplicate detection is on the resolved key.
+        Duplicate detection is on the resolved key. The lane is a class
+        attribute, not a registration argument: a handler whose class declares
+        ``control = True`` is filed in the control registry and dispatched on
+        control channels; every other handler goes to the data registry.
 
         Args:
             handler_class: The ``TaskHandler`` subclass to register.
@@ -582,7 +567,7 @@ class TaskProcessor(BasicWorker):
         and calls its ``start()`` method with a timeout.
 
         Args:
-            handler_name: The name of the handler to start.
+            handler_name: Name of the handler to start.
 
         Returns:
             ``True`` if the handler started and became ready; ``False``
@@ -660,7 +645,9 @@ class TaskProcessor(BasicWorker):
         to. Safe to call for a handler that is not registered.
 
         Args:
-            handler_name: The class name of the handler to remove.
+            handler_name: The resolved registry key of the handler to remove —
+                the ``name`` passed to ``add_task_handler`` when given,
+                otherwise the handler class name.
         """
         active = self.__control_handlers if handler_name in self.__control_handlers else self.__task_handlers
         if handler_name in active:
@@ -912,9 +899,6 @@ class TaskProcessor(BasicWorker):
             control: Whether the task arrived on a control channel (``True``)
                 or a data channel (``False``); selects the registry used for
                 dispatch.
-
-        Returns:
-            A ``TaskResult`` with the processing outcome.
         """
         task_id = task_data_id(task_data)
         self.logger.log(logging.DEBUG, "Processing task %s (%s): %s", task_data.task, task_id, task_data)

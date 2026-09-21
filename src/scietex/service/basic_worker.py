@@ -39,18 +39,15 @@ from .version import __version__
 
 
 class ServiceStatus(Enum):
-    """Lifecycle states of a ``BasicWorker`` instance.
+    """Lifecycle states of a ``BasicWorker`` instance."""
 
-    Attributes:
-        STOPPED: The service is not running.
-        STARTING: The service is in the process of starting up.
-        RUNNING: The service is actively running and processing.
-        STOPPING: The service is in the process of shutting down.
-    """
-
+    #: The service is not running.
     STOPPED = "Stopped"
+    #: The service is in the process of starting up.
     STARTING = "Starting"
+    #: The service is actively running and processing.
     RUNNING = "Running"
+    #: The service is in the process of shutting down.
     STOPPING = "Stopping"
 
 
@@ -67,15 +64,6 @@ class BasicWorker:
         - ``heartbeat()``: Periodic heartbeat behavior.
         - ``watchdog()``: Periodic watchdog checks.
         - ``cleanup()``: Service-specific cleanup on shutdown.
-
-    Properties:
-        service_name (str): Name of the service (read-only).
-        instance_id (str): Unique identifier for this worker instance (read-only).
-        version (str): Version string of the service (read-only).
-        logger (logging.Logger): Logger instance for the worker.
-        logging_level (int): Current logging level (read-only).
-        state (ServiceStatus): Current service lifecycle state.
-        start_time (datetime | None): Service start timestamp.
     """
 
     # Concrete config struct type for this worker. The base stores the config
@@ -86,7 +74,11 @@ class BasicWorker:
 
     def __init__(self, config: WorkerConfig | None = None):
         """
-        Initialize the BasicWorker.
+        Initialize the worker.
+
+        Each instance auto-generates a unique ``instance_id`` used for
+        logger names and (in ``ValkeyWorker``) consumer/status keys, so
+        multiple instances of the same service can coexist in one process.
 
         Args:
             config: A :class:`~scietex.service.config.WorkerConfig` holding the
@@ -95,11 +87,6 @@ class BasicWorker:
                 ``None`` timing/retry field resolves to its ``DEFAULT_*``
                 constant at read time; an out-of-range value is rejected at
                 construction.
-
-        Note:
-            Each instance auto-generates a unique ``instance_id`` used for
-            logger names and (in ``ValkeyWorker``) consumer/status keys, so
-            multiple instances of the same service can coexist in one process.
         """
         cfg = config if config is not None else self._config_type()
         self._config: WorkerConfig = cfg
@@ -159,12 +146,7 @@ class BasicWorker:
 
     @property
     def state(self) -> ServiceStatus:
-        """Current lifecycle state of the service (read-only).
-
-        Returns:
-            The current ``ServiceStatus`` enum value indicating whether
-            the service is stopped, starting, running, or stopping.
-        """
+        """Current lifecycle state of the service (read-only)."""
         return self._lifecycle.state
 
     @property
@@ -174,39 +156,25 @@ class BasicWorker:
         Contains two events:
             - ``exit_requested``: Set when an exit is requested (e.g., via signal).
             - ``exit``: Set when the worker has fully stopped.
-
-        Returns:
-            A read-only mapping view of the internal events dictionary. The
-            ``asyncio.Event`` values remain mutable and may be awaited or
-            inspected, but the mapping itself cannot be modified.
         """
         return self._lifecycle.events
 
     @property
     def service_name(self) -> str:
-        """Name of the service, used for logging and identification (read-only).
-
-        Returns:
-            The service name string provided during initialization.
-        """
+        """Name of the service, used for logging and identification (read-only)."""
         return self.__service_name
 
     @property
     def instance_id(self) -> str:
         """Unique identifier for this worker instance (read-only).
 
-        Returns:
-            The auto-generated instance ID string (``uuid4().hex``).
+        Auto-generated from ``uuid4().hex`` at construction.
         """
         return self.__instance_id
 
     @property
     def version(self) -> str:
-        """Version string of the service (read-only).
-
-        Returns:
-            The version string provided during initialization.
-        """
+        """Version string of the service (read-only)."""
         return self.__version
 
     @property
@@ -217,9 +185,6 @@ class BasicWorker:
         ``conf_dir`` argument, ``SCIETEX_CONFIG_DIR``, ``$XDG_CONFIG_HOME/scietex``,
         ``~/.config/scietex/``, ``/etc/scietex/``, ``/usr/local/etc/scietex/``,
         or ``./config/`` (CWD).
-
-        Returns:
-            The ``Path`` object pointing to the configuration directory.
         """
         return self.__conf_dir
 
@@ -231,9 +196,6 @@ class BasicWorker:
         ``DEFAULT_LOGGER_HANDLER_TIMEOUT``; a non-``None`` value is validated
         against ``[MIN_LOGGER_HANDLER_TIMEOUT, MAX_LOGGER_HANDLER_TIMEOUT]`` at
         construction. Resolution happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The current timeout value in seconds.
         """
         return self.__logger_handler_timeout
 
@@ -245,9 +207,6 @@ class BasicWorker:
         ``DEFAULT_MANAGER_SHUTDOWN_TIMEOUT``; a non-``None`` value is validated
         against ``[MIN_MANAGER_SHUTDOWN_TIMEOUT, MAX_MANAGER_SHUTDOWN_TIMEOUT]``
         at construction. Resolution happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The current timeout value in seconds.
         """
         return self.__manager_shutdown_timeout
 
@@ -259,9 +218,6 @@ class BasicWorker:
         a non-``None`` value is validated against
         ``[MIN_MANAGER_MAX_RETRIES, MAX_MANAGER_MAX_RETRIES]`` at construction.
         Resolution happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The current maximum retry count.
         """
         return self.__manager_max_retries
 
@@ -273,20 +229,12 @@ class BasicWorker:
         ``DEFAULT_MANAGER_RESTART_BACKOFF``; a non-``None`` value is validated
         against ``[MIN_MANAGER_RESTART_BACKOFF, MAX_MANAGER_RESTART_BACKOFF]``
         at construction. Resolution happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The current backoff delay in seconds.
         """
         return self.__manager_restart_backoff
 
     @property
     def failed_managers(self) -> list[str]:
-        """Names of managers that exhausted their retry budget and gave up (read-only).
-
-        Returns:
-            A list of manager names whose runtime status is
-            ``ManagerStatus.FAILED`` (``[]`` when no manager has failed).
-        """
+        """Names of managers that exhausted their retry budget and gave up (read-only)."""
         return self._manager_runtime.failed_managers
 
     @property
@@ -297,9 +245,6 @@ class BasicWorker:
         and control individual managers (``start_manager``/``stop_manager``),
         statuses, and errors. The runtime's own methods are the documented
         API; this property only provides access to the runtime instance.
-
-        Returns:
-            The ``ManagerRuntime`` managing this worker's managers.
         """
         return self._manager_runtime
 
@@ -311,9 +256,6 @@ class BasicWorker:
         a non-``None`` value is validated against
         ``[MIN_HEARTBEAT_INTERVAL, MAX_HEARTBEAT_INTERVAL]`` at construction.
         Resolution happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The current heartbeat interval in seconds.
         """
         return self.__heartbeat_interval
 
@@ -326,9 +268,6 @@ class BasicWorker:
         value is validated against ``[MIN_HEARTBEAT_TTL, MAX_HEARTBEAT_TTL]``
         and must exceed ``heartbeat_interval`` at construction. Resolution
         happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The active heartbeat entry lifetime in seconds.
         """
         return self.__active_ttl
 
@@ -340,9 +279,6 @@ class BasicWorker:
         ``DEFAULT_INACTIVE_TTL_MULTIPLIER × heartbeat_interval``; a non-``None``
         value is validated against ``[MIN_HEARTBEAT_TTL, MAX_HEARTBEAT_TTL]``
         at construction. Resolution happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The inactive heartbeat entry lifetime in seconds.
         """
         return self.__inactive_ttl
 
@@ -354,9 +290,6 @@ class BasicWorker:
         a non-``None`` value is validated against
         ``[MIN_WATCHDOG_INTERVAL, MAX_WATCHDOG_INTERVAL]`` at construction.
         Resolution happens eagerly in ``__init__`` (AR-080).
-
-        Returns:
-            The current watchdog interval in seconds.
         """
         return self.__watchdog_interval
 
@@ -364,10 +297,7 @@ class BasicWorker:
     def start_time(self) -> datetime | None:
         """Timestamp when the service started running (read-only).
 
-        Returns:
-            The UTC ``datetime`` when the service transitioned to
-            ``RUNNING`` state, or ``None`` if the service has not
-            started or has been stopped.
+        UTC; ``None`` until the service has started and after it has been stopped.
         """
         return self._lifecycle.start_time
 
@@ -377,9 +307,6 @@ class BasicWorker:
 
         The logger is named using the pattern ``{service_name}:{instance_id}``
         and is configured with a ``ConsoleHandler`` for async logging.
-
-        Returns:
-            The ``logging.Logger`` instance associated with this worker.
         """
         return self._logger
 
@@ -388,10 +315,6 @@ class BasicWorker:
         """Current logging level for the worker (read-only).
 
         Parsed once from the worker's configuration at construction.
-
-        Returns:
-            The logging level as an integer constant from the
-            ``logging`` module (e.g., ``logging.DEBUG``, ``logging.INFO``).
         """
         return self.__logging_level
 
@@ -559,13 +482,8 @@ class BasicWorker:
         """
         Stop the worker gracefully.
 
-        This method:
-        1. Shuts down managers tasks
-        2. Processes remaining log messages
-        3. Performs cleanup
-
-        Note:
-            This method is automatically called on SIGINT or SIGTERM
+        Stops managers, unregisters the instance, runs cleanup, and shuts down
+        the logging handlers. Invoked automatically on SIGINT or SIGTERM.
         """
         try:
             self.logger.debug("Stopping worker gracefully...")
@@ -610,10 +528,8 @@ class BasicWorker:
         If the worker is stopped or already stopping, returns after setting the
         ``exit`` event when an exit was requested (and clearing
         ``exit_requested``). Otherwise, creates a task to execute the full
-        shutdown sequence (stop managers, cleanup, shut down loggers).
-
-        Note:
-            This method is automatically called when SIGINT or SIGTERM is received.
+        shutdown sequence (stop managers, cleanup, shut down loggers). Invoked
+        automatically when SIGINT or SIGTERM is received.
         """
         if self._lifecycle.state == ServiceStatus.STOPPED:
             self.logger.log(
@@ -765,10 +681,6 @@ LOGO = """
 
 def print_scietex_logo(service_name: str, version: str) -> None:
     """Print the Scietex Service logo with service-specific details.
-
-    Args:
-        service_name: Name of the running service.
-        version: Version string of the running service.
 
     The scietex.service version is resolved automatically from
     ``.version.__version__`` at call time.

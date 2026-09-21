@@ -1,25 +1,4 @@
-"""Typed worker configuration objects for ``scietex.service``.
-
-Provides ``WorkerConfig`` and ``TaskProcessorConfig`` — immutable
-``msgspec.Struct`` classes that replace the constructor keyword arguments of
-``BasicWorker`` and ``TaskProcessor``. The module-level
-MIN/MAX/DEFAULT constants are the single source of truth for the timing and
-retry bounds; the structs enforce them at construction (raising
-``msgspec.ValidationError`` on an out-of-range value instead of silently
-clamping).
-
-A field with a ``None`` default means "use the DEFAULT constant at read time":
-the config struct stays declarative while the worker resolves ``None`` to the
-corresponding ``DEFAULT_*`` value when it reads the field.
-
-The ``ValkeyWorkerConfig`` struct lives in :mod:`scietex.service.valkey.config`
-(alongside ``ValkeyConfig``), not here, because its ``valkey_config`` field
-references the optional ``ValkeyConfig`` type (whose module imports ``glide``)
-and must not force a glide dependency on the always-imported core package.
-
-The module also hosts :func:`prepare_conf_dir`, the fallback-based
-configuration-directory search used by ``BasicWorker`` at construction time.
-"""
+"""Typed, frozen worker configuration structs and the config-directory search helper."""
 
 import logging
 import os
@@ -59,9 +38,6 @@ def prepare_conf_dir(conf_dir: str | Path | None) -> Path:
     Args:
         conf_dir: User-supplied configuration directory path. May be a
             ``str``, :class:`pathlib.Path`, or ``None``.
-
-    Returns:
-        An existing directory path to use for configuration files.
     """
     # 1. Explicit argument
     if isinstance(conf_dir, (str, Path)):
@@ -419,9 +395,6 @@ def resolve_reloadable_settings(
         logger: Optional logger for the auto-tune INFO diagnostic. ``None``
             (the default) keeps the call silent, so the function is pure and
             cleanly testable without a logger.
-
-    Returns:
-        The resolved :class:`ReloadableSettings` snapshot.
     """
     if config.max_concurrent_tasks is not None:
         max_concurrent_tasks = config.max_concurrent_tasks
