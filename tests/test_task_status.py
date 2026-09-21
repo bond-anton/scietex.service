@@ -6,9 +6,12 @@ from uuid import UUID
 
 import msgspec
 import pytest
-from mqtt.test_transport import _transport
 from valkey._helpers import DummyClient
 
+from scietex.service.health import TransportHealth
+from scietex.service.mqtt.config import MqttWorkerConfig
+from scietex.service.mqtt.inbox import MemoryInbox
+from scietex.service.mqtt.transport import MqttTransport
 from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus
 from scietex.service.task_status import build_running_status, build_terminal_status
 from scietex.service.valkey.tracking import TaskStatusStore
@@ -31,7 +34,7 @@ _TERMINAL_CASES = [
 
 
 def _task_data() -> TaskData:
-    return TaskData(task="dummy", payload=b"{}")
+    return TaskData(task_id=str(TASK_ID), task="dummy", payload=b"{}")
 
 
 def _terminal_fields(status: TaskStatus) -> tuple:
@@ -140,6 +143,39 @@ def test_build_terminal_status_missing_task_data():
     assert status.updated_at == NOW
 
 
+def _health() -> TransportHealth:
+    async def _reconnect() -> None:
+        return None
+
+    return TransportHealth(
+        reconnect=_reconnect,
+        is_connected=lambda: True,
+        logger=logging.getLogger("test_task_status"),
+    )
+
+
+def _mqtt_transport():
+    """Build an ``MqttTransport`` backed by a recording publisher and an
+    in-memory inbox, so the status-publishing path is exercised without
+    importing ``tests/mqtt/`` (owned by the MQTT suite)."""
+    published: list[tuple[str, bytes, int, bool]] = []
+
+    async def record(topic, payload, qos, *, retain=False, properties=None):
+        published.append((topic, payload, qos, retain))
+
+    config = MqttWorkerConfig(service_name="svc", status_ttl=None)
+    transport = MqttTransport(
+        config=config,
+        service_name="svc",
+        topic="scietex/svc/tasks",
+        inbox=MemoryInbox(),
+        health=_health(),
+        publish=record,
+        logger=logging.getLogger("test_task_status"),
+    )
+    return transport, published
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "task_result, cancel_reason",
@@ -164,8 +200,8 @@ async def test_transports_produce_equivalent_terminal_status(task_result, cancel
     valkey_status = msgspec.msgpack.decode(client.sets[0][1], type=TaskStatus)
 
     # MQTT path: MqttTransport.ack publishes a retained terminal status.
-    transport, _, published = _transport()
-    await transport.ack(TASK_ID, task_data, task_result, cancel_reason=cancel_reason)
+    transport, published = _mqtt_transport()
+    await transport.ack(task_data, task_result, cancel_reason=cancel_reason)
     assert len(published) == 1
     mqtt_status = msgspec.msgpack.decode(published[0][1], type=TaskStatus)
 

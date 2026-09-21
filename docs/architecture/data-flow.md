@@ -6,7 +6,7 @@ transformations, and any async boundaries (queues/events/tasks).
 ## F1. In-process task processing (core flow)
 
 **Source:** external caller/enqueue sites — subclass `fetch_tasks()` puts
-`(UUID, TaskData)` tuples into the worker's internal queue, or a producer calls
+`TaskData` into the worker's internal queue, or a producer calls
 `enqueue_task()` directly.
 
 **Processing chain:**
@@ -16,13 +16,14 @@ transformations, and any async boundaries (queues/events/tasks).
    `task_queue_manager_sleep_time` (default 0.01 s).
 2. `TaskProcessor.task_manager` (`task_processor.py:818`,
    `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
-   pops `(task_id, task_data)` off `task_queue` with a fetch timeout of
+   pops `task_data` off `task_queue` with a fetch timeout of
    `task_queue_fetch_timeout` (default 1 s),
    wraps `handle_task` in an `asyncio.Task`, and records the tracker via
-   `TaskLifecycle.register(task_id, TaskTracker(...))` (the composed lifecycle
-   state, AR-088).
+   `TaskLifecycle.register(task_data_id(task_data), TaskTracker(...))` (the
+   composed lifecycle state, AR-088) — the id is derived from
+   `TaskData.task_id`.
 3. `TaskExecutor._handle_task` (`task_executor.py:128`) calls
-   `process_task(task_id, task_data)`.
+   `process_task(task_data)`.
 4. `process_task` (764): guards the empty-`task` case first — an empty
    `task_data.task` returns `TaskResult(status="error", error="Task data must
    contain 'task' field")` (790–798) — then selects a handler with
@@ -44,10 +45,10 @@ removes the tracker (`TaskLifecycle.remove_tracker`), calls
 `task_queue.task_done()`, and passes the consumed cancel reason
 (`TaskLifecycle.take_cancel_reason`) to the ack. Then: a
 `retryable=True` error result is requeued via
-`return_task_to_queue(task_id, task_data)` **before** acking
+`return_task_to_queue(task_data)` **before** acking
 (`TaskExecutor._apply_retry_policy`, `task_executor.py:202-263`) — the
 retry copy is made durable (XADD) before the original is dropped (XACK) — and
-then `on_task_completed(task_id, task_data, task_result)` is invoked — the
+then `on_task_completed(task_data, task_result)` is invoked — the
 transport-agnostic ack/result-sink seam. The base delegates to `transport.ack`;
 `ValkeyTransport.ack` does `XACK`+`XDEL` on the stream entry. A requeue failure
 is logged and the entry is still acked (the retry copy is lost, but the entry
@@ -63,21 +64,22 @@ intake and dispatch; per-task `asyncio.Task`; concurrency cap
 
 **Source:** external producer writes task entries into Valkey stream
 `scietex:{service}:tasks`. Entry shape: one field-value pair per
-message — **field = task UUID string, value = msgpack-encoded versioned
-`TaskEnvelope` wrapping a `TaskData`** (written by `ValkeyTransport.requeue`
-via `encode_task_envelope`, `valkey/transport.py`).
+message — **field = the fixed `TASK_FIELD` (`b"task"`), value =
+msgpack-encoded versioned `TaskEnvelope` wrapping a `TaskData`** (written by
+`ValkeyTransport.requeue` via `encode_task_envelope`, `valkey/transport.py`);
+the task id travels inside the wrapped `TaskData.task_id`.
 
 **Processing chain (`ValkeyTransport.fetch`):**
 1. On the first call only, `recover_pending_tasks` runs `XAUTOCLAIM` to
    re-enqueue entries left pending by a previous crash (at-least-once).
 2. `XREADGROUP` on group `...:task_group`, consumer `...`, key `>`, count 1,
    `block_ms=1000`.
-3. Per entry: decode field → UUID, decode value →
+3. Per entry: decode value →
    `decode_task_envelope(payload)` (→ `TaskData`; an invalid payload or unknown
    version returns `None` and the entry is skipped with an ERROR log);
-   `enqueue_task(UUID(task_id),
-   task_data)` (non-blocking; a full queue leaves the entry pending — its id is
-   not recorded — to be redelivered on a later poll) — now flows through F1. On
+   `enqueue_task(task_data)` (non-blocking; a full queue leaves the entry
+   pending — its id is not recorded — to be redelivered on a later poll) — now
+   flows through F1. On
    success the entry id is recorded in the transport's entry-id map.
 4. Decode errors: logged, entry skipped. Read errors: `disconnect()` +
    `connect()` (reconnect).
@@ -104,8 +106,8 @@ F1).
 `elapsed > task_data.timeout.timeout` (or the configured `task_timeout`, default
 3), waits up to the configured `task_cancellation_timeout` (default 5), and only
 if the handler actually
-stopped (`worker_task.done()`) calls `return_task_to_queue(task_id,
-task_data)` when `timeout_action == "requeue"`. Base `return_task_to_queue`
+stopped (`worker_task.done()`) calls `return_task_to_queue(task_data)` when
+`timeout_action == "requeue"`. Base `return_task_to_queue`
 delegates to `transport.requeue`; `ValkeyTransport.requeue` does `XADD` back to
 the same task stream (tail), re-entering F2/F1. A handler that ignores
 cancellation is not requeued (its entry stays pending and is redelivered on

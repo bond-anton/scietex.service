@@ -22,13 +22,13 @@ class _SpyTransport(InMemoryTransport):
         self.fetched += 1
         return await super().fetch(sink)
 
-    async def on_started(self, task_id, task_data) -> None:
+    async def on_started(self, task_data) -> None:
         self.started += 1
-        await super().on_started(task_id, task_data)
+        await super().on_started(task_data)
 
-    async def ack(self, task_id, task_data, task_result, *, cancel_reason=None) -> None:
+    async def ack(self, task_data, task_result, *, cancel_reason=None) -> None:
         self.acked += 1
-        await super().ack(task_id, task_data, task_result, cancel_reason=cancel_reason)
+        await super().ack(task_data, task_result, cancel_reason=cancel_reason)
 
 
 def test_class_docstring_names_transport_seam():

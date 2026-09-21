@@ -33,6 +33,7 @@ from ..task_handler.schemas import (
     TaskResult,
     TaskStatus,
     is_control_task,
+    task_data_id,
 )
 from ..task_handler.wire import encode_task_envelope
 from ..task_status import build_running_status, build_terminal_status
@@ -41,15 +42,7 @@ from ._aiomqtt import PacketTypes, Properties
 from .config import MqttWorkerConfig
 from .inbox import MqttInbox
 
-__all__ = ["MqttPublish", "MqttTransport", "TASK_ID_PROPERTY"]
-
-
-#: MQTT 5 user property carrying the task id alongside the envelope payload
-#: (design §10 #2). The envelope stays the pure wire format; the id travels
-#: here because the MQTT transport cannot read it from a stream entry key.
-#: Defined here because both the worker's message loop and the transport's
-#: requeue publish must agree on it.
-TASK_ID_PROPERTY: str = "scietex-task-id"
+__all__ = ["MqttPublish", "MqttTransport"]
 
 
 # The worker owns the aiomqtt connection, so the publish seam is this injected
@@ -225,11 +218,12 @@ class MqttTransport(RecoverableTransport):
         """
         enqueued = await self.ensure_recovered(sink)
         data_blocked = False
-        for task_id, task_data in await self._inbox.pending():
+        for task_data in await self._inbox.pending():
+            task_id = task_data_id(task_data)
             if task_id in self._enqueued:
                 continue
             if is_control_task(task_data):
-                if not sink.enqueue_task(task_id, task_data):
+                if not sink.enqueue_task(task_data):
                     continue  # control lane full; retry next poll
                 self._enqueued.add(task_id)
                 await self._publish_status(
@@ -240,7 +234,7 @@ class MqttTransport(RecoverableTransport):
             if data_blocked or sink.task_queue_full():
                 data_blocked = True
                 continue
-            if not sink.enqueue_task(task_id, task_data):
+            if not sink.enqueue_task(task_data):
                 data_blocked = True
                 continue
             self._enqueued.add(task_id)
@@ -269,11 +263,12 @@ class MqttTransport(RecoverableTransport):
         """
         enqueued = False
         data_blocked = False
-        for task_id, task_data in await self._inbox.recover():
+        for task_data in await self._inbox.recover():
+            task_id = task_data_id(task_data)
             if task_id in self._enqueued:
                 continue
             if is_control_task(task_data):
-                if not sink.enqueue_task(task_id, task_data):
+                if not sink.enqueue_task(task_data):
                     continue
                 self._enqueued.add(task_id)
                 await self._publish_status(
@@ -284,7 +279,7 @@ class MqttTransport(RecoverableTransport):
             if data_blocked or sink.task_queue_full():
                 data_blocked = True
                 continue
-            if not sink.enqueue_task(task_id, task_data):
+            if not sink.enqueue_task(task_data):
                 data_blocked = True
                 continue
             self._enqueued.add(task_id)
@@ -292,47 +287,41 @@ class MqttTransport(RecoverableTransport):
             enqueued = True
         return (not data_blocked), enqueued
 
-    async def requeue(self, task_id: UUID, task_data: TaskData) -> None:
+    async def requeue(self, task_data: TaskData) -> None:
         """Re-queue a task by re-publishing it to the task topic.
 
         Encodes ``task_data`` into a versioned transport envelope (msgpack) and
         publishes it to the resolved task topic at ``task_qos``, so the broker
-        redelivers it. The inbox entry is left non-terminal, so it is also
-        redelivered by recovery after a crash.
-
-        The re-published message carries the ``scietex-task-id`` user property,
-        exactly as a submitter's publish does: the worker's own message loop
-        rejects any message without it, so omitting it would make the retry
-        copy a no-op.
+        redelivers it. The task id travels inside the encoded ``TaskData``, so
+        no user property is needed on the re-published copy. The inbox entry is
+        left non-terminal, so it is also redelivered by recovery after a crash.
 
         The task is then re-advertised as ``queued`` (design §13.4), and its
         progress throttle is dropped without flushing: the fresh run that
         starts on redelivery should not inherit a stale progress value.
         """
-        properties = Properties(PacketTypes.PUBLISH)
-        properties.UserProperty = [(TASK_ID_PROPERTY, str(task_id))]
+        task_id = task_data_id(task_data)
         await self._publish(
             self._topic,
             encode_task_envelope(task_data),
             self._config.task_qos,
-            properties=properties,
         )
         self._progress.pop(task_id, None)
         await self._publish_status(build_running_status(task_id, self._service_name, task_data, status="queued"))
 
-    async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_started(self, task_data: TaskData) -> None:
         """Record that a task began processing (the inbox entry is in-flight).
 
         The task is advertised as ``running`` and its progress throttle is reset
         so a re-delivered task starts clean (design §13.4).
         """
+        task_id = task_data_id(task_data)
         await self._inbox.mark_in_flight(task_id)
         self._progress.pop(task_id, None)
         await self._publish_status(build_running_status(task_id, self._service_name, task_data))
 
     async def ack(
         self,
-        task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
         *,
@@ -350,6 +339,7 @@ class MqttTransport(RecoverableTransport):
         path publishes nothing: the task is not terminal, and ``requeue`` has
         already advertised it as ``queued``.
         """
+        task_id = task_data_id(task_data)
         # A retryable error was already re-published by ``requeue`` with the
         # SAME task id; writing a tombstone here would suppress that retry copy
         # when it arrives (inbox.put skips tombstoned ids), silently losing the
@@ -407,7 +397,7 @@ class MqttTransport(RecoverableTransport):
         else:
             throttle.pending = value
 
-    async def on_drain(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_drain(self, task_data: TaskData) -> None:
         """Release the in-process claim for a drained task without re-enqueueing it.
 
         The inbox entry is left non-terminal (the broker still holds the
@@ -416,6 +406,7 @@ class MqttTransport(RecoverableTransport):
         published and the throttle state is dropped: the task is neither
         terminal nor restarted (design §13.4).
         """
+        task_id = task_data_id(task_data)
         self._enqueued.discard(task_id)
         self._progress.pop(task_id, None)
 

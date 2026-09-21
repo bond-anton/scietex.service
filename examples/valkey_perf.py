@@ -35,7 +35,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from glide import GlideClient
 
@@ -56,6 +56,7 @@ from scietex.service.task_handler import (
     encode_task_envelope,
 )
 from scietex.service.valkey.config import generate_glide_config
+from scietex.service.valkey.transport import TASK_FIELD
 
 _SCRIPT = str(Path(__file__).resolve())
 _READY = "PERF_PRODUCER_READY"
@@ -103,13 +104,12 @@ class PerfWorker(ValkeyWorker):
 
     async def on_task_completed(
         self,
-        task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
         *,
         cancel_reason: CancelReason | None = None,
     ) -> None:
-        await super().on_task_completed(task_id, task_data, task_result, cancel_reason=cancel_reason)
+        await super().on_task_completed(task_data, task_result, cancel_reason=cancel_reason)
         # Single event loop, no await between increment and check: the count is
         # always accurate when the completion event is inspected.
         self._completed += 1
@@ -136,14 +136,16 @@ def build_valkey_config(host: str, port: int) -> ValkeyConfig:
 async def load_tasks(client: GlideClient, stream_name: str, n: int) -> int:
     """Preload ``n`` tasks as one XADD per entry, then return the stream length.
 
-    Each task is its own stream entry (field = task UUID, value = encoded
-    envelope) so the worker acknowledges and deletes exactly one entry per
-    completed task. Packing multiple field/value pairs into a single XADD would
-    share one entry id and corrupt the worker's per-entry ack/delete bookkeeping.
+    Each task is its own stream entry (field = the transport's fixed
+    ``TASK_FIELD``, value = encoded envelope with the task id inside) so the
+    worker acknowledges and deletes exactly one entry per completed task.
+    Packing multiple field/value pairs into a single XADD would share one entry
+    id and corrupt the worker's per-entry ack/delete bookkeeping.
     """
     for _ in range(n):
-        task_id = str(uuid4()).encode("utf-8")
-        await client.xadd(stream_name, [(task_id, encode_task_envelope(TaskData(task="perf")))])
+        await client.xadd(
+            stream_name, [(TASK_FIELD, encode_task_envelope(TaskData(task_id=str(uuid4()), task="perf")))]
+        )
     return await client.xlen(stream_name)
 
 

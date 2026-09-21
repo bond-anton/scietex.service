@@ -26,8 +26,8 @@ async def test_enqueue_task_routes_control_and_data_to_separate_lanes():
     control_id = uuid4()
     data_id = uuid4()
 
-    assert proc.enqueue_task(control_id, TaskData(task="cancel_task", payload=_cancel_payload(uuid4())))
-    assert proc.enqueue_task(data_id, TaskData(task="dummy", payload=b"{}"))
+    assert proc.enqueue_task(TaskData(task_id=str(control_id), task="cancel_task", payload=_cancel_payload(uuid4())))
+    assert proc.enqueue_task(TaskData(task_id=str(data_id), task="dummy", payload=b"{}"))
 
     # Both lanes hold their task; neither was dropped.
     assert not proc.control_queue_empty()
@@ -37,8 +37,8 @@ async def test_enqueue_task_routes_control_and_data_to_separate_lanes():
     # control command stays in its own lane.
     dequeued = proc.dequeue_task()
     assert dequeued is not None
-    assert dequeued[0] == data_id
-    assert dequeued[1].task == "dummy"
+    assert dequeued.task_id == str(data_id)
+    assert dequeued.task == "dummy"
     assert proc.task_queue_empty()
     assert not proc.control_queue_empty()
 
@@ -54,7 +54,7 @@ async def test_cancel_task_bypasses_saturated_data_plane():
     try:
         # Occupy the single data slot so the next data task stays queued.
         blocker_id = uuid4()
-        proc.enqueue_task(blocker_id, TaskData(task="slow", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(blocker_id), task="slow", payload=b"{}"))
         for _ in range(100):
             if blocker_id in proc.running_tasks:
                 break
@@ -62,13 +62,13 @@ async def test_cancel_task_bypasses_saturated_data_plane():
         assert blocker_id in proc.running_tasks
 
         target_id = uuid4()
-        proc.enqueue_task(target_id, TaskData(task="slow", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(target_id), task="slow", payload=b"{}"))
         assert not proc.task_queue_empty()
 
         # The cancel travels the control lane and completes while the data slot
         # is still occupied, removing the queued target.
         cancel_id = uuid4()
-        proc.enqueue_task(cancel_id, TaskData(task="cancel_task", payload=_cancel_payload(target_id)))
+        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id)))
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -94,7 +94,7 @@ async def test_task_queue_manager_polls_when_data_full_but_control_has_room():
     """The intake gate polls fetch_tasks while the data queue is full but the
     control lane still has room, so control commands are not starved (AR-108)."""
     proc = DemoProcessor(TaskProcessorConfig(queue_size=1))
-    proc.enqueue_task(uuid4(), TaskData(task="dummy", payload=b"{}"))
+    proc.enqueue_task(TaskData(task_id=str(uuid4()), task="dummy", payload=b"{}"))
     assert proc.task_queue_full()
     assert not proc.control_queue_full()
 

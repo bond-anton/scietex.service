@@ -360,9 +360,10 @@ topic as an in-memory snapshot. Startup does:
 
 Retained delivery is immediate after SUBACK, so the bounded wait makes startup
 deterministic without hanging a broker that has no retained config.
-`_message_loop`/`_handle_message` (`mqtt/worker.py:699-752`) currently treats
-**every** message as a task and skips messages lacking the `scietex-task-id`
-user property; the source requires **topic-based dispatch** in `_handle_message`:
+`_message_loop`/`_handle_message` (`mqtt/worker.py:699-752`) decodes every
+non-config message as a versioned envelope first (the task id travels inside
+`TaskData.task_id` as of v5.0.0) and skips messages whose envelope does not
+decode; the source requires **topic-based dispatch** in `_handle_message`:
 config-topic messages go to the source, everything else follows the existing
 task path. This is a real, contained change.
 
@@ -688,7 +689,8 @@ Broker-free unit tests follow existing patterns; integration tests use the
 **MQTT — `tests/mqtt/test_config_source.py`** (fake client pattern,
 `tests/mqtt/`)
 - config-topic message updates the snapshot; task-topic message still routes as
-  a task; config message lacking `scietex-task-id` is not treated as a task.
+  a task (decoded as a versioned envelope, id from `TaskData.task_id`); a
+  config-topic message is not treated as a task.
 - `wait_for_snapshot` returns on delivery and times out cleanly when absent.
 - retained config publish sets `retain=True`, `config_qos`, and the `config_ttl`
   message-expiry property.

@@ -11,7 +11,7 @@ Shows how to:
 import asyncio
 import json
 import logging
-from uuid import UUID
+from uuid import uuid4
 
 from scietex.service import TaskProcessor, TaskProcessorConfig
 from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskResult, TaskTimeout
@@ -142,12 +142,11 @@ class InMemoryTaskSource:
     """Simulates an external task source (e.g. database, message queue)."""
 
     def __init__(self) -> None:
-        self._tasks: list[tuple[UUID, TaskData]] = []
+        self._tasks: list[TaskData] = []
 
     def add_task(self, task_data: TaskData) -> None:
-        task_id = UUID(int=len(self._tasks))
-        self._tasks.append((task_id, task_data))
-        self.logger.info("Task source: queued task '%s' (id=%s)", task_data.task, task_id)
+        self._tasks.append(task_data)
+        self.logger.info("Task source: queued task '%s' (id=%s)", task_data.task, task_data.task_id)
 
     @property
     def logger(self):
@@ -176,14 +175,14 @@ class TaskProcessorService(TaskProcessor):
         """
         enqueued = False
         while self._task_source._tasks and not self.task_queue_full():
-            task_id, task_data = self._task_source._tasks.pop(0)
-            self.enqueue_task(task_id, task_data)
+            task_data = self._task_source._tasks.pop(0)
+            self.enqueue_task(task_data)
             enqueued = True
         return enqueued
 
-    async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
+    async def return_task_to_queue(self, task_data: TaskData) -> None:
         """Re-queue tasks that timed out or were canceled."""
-        self.logger.warning("Re-queuing task '%s' (id=%s)", task_data.task, task_id)
+        self.logger.warning("Re-queuing task '%s' (id=%s)", task_data.task, task_data.task_id)
         self._task_source.add_task(task_data)
 
 
@@ -194,12 +193,21 @@ async def main() -> None:
 
     # Create task source and populate with sample tasks
     task_source = InMemoryTaskSource()
-    task_source.add_task(TaskData(task="process_data", payload=b'{"name": "sensor_readings", "value": 42}'))
-    task_source.add_task(TaskData(task="validate_data", payload=b'{"name": "user", "value": 100}'))
-    task_source.add_task(TaskData(task="generate_report", payload=b'{"entries": 5}', timeout=TaskTimeout(timeout=5)))
+    task_source.add_task(
+        TaskData(task_id=str(uuid4()), task="process_data", payload=b'{"name": "sensor_readings", "value": 42}')
+    )
+    task_source.add_task(
+        TaskData(task_id=str(uuid4()), task="validate_data", payload=b'{"name": "user", "value": 100}')
+    )
+    task_source.add_task(
+        TaskData(
+            task_id=str(uuid4()), task="generate_report", payload=b'{"entries": 5}', timeout=TaskTimeout(timeout=5)
+        )
+    )
     # Discard on timeout so the example drains instead of requeueing forever.
     task_source.add_task(
         TaskData(
+            task_id=str(uuid4()),
             task="resize_image",
             payload=b"",
             timeout=TaskTimeout(timeout=1, timeout_action="discard"),

@@ -8,6 +8,15 @@ core. This document specifies that second transport: an MQTT-backed
 `MqttWorker`/`MqttTransport` that reuses the core `TaskTransport` Protocol, the
 transport-agnostic wire format, and the `TransportHealth` supervisor.
 
+> **Post-implementation note (v5.0.0).** The task-id carrier was changed after
+> this design shipped: `TaskData` gained a required `task_id: str` field, so the
+> task id now travels inside the encoded `TaskData` instead of the
+> `scietex-task-id` MQTT 5 user property. `TASK_ID_PROPERTY` and
+> `MqttWorker._extract_task_id` were removed, and `_handle_message` decodes the
+> envelope first (an undecodable envelope — including a pre-v5 payload without
+> a `task_id` — is skipped). This supersedes §6 and §10 #2 below;
+> `docs/mqtt_worker.md` documents the current behaviour.
+
 ---
 
 ## 1. Goals and non-goals
@@ -85,11 +94,11 @@ Implements the eight `TaskTransport` methods. Mapping from MQTT semantics:
 | Protocol method | MQTT behavior |
 |---|---|
 | `fetch(sink)` | Drain the inbox (and/or the aiomqtt message queue) into `sink.enqueue_task` until `sink.task_queue_full()`. Returns `True` if any task was enqueued. |
-| `requeue(task_id, task_data)` | Re-publish the envelope to the task topic (QoS 2), carrying the `scietex-task-id` user property (`mqtt/transport.py:326`), and mark the inbox entry pending again. The user property is load-bearing: the worker's own message loop rejects any message without it. |
-| `on_started(task_id, task_data)` | Mark the inbox entry in-flight. |
-| `ack(task_id, task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and remove it (or tombstone it for dedupe). |
+| `requeue(task_data)` | Re-publish the envelope to the task topic (QoS 2), and mark the inbox entry pending again. The task id travels inside the encoded `TaskData`; the worker's own message loop rejects any message whose envelope does not decode. |
+| `on_started(task_data)` | Mark the inbox entry in-flight. |
+| `ack(task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and remove it (or tombstone it for dedupe). |
 | `on_progress(task_id, value)` | Publish a throttled `TaskProgress` message to the per-task progress topic (addendum §13); a no-op when status publishing is disabled. Progress also stays in-process via `TaskCapabilities`. |
-| `on_drain(task_id, task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. No status is published. |
+| `on_drain(task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. No status is published. |
 | `refresh_leases()` | No-op: the file-backed inbox holds no per-entry lease to renew (kept for parity with `ValkeyTransport`). |
 | `recover_pending_tasks(sink)` | Replay non-terminal inbox entries on the first `fetch` (shared `RecoverableTransport` guard), returning `(recovery_complete, enqueued)`. |
 
@@ -370,7 +379,8 @@ No new format. `MqttTransport` uses the existing transport-agnostic helpers:
 (`scietex-task-id`) alongside the envelope payload. The envelope stays the pure
 wire format — no wire-format change, no topic churn. This is the one place the
 MQTT transport needs information the Valkey transport gets for free from the
-stream entry key.
+stream entry key. **Superseded in v5.0.0** (see post-implementation note above):
+the id now travels inside `TaskData.task_id`.
 
 ---
 
@@ -437,7 +447,7 @@ implementation.
 | # | Question | Decision |
 |---|---|---|
 | 1 | Protocol version | **MQTT 5 only.** Single code path; user properties available. |
-| 2 | Task-id carrier | **MQTT 5 user property** (`scietex-task-id`). The envelope stays untouched. |
+| 2 | Task-id carrier | **MQTT 5 user property** (`scietex-task-id`). The envelope stays untouched. *(Superseded v5.0.0 — the id now travels inside `TaskData.task_id`; see note above.)* |
 | 3 | Inbox backend | **File-backed, behind the `MqttInbox` Protocol.** No new dependency; single-process; retired when aiomqtt v3 lands. |
 | 4 | `TransportHealth` hoist | **Hoist to core now** (`src/scietex/service/health.py`), re-export from `scietex.service.valkey.health` for back-compat. |
 | 5 | Status/progress persistence | **No status store; status publisher instead** (amended, addendum §13). `MqttTransport` publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics. There is no read-back API, so this is not a store and does not reverse the original decision. |
@@ -524,7 +534,7 @@ dashboard needs to render progress. The alternatives were rejected for concrete
 reasons:
 
 - **Status on the task topic.** `scietex/{service}/tasks` carries the versioned
-  `TaskEnvelope` payload plus the `scietex-task-id` user property. Publishing
+  `TaskEnvelope` payload. Publishing
   status there would force every task consumer to filter messages by shape, mix
   observability traffic into the delivery path, and make the retained flag
   unusable (a retained status on the task topic would be redelivered as a bogus
@@ -562,8 +572,8 @@ With the defaults (`service_name="worker"`, `status_topic_prefix =
 | Task status | `scietex/worker/tasks/{task_id}/status` | 1 | **yes** |
 | Task progress | `scietex/worker/tasks/{task_id}/progress` | 0 | no |
 
-`task_id` is the string form of the task `UUID` — the same value carried in the
-`scietex-task-id` user property and used in the Valkey store key.
+`task_id` is the string form of the task `UUID` — the same value carried in
+`TaskData.task_id` and used in the Valkey store key.
 
 Subscription examples:
 

@@ -21,7 +21,7 @@ async def test_watchdog_requeues_timed_out_task():
     settings = make_settings(task_cancellation_timeout=0.1)
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
     task_id = uuid4()
-    task_data = TaskData(task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
+    task_data = TaskData(task_id=str(task_id), task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
     tracker = register_running(lifecycle, task_id, task_data, started=-100.0)
 
     await executor.watchdog()
@@ -41,7 +41,7 @@ async def test_watchdog_discards_timed_out_task():
     settings = make_settings(task_cancellation_timeout=0.1)
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
     task_id = uuid4()
-    task_data = TaskData(task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="discard"))
+    task_data = TaskData(task_id=str(task_id), task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="discard"))
     tracker = register_running(lifecycle, task_id, task_data, started=-100.0)
 
     await executor.watchdog()
@@ -60,7 +60,7 @@ async def test_watchdog_uses_configured_task_timeout_when_per_task_none():
     settings = make_settings(task_timeout=0.1, task_cancellation_timeout=0.1)
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
     task_id = uuid4()
-    task_data = TaskData(task="slow", timeout=TaskTimeout(timeout=None, timeout_action="requeue"))
+    task_data = TaskData(task_id=str(task_id), task="slow", timeout=TaskTimeout(timeout=None, timeout_action="requeue"))
     register_running(lifecycle, task_id, task_data, started=-100.0)
 
     await executor.watchdog()
@@ -77,7 +77,7 @@ async def test_watchdog_ignores_non_positive_timeout():
     settings = make_settings(task_timeout=3.0)
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
     task_id = uuid4()
-    task_data = TaskData(task="never", timeout=TaskTimeout(timeout=0, timeout_action="requeue"))
+    task_data = TaskData(task_id=str(task_id), task="never", timeout=TaskTimeout(timeout=0, timeout_action="requeue"))
     tracker = register_running(lifecycle, task_id, task_data, started=-100.0)
 
     await executor.watchdog()
@@ -107,7 +107,7 @@ async def test_watchdog_requeues_until_ceiling_then_terminates():
         max_timeout_requeues=2,
     )
     task_id = uuid4()
-    task_data = TaskData(task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
+    task_data = TaskData(task_id=str(task_id), task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
 
     # First redelivery: under budget, requeue and bump to 1.
     register_running(lifecycle, task_id, task_data, started=-100.0)
@@ -144,7 +144,7 @@ async def test_watchdog_zero_ceiling_never_requeues():
         max_timeout_requeues=0,
     )
     task_id = uuid4()
-    task_data = TaskData(task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
+    task_data = TaskData(task_id=str(task_id), task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
     tracker = register_running(lifecycle, task_id, task_data, started=-100.0)
 
     await executor.watchdog()

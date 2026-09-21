@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import CANCEL_TASK_TYPE, TaskData, TaskResult
+from scietex.service.task_handler.schemas import CANCEL_TASK_TYPE, TaskData, TaskResult, task_data_id
 from scietex.service.task_lifecycle import TaskLifecycle
 
 from ._helpers import Recording, build_executor, register_finished
@@ -19,12 +19,12 @@ async def test_settle_removes_tracker_and_acks_result():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task="dummy")
+    task_data = TaskData(task_id=str(task_id), task="dummy")
     result = TaskResult(status="success")
-    queue.put_nowait((task_id, task_data))
+    queue.put_nowait(task_data)
     await register_finished(lifecycle, task_id, task_data)
 
-    await executor._settle(task_id, task_data, result)
+    await executor._settle(task_data, result)
 
     assert task_id not in lifecycle.trackers()
     assert recording.completed == [(task_id, task_data, result, None)]
@@ -38,12 +38,12 @@ async def test_settle_consumes_cancel_reason():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task="dummy")
-    queue.put_nowait((task_id, task_data))
+    task_data = TaskData(task_id=str(task_id), task="dummy")
+    queue.put_nowait(task_data)
     await register_finished(lifecycle, task_id, task_data)
     lifecycle.mark_cancelled(task_id, "deliberate")
 
-    await executor._settle(task_id, task_data, None)
+    await executor._settle(task_data, None)
 
     _, _, acked, cancel_reason = recording.completed[0]
     assert acked is None
@@ -56,8 +56,8 @@ async def test_settle_ack_failure_is_logged_not_raised():
     """A transport ack failure must not raise out of settle."""
 
     class RaisingRecording(Recording):
-        async def on_completed(self, task_id, task_data, result, *, cancel_reason=None):
-            self.completed.append((task_id, task_data, result, cancel_reason))
+        async def on_completed(self, task_data, result, *, cancel_reason=None):
+            self.completed.append((task_data_id(task_data), task_data, result, cancel_reason))
             raise RuntimeError("ack boom")
 
     recording = RaisingRecording()
@@ -65,11 +65,11 @@ async def test_settle_ack_failure_is_logged_not_raised():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task="dummy")
-    queue.put_nowait((task_id, task_data))
+    task_data = TaskData(task_id=str(task_id), task="dummy")
+    queue.put_nowait(task_data)
     await register_finished(lifecycle, task_id, task_data)
 
-    await executor._settle(task_id, task_data, TaskResult(status="success"))
+    await executor._settle(task_data, TaskResult(status="success"))
 
     assert task_id not in lifecycle.trackers()
 
@@ -82,10 +82,10 @@ async def test_execute_swallows_exception():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task="raiser")
-    queue.put_nowait((task_id, task_data))
+    task_data = TaskData(task_id=str(task_id), task="raiser")
+    queue.put_nowait(task_data)
 
-    await executor._handle_task(task_id, task_data)
+    await executor._handle_task(task_data)
 
     assert recording.completed == [(task_id, task_data, None, None)]
 
@@ -96,8 +96,8 @@ async def test_execute_propagates_cancelled_error():
     while the settle step still runs and acks None."""
 
     class CancelRecording(Recording):
-        async def process_task(self, task_id, task_data):
-            self.processed.append((task_id, task_data))
+        async def process_task(self, task_data):
+            self.processed.append((task_data_id(task_data), task_data))
             raise asyncio.CancelledError()
 
     recording = CancelRecording()
@@ -105,11 +105,11 @@ async def test_execute_propagates_cancelled_error():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task="cancelled")
-    queue.put_nowait((task_id, task_data))
+    task_data = TaskData(task_id=str(task_id), task="cancelled")
+    queue.put_nowait(task_data)
 
     with pytest.raises(asyncio.CancelledError):
-        await executor._handle_task(task_id, task_data)
+        await executor._handle_task(task_data)
 
     assert recording.completed == [(task_id, task_data, None, None)]
 
@@ -123,12 +123,12 @@ async def test_settle_balances_control_lane():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, control_queue=control_queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task=CANCEL_TASK_TYPE)
-    control_queue.put_nowait((task_id, task_data))
+    task_data = TaskData(task_id=str(task_id), task=CANCEL_TASK_TYPE)
+    control_queue.put_nowait(task_data)
     await register_finished(lifecycle, task_id, task_data)
     executor._control_running.add(task_id)
 
-    await executor._settle(task_id, task_data, TaskResult(status="success"))
+    await executor._settle(task_data, TaskResult(status="success"))
 
     await asyncio.wait_for(control_queue.join(), timeout=0.1)
     assert task_id not in executor._control_running

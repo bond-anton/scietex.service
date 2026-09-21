@@ -281,13 +281,14 @@ Drains the internal task queue and cancels running tasks via the parent
 Re-queue a task by appending it to the Valkey task stream.
 
 ```python
-async def requeue(self, task_id: UUID, task_data: TaskData) -> None:
+async def requeue(self, task_data: TaskData) -> None:
     """Encode TaskData into a versioned envelope, append to task stream."""
 ```
 
 `ValkeyTransport.requeue()` encodes `task_data` into a versioned
 `TaskEnvelope` (see [Wire Format](#wire-format)) and appends a new entry to the
-stream. The entry key is the string representation of `task_id`. It also
+stream under the fixed `TASK_FIELD` (`b"task"`) field name; the task id travels
+inside the encoded `TaskData.task_id`. It also
 deletes the per-entry lease as part of the requeue: the requeued copy reuses
 the same `task_id`, so leaving this worker's lease in place would block a peer
 from claiming the copy (AR-077b).
@@ -310,7 +311,7 @@ On the first call, recovers entries left pending by a previous run (see
 `XREADGROUP` with `block_ms=1000` and the configured consumer group,
 decodes each versioned envelope payload into a `TaskData` struct (see
 [Wire Format](#wire-format)), and enqueues it via
-the non-blocking `enqueue_task()` as a `(UUID, TaskData)` tuple. Each
+the non-blocking `enqueue_task()`. Each
 accepted entry's id is recorded in the transport's entry-id map and its
 per-entry lease is written at enqueue-accept (ownership begins when the entry
 is recorded), so a task is protected from a peer's recovery for its whole
@@ -331,7 +332,6 @@ Acknowledge the stream entry for a completed task.
 ```python
 async def ack(
     self,
-    task_id: UUID,
     task_data: TaskData,
     task_result: TaskResult | None,
     *,

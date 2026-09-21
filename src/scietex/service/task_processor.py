@@ -38,6 +38,7 @@ from .task_handler import (
     TaskTracker,
     is_control_task,
 )
+from .task_handler.schemas import task_data_id
 from .task_lifecycle import TaskLifecycle
 from .transport import InMemoryTransport, TaskTransport
 
@@ -136,8 +137,8 @@ class TaskProcessor(BasicWorker):
         # together only here and in `_apply_reloadable_config`.
         self._effective: ReloadableSettings = resolve_reloadable_settings(cfg, self.logger)
 
-        self.__task_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
-        self.__control_queue: asyncio.Queue[tuple[UUID, TaskData]] = asyncio.Queue(maxsize=self.queue_size)
+        self.__task_queue: asyncio.Queue[TaskData] = asyncio.Queue(maxsize=self.queue_size)
+        self.__control_queue: asyncio.Queue[TaskData] = asyncio.Queue(maxsize=self.queue_size)
 
         # Task execution loop (AR-101): the executor owns the dequeue -> track
         # -> dispatch -> retry -> ack machinery but shares the processor's
@@ -367,7 +368,7 @@ class TaskProcessor(BasicWorker):
         self._effective = effective
         return changed
 
-    def enqueue_task(self, task_id: UUID, task_data: TaskData) -> bool:
+    def enqueue_task(self, task_data: TaskData) -> bool:
         """Enqueue a task for processing without blocking.
 
         Control-plane commands (AR-108) are routed to the priority control lane
@@ -377,7 +378,7 @@ class TaskProcessor(BasicWorker):
         """
         queue = self.__control_queue if is_control_task(task_data) else self.__task_queue
         try:
-            queue.put_nowait((task_id, task_data))
+            queue.put_nowait(task_data)
         except asyncio.QueueFull:
             return False
         return True
@@ -398,12 +399,11 @@ class TaskProcessor(BasicWorker):
         """Whether the control-plane lane has reached its maximum size."""
         return self.__control_queue.full()
 
-    def dequeue_task(self) -> tuple[UUID, TaskData] | None:
+    def dequeue_task(self) -> TaskData | None:
         """Remove and return the next pending task without blocking.
 
         Returns:
-            The ``(task_id, task_data)`` tuple, or ``None`` if the queue is
-            empty.
+            The next ``TaskData``, or ``None`` if the queue is empty.
         """
         try:
             return self.__task_queue.get_nowait()
@@ -615,7 +615,7 @@ class TaskProcessor(BasicWorker):
                 return handler
         return None
 
-    async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
+    async def return_task_to_queue(self, task_data: TaskData) -> None:
         """Return a task to its external source queue.
 
         Compatibility shim: prefer overriding
@@ -624,10 +624,9 @@ class TaskProcessor(BasicWorker):
         ``requeue``. The default delegates to the transport's ``requeue`` hook.
 
         Args:
-            task_id: The unique identifier of the task.
             task_data: The task data to return to the external queue.
         """
-        await self._transport.requeue(task_id, task_data)
+        await self._transport.requeue(task_data)
 
     async def _cancel_task(self, target_id: UUID) -> CancelOutcome:
         """Cancel a running or queued task by id.
@@ -652,7 +651,6 @@ class TaskProcessor(BasicWorker):
 
     async def on_task_completed(
         self,
-        task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
         *,
@@ -670,7 +668,6 @@ class TaskProcessor(BasicWorker):
         after the handler's work on it is done (at-least-once).
 
         Args:
-            task_id: Identifier of the task.
             task_data: The task data that was processed.
             task_result: The handler's result, or ``None`` on cancellation.
             cancel_reason: Why the task was cancelled, when it was. ``None``
@@ -678,9 +675,9 @@ class TaskProcessor(BasicWorker):
                 ``cancel_task`` request; ``"timeout"``/``"shutdown"`` mark
                 framework-driven cancellation.
         """
-        await self._transport.ack(task_id, task_data, task_result, cancel_reason=cancel_reason)
+        await self._transport.ack(task_data, task_result, cancel_reason=cancel_reason)
 
-    async def on_task_started(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_task_started(self, task_data: TaskData) -> None:
         """Hook invoked when a task begins processing.
 
         Compatibility shim: prefer overriding
@@ -688,7 +685,7 @@ class TaskProcessor(BasicWorker):
         via ``transport=``. The default delegates to the transport's
         ``on_started`` hook, which publishes a ``running`` tracking record.
         """
-        await self._transport.on_started(task_id, task_data)
+        await self._transport.on_started(task_data)
 
     async def _write_task_progress(self, task_id: UUID, value: float) -> None:
         """Hook invoked when a handler reports granular progress.
@@ -723,7 +720,7 @@ class TaskProcessor(BasicWorker):
                 return False
         return True
 
-    async def _on_queue_drain_task_processing(self, task_id: UUID, task_data: TaskData) -> None:
+    async def _on_queue_drain_task_processing(self, task_data: TaskData) -> None:
         """Handle a task still queued when the in-process queue is drained on shutdown.
 
         Compatibility shim: prefer overriding
@@ -739,10 +736,9 @@ class TaskProcessor(BasicWorker):
         redelivered on restart, so re-enqueueing here would duplicate them.
 
         Args:
-            task_id: Identifier of the queued task.
             task_data: The task data that was still queued at drain time.
         """
-        await self._transport.on_drain(task_id, task_data)
+        await self._transport.on_drain(task_data)
 
     async def cleanup(self) -> None:
         """Release resources and stop processing before exit.
@@ -761,7 +757,7 @@ class TaskProcessor(BasicWorker):
             await self._stop_task_handler(handler_name)
         self.logger.debug("All task handlers cleaned up")
 
-    async def process_task(self, task_id: UUID, task_data: TaskData) -> TaskResult:
+    async def process_task(self, task_data: TaskData) -> TaskResult:
         """Process a single task by dispatching to the appropriate handler.
 
         Looks up a handler that supports the task type via
@@ -778,12 +774,12 @@ class TaskProcessor(BasicWorker):
         no matching handler) are permanent and leave ``retryable=False``.
 
         Args:
-            task_id: Identifier of the task to process.
             task_data: The data associated with the task.
 
         Returns:
             A ``TaskResult`` with the processing outcome.
         """
+        task_id = task_data_id(task_data)
         self.logger.log(logging.DEBUG, "Processing task %s (%s): %s", task_data.task, task_id, task_data)
 
         task_type = task_data.task

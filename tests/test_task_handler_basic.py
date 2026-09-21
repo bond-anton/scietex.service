@@ -74,7 +74,9 @@ async def test_dummyhandler_lifecycle():
     assert not handler.supports("other")
 
     # handle should return expected result
-    res = await handler.handle(TaskData(task="dummy", payload=b'{"value": 123}'), capabilities=_capabilities())
+    res = await handler.handle(
+        TaskData(task_id=str(uuid4()), task="dummy", payload=b'{"value": 123}'), capabilities=_capabilities()
+    )
     assert res.status == "success"
     assert res.payload.decode("utf-8") == '{"value": 123}'
 

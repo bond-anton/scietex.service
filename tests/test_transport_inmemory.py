@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from scietex.service.task_handler import CANCEL_TASK_TYPE
-from scietex.service.task_handler.schemas import TaskData
+from scietex.service.task_handler.schemas import TaskData, task_data_id
 from scietex.service.transport import InMemoryTransport, RecoverableTransport, TaskSink
 
 
@@ -26,7 +26,8 @@ class FakeSink:
     def task_queue_full(self) -> bool:
         return self.full
 
-    def enqueue_task(self, task_id: UUID, task_data: TaskData) -> bool:
+    def enqueue_task(self, task_data: TaskData) -> bool:
+        task_id = task_data_id(task_data)
         if task_id in self.reject:
             return False
         self.items.append((task_id, task_data))
@@ -40,9 +41,10 @@ async def test_fetch_drains_submitted_tasks_and_reports():
     transport = InMemoryTransport(logger=_logger())
     sink = FakeSink()
     t1, t2 = uuid4(), uuid4()
-    d1, d2 = TaskData(task="a"), TaskData(task="b")
-    transport.submit(t1, d1)
-    transport.submit(t2, d2)
+    d1 = TaskData(task_id=str(t1), task="a")
+    d2 = TaskData(task_id=str(t2), task="b")
+    transport.submit(d1)
+    transport.submit(d2)
 
     assert await transport.fetch(sink) is True
     assert sink.items == [(t1, d1), (t2, d2)]
@@ -55,10 +57,12 @@ async def test_fetch_stops_at_queue_full_and_preserves_order_on_reject():
     task the rejected task is put back at the front, preserving order."""
     transport = InMemoryTransport(logger=_logger())
     t1, t2, t3 = uuid4(), uuid4(), uuid4()
-    d1, d2, d3 = TaskData(task="a"), TaskData(task="b"), TaskData(task="c")
-    transport.submit(t1, d1)
-    transport.submit(t2, d2)
-    transport.submit(t3, d3)
+    d1 = TaskData(task_id=str(t1), task="a")
+    d2 = TaskData(task_id=str(t2), task="b")
+    d3 = TaskData(task_id=str(t3), task="c")
+    transport.submit(d1)
+    transport.submit(d2)
+    transport.submit(d3)
 
     # A full sink accepts nothing and reports nothing enqueued.
     full_sink = FakeSink(full=True)
@@ -82,12 +86,12 @@ async def test_requeue_redelivers_on_next_fetch():
     transport = InMemoryTransport(logger=_logger())
     sink = FakeSink()
     t1 = uuid4()
-    d1 = TaskData(task="a")
-    transport.submit(t1, d1)
+    d1 = TaskData(task_id=str(t1), task="a")
+    transport.submit(d1)
     await transport.fetch(sink)
     assert sink.items == [(t1, d1)]
 
-    await transport.requeue(t1, d1)
+    await transport.requeue(d1)
     sink.items.clear()
     assert await transport.fetch(sink) is True
     assert sink.items == [(t1, d1)]
@@ -100,11 +104,11 @@ async def test_on_drain_requeues_iff_canceled_action_is_requeue():
     transport = InMemoryTransport(logger=_logger())
     sink = FakeSink()
     t1, t2 = uuid4(), uuid4()
-    requeue_data = TaskData(task="a", canceled_action="requeue")
-    discard_data = TaskData(task="b", canceled_action="discard")
+    requeue_data = TaskData(task_id=str(t1), task="a", canceled_action="requeue")
+    discard_data = TaskData(task_id=str(t2), task="b", canceled_action="discard")
 
-    await transport.on_drain(t1, requeue_data)
-    await transport.on_drain(t2, discard_data)
+    await transport.on_drain(requeue_data)
+    await transport.on_drain(discard_data)
 
     assert await transport.fetch(sink) is True
     assert sink.items == [(t1, requeue_data)]
@@ -116,10 +120,10 @@ async def test_started_ack_progress_are_noops():
     they neither enqueue nor raise."""
     transport = InMemoryTransport(logger=_logger())
     t1 = uuid4()
-    data = TaskData(task="a")
+    data = TaskData(task_id=str(t1), task="a")
 
-    await transport.on_started(t1, data)
-    await transport.ack(t1, data, None)
+    await transport.on_started(data)
+    await transport.ack(data, None)
     await transport.on_progress(t1, 42.0)
 
     assert await transport.fetch(FakeSink()) is False
@@ -131,8 +135,8 @@ async def test_refresh_leases_is_noop():
     in-memory transport holds no lease to renew."""
     transport = InMemoryTransport(logger=_logger())
     t1 = uuid4()
-    data = TaskData(task="a")
-    transport.submit(t1, data)
+    data = TaskData(task_id=str(t1), task="a")
+    transport.submit(data)
 
     await transport.refresh_leases()
 
@@ -207,15 +211,15 @@ async def test_fetch_delivers_control_behind_full_data_lane():
     while the data tasks stay pending (AR-108)."""
     transport = InMemoryTransport(logger=_logger())
     t1, t2 = uuid4(), uuid4()
-    data = TaskData(task="a")
-    control = TaskData(task=CANCEL_TASK_TYPE)
-    transport.submit(t1, data)
-    transport.submit(t2, control)
+    data = TaskData(task_id=str(t1), task="a")
+    control = TaskData(task_id=str(t2), task=CANCEL_TASK_TYPE)
+    transport.submit(data)
+    transport.submit(control)
 
     sink = FakeSink(full=True)
     assert await transport.fetch(sink) is True
     assert sink.items == [(t2, control)]
-    assert list(transport._pending) == [(t1, data)]
+    assert list(transport._pending) == [data]
 
 
 @pytest.mark.asyncio
@@ -224,12 +228,14 @@ async def test_fetch_preserves_data_fifo_when_control_interleaved():
     and leaves data FIFO order [d1, d2] intact (AR-108)."""
     transport = InMemoryTransport(logger=_logger())
     t1, t2, t3 = uuid4(), uuid4(), uuid4()
-    d1, c1, d2 = TaskData(task="a"), TaskData(task=CANCEL_TASK_TYPE), TaskData(task="b")
-    transport.submit(t1, d1)
-    transport.submit(t2, c1)
-    transport.submit(t3, d2)
+    d1 = TaskData(task_id=str(t1), task="a")
+    c1 = TaskData(task_id=str(t2), task=CANCEL_TASK_TYPE)
+    d2 = TaskData(task_id=str(t3), task="b")
+    transport.submit(d1)
+    transport.submit(c1)
+    transport.submit(d2)
 
     sink = FakeSink(full=True)
     assert await transport.fetch(sink) is True
     assert sink.items == [(t2, c1)]
-    assert list(transport._pending) == [(t1, d1), (t3, d2)]
+    assert list(transport._pending) == [d1, d2]

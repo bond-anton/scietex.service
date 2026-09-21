@@ -42,7 +42,7 @@ Run all commands (linters, tests, examples) within this environment.
 **Transport layer:**
 - `TaskTransport` — Protocol for the task-delivery backend (`fetch`/`requeue`/`on_started`/`ack`/`on_progress`/`on_drain`/`refresh_leases`/`recover_pending_tasks`); `TaskProcessor` composes one via the keyword-only `transport=` argument
 - `TaskSink` — Protocol for the enqueue surface a transport delivers into (`task_queue_full`/`enqueue_task`)
-- `InMemoryTransport` — Default in-process transport (deque-backed; feed it with `submit(task_id, task_data)`)
+- `InMemoryTransport` — Default in-process transport (deque-backed; feed it with `submit(task_data)`)
 - `ValkeyTransport` (`scietex.service.valkey`) — Valkey-stream implementation, injected automatically by `ValkeyWorker`
 - `MqttTransport` (`scietex.service.mqtt`) — MQTT 5 implementation draining a durable file-backed inbox, injected automatically by `MqttWorker`
 - The legacy hooks (`fetch_tasks`, `return_task_to_queue`, `on_task_started`, `on_task_completed`, `_write_task_progress`, `_on_queue_drain_task_processing`) remain on `TaskProcessor` as thin delegators to the transport
@@ -128,7 +128,7 @@ is created.
 - Read deferred to first `connect()` (AR-066): constructing `MqttWorker()` with no explicit `mqtt_config` does not touch the filesystem
 - `MqttWorkerConfig.mqtt_config` is `MqttConfig | None`; `MqttConfig` fields: `host`, `port`, `username`, `password`, `identifier`, `keepalive`, `clean_start`, `session_expiry_interval`, `transport`, `timeout`, `tls_insecure`, `tls_context`
 - `MqttWorkerConfig` fields: `task_topic` (`scietex/{service}/tasks`), `task_qos` (default 2), `inbox_backend` (`"file"`/`"memory"`/`"none"`), `inbox_path`, `inbox_ttl` (default 86400, range `[1, 2592000]`, `None` disables expiry), `log_topic` (`scietex/{service}/log`), `log_qos` (default 0), `log_retain`, `status_publish_enabled` (default `True`), `status_topic_prefix` (default `scietex/{service}/tasks`), `status_qos` (default 1, range `[0, 2]`), `status_ttl` (default 86400, range `[1, 2592000]`, `None` disables expiry), `progress_qos` (default 0, range `[0, 2]`), `progress_min_interval` (default 1.0, range `[0.0, 3600.0]`), `progress_min_delta` (default 0.0, range `[0.0, 100.0]`), `config_topic` (`scietex/{service}/config`), `config_qos` (default 1, range `[0, 2]`), `config_ttl` (default 86400, range `[1, 2592000]`, `None` disables expiry)
-- MQTT 5 only; the task id travels as the `scietex-task-id` user property (the `TaskEnvelope` wire format is untouched)
+- MQTT 5 only; the task id travels inside the encoded `TaskData` (its required `task_id` field), not as a separate user property
 - Delivery semantics: aiomqtt v2.5.1 auto-acks at the broker when `on_message` returns, so wire QoS 2 is at-most-once at the app layer; the durable file inbox restores at-least-once by persisting every received message before processing and deduping on replay via tombstones. `inbox_backend="memory"` (or its alias `"none"`) is the explicit at-most-once opt-out, backed by `MemoryInbox`
 - No status store: `MqttTransport` publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics (`scietex/{service}/tasks/{task_id}/status` default QoS 1 retained, `.../progress` default QoS 0 not retained) — a publisher with no read-back API, not a store; `status_publish_enabled=False` restores the no-op; progress also remains in-process via `TaskCapabilities`
 - Registry/heartbeat use retained-message topics `scietex/{service}/workers/{instance_id}`
@@ -151,7 +151,7 @@ is created.
 4. `handle(task_data, *, capabilities=...)` returns `TaskResult`; report progress via `capabilities.report_progress(value)`
 
 **Task schemas (msgspec.Struct):**
-- `TaskData`: `task: str`, `payload: bytes`, `timeout: TaskTimeout`, `canceled_action: "requeue"|"discard"`
+- `TaskData`: `task_id: str`, `task: str`, `payload: bytes`, `timeout: TaskTimeout`, `canceled_action: "requeue"|"discard"`
 - `TaskResult`: `status: "success"|"error"`, `error: str`, `payload: bytes`, `processed_at: datetime`, `error_code: str`, `retryable: bool`, `partial: bool`
 - `TaskTimeout`: `timeout: float | None`, `timeout_action: "requeue"|"discard"`
 - `TaskEnvelope`: `version: int = 1`, `data: bytes` — versioned transport envelope; encode/decode via `task_handler.wire` (`encode_task_envelope`/`decode_task_envelope`)

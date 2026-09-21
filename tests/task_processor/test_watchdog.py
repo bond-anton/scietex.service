@@ -29,8 +29,8 @@ async def test_watchdog_requeues_timed_out_task():
     # push a task that will timeout quickly
     t_id = uuid4()
     proc.enqueue_task(
-        t_id,
         TaskData(
+            task_id=str(t_id),
             task="slow",
             payload=b'{"value": 5}',
             timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
@@ -60,8 +60,8 @@ async def test_watchdog_uses_configured_task_timeout_when_per_task_none():
     try:
         t_id = uuid4()
         proc.enqueue_task(
-            t_id,
             TaskData(
+                task_id=str(t_id),
                 task="slow",
                 payload=b"{}",
                 timeout=TaskTimeout(timeout=None, timeout_action="requeue"),
@@ -88,8 +88,8 @@ async def test_watchdog_does_not_requeue_when_handler_ignores_cancellation():
     try:
         t_id = uuid4()
         proc.enqueue_task(
-            t_id,
             TaskData(
+                task_id=str(t_id),
                 task="stubborn",
                 payload=b"{}",
                 timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
@@ -119,8 +119,8 @@ async def test_watchdog_ignored_cancellation_preserves_timeout_reason():
     try:
         t_id = uuid4()
         proc.enqueue_task(
-            t_id,
             TaskData(
+                task_id=str(t_id),
                 task="stubborn",
                 payload=b"{}",
                 timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),
@@ -150,8 +150,8 @@ async def test_watchdog_ignores_non_positive_timeout():
     try:
         t_id = uuid4()
         proc.enqueue_task(
-            t_id,
             TaskData(
+                task_id=str(t_id),
                 task="never",
                 payload=b"{}",
                 timeout=TaskTimeout(timeout=0, timeout_action="requeue"),
@@ -184,8 +184,8 @@ async def test_watchdog_ignores_non_positive_configured_task_timeout():
     try:
         t_id = uuid4()
         proc.enqueue_task(
-            t_id,
             TaskData(
+                task_id=str(t_id),
                 task="never",
                 payload=b"{}",
                 timeout=TaskTimeout(timeout=None, timeout_action="requeue"),
@@ -227,8 +227,8 @@ async def test_watchdog_bounds_timeout_requeue_loop():
     try:
         t_id = uuid4()
         proc.enqueue_task(
-            t_id,
             TaskData(
+                task_id=str(t_id),
                 task="never",
                 payload=b"{}",
                 timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"),

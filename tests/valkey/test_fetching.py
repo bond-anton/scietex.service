@@ -11,6 +11,7 @@ from scietex.service.task_handler.schemas import TaskData
 from scietex.service.task_handler.wire import encode_task_envelope
 from scietex.service.valkey._glide import ExpirySet, ExpiryType
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
+from scietex.service.valkey.transport import TASK_FIELD
 
 from ._helpers import DummyClient, FakeHandler, _entry
 
@@ -19,9 +20,10 @@ from ._helpers import DummyClient, FakeHandler, _entry
 async def test_fetch_tasks_does_not_ack_on_enqueue():
     """fetch_tasks must not XACK/XDEL on enqueue; it records the entry id so
     the entry stays pending until the handler completes (AR-005)."""
-    task_data = TaskData(task="dummy", payload=b"{}")
+    t_id = UUID("11111111-1111-1111-1111-111111111111")
+    task_data = TaskData(task_id=str(t_id), task="dummy", payload=b"{}")
     payload = encode_task_envelope(task_data)
-    client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
 
@@ -30,7 +32,8 @@ async def test_fetch_tasks_does_not_ack_on_enqueue():
     assert client.acked == [], "fetch_tasks must not ack on enqueue"
     assert client.deleted == [], "fetch_tasks must not delete on enqueue"
     assert not worker.task_queue_empty()
-    t_id, t_data = worker.dequeue_task()
+    t_data = worker.dequeue_task()
+    assert t_data is not None
     assert t_data.task == "dummy"
     assert worker._task_entry_ids[t_id] == b"1-0"
 
@@ -39,9 +42,9 @@ async def test_fetch_tasks_does_not_ack_on_enqueue():
 async def test_fetch_tasks_reads_batch_and_reports_enqueued():
     """fetch_tasks must read up to task_fetch_batch_size entries per XREADGROUP
     and return True when it enqueued at least one task (AR-042)."""
-    task_data = TaskData(task="dummy", payload=b"{}")
+    task_data = TaskData(task_id="11111111-1111-1111-1111-111111111111", task="dummy", payload=b"{}")
     payload = encode_task_envelope(task_data)
-    client = DummyClient(xreadgroup_result=_entry(b"1-0", "11111111-1111-1111-1111-111111111111", payload))
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig(), task_fetch_batch_size=25))
     worker._client = client
 
@@ -115,9 +118,9 @@ async def test_fetch_tasks_writes_lease_on_enqueue_accept():
     is recorded in _task_entry_ids and the lease key is written with the
     consumer-name value and the derived TTL."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
-    task_data = TaskData(task="dummy", payload=b"{}")
+    task_data = TaskData(task_id=str(t_id), task="dummy", payload=b"{}")
     payload = encode_task_envelope(task_data)
-    client = DummyClient(xreadgroup_result=_entry(b"1-0", str(t_id), payload))
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
     worker._client = client
     worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
@@ -137,14 +140,14 @@ async def test_fetch_tasks_queue_full_does_not_write_lease():
     """A full queue at fetch time leaves the stream entry pending: no lease is
     written, the entry is not recorded, and the stream is not acked."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
-    task_data = TaskData(task="dummy", payload=b"{}")
+    task_data = TaskData(task_id=str(t_id), task="dummy", payload=b"{}")
     payload = encode_task_envelope(task_data)
-    client = DummyClient(xreadgroup_result=_entry(b"1-0", str(t_id), payload))
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
     worker._client = client
     worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
     filler = UUID("99999999-9999-9999-9999-999999999999")
-    assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
+    assert worker.enqueue_task(TaskData(task_id=str(filler), task="dummy", payload=b"{}")) is True
 
     enqueued = await worker.fetch_tasks()
 
@@ -160,14 +163,14 @@ async def test_fetch_tasks_defers_then_flushes_when_room():
     written, entry id not recorded); once the lane has room, the next fetch
     flushes it (enqueued, entry id recorded, lease written)."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
-    task_data = TaskData(task="dummy", payload=b"{}")
+    task_data = TaskData(task_id=str(t_id), task="dummy", payload=b"{}")
     payload = encode_task_envelope(task_data)
-    client = DummyClient(xreadgroup_result=_entry(b"1-0", str(t_id), payload))
+    client = DummyClient(xreadgroup_result=_entry(b"1-0", payload))
     worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
     worker._client = client
     worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
     filler = UUID("99999999-9999-9999-9999-999999999999")
-    assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
+    assert worker.enqueue_task(TaskData(task_id=str(filler), task="dummy", payload=b"{}")) is True
 
     enqueued = await worker.fetch_tasks()
 
@@ -205,13 +208,12 @@ async def test_fetch_tasks_stops_reading_when_deferred_full():
     worker._client = client
     worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
     filler = UUID("99999999-9999-9999-9999-999999999999")
-    assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
+    assert worker.enqueue_task(TaskData(task_id=str(filler), task="dummy", payload=b"{}")) is True
     # Seed the deferred buffer to capacity; the full data lane keeps the flush
     # from draining it, so the backpressure guard is what short-circuits the read.
     for i in range(2):
-        worker._transport._deferred.append(
-            (UUID(f"aaaaaaaa-aaaa-aaaa-aaaa-{i:012d}"), TaskData(task="dummy", payload=b"{}"), b"1-0")
-        )
+        d_id = UUID(f"aaaaaaaa-aaaa-aaaa-aaaa-{i:012d}")
+        worker._transport._deferred.append((d_id, TaskData(task_id=str(d_id), task="dummy", payload=b"{}"), b"1-0"))
 
     enqueued = await worker.fetch_tasks()
 
@@ -226,12 +228,12 @@ async def test_fetch_tasks_delivers_control_from_batch_when_data_full():
     delivers the control task even though the data entries are deferred."""
     data_id = UUID("11111111-1111-1111-1111-111111111111")
     control_id = UUID("22222222-2222-2222-2222-222222222222")
-    data_payload = encode_task_envelope(TaskData(task="dummy", payload=b"{}"))
-    control_payload = encode_task_envelope(TaskData(task=CANCEL_TASK_TYPE))
+    data_payload = encode_task_envelope(TaskData(task_id=str(data_id), task="dummy", payload=b"{}"))
+    control_payload = encode_task_envelope(TaskData(task_id=str(control_id), task=CANCEL_TASK_TYPE))
     result = {
         b"stream": {
-            b"1-0": [[str(data_id).encode("utf-8"), data_payload]],
-            b"2-0": [[str(control_id).encode("utf-8"), control_payload]],
+            b"1-0": [[TASK_FIELD, data_payload]],
+            b"2-0": [[TASK_FIELD, control_payload]],
         }
     }
     client = DummyClient(xreadgroup_result=result)
@@ -239,7 +241,7 @@ async def test_fetch_tasks_delivers_control_from_batch_when_data_full():
     worker._client = client
     worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
     filler = UUID("99999999-9999-9999-9999-999999999999")
-    assert worker.enqueue_task(filler, TaskData(task="dummy", payload=b"{}")) is True
+    assert worker.enqueue_task(TaskData(task_id=str(filler), task="dummy", payload=b"{}")) is True
 
     enqueued = await worker.fetch_tasks()
 

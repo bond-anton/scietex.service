@@ -143,6 +143,7 @@ import msgspec
 from scietex.service.task_handler import CancelTaskRequest, TaskData
 
 task_data = TaskData(
+    task_id="<uuid>",
     task="cancel_task",
     payload=msgspec.msgpack.encode(
         CancelTaskRequest(target_task_id="<uuid>", reason="operator request")
@@ -222,6 +223,7 @@ Immutable task payload passed to handlers.
 
 ```python
 class TaskData(msgspec.Struct, frozen=True):
+    task_id: str  # Unique task id (string UUID)
     task: str  # Task type string
     timeout: TaskTimeout = TaskTimeout()  # Timeout configuration
     canceled_action: Literal["requeue", "discard"] = "requeue"
@@ -230,6 +232,7 @@ class TaskData(msgspec.Struct, frozen=True):
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `task_id` | `str` | *(required)* | Unique task id (a string UUID); added as a required first field in v5.0.0 |
 | `task` | `str` | *(required)* | Task type used to select a handler |
 | `timeout` | `TaskTimeout` | `TaskTimeout()` | Timeout configuration |
 | `canceled_action` | `"requeue"` or `"discard"` | `"requeue"` | Action when task is canceled |
@@ -456,7 +459,7 @@ re-queueing logic (e.g., writing timed-out tasks back to a message queue):
 
 ```python
 class MyWorker(TaskProcessor):
-    async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
+    async def return_task_to_queue(self, task_data: TaskData) -> None:
         await self.valkey_client.rpush("retry_queue", msgspec.msgpack.encode(task_data))
 ```
 
@@ -533,6 +536,7 @@ Use `TaskTimeout` to control per-task timeout behavior:
 ```python
 # Long-running report generation (10 second timeout)
 task = TaskData(
+    task_id="<uuid>",
     task="generate_report",
     payload=b'{"report_id": 42}',
     timeout=TaskTimeout(timeout=10.0, timeout_action="requeue"),
@@ -540,6 +544,7 @@ task = TaskData(
 
 # Fast operation with discard-on-timeout
 task = TaskData(
+    task_id="<uuid>",
     task="send_notification",
     payload=b'{"user_id": 123}',
     timeout=TaskTimeout(timeout=1.0, timeout_action="discard"),

@@ -22,7 +22,7 @@ async def test_report_progress_inside_task_reaches_write_with_clamped_value():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="progress", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="progress", payload=b"{}"))
         for _ in range(100):
             if len(proc.progress_values) == 2:
                 break

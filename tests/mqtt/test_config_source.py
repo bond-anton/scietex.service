@@ -22,7 +22,7 @@ from scietex.service.config_reload import (
 )
 from scietex.service.mqtt.config import MqttConfig, MqttWorkerConfig
 from scietex.service.mqtt.config_source import MqttConfigSource
-from scietex.service.mqtt.worker import TASK_ID_PROPERTY, MqttWorker
+from scietex.service.mqtt.worker import MqttWorker
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.task_handler.wire import encode_task_envelope
 
@@ -234,7 +234,7 @@ async def test_handle_message_config_topic_records_snapshot(tmp_path, caplog):
 
     assert await worker._mqtt_config_source.load() == b"envelope-bytes"
     assert await worker._inbox.pending() == []
-    assert not any("without a scietex-task-id" in r.getMessage() for r in caplog.records)
+    assert not any("undecodable envelope" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -243,12 +243,12 @@ async def test_handle_message_task_topic_still_routes(tmp_path):
     inbox) despite the new topic dispatch."""
     worker = _plain_worker(tmp_path)
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b'{"to":"a@b.c"}')
-    message = _FakeMessage(encode_task_envelope(task_data), [(TASK_ID_PROPERTY, str(task_id))])
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to":"a@b.c"}')
+    message = _FakeMessage(encode_task_envelope(task_data))
 
     await worker._handle_message(message)
 
-    assert await worker._inbox.pending() == [(task_id, task_data)]
+    assert await worker._inbox.pending() == [task_data]
 
 
 # --- worker startup tests ---------------------------------------------------

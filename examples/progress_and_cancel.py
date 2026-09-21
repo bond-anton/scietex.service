@@ -53,7 +53,9 @@ from scietex.service.task_handler import (
     TaskStatus,
     encode_task_envelope,
 )
+from scietex.service.task_handler.schemas import task_data_id
 from scietex.service.valkey.config import generate_glide_config
+from scietex.service.valkey.transport import TASK_FIELD
 
 SERVICE_NAME = "ProgressCancelDemo"
 STREAM_NAME = f"scietex:{SERVICE_NAME}:tasks"
@@ -97,16 +99,30 @@ class LongJobHandler(TaskHandler):
 
 
 async def submit(client: GlideClient, task_data: TaskData) -> UUID:
-    """Submit one task as its own stream entry and return its id."""
-    task_id = uuid4()
-    await client.xadd(STREAM_NAME, [(str(task_id).encode("utf-8"), encode_task_envelope(task_data))])
-    return task_id
+    """Submit one task as its own stream entry and return its id.
+
+    The id travels inside the encoded ``TaskData``; the stream entry is stored
+    under the transport's fixed ``TASK_FIELD``.
+    """
+    await client.xadd(STREAM_NAME, [(TASK_FIELD, encode_task_envelope(task_data))])
+    return task_data_id(task_data)
+
+
+def with_task_id(task_data: TaskData, task_id: UUID) -> TaskData:
+    """Copy ``task_data`` under a fresh ``task_id`` for resubmission."""
+    return TaskData(
+        task_id=str(task_id),
+        task=task_data.task,
+        timeout=task_data.timeout,
+        canceled_action=task_data.canceled_action,
+        payload=task_data.payload,
+    )
 
 
 async def submit_cancel(client: GlideClient, target_id: UUID, reason: str) -> UUID:
     """Submit a ``cancel_task`` request targeting ``target_id``."""
     payload = msgspec.msgpack.encode(CancelTaskRequest(target_task_id=str(target_id), reason=reason))
-    return await submit(client, TaskData(task=CANCEL_TASK_TYPE, payload=payload))
+    return await submit(client, TaskData(task_id=str(uuid4()), task=CANCEL_TASK_TYPE, payload=payload))
 
 
 async def read_status(client: GlideClient, task_id: UUID) -> TaskStatus | None:
@@ -179,7 +195,7 @@ async def run(host: str, port: int) -> None:
 
     await worker.start()
 
-    job_id = await submit(producer, TaskData(task="long_job"))
+    job_id = await submit(producer, TaskData(task_id=str(uuid4()), task="long_job"))
     print(f"Submitted long_job {job_id}")
 
     # Watch progress climb while the job runs.
@@ -206,7 +222,7 @@ async def run(host: str, port: int) -> None:
             # The cancelled record embeds the original request so an external
             # process can modify and resubmit it under a NEW id.
             print(f"Embedded TaskData: task={final.data.task!r} payload={final.data.payload!r}")
-            resubmitted = await submit(producer, final.data)
+            resubmitted = await submit(producer, with_task_id(final.data, uuid4()))
             print(f"Resubmitted under new id {resubmitted}")
 
     await producer.close()

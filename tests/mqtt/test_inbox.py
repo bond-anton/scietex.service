@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from scietex.service.mqtt.inbox import FileMqttInbox, MemoryInbox
-from scietex.service.task_handler.schemas import TaskData
+from scietex.service.task_handler.schemas import TaskData, task_data_id
 from scietex.service.task_handler.wire import encode_task_envelope
 
 _LOGGER = "test_inbox"
@@ -41,11 +41,11 @@ async def test_put_then_pending_roundtrips_task_data(tmp_path):
     """``put`` persists the envelope; ``pending`` returns the original TaskData."""
     inbox = _inbox(tmp_path)
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b'{"to": "a@b.c"}')
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to": "a@b.c"}')
 
     await inbox.put(task_id, task_data)
 
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
 
 
 @pytest.mark.asyncio
@@ -53,12 +53,12 @@ async def test_in_flight_is_non_terminal(tmp_path):
     """An in-flight entry is still returned by ``pending`` (non-terminal)."""
     inbox = _inbox(tmp_path)
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b"x")
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b"x")
 
     await inbox.put(task_id, task_data)
     await inbox.mark_in_flight(task_id)
 
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
 
 
 @pytest.mark.asyncio
@@ -67,7 +67,7 @@ async def test_mark_terminal_hides_entry(tmp_path):
     inbox = _inbox(tmp_path)
     task_id = uuid4()
 
-    await inbox.put(task_id, TaskData(task="send_email", payload=b"x"))
+    await inbox.put(task_id, TaskData(task_id=str(task_id), task="send_email", payload=b"x"))
     await inbox.mark_terminal(task_id)
 
     assert await inbox.pending() == []
@@ -81,10 +81,10 @@ async def test_recover_returns_oldest_first(tmp_path):
     inbox = FileMqttInbox(inbox_dir, logger=logging.getLogger(_LOGGER))
     first = uuid4()
     second = uuid4()
-    _write_entry(inbox_dir, first, TaskData(task="a", payload=b"1"), created_at=200.0)
-    _write_entry(inbox_dir, second, TaskData(task="b", payload=b"2"), created_at=100.0)
+    _write_entry(inbox_dir, first, TaskData(task_id=str(first), task="a", payload=b"1"), created_at=200.0)
+    _write_entry(inbox_dir, second, TaskData(task_id=str(second), task="b", payload=b"2"), created_at=100.0)
 
-    assert [task_id for task_id, _ in await inbox.recover()] == [second, first]
+    assert [task_data_id(td) for td in await inbox.recover()] == [second, first]
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_duplicate_put_after_terminal_is_skipped(tmp_path):
     """A tombstone suppresses a duplicate ``put`` of the same task id."""
     inbox = _inbox(tmp_path)
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b"x")
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b"x")
 
     await inbox.put(task_id, task_data)
     await inbox.mark_terminal(task_id)
@@ -108,14 +108,16 @@ async def test_expired_entry_is_dropped(tmp_path):
     inbox_dir = tmp_path / "inbox"
     inbox = FileMqttInbox(inbox_dir, logger=logging.getLogger(_LOGGER), ttl=60)
     expired = uuid4()
-    _write_entry(inbox_dir, expired, TaskData(task="old", payload=b"x"), created_at=time.time() - 120.0)
+    _write_entry(
+        inbox_dir, expired, TaskData(task_id=str(expired), task="old", payload=b"x"), created_at=time.time() - 120.0
+    )
     fresh = uuid4()
-    fresh_data = TaskData(task="new", payload=b"y")
+    fresh_data = TaskData(task_id=str(fresh), task="new", payload=b"y")
 
     await inbox.put(fresh, fresh_data)
 
-    assert await inbox.pending() == [(fresh, fresh_data)]
-    assert await inbox.recover() == [(fresh, fresh_data)]
+    assert await inbox.pending() == [fresh_data]
+    assert await inbox.recover() == [fresh_data]
 
 
 @pytest.mark.asyncio
@@ -125,13 +127,13 @@ async def test_corrupt_entry_is_skipped_with_warning(tmp_path, caplog):
     inbox = FileMqttInbox(inbox_dir, logger=logging.getLogger(_LOGGER))
     (inbox_dir / f"{uuid4()}.json").write_text("not json", encoding="utf-8")
     valid = uuid4()
-    task_data = TaskData(task="ok", payload=b"p")
+    task_data = TaskData(task_id=str(valid), task="ok", payload=b"p")
 
     await inbox.put(valid, task_data)
     with caplog.at_level(logging.WARNING):
         entries = await inbox.pending()
 
-    assert entries == [(valid, task_data)]
+    assert entries == [task_data]
     assert any("Skipping corrupt inbox entry" in record.getMessage() for record in caplog.records)
 
 
@@ -143,7 +145,7 @@ async def test_put_creates_directory(tmp_path):
     inbox_dir.rmdir()  # remove the empty directory after construction
     task_id = uuid4()
 
-    await inbox.put(task_id, TaskData(task="send_email", payload=b"x"))
+    await inbox.put(task_id, TaskData(task_id=str(task_id), task="send_email", payload=b"x"))
 
     assert inbox_dir.is_dir()
     assert (inbox_dir / f"{task_id}.json").is_file()
@@ -154,11 +156,11 @@ async def test_memory_inbox_put_then_pending_roundtrips():
     """``MemoryInbox.put`` buffers the entry; ``pending`` returns it."""
     inbox = MemoryInbox()
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b'{"to": "a@b.c"}')
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to": "a@b.c"}')
 
     await inbox.put(task_id, task_data)
 
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
 
 
 @pytest.mark.asyncio
@@ -166,7 +168,7 @@ async def test_memory_inbox_mark_terminal_removes_entry():
     """``mark_terminal`` drops the buffered entry (no tombstone)."""
     inbox = MemoryInbox()
     task_id = uuid4()
-    await inbox.put(task_id, TaskData(task="send_email", payload=b"x"))
+    await inbox.put(task_id, TaskData(task_id=str(task_id), task="send_email", payload=b"x"))
 
     await inbox.mark_terminal(task_id)
 
@@ -178,19 +180,20 @@ async def test_memory_inbox_mark_in_flight_keeps_entry():
     """``mark_in_flight`` is a no-op: the entry stays non-terminal."""
     inbox = MemoryInbox()
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b"x")
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b"x")
     await inbox.put(task_id, task_data)
 
     await inbox.mark_in_flight(task_id)
 
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
 
 
 @pytest.mark.asyncio
 async def test_memory_inbox_recover_is_empty():
     """``recover`` returns nothing: the at-most-once contract (no restart replay)."""
     inbox = MemoryInbox()
-    await inbox.put(uuid4(), TaskData(task="send_email", payload=b"x"))
+    task_id = uuid4()
+    await inbox.put(task_id, TaskData(task_id=str(task_id), task="send_email", payload=b"x"))
 
     assert await inbox.recover() == []
 
@@ -217,9 +220,11 @@ async def test_prune_expired_removes_expired_entry_keeps_in_flight(tmp_path):
     inbox_dir = tmp_path / "inbox"
     inbox = FileMqttInbox(inbox_dir, logger=logging.getLogger(_LOGGER), ttl=60)
     expired = uuid4()
-    _write_entry(inbox_dir, expired, TaskData(task="old", payload=b"x"), created_at=time.time() - 120.0)
+    _write_entry(
+        inbox_dir, expired, TaskData(task_id=str(expired), task="old", payload=b"x"), created_at=time.time() - 120.0
+    )
     fresh = uuid4()
-    fresh_data = TaskData(task="new", payload=b"y")
+    fresh_data = TaskData(task_id=str(fresh), task="new", payload=b"y")
     await inbox.put(fresh, fresh_data)
     await inbox.mark_in_flight(fresh)
 
@@ -227,7 +232,7 @@ async def test_prune_expired_removes_expired_entry_keeps_in_flight(tmp_path):
 
     assert not (inbox_dir / f"{expired}.json").exists()
     assert (inbox_dir / f"{fresh}.json").is_file()
-    assert await inbox.pending() == [(fresh, fresh_data)]
+    assert await inbox.pending() == [fresh_data]
 
 
 @pytest.mark.asyncio
@@ -238,7 +243,12 @@ async def test_prune_expired_noop_when_ttl_is_none(tmp_path):
     task_id = uuid4()
     entry_id = uuid4()
     _write_tombstone(inbox_dir, task_id, completed_at=time.time() - 999999.0)
-    _write_entry(inbox_dir, entry_id, TaskData(task="old", payload=b"x"), created_at=time.time() - 999999.0)
+    _write_entry(
+        inbox_dir,
+        entry_id,
+        TaskData(task_id=str(entry_id), task="old", payload=b"x"),
+        created_at=time.time() - 999999.0,
+    )
 
     await inbox.prune_expired()
 
@@ -251,12 +261,12 @@ async def test_memory_inbox_prune_expired_is_noop():
     """``MemoryInbox.prune_expired`` returns cleanly and keeps entries intact."""
     inbox = MemoryInbox()
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b"x")
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b"x")
     await inbox.put(task_id, task_data)
 
     await inbox.prune_expired()
 
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
 
 
 @pytest.mark.asyncio
@@ -278,7 +288,7 @@ async def test_prune_expired_reopens_dedup_window(tmp_path):
     inbox_dir = tmp_path / "inbox"
     inbox = FileMqttInbox(inbox_dir, logger=logging.getLogger(_LOGGER), ttl=60)
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b"x")
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b"x")
     await inbox.put(task_id, task_data)
     await inbox.mark_terminal(task_id)
     _write_tombstone(inbox_dir, task_id, completed_at=time.time() - 120.0)
@@ -287,7 +297,7 @@ async def test_prune_expired_reopens_dedup_window(tmp_path):
 
     assert not (inbox_dir / f"{task_id}.done").exists()
     await inbox.put(task_id, task_data)
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
 
 
 @pytest.mark.asyncio
@@ -301,5 +311,5 @@ async def test_prune_expired_keeps_corrupt_tombstone_active(tmp_path):
     await inbox.prune_expired()
 
     assert (inbox_dir / f"{task_id}.done").is_file()
-    await inbox.put(task_id, TaskData(task="send_email", payload=b"x"))
+    await inbox.put(task_id, TaskData(task_id=str(task_id), task="send_email", payload=b"x"))
     assert await inbox.pending() == []

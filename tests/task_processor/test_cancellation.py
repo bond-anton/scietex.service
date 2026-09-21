@@ -28,7 +28,7 @@ async def test_cancel_task_cancels_running_target():
     await proc.start()
     try:
         target_id = uuid4()
-        proc.enqueue_task(target_id, TaskData(task="slow", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(target_id), task="slow", payload=b"{}"))
         for _ in range(100):
             if target_id in proc.running_tasks:
                 break
@@ -36,7 +36,7 @@ async def test_cancel_task_cancels_running_target():
         assert target_id in proc.running_tasks
 
         cancel_id = uuid4()
-        proc.enqueue_task(cancel_id, TaskData(task="cancel_task", payload=_cancel_payload(target_id)))
+        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id)))
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -64,7 +64,7 @@ async def test_cancel_task_unknown_target_returns_not_running():
     await proc.start()
     try:
         cancel_id = uuid4()
-        proc.enqueue_task(cancel_id, TaskData(task="cancel_task", payload=_cancel_payload(uuid4())))
+        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(uuid4())))
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -88,7 +88,7 @@ async def test_cancel_task_malformed_payload_returns_invalid_code():
     await proc.start()
     try:
         cancel_id = uuid4()
-        proc.enqueue_task(cancel_id, TaskData(task="cancel_task", payload=b"not-msgpack"))
+        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=b"not-msgpack"))
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -115,14 +115,14 @@ async def test_cancel_task_stubborn_target_reports_ignored():
     await proc.start()
     try:
         target_id = uuid4()
-        proc.enqueue_task(target_id, TaskData(task="stubborn", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(target_id), task="stubborn", payload=b"{}"))
         for _ in range(100):
             if target_id in proc.running_tasks:
                 break
             await asyncio.sleep(0.01)
 
         cancel_id = uuid4()
-        proc.enqueue_task(cancel_id, TaskData(task="cancel_task", payload=_cancel_payload(target_id)))
+        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id)))
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -153,14 +153,14 @@ async def test_cancel_task_removes_queued_target():
     try:
         # Occupy the single concurrency slot so the next task stays queued.
         blocker_id = uuid4()
-        proc.enqueue_task(blocker_id, TaskData(task="slow", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(blocker_id), task="slow", payload=b"{}"))
         for _ in range(100):
             if blocker_id in proc.running_tasks:
                 break
             await asyncio.sleep(0.01)
 
         target_id = uuid4()
-        proc.enqueue_task(target_id, TaskData(task="slow", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(target_id), task="slow", payload=b"{}"))
         assert not proc.task_queue_empty()
 
         # Cancel the queued target directly through the callback. With the
@@ -189,7 +189,7 @@ async def test_cancel_task_self_cancel_rejected():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="self_cancel", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="self_cancel", payload=b"{}"))
         for _ in range(200):
             if any(tid == t_id for tid, *_ in proc.completed):
                 break
@@ -213,8 +213,7 @@ async def test_cancel_task_does_not_requeue_deliberate_cancel():
     try:
         target_id = uuid4()
         proc.enqueue_task(
-            target_id,
-            TaskData(task="slow", payload=b"{}", canceled_action="requeue"),
+            TaskData(task_id=str(target_id), task="slow", payload=b"{}", canceled_action="requeue"),
         )
         for _ in range(100):
             if target_id in proc.running_tasks:

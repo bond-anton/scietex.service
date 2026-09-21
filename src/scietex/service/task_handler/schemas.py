@@ -8,6 +8,7 @@ results.
 
 from datetime import datetime, timezone
 from typing import Literal
+from uuid import UUID
 
 import msgspec
 
@@ -61,6 +62,9 @@ class TaskData(msgspec.Struct, frozen=True):
     """Immutable task payload passed to task handlers.
 
     Args:
+        task_id: Unique task identifier (string form of a UUID). Required —
+            a payload without it is rejected at decode, which is how pre-v5
+            wire payloads are refused.
         task: Task type string used to select a handler.
         timeout: Timeout configuration for this task.
         canceled_action: Action when task is canceled: ``"requeue"``
@@ -70,11 +74,23 @@ class TaskData(msgspec.Struct, frozen=True):
         payload: Raw bytes payload associated with the task.
     """
 
-    # The task identifier/type string used to select a handler.
+    # Required, no default: a pre-v5 payload (no task_id) must fail decode
+    # rather than silently decode with a bogus id.
+    task_id: str
     task: str
     timeout: TaskTimeout = TaskTimeout(timeout=None, timeout_action="requeue")
     canceled_action: Literal["requeue", "discard"] = "requeue"
     payload: bytes = b""
+
+
+def task_data_id(task_data: TaskData) -> UUID:
+    """In-process UUID identity of a task.
+
+    The wire id is a string (``TaskData.task_id``); the in-process machinery
+    (lifecycle, leases, tracking keys) is UUID-keyed. This is the single
+    conversion point between the two.
+    """
+    return UUID(task_data.task_id)
 
 
 def is_control_task(task_data: TaskData) -> bool:
@@ -89,6 +105,11 @@ class TaskEnvelope(msgspec.Struct, frozen=True):
     the transport format can evolve independently of the in-process handler
     contract (AR-064). ``data`` holds the serialized ``TaskData`` (or a
     future version's payload) for the given ``version``.
+
+    ``version`` stays ``1``: the envelope structure is unchanged. The payload
+    schema changed in v5 — ``data`` is ``msgpack(TaskData)`` where ``TaskData``
+    now requires ``task_id``. Pre-v5 payloads (without ``task_id``) fail the
+    inner decode and are rejected.
 
     Args:
         version: Wire-format version. ``1`` wraps a msgpack-encoded

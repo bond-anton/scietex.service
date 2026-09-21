@@ -4,6 +4,35 @@ Planned work for future major versions. Items here are **not** committed to a
 release date; they are tracked so architectural decisions made in earlier
 versions are not lost. Each entry cites the review finding that motivated it.
 
+## v5.0.0 — Task id moves into `TaskData`
+
+**Motivation:** the task id travelled as a sibling of the payload — a Valkey
+stream field name, an MQTT 5 user property (`scietex-task-id`), and a separate
+argument threaded through every transport hook. That made the id a
+transport-level concern with three different encodings, and forced the MQTT
+intake path to read the id from a user property before it could decode the
+payload. A shared task registry (AR-123) needs the id to be intrinsic to the
+task record, not a transport artifact.
+
+**Decision (v5.0.0):** `TaskData` gains `task_id: str` as a **required field
+with no default**. The `TaskEnvelope` structure is unchanged and `version`
+stays `1`; the payload schema changed instead. A pre-v5 payload (no `task_id`)
+fails the inner decode and is rejected — `decode_task_envelope` returns `None`.
+This is a deliberate hard cut with no backward compatibility: the
+unsupported-vs-malformed distinction (AR-098) is intentionally lost for this
+case.
+
+Consequences: the Valkey stream field name becomes the fixed constant
+`TASK_FIELD = b"task"`; MQTT drops `TASK_ID_PROPERTY` and `_extract_task_id`
+and decodes the envelope first; `MqttInbox.pending()`/`recover()` return
+`list[TaskData]`; the transport hooks (`requeue`/`on_started`/`ack`/`on_drain`)
+and `TaskSink.enqueue_task` drop their `task_id` sibling argument. The
+in-process machinery stays UUID-keyed: `task_data_id(task_data)` in
+`task_handler/schemas.py` is the single conversion point. `TaskStatus.task_id`
+and `TaskCapabilities.task_id` are unchanged.
+
+**Status: implemented** (v5.0.0).
+
 ## v5.0.0 — Cross-worker control plane
 
 **Motivation:** AR-123 (docs/reviews/architecture/2026-09-20-1.md) — control-plane

@@ -29,13 +29,13 @@ class RecordingTransport:
     async def fetch(self, sink) -> bool:
         return False
 
-    async def requeue(self, task_id, task_data) -> None:
+    async def requeue(self, task_data) -> None:
         return None
 
-    async def on_started(self, task_id, task_data) -> None:
+    async def on_started(self, task_data) -> None:
         return None
 
-    async def ack(self, task_id, task_data, task_result, *, cancel_reason=None) -> None:
+    async def ack(self, task_data, task_result, *, cancel_reason=None) -> None:
         return None
 
     async def on_progress(self, task_id, value) -> None:
@@ -44,7 +44,7 @@ class RecordingTransport:
     async def recover_pending_tasks(self, sink):
         return True, False
 
-    async def on_drain(self, task_id, task_data) -> None:
+    async def on_drain(self, task_data) -> None:
         return None
 
 

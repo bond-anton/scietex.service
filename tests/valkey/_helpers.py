@@ -14,6 +14,7 @@ import logging
 from scietex.service import ValkeyWorker
 from scietex.service.valkey._glide import ConditionalChange
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
+from scietex.service.valkey.transport import TASK_FIELD
 
 
 class DummyClient:
@@ -185,9 +186,9 @@ def _patch_glide_and_handler(monkeypatch):
     return mod
 
 
-def _entry(entry_id: bytes, task_id: str, payload: bytes):
+def _entry(entry_id: bytes, payload: bytes):
     """Build an xreadgroup/xautoclaim result mapping for one stream entry."""
-    return {b"stream": {entry_id: [[task_id.encode("utf-8"), payload]]}}
+    return {b"stream": {entry_id: [[TASK_FIELD, payload]]}}
 
 
 def _make_tracking_worker(client, *, ttl=3600, service="svc", task_lease_ttl=None):

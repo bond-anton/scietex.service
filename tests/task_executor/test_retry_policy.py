@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import TaskData, TaskResult
+from scietex.service.task_handler.schemas import TaskData, TaskResult, task_data_id
 
 from ._helpers import Recording, build_executor
 
@@ -24,10 +24,10 @@ async def test_retryable_error_requeues_and_bumps_budget():
     retry_attempts = {}
     executor = build_executor(recording, retry_attempts=retry_attempts)
     task_id = uuid4()
-    task_data = TaskData(task="retryable")
+    task_data = TaskData(task_id=str(task_id), task="retryable")
     result = _retryable_error()
 
-    ack = await executor._apply_retry_policy(task_id, task_data, result)
+    ack = await executor._apply_retry_policy(task_data, result)
 
     assert ack is not None
     assert ack is result
@@ -45,9 +45,9 @@ async def test_retryable_error_exhausts_budget_and_acks_terminal():
     task_id = uuid4()
     retry_attempts = {task_id: 1}
     executor = build_executor(recording, retry_attempts=retry_attempts)
-    task_data = TaskData(task="retryable")
+    task_data = TaskData(task_id=str(task_id), task="retryable")
 
-    ack = await executor._apply_retry_policy(task_id, task_data, _retryable_error())
+    ack = await executor._apply_retry_policy(task_data, _retryable_error())
 
     assert ack is not None
     assert ack.retryable is False
@@ -62,10 +62,10 @@ async def test_non_retryable_error_pops_budget():
     task_id = uuid4()
     retry_attempts = {task_id: 1}
     executor = build_executor(recording, retry_attempts=retry_attempts)
-    task_data = TaskData(task="permanent")
+    task_data = TaskData(task_id=str(task_id), task="permanent")
     result = _permanent_error()
 
-    ack = await executor._apply_retry_policy(task_id, task_data, result)
+    ack = await executor._apply_retry_policy(task_data, result)
 
     assert ack is result
     assert not recording.requeued
@@ -79,10 +79,10 @@ async def test_success_result_pops_budget():
     task_id = uuid4()
     retry_attempts = {task_id: 1}
     executor = build_executor(recording, retry_attempts=retry_attempts)
-    task_data = TaskData(task="ok")
+    task_data = TaskData(task_id=str(task_id), task="ok")
     result = TaskResult(status="success")
 
-    ack = await executor._apply_retry_policy(task_id, task_data, result)
+    ack = await executor._apply_retry_policy(task_data, result)
 
     assert ack is result
     assert not recording.requeued
@@ -96,9 +96,9 @@ async def test_none_result_pops_budget():
     task_id = uuid4()
     retry_attempts = {task_id: 1}
     executor = build_executor(recording, retry_attempts=retry_attempts)
-    task_data = TaskData(task="cancelled")
+    task_data = TaskData(task_id=str(task_id), task="cancelled")
 
-    ack = await executor._apply_retry_policy(task_id, task_data, None)
+    ack = await executor._apply_retry_policy(task_data, None)
 
     assert ack is None
     assert not recording.requeued
@@ -111,18 +111,18 @@ async def test_requeue_failure_pops_budget_and_returns_result():
     so a phantom second retry is never granted, and the result is returned as-is."""
 
     class FailingRecording(Recording):
-        async def requeue(self, task_id, task_data):
-            self.requeued.append((task_id, task_data))
+        async def requeue(self, task_data):
+            self.requeued.append((task_data_id(task_data), task_data))
             raise RuntimeError("requeue boom")
 
     recording = FailingRecording()
     retry_attempts = {}
     executor = build_executor(recording, retry_attempts=retry_attempts)
     task_id = uuid4()
-    task_data = TaskData(task="retryable")
+    task_data = TaskData(task_id=str(task_id), task="retryable")
     result = _retryable_error()
 
-    ack = await executor._apply_retry_policy(task_id, task_data, result)
+    ack = await executor._apply_retry_policy(task_data, result)
 
     assert ack is not None
     assert ack is result
@@ -141,9 +141,9 @@ async def test_timeout_cancel_preserves_timeout_budget():
     retry_attempts = {task_id: 1}
     executor = build_executor(recording, retry_attempts=retry_attempts)
     executor._timeout_requeues = {task_id: 2}
-    task_data = TaskData(task="timeout")
+    task_data = TaskData(task_id=str(task_id), task="timeout")
 
-    ack = await executor._apply_retry_policy(task_id, task_data, None, cancel_reason="timeout")
+    ack = await executor._apply_retry_policy(task_data, None, cancel_reason="timeout")
 
     assert ack is None
     assert executor._timeout_requeues == {task_id: 2}
@@ -159,9 +159,9 @@ async def test_non_timeout_cancel_clears_timeout_budget():
         retry_attempts = {task_id: 1}
         executor = build_executor(recording, retry_attempts=retry_attempts)
         executor._timeout_requeues = {task_id: 2}
-        task_data = TaskData(task="cancelled")
+        task_data = TaskData(task_id=str(task_id), task="cancelled")
 
-        ack = await executor._apply_retry_policy(task_id, task_data, None, cancel_reason=reason)
+        ack = await executor._apply_retry_policy(task_data, None, cancel_reason=reason)
 
         assert ack is None
         assert executor._timeout_requeues == {}

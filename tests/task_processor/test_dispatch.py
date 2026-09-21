@@ -20,7 +20,7 @@ async def test_process_task_with_dummy_handler():
     proc.add_task_handler(DummyHandler)
     await proc._start_task_handler("DummyHandler")
 
-    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="dummy", payload=b'{"value": 5}'))
+    result: TaskResult = await proc.process_task(TaskData(task_id=str(uuid4()), task="dummy", payload=b'{"value": 5}'))
 
     assert result.status == "success"
     assert result.payload.decode("utf-8") == '{"value": 5}'
@@ -30,7 +30,7 @@ async def test_process_task_with_dummy_handler():
 async def test_process_task_empty_task_returns_error_result():
     """An empty task type must yield an error TaskResult, not raise (AR-010)."""
     proc = DemoProcessor()
-    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="", payload=b"{}"))
+    result: TaskResult = await proc.process_task(TaskData(task_id=str(uuid4()), task="", payload=b"{}"))
     assert result.status == "error"
     assert "task" in result.error
     assert result.retryable is False
@@ -45,7 +45,7 @@ async def test_process_task_handler_exception_is_permanent():
     proc.add_task_handler(RaisingHandler)
     await proc._start_task_handler("RaisingHandler")
 
-    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="raiser", payload=b"{}"))
+    result: TaskResult = await proc.process_task(TaskData(task_id=str(uuid4()), task="raiser", payload=b"{}"))
 
     assert result.status == "error"
     assert result.error == "boom"
@@ -62,7 +62,7 @@ async def test_process_task_preserves_handler_returned_result_fields():
     proc.add_task_handler(ReturningErrorHandler)
     await proc._start_task_handler("ReturningErrorHandler")
 
-    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="error_returner", payload=b"{}"))
+    result: TaskResult = await proc.process_task(TaskData(task_id=str(uuid4()), task="error_returner", payload=b"{}"))
 
     assert result.status == "error"
     assert result.error == "x"
@@ -76,7 +76,7 @@ async def test_process_task_no_handler_is_not_retryable():
     """The 'no handler found' framework error is permanent: retryable stays
     False (AR-022)."""
     proc = DemoProcessor()
-    result: TaskResult = await proc.process_task(uuid4(), TaskData(task="unknown", payload=b"{}"))
+    result: TaskResult = await proc.process_task(TaskData(task_id=str(uuid4()), task="unknown", payload=b"{}"))
 
     assert result.status == "error"
     assert "No handler" in result.error

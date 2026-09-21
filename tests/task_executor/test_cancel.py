@@ -20,7 +20,7 @@ async def test_cancel_running_target_returns_cancelled():
     settings = make_settings(task_cancellation_timeout=0.1)
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
     target_id = uuid4()
-    task_data = TaskData(task="slow")
+    task_data = TaskData(task_id=str(target_id), task="slow")
     tracker = register_running(lifecycle, target_id, task_data)
 
     outcome = await executor.cancel(target_id)
@@ -38,8 +38,8 @@ async def test_cancel_queued_target_returns_cancelled():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     target_id = uuid4()
-    task_data = TaskData(task="dummy")
-    await queue.put((target_id, task_data))
+    task_data = TaskData(task_id=str(target_id), task="dummy")
+    await queue.put(task_data)
 
     outcome = await executor.cancel(target_id)
 
@@ -56,8 +56,8 @@ async def test_queued_cancel_clears_timeout_budget():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     target_id = uuid4()
-    task_data = TaskData(task="dummy")
-    await queue.put((target_id, task_data))
+    task_data = TaskData(task_id=str(target_id), task="dummy")
+    await queue.put(task_data)
     executor._timeout_requeues = {target_id: 3}
 
     outcome = await executor.cancel(target_id)
@@ -82,8 +82,8 @@ async def test_queued_cancel_clears_retry_budget():
     )
     target_id = uuid4()
     other_id = uuid4()
-    task_data = TaskData(task="dummy")
-    await queue.put((target_id, task_data))
+    task_data = TaskData(task_id=str(target_id), task="dummy")
+    await queue.put(task_data)
     # Simulate a retryable error that requeued this id: budget == 1.
     retry_attempts[target_id] = 1
     retry_attempts[other_id] = 1
@@ -122,8 +122,8 @@ async def test_cancel_removes_queued_control_task():
         lifecycle=lifecycle,
     )
     target_id = uuid4()
-    task_data = TaskData(task=CANCEL_TASK_TYPE)
-    await control_queue.put((target_id, task_data))
+    task_data = TaskData(task_id=str(target_id), task=CANCEL_TASK_TYPE)
+    await control_queue.put(task_data)
 
     outcome = await executor.cancel(target_id)
 
@@ -150,11 +150,11 @@ async def test_shutdown_drains_cancels_and_clears_budget():
     )
 
     queued_id = uuid4()
-    queued_data = TaskData(task="queued", canceled_action="requeue")
-    await queue.put((queued_id, queued_data))
+    queued_data = TaskData(task_id=str(queued_id), task="queued", canceled_action="requeue")
+    await queue.put(queued_data)
 
     running_id = uuid4()
-    running_data = TaskData(task="running", canceled_action="requeue")
+    running_data = TaskData(task_id=str(running_id), task="running", canceled_action="requeue")
     running_tracker = register_running(lifecycle, running_id, running_data)
 
     await executor.shutdown()
@@ -175,7 +175,7 @@ async def test_shutdown_does_not_requeue_discarded_running_task():
     settings = make_settings(task_cancellation_timeout=0.1)
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
     running_id = uuid4()
-    running_data = TaskData(task="running", canceled_action="discard")
+    running_data = TaskData(task_id=str(running_id), task="running", canceled_action="discard")
     running_tracker = register_running(lifecycle, running_id, running_data)
 
     await executor.shutdown()
@@ -198,8 +198,8 @@ async def test_shutdown_drains_control_lane():
         lifecycle=lifecycle,
     )
     control_id = uuid4()
-    control_data = TaskData(task=CANCEL_TASK_TYPE)
-    await control_queue.put((control_id, control_data))
+    control_data = TaskData(task_id=str(control_id), task=CANCEL_TASK_TYPE)
+    await control_queue.put(control_data)
 
     await executor.shutdown()
 

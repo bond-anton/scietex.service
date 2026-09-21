@@ -19,9 +19,9 @@ async def test_on_task_completed_deliberate_cancel_writes_cancelled_with_data():
     client = DummyClient()
     worker = _make_tracking_worker(client)
     worker._task_entry_ids[t_id] = b"1-0"
-    task_data = TaskData(task="dummy", payload=b"original", canceled_action="requeue")
+    task_data = TaskData(task_id=str(t_id), task="dummy", payload=b"original", canceled_action="requeue")
 
-    await worker.on_task_completed(t_id, task_data, None, cancel_reason="deliberate")
+    await worker.on_task_completed(task_data, None, cancel_reason="deliberate")
 
     assert len(client.sets) == 1
     _key, value, _expiry = client.sets[0]
@@ -41,7 +41,9 @@ async def test_on_task_completed_timeout_cancel_stays_failed():
     client = DummyClient()
     worker = _make_tracking_worker(client)
 
-    await worker.on_task_completed(t_id, TaskData(task="dummy", payload=b"{}"), None, cancel_reason="timeout")
+    await worker.on_task_completed(
+        TaskData(task_id=str(t_id), task="dummy", payload=b"{}"), None, cancel_reason="timeout"
+    )
 
     assert len(client.sets) == 1
     _key, value, _expiry = client.sets[0]
@@ -56,7 +58,7 @@ async def test_cancelled_status_round_trips_through_msgpack():
     """A cancelled TaskStatus with embedded TaskData survives a msgpack
     round-trip, so an external process can decode it and resubmit."""
     t_id = UUID("11111111-1111-1111-1111-111111111111")
-    task_data = TaskData(task="dummy", payload=b"original", canceled_action="requeue")
+    task_data = TaskData(task_id=str(t_id), task="dummy", payload=b"original", canceled_action="requeue")
     status = TaskStatus(
         task_id=str(t_id),
         service="svc",
@@ -83,7 +85,7 @@ async def test_cancel_queued_task_deletes_lease_and_acks_entry():
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     client = DummyClient()
     worker = _make_tracking_worker(client)
-    worker.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
+    worker.enqueue_task(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
     worker._task_entry_ids[t_id] = b"1-0"
 
     outcome = await worker._cancel_task(t_id)

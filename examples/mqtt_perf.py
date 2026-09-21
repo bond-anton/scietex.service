@@ -47,11 +47,9 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import aiomqtt
-from paho.mqtt.packettypes import PacketTypes
-from paho.mqtt.properties import Properties
 
 from scietex.service import MqttConfig, MqttWorker, MqttWorkerConfig
 from scietex.service.task_handler import (
@@ -74,9 +72,6 @@ class ProducerResult:
 
     count: int
     seconds: float
-
-
-TASK_ID_PROPERTY = "scietex-task-id"
 
 
 class PerfHandler(TaskHandler):
@@ -122,13 +117,12 @@ class PerfWorker(MqttWorker):
 
     async def on_task_completed(
         self,
-        task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
         *,
         cancel_reason: CancelReason | None = None,
     ) -> None:
-        await super().on_task_completed(task_id, task_data, task_result, cancel_reason=cancel_reason)
+        await super().on_task_completed(task_data, task_result, cancel_reason=cancel_reason)
         # Single event loop, no await between increment and check: the count is
         # always accurate when the completion event is inspected.
         self._completed += 1
@@ -141,18 +135,14 @@ class PerfWorker(MqttWorker):
 async def load_tasks(client: aiomqtt.Client, topic: str, n: int, qos: int) -> None:
     """Publish ``n`` task envelopes to ``topic``, one per message.
 
-    Each task carries its own id in the ``scietex-task-id`` user property, so
-    the worker acknowledges exactly one inbox entry per completed task.
+    Each task carries its id inside the encoded ``TaskData``, so the worker
+    acknowledges exactly one inbox entry per completed task.
     """
     for _ in range(n):
-        task_id = uuid4()
-        props = Properties(PacketTypes.PUBLISH)
-        props.UserProperty = [(TASK_ID_PROPERTY, str(task_id))]
         await client.publish(
             topic,
-            encode_task_envelope(TaskData(task="perf")),
+            encode_task_envelope(TaskData(task_id=str(uuid4()), task="perf")),
             qos=qos,
-            properties=props,
         )
 
 

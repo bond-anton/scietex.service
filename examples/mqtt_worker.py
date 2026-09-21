@@ -5,8 +5,8 @@ full MQTT round trip:
 
 1. The worker connects, subscribes to ``scietex/{service}/tasks`` (QoS 2), and
    replays any non-terminal entries from its durable file inbox.
-2. A producer publishes a ``TaskEnvelope`` to that topic with the task id in
-   the MQTT 5 user property ``scietex-task-id``.
+2. A producer publishes a ``TaskEnvelope`` to that topic; the task id is
+   embedded in the encoded ``TaskData``.
 3. The worker persists the message to its inbox, drains it into the processor
    queue, and runs the matching handler.
 4. The handler reports progress; the worker publishes retained ``TaskStatus``
@@ -19,9 +19,8 @@ Requires a running MQTT 5 broker and the ``mqtt`` extra:
 
     pip install "scietex.service[mqtt]"
 
-The producer uses the public ``aiomqtt`` API. The one paho import is for the
-MQTT 5 ``Properties`` type, which aiomqtt v2.5.1 does not re-export but which
-is required to attach the ``scietex-task-id`` user property.
+The producer uses the public ``aiomqtt`` API. The task id is embedded in the
+``TaskData`` payload rather than an MQTT user property.
 
 Run with ``python -m examples.mqtt_worker``. Override the broker with
 ``--host``/``--port``.
@@ -34,8 +33,6 @@ from uuid import UUID, uuid4
 
 import aiomqtt
 import msgspec
-from paho.mqtt.packettypes import PacketTypes
-from paho.mqtt.properties import Properties
 
 from scietex.service import MqttConfig, MqttWorker, MqttWorkerConfig
 from scietex.service.task_handler import (
@@ -46,11 +43,11 @@ from scietex.service.task_handler import (
     TaskStatus,
     encode_task_envelope,
 )
+from scietex.service.task_handler.schemas import task_data_id
 
 SERVICE_NAME = "MqttDemo"
 TASK_TOPIC = f"scietex/{SERVICE_NAME}/tasks"
 STATUS_TOPIC_PREFIX = f"scietex/{SERVICE_NAME}/tasks"
-TASK_ID_PROPERTY = "scietex-task-id"
 
 # Number of progress steps the long job performs before finishing.
 TOTAL_STEPS = 10
@@ -86,19 +83,11 @@ class LongJobHandler(TaskHandler):
 async def submit(client: aiomqtt.Client, task_data: TaskData) -> UUID:
     """Publish one task envelope and return its id.
 
-    The task id travels as the MQTT 5 user property ``scietex-task-id``; the
-    envelope wire format itself is unchanged.
+    The id is embedded in the encoded ``TaskData`` and read back by the
+    worker, so no MQTT user property is needed.
     """
-    task_id = uuid4()
-    props = Properties(PacketTypes.PUBLISH)
-    props.UserProperty = [(TASK_ID_PROPERTY, str(task_id))]
-    await client.publish(
-        TASK_TOPIC,
-        encode_task_envelope(task_data),
-        qos=2,
-        properties=props,
-    )
-    return task_id
+    await client.publish(TASK_TOPIC, encode_task_envelope(task_data), qos=2)
+    return task_data_id(task_data)
 
 
 async def watch_status(client: aiomqtt.Client, task_id: UUID, *, timeout: float = 15.0) -> None:
@@ -152,7 +141,7 @@ async def run(host: str, port: int) -> None:
 
     # A separate client acts as the producer and status subscriber.
     async with aiomqtt.Client(hostname=host, port=port, protocol=aiomqtt.ProtocolVersion.V5) as producer:
-        job_id = await submit(producer, TaskData(task="long_job"))
+        job_id = await submit(producer, TaskData(task_id=str(uuid4()), task="long_job"))
         print(f"Submitted long_job {job_id}")
         await watch_status(producer, job_id)
 

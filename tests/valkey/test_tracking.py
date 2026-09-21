@@ -23,7 +23,7 @@ async def test_on_task_completed_acks_and_deletes_entry():
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     worker._task_entry_ids[t_id] = b"1-0"
 
-    await worker.on_task_completed(t_id, None, None)
+    await worker.on_task_completed(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"), None)
 
     assert client.acked == [(worker._task_stream_name, worker._task_group_name, [b"1-0"])]
     assert client.deleted == [(worker._task_stream_name, [b"1-0"])]
@@ -38,7 +38,7 @@ async def test_on_task_started_writes_running_tracking_record():
     client = DummyClient()
     worker = _make_tracking_worker(client)
 
-    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
+    await worker.on_task_started(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
 
     assert len(client.sets) == 2
     key, value, expiry = client.sets[0]
@@ -66,7 +66,7 @@ async def test_on_task_completed_success_writes_completed_and_acks():
     worker._task_entry_ids[t_id] = b"1-0"
 
     await worker.on_task_completed(
-        t_id, TaskData(task="dummy", payload=b"{}"), TaskResult(status="success", payload=b"done")
+        TaskData(task_id=str(t_id), task="dummy", payload=b"{}"), TaskResult(status="success", payload=b"done")
     )
 
     assert len(client.sets) == 1
@@ -86,8 +86,7 @@ async def test_on_task_completed_error_writes_failed_with_error():
     worker = _make_tracking_worker(client)
 
     await worker.on_task_completed(
-        t_id,
-        TaskData(task="dummy", payload=b"{}"),
+        TaskData(task_id=str(t_id), task="dummy", payload=b"{}"),
         TaskResult(status="error", error="boom", error_code="PERMANENT"),
     )
 
@@ -108,7 +107,7 @@ async def test_on_task_completed_none_writes_failed_canceled():
     client = DummyClient()
     worker = _make_tracking_worker(client)
 
-    await worker.on_task_completed(t_id, TaskData(task="dummy", payload=b"{}"), None)
+    await worker.on_task_completed(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"), None)
 
     assert len(client.sets) == 1
     _key, value, _expiry = client.sets[0]
@@ -161,5 +160,5 @@ async def test_tracking_write_failure_does_not_raise():
     worker = _make_tracking_worker(client)
     t_id = UUID("11111111-1111-1111-1111-111111111111")
 
-    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
-    await worker.on_task_completed(t_id, TaskData(task="dummy", payload=b"{}"), None)
+    await worker.on_task_started(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
+    await worker.on_task_completed(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"), None)

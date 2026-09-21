@@ -53,9 +53,9 @@ class MqttInbox(Protocol):
 
     async def mark_terminal(self, task_id: UUID) -> None: ...
 
-    async def pending(self) -> list[tuple[UUID, TaskData]]: ...
+    async def pending(self) -> list[TaskData]: ...
 
-    async def recover(self) -> list[tuple[UUID, TaskData]]: ...
+    async def recover(self) -> list[TaskData]: ...
 
     async def prune_expired(self) -> None: ...
 
@@ -85,10 +85,10 @@ class MemoryInbox:
     async def mark_terminal(self, task_id: UUID) -> None:
         self._entries.pop(task_id, None)
 
-    async def pending(self) -> list[tuple[UUID, TaskData]]:
-        return list(self._entries.items())
+    async def pending(self) -> list[TaskData]:
+        return list(self._entries.values())
 
-    async def recover(self) -> list[tuple[UUID, TaskData]]:
+    async def recover(self) -> list[TaskData]:
         return []
 
     async def prune_expired(self) -> None:
@@ -238,16 +238,18 @@ class FileMqttInbox:
         self._tombstone_path(task_id).write_text(json.dumps(time.time()), encoding="utf-8")
         self._unlink_quietly(self._entry_path(task_id))
 
-    def _load_entries(self) -> list[tuple[float, UUID, TaskData]]:
-        """Scan the inbox and return non-terminal entries (``created_at``, id, data).
+    def _load_entries(self) -> list[TaskData]:
+        """Scan the inbox and return non-terminal entry payloads, oldest first.
 
         Runs synchronously (called via ``asyncio.to_thread``). Corrupt, expired,
         and tombstoned entries are skipped; expired files are unlinked inline
         until the next :meth:`prune_expired` maintenance pass bounds growth.
+        The file's addressing id is used only for the tombstone dedupe here;
+        the returned ``TaskData`` carries its own id.
         """
         self._path.mkdir(parents=True, exist_ok=True)
         now = time.time()
-        entries: list[tuple[float, UUID, TaskData]] = []
+        entries: list[tuple[float, TaskData]] = []
         for entry_path in self._path.glob("*.json"):
             try:
                 raw = json.loads(entry_path.read_text(encoding="utf-8"))
@@ -274,9 +276,9 @@ class FileMqttInbox:
             task_data = self._decode_envelope(envelope, entry_path)
             if task_data is None:
                 continue
-            entries.append((created_at, task_id, task_data))
+            entries.append((created_at, task_data))
         entries.sort(key=lambda item: item[0])
-        return entries
+        return [task_data for _, task_data in entries]
 
     async def put(self, task_id: UUID, task_data: TaskData) -> None:
         """Persist ``task_data`` for ``task_id`` in the ``pending`` state.
@@ -309,15 +311,14 @@ class FileMqttInbox:
         async with self._lock:
             await asyncio.to_thread(self._prune_sync)
 
-    async def pending(self) -> list[tuple[UUID, TaskData]]:
+    async def pending(self) -> list[TaskData]:
         """Return all non-terminal entries, oldest first (diagnostics/tests)."""
         return await self._snapshot()
 
-    async def recover(self) -> list[tuple[UUID, TaskData]]:
+    async def recover(self) -> list[TaskData]:
         """Return all non-terminal entries for startup replay, oldest first."""
         return await self._snapshot()
 
-    async def _snapshot(self) -> list[tuple[UUID, TaskData]]:
+    async def _snapshot(self) -> list[TaskData]:
         async with self._lock:
-            entries = await asyncio.to_thread(self._load_entries)
-        return [(task_id, task_data) for _, task_id, task_data in entries]
+            return await asyncio.to_thread(self._load_entries)

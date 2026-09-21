@@ -19,7 +19,7 @@ def _make_tracker() -> TaskTracker:
     """
     return TaskTracker(
         worker_task=cast(asyncio.Task, None),
-        data=TaskData(task="dummy"),
+        data=TaskData(task_id=str(uuid4()), task="dummy"),
         started=time.monotonic(),
     )
 

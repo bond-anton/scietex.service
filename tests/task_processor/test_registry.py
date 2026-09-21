@@ -49,14 +49,14 @@ async def test_add_task_handler_named_instances_coexist_and_dispatch():
     assert "alpha" in proc.task_handlers
     assert "beta" in proc.task_handlers
 
-    alpha_result = await proc.process_task(uuid4(), TaskData(task="alpha_task", payload=b"alpha"))
+    alpha_result = await proc.process_task(TaskData(task_id=str(uuid4()), task="alpha_task", payload=b"alpha"))
     assert alpha_result.status == "success"
-    beta_result = await proc.process_task(uuid4(), TaskData(task="beta_task", payload=b"beta"))
+    beta_result = await proc.process_task(TaskData(task_id=str(uuid4()), task="beta_task", payload=b"beta"))
     assert beta_result.status == "success"
     assert beta_result.payload == b"beta"
 
     # no handler claims the other instance's task types
-    missing = await proc.process_task(uuid4(), TaskData(task="other_task", payload=b"{}"))
+    missing = await proc.process_task(TaskData(task_id=str(uuid4()), task="other_task", payload=b"{}"))
     assert missing.status == "error"
     assert "No handler" in missing.error
 
@@ -100,7 +100,7 @@ async def test_add_task_handler_stateful_handler_shared_object():
     handler = cast(SharedStateHandler, proc.task_handlers["SharedStateHandler"])
     assert handler.shared is shared
 
-    await proc.process_task(uuid4(), TaskData(task="shared", payload=b"{}"))
+    await proc.process_task(TaskData(task_id=str(uuid4()), task="shared", payload=b"{}"))
     assert shared["count"] == 1
 
 

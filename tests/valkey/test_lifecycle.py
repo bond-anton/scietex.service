@@ -197,7 +197,7 @@ async def test_shutdown_drain_deletes_queued_lease():
     t_id = UUID("11111111-1111-1111-1111-111111111111")
     client = DummyClient()
     worker = _make_tracking_worker(client)
-    worker.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
+    worker.enqueue_task(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
     worker._task_entry_ids[t_id] = b"1-0"
 
     await worker.cleanup()

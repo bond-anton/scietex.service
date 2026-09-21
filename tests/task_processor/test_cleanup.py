@@ -16,7 +16,7 @@ async def test_cleanup_drain_requeues_queued_tasks_for_non_durable_transport():
     silently lose work on shutdown (AR-041)."""
     proc = DemoProcessor()
     t_id = uuid4()
-    proc.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
+    proc.enqueue_task(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
     await proc.cleanup()
     assert any(tid == t_id for tid, _ in proc.requeued)
     assert proc.task_queue_empty()
@@ -29,7 +29,7 @@ async def test_cleanup_drain_does_not_requeue_queued_tasks_for_durable_transport
     an XADD here would duplicate them (AR-041)."""
     proc = DurableProcessor()
     t_id = uuid4()
-    proc.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
+    proc.enqueue_task(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
     await proc.cleanup()
     assert not any(tid == t_id for tid, _ in proc.requeued)
     assert proc.task_queue_empty()

@@ -11,7 +11,7 @@ from scietex.service.task_handler.basic import TaskHandler
 from scietex.service.task_handler.cancel import CancelTaskRequest
 from scietex.service.task_handler.capabilities import TaskCapabilities
 from scietex.service.task_handler.context import TaskHandlerContext
-from scietex.service.task_handler.schemas import TaskData, TaskResult
+from scietex.service.task_handler.schemas import TaskData, TaskResult, task_data_id
 from scietex.service.task_processor import TaskProcessor
 from scietex.service.transport import InMemoryTransport
 
@@ -24,9 +24,9 @@ class RecordingInMemoryTransport(InMemoryTransport):
         super().__init__(logger=logger)
         self._requeued = requeued
 
-    async def requeue(self, task_id, task_data) -> None:
-        self._requeued.append((task_id, task_data))
-        await super().requeue(task_id, task_data)
+    async def requeue(self, task_data) -> None:
+        self._requeued.append((task_data_id(task_data), task_data))
+        await super().requeue(task_data)
 
 
 class DurableInMemoryTransport(InMemoryTransport):
@@ -34,7 +34,7 @@ class DurableInMemoryTransport(InMemoryTransport):
     not re-enqueued on shutdown (its entry stays pending and redelivers on
     restart), mirroring a Valkey stream (AR-041)."""
 
-    async def on_drain(self, task_id, task_data) -> None:
+    async def on_drain(self, task_data) -> None:
         pass
 
 
@@ -260,13 +260,13 @@ class RecordingProcessor(DemoProcessor):
         super().__init__(*args, **kwargs)
         self.completed: list = []
 
-    async def on_task_completed(self, task_id, task_data, task_result, *, cancel_reason=None):
-        self.completed.append((task_id, task_data, task_result))
+    async def on_task_completed(self, task_data, task_result, *, cancel_reason=None):
+        self.completed.append((task_data_id(task_data), task_data, task_result))
 
 
 class RequeueRecordingProcessor(RecordingProcessor):
-    async def return_task_to_queue(self, task_id, task_data):
-        self.requeued.append((task_id, task_data))
+    async def return_task_to_queue(self, task_data):
+        self.requeued.append((task_data_id(task_data), task_data))
 
 
 class RetryCycleProcessor(RecordingProcessor):
@@ -297,9 +297,9 @@ class DurableProcessor(TaskProcessor):
     async def fetch_tasks(self) -> bool:  # pragma: no cover - stub
         return False
 
-    async def return_task_to_queue(self, task_id, task_data):
+    async def return_task_to_queue(self, task_data):
         # record requeued tasks for assertions
-        self.requeued.append((task_id, task_data))
+        self.requeued.append((task_data_id(task_data), task_data))
 
 
 class ReportingProcessor(TaskProcessor):
@@ -322,12 +322,12 @@ class OrderRecordingProcessor(DemoProcessor):
         super().__init__(*args, **kwargs)
         self.call_order: list[str] = []
 
-    async def on_task_started(self, task_id, task_data):
+    async def on_task_started(self, task_data):
         self.call_order.append("started")
 
-    async def process_task(self, task_id, task_data):
+    async def process_task(self, task_data):
         self.call_order.append("process")
-        return await super().process_task(task_id, task_data)
+        return await super().process_task(task_data)
 
 
 class ProgressReportingHandler(TaskHandler):
@@ -363,8 +363,8 @@ class CancelRecordingProcessor(DemoProcessor):
         super().__init__(*args, **kwargs)
         self.completed: list = []
 
-    async def on_task_completed(self, task_id, task_data, task_result, *, cancel_reason=None):
-        self.completed.append((task_id, task_data, task_result, cancel_reason))
+    async def on_task_completed(self, task_data, task_result, *, cancel_reason=None):
+        self.completed.append((task_data_id(task_data), task_data, task_result, cancel_reason))
 
 
 def _cancel_payload(target_id) -> bytes:

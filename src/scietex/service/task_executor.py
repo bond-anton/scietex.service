@@ -18,6 +18,7 @@ from .task_handler import (
     TaskTracker,
     is_control_task,
 )
+from .task_handler.schemas import task_data_id
 from .task_lifecycle import TaskLifecycle
 
 #: AR-022 v4: the framework grants exactly one error-path retry per task id.
@@ -49,19 +50,19 @@ class TaskExecutor:
     def __init__(
         self,
         *,
-        queue: asyncio.Queue[tuple[UUID, TaskData]],
+        queue: asyncio.Queue[TaskData],
         lifecycle: TaskLifecycle,
         retry_attempts: dict[UUID, int],
-        process_task: Callable[[UUID, TaskData], Awaitable[TaskResult]],
-        on_started: Callable[[UUID, TaskData], Awaitable[None]],
+        process_task: Callable[[TaskData], Awaitable[TaskResult]],
+        on_started: Callable[[TaskData], Awaitable[None]],
         on_completed: Callable[..., Awaitable[None]],
-        requeue: Callable[[UUID, TaskData], Awaitable[None]],
-        on_drain: Callable[[UUID, TaskData], Awaitable[None]],
+        requeue: Callable[[TaskData], Awaitable[None]],
+        on_drain: Callable[[TaskData], Awaitable[None]],
         settings: Callable[[], ReloadableSettings],
         logger: logging.Logger,
         max_retries: int = DEFAULT_MAX_TASK_RETRIES,
         max_timeout_requeues: int = DEFAULT_MAX_TIMEOUT_REQUEUES,
-        control_queue: asyncio.Queue[tuple[UUID, TaskData]] | None = None,
+        control_queue: asyncio.Queue[TaskData] | None = None,
         control_concurrency: int = DEFAULT_CONTROL_CONCURRENCY,
     ) -> None:
         self._queue = queue
@@ -95,10 +96,8 @@ class TaskExecutor:
             return
         if self._data_running() < self._settings().max_concurrent_tasks:
             try:
-                task_id, task_data = await asyncio.wait_for(
-                    self._queue.get(), timeout=self._settings().task_queue_fetch_timeout
-                )
-                self._dispatch(task_id, task_data, control=False)
+                task_data = await asyncio.wait_for(self._queue.get(), timeout=self._settings().task_queue_fetch_timeout)
+                self._dispatch(task_data, control=False)
             except asyncio.TimeoutError:
                 pass
         else:
@@ -109,40 +108,42 @@ class TaskExecutor:
         if self._control_queue is None or len(self._control_running) >= self._control_concurrency:
             return False
         try:
-            task_id, task_data = self._control_queue.get_nowait()
+            task_data = self._control_queue.get_nowait()
         except asyncio.QueueEmpty:
             return False
-        self._dispatch(task_id, task_data, control=True)
+        self._dispatch(task_data, control=True)
         return True
 
     def _data_running(self) -> int:
         """Running data-plane tasks (control commands are excluded from the budget)."""
         return len(self._lifecycle.trackers()) - len(self._control_running)
 
-    def _dispatch(self, task_id: UUID, task_data: TaskData, *, control: bool) -> None:
-        task = asyncio.create_task(self._handle_task(task_id, task_data))
+    def _dispatch(self, task_data: TaskData, *, control: bool) -> None:
+        task_id = task_data_id(task_data)
+        task = asyncio.create_task(self._handle_task(task_data))
         self._lifecycle.register(task_id, TaskTracker(worker_task=task, data=task_data, started=time.monotonic()))
         if control:
             self._control_running.add(task_id)
 
-    async def _handle_task(self, task_id: UUID, task_data: TaskData) -> None:
+    async def _handle_task(self, task_data: TaskData) -> None:
         """Execute a single task, then settle its transport entry exactly once."""
         result: TaskResult | None = None
         try:
-            result = await self._execute(task_id, task_data)
+            result = await self._execute(task_data)
         finally:
-            await self._settle(task_id, task_data, result)
+            await self._settle(task_data, result)
 
-    async def _execute(self, task_id: UUID, task_data: TaskData) -> TaskResult | None:
+    async def _execute(self, task_data: TaskData) -> TaskResult | None:
         """Run the on_started hook, dispatch to the handler, and log completion.
 
         Catches ``Exception`` (never ``BaseException``) so ``CancelledError``
         propagates and ``result`` stays ``None`` for the settle step to ack as a
         cancellation.
         """
+        task_id = task_data_id(task_data)
         try:
-            await self._on_started(task_id, task_data)
-            result = await self._process_task(task_id, task_data)
+            await self._on_started(task_data)
+            result = await self._process_task(task_data)
             self._logger.log(
                 logging.DEBUG,
                 "Task %s (%s) finished with status %s",
@@ -165,8 +166,9 @@ class TaskExecutor:
             )
             return None
 
-    async def _settle(self, task_id: UUID, task_data: TaskData, result: TaskResult | None) -> None:
+    async def _settle(self, task_data: TaskData, result: TaskResult | None) -> None:
         """Drop the tracker, balance the queue, apply retry policy, then ack."""
+        task_id = task_data_id(task_data)
         self._lifecycle.remove_tracker(task_id)
         if self._control_queue is not None and is_control_task(task_data):
             self._control_running.discard(task_id)
@@ -174,7 +176,7 @@ class TaskExecutor:
         else:
             self._queue.task_done()
         cancel_reason = self._lifecycle.take_cancel_reason(task_id)
-        ack_result = await self._apply_retry_policy(task_id, task_data, result, cancel_reason)
+        ack_result = await self._apply_retry_policy(task_data, result, cancel_reason)
         try:
             # Ack the transport entry exactly when the handler's work on it
             # ends (success, error, or cancellation). On CancelledError, result
@@ -182,7 +184,6 @@ class TaskExecutor:
             # popped here so the transport can distinguish a deliberate cancel
             # from a timeout.
             await self._on_completed(
-                task_id,
                 task_data,
                 ack_result,
                 cancel_reason=cancel_reason,
@@ -201,7 +202,6 @@ class TaskExecutor:
 
     async def _apply_retry_policy(
         self,
-        task_id: UUID,
         task_data: TaskData,
         result: TaskResult | None,
         cancel_reason: CancelReason | None = None,
@@ -216,6 +216,7 @@ class TaskExecutor:
         requeue. A requeue failure is logged and the task is still acked (the
         retry copy is lost, but the entry must not stay pending forever).
         """
+        task_id = task_data_id(task_data)
         if result is None and cancel_reason == "timeout":
             # The timeout watchdog owns `_timeout_requeues` and bumps it only
             # after the handler has stopped; clearing it here would reset the
@@ -234,7 +235,7 @@ class TaskExecutor:
         if attempts < self._max_retries:
             self._retry_attempts[task_id] = attempts + 1
             try:
-                await self._requeue(task_id, task_data)
+                await self._requeue(task_data)
             except Exception as exc:
                 # The retry copy is lost, so the budget must not stay behind to
                 # grant a phantom second retry; the task is still acked.
@@ -309,7 +310,7 @@ class TaskExecutor:
             # queued cancellation (AR-122).
             self._retry_attempts.pop(target_id, None)
             self._timeout_requeues.pop(target_id, None)
-            await self._on_completed(target_id, queued_data, None, cancel_reason="deliberate")
+            await self._on_completed(queued_data, None, cancel_reason="deliberate")
             return "cancelled"
 
         return "not_running"
@@ -330,11 +331,14 @@ class TaskExecutor:
     def _drain_queue(self, queue: asyncio.Queue, task_id: UUID) -> TaskData | None:
         """Remove ``task_id`` from one lane atomically (no await between drain/re-put)."""
         removed: TaskData | None = None
-        pending: list[tuple[UUID, TaskData]] = []
+        pending: list[TaskData] = []
         while not queue.empty():
             item = queue.get_nowait()
-            if item[0] == task_id and removed is None:
-                removed = item[1]
+            # Compare UUID-to-UUID: the wire id is a string that may be
+            # non-canonical (e.g. uppercase hex), so a raw string comparison
+            # would silently miss the target and leave it queued.
+            if task_data_id(item) == task_id and removed is None:
+                removed = item
                 queue.task_done()
             else:
                 pending.append(item)
@@ -344,8 +348,8 @@ class TaskExecutor:
 
     async def _drain_lane(self, queue: asyncio.Queue) -> None:
         while not queue.empty():
-            task_id, task_data = queue.get_nowait()
-            await self._on_drain(task_id, task_data)
+            task_data = queue.get_nowait()
+            await self._on_drain(task_data)
             queue.task_done()
 
     async def watchdog(self) -> None:
@@ -392,7 +396,7 @@ class TaskExecutor:
                                 attempts + 1,
                                 self._max_timeout_requeues,
                             )
-                            await self._requeue(task_id, task_tracker.data)
+                            await self._requeue(task_tracker.data)
                         else:
                             # Ceiling hit: the original entry was already acked
                             # as failed/timeout above; do not redeliver.
@@ -453,7 +457,7 @@ class TaskExecutor:
                 )
                 if task_tracker.worker_task.done() and task_tracker.data.canceled_action == "requeue":
                     self._logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
-                    await self._requeue(task_id, task_tracker.data)
+                    await self._requeue(task_tracker.data)
         self._logger.debug("All tasks cancelled")
 
         # A task requeued but never re-handled before shutdown would otherwise

@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from ..health import TransportHealth
-from ..task_handler.schemas import CancelReason, TaskData, TaskResult
+from ..task_handler.schemas import CancelReason, TaskData, TaskResult, task_data_id
 from ..task_handler.wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
 from ..transport import RecoverableTransport, TaskSink
 from ._glide import (
@@ -29,6 +29,12 @@ from ._glide import (
 from .config import DEFAULT_CLAIM_MIN_IDLE_MS, ValkeyWorkerConfig
 from .lease import TaskLeaseManager
 from .tracking import TaskStatusStore
+
+#: Fixed stream field name under which an entry carries its encoded
+#: ``TaskData``. The task id moved inside the payload (``TaskData.task_id`` is
+#: now required), so the field no longer doubles as the id key and stays
+#: constant across entries.
+TASK_FIELD = b"task"
 
 
 class ValkeyTransport(RecoverableTransport):
@@ -128,20 +134,19 @@ class ValkeyTransport(RecoverableTransport):
                         if pairs is None:
                             continue
                         for field, payload_bytes in pairs:
-                            task_id = field.decode("utf-8") if isinstance(field, bytes) else field
                             if payload_bytes is None:
                                 continue
                             task_data = decode_task_envelope(payload_bytes)
                             if task_data is None:
                                 version = decode_task_envelope_version(payload_bytes)
                                 self._logger.error(
-                                    "Failed to decode task envelope for %s (version=%s)",
-                                    task_id,
+                                    "Failed to decode task envelope for entry %s (version=%s)",
+                                    entry_id,
                                     version if version is not None else "malformed",
                                 )
                                 continue
-                            uuid = UUID(task_id)
-                            if sink.enqueue_task(uuid, task_data):
+                            uuid = task_data_id(task_data)
+                            if sink.enqueue_task(task_data):
                                 self._entry_ids[uuid] = entry_id
                                 # The entry id is recorded before the lease write so
                                 # the local ownership guard is active from the same
@@ -155,7 +160,7 @@ class ValkeyTransport(RecoverableTransport):
                                 # recorded only on successful enqueue, preserving the
                                 # existing "full queue leaves no lease" policy.
                                 self._deferred.append((uuid, task_data, entry_id))
-                                self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", task_id)
+                                self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", uuid)
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
             self._health.report_failure(exc)
@@ -173,7 +178,7 @@ class ValkeyTransport(RecoverableTransport):
         enqueued = False
         while self._deferred:
             task_id, task_data, entry_id = self._deferred[0]
-            if not sink.enqueue_task(task_id, task_data):
+            if not sink.enqueue_task(task_data):
                 break
             self._deferred.popleft()
             self._entry_ids[task_id] = entry_id
@@ -227,17 +232,16 @@ class ValkeyTransport(RecoverableTransport):
                     break
                 for entry_id, pairs in entries.items():
                     for field, payload_bytes in pairs:
-                        task_id = field.decode("utf-8") if isinstance(field, bytes) else field
                         task_data = decode_task_envelope(payload_bytes)
                         if task_data is None:
                             version = decode_task_envelope_version(payload_bytes)
                             self._logger.error(
-                                "Failed to decode recovered task envelope for %s (version=%s)",
-                                task_id,
+                                "Failed to decode recovered task envelope for entry %s (version=%s)",
+                                entry_id,
                                 version if version is not None else "malformed",
                             )
                             continue
-                        uuid = UUID(task_id)
+                        uuid = task_data_id(task_data)
                         if uuid in self._entry_ids:
                             continue
                         if not await self._lease.acquire(uuid):
@@ -245,10 +249,10 @@ class ValkeyTransport(RecoverableTransport):
                             self._logger.log(
                                 logging.DEBUG,
                                 "Task %s is leased by a live holder; deferring recovery",
-                                task_id,
+                                uuid,
                             )
                             continue
-                        if not sink.enqueue_task(uuid, task_data):
+                        if not sink.enqueue_task(task_data):
                             # Queue full mid-recovery: roll back the lease we just
                             # acquired (the entry was never accepted) and stop
                             # claiming so the remaining pending entries stay
@@ -257,7 +261,7 @@ class ValkeyTransport(RecoverableTransport):
                             self._logger.log(
                                 logging.DEBUG,
                                 "Task queue full during recovery; deferring task %s",
-                                task_id,
+                                uuid,
                             )
                             return False, enqueued
                         self._entry_ids[uuid] = entry_id
@@ -270,11 +274,12 @@ class ValkeyTransport(RecoverableTransport):
             return False, enqueued
         return (not lease_skipped), enqueued
 
-    async def requeue(self, task_id: UUID, task_data: TaskData) -> None:
+    async def requeue(self, task_data: TaskData) -> None:
         """Re-queue a task by appending it to the Valkey task stream.
 
         Encodes ``task_data`` into a versioned transport envelope (msgpack)
-        and appends a new entry keyed by the string form of ``task_id``.
+        and appends a new entry carrying it under the fixed ``TASK_FIELD``
+        field name.
 
         The lease is deleted as part of the requeue: the requeued copy reuses
         the same ``task_id``, so leaving this worker's lease in place would
@@ -282,15 +287,16 @@ class ValkeyTransport(RecoverableTransport):
         peer's fresh lease (AR-077b). Releasing it here means the copy is
         immediately claimable by any worker.
         """
+        task_id = task_data_id(task_data)
         client = self._client_provider()
         if client:
-            t_id: bytes = str(task_id).encode("utf-8")
             packed = encode_task_envelope(task_data)
-            await client.xadd(self._stream_name, [(t_id, packed)])
+            await client.xadd(self._stream_name, [(TASK_FIELD, packed)])
         await self._lease.delete(task_id)
 
-    async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_started(self, task_data: TaskData) -> None:
         """Publish a ``running`` tracking record when a task begins."""
+        task_id = task_data_id(task_data)
         await self._status.record_running(task_id, task_data)
         # The lease marks this entry as owned by a live worker, so recovery on
         # another replica skips it while processing is still in flight.
@@ -298,7 +304,6 @@ class ValkeyTransport(RecoverableTransport):
 
     async def ack(
         self,
-        task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
         *,
@@ -314,6 +319,7 @@ class ValkeyTransport(RecoverableTransport):
         misreport a task that is still in flight. ``task_result`` is ``None``
         when the task was cancelled before producing a result.
         """
+        task_id = task_data_id(task_data)
         # The retry copy is a NEW stream entry with the same task id; the old
         # entry must still be acked/deleted before returning. ``task_data`` is
         # None only in unit tests that exercise the ack path in isolation.
@@ -340,7 +346,7 @@ class ValkeyTransport(RecoverableTransport):
         """Update the tracking record's progress for a running task."""
         await self._status.update_progress(task_id, value)
 
-    async def on_drain(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_drain(self, task_data: TaskData) -> None:
         """Release the lease for a drained task without re-enqueueing it.
 
         For a durable transport the stream entry is still pending and is
@@ -348,7 +354,7 @@ class ValkeyTransport(RecoverableTransport):
         (AR-041). The lease is deleted so a restart or peer can reclaim the
         entry immediately instead of waiting for it to expire.
         """
-        await self._lease.delete(task_id)
+        await self._lease.delete(task_data_id(task_data))
 
     async def refresh_leases(self) -> None:
         """Renew the lease for every task this worker owns.

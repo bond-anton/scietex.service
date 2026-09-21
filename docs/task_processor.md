@@ -97,8 +97,8 @@ methods:
 
 | Method | Returns | Description |
 |---|---|---|
-| `enqueue_task(task_id, task_data)` | `bool` | Non-blocking `put_nowait`; returns `False` if the queue is full |
-| `dequeue_task()` | `tuple[UUID, TaskData] \| None` | Non-blocking `get_nowait`; returns `None` if empty |
+| `enqueue_task(task_data)` | `bool` | Non-blocking `put_nowait`; returns `False` if the queue is full |
+| `dequeue_task()` | `TaskData \| None` | Non-blocking `get_nowait`; returns `None` if empty |
 | `task_queue_empty()` | `bool` | `True` if the queue has no pending tasks |
 | `task_queue_full()` | `bool` | `True` if the queue has reached its maximum size |
 
@@ -174,7 +174,7 @@ transport = InMemoryTransport(logger=logging.getLogger("svc"))
 processor = TaskProcessor(TaskProcessorConfig(service_name="svc"), transport=transport)
 
 # Feed the in-memory transport directly:
-transport.submit(task_id, task_data)
+transport.submit(task_data)
 ```
 
 `InMemoryTransport` is deque-backed and re-delivers a requeued task on the
@@ -377,7 +377,7 @@ async def watchdog(self) -> None:
             if tracker.worker_task.done():
                 # Handler actually stopped; requeue a fresh delivery only now
                 if tracker.data.timeout.timeout_action == "requeue":
-                    await self.return_task_to_queue(task_id, tracker.data)
+                    await self.return_task_to_queue(tracker.data)
             # else: handler ignored cancellation — requeueing would run it twice
 ```
 
@@ -445,13 +445,13 @@ class MyWorker(TaskProcessor):
         while not self.task_queue_full():
             try:
                 raw = await self.message_queue.get(timeout=0.1)
-                task_id = uuid4()
                 task_data = TaskData(
+                    task_id=str(uuid4()),
                     task=raw["type"],
                     payload=raw["payload"].encode(),
                     timeout=TaskTimeout(timeout=raw.get("timeout")),
                 )
-                self.enqueue_task(task_id, task_data)
+                self.enqueue_task(task_data)
             except Empty:
                 break
         # Return True when at least one task was enqueued so the
@@ -468,10 +468,10 @@ cancelled tasks:
 
 ```python
 class MyWorker(TaskProcessor):
-    async def return_task_to_queue(self, task_id: UUID, task_data: TaskData) -> None:
+    async def return_task_to_queue(self, task_data: TaskData) -> None:
         """Send timed-out tasks back to the external queue."""
         raw = {
-            "task_id": str(task_id),
+            "task_id": task_data.task_id,
             "task": task_data.task,
             "payload": task_data.payload.decode(),
         }
@@ -544,7 +544,6 @@ implement `TaskTransport` instead.
 ```python
 import asyncio
 import json
-import uuid
 from uuid import uuid4
 
 from scietex.service import TaskProcessor, TaskProcessorConfig
@@ -592,17 +591,17 @@ class MyTaskWorker(TaskProcessor):
             if not self._external_queue:
                 break
             item = self._external_queue.pop(0)
-            task_id = uuid4()
             task_data = TaskData(
+                task_id=str(uuid4()),
                 task=item["type"],
                 payload=json.dumps(item["payload"]).encode(),
                 timeout=TaskTimeout(timeout=item.get("timeout")),
             )
-            self.enqueue_task(task_id, task_data)
+            self.enqueue_task(task_data)
             enqueued = True
         return enqueued
 
-    async def return_task_to_queue(self, task_id: uuid.UUID, task_data: TaskData) -> None:
+    async def return_task_to_queue(self, task_data: TaskData) -> None:
         """Re-queue timed-out tasks."""
         self._external_queue.append(
             {
@@ -610,7 +609,7 @@ class MyTaskWorker(TaskProcessor):
                 "payload": json.loads(task_data.payload),
             }
         )
-        self.logger.info("Re-queued task %s", task_id)
+        self.logger.info("Re-queued task %s", task_data.task_id)
 
     async def cleanup(self) -> None:
         """Flush any remaining tasks back to the external queue."""
@@ -618,8 +617,8 @@ class MyTaskWorker(TaskProcessor):
             task = self.dequeue_task()
             if task is None:
                 break
-            task_id, task_data = task
-            await self.return_task_to_queue(task_id, task_data)
+            task_data = task
+            await self.return_task_to_queue(task_data)
         await super().cleanup()
 
 
@@ -691,12 +690,14 @@ unnecessary:
 
 ```python
 task = TaskData(
+    task_id="<uuid>",
     task="send_notification",
     payload=b'{"user_id": 123}',
     timeout=TaskTimeout(timeout=2.0, timeout_action="discard"),
 )
 
 task = TaskData(
+    task_id="<uuid>",
     task="generate_report",
     payload=b'{"report_id": 42}',
     timeout=TaskTimeout(timeout=30.0, timeout_action="requeue"),

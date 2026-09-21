@@ -26,7 +26,7 @@ async def test_on_task_started_writes_lease_key():
     client = DummyClient()
     worker = _make_tracking_worker(client)
 
-    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
+    await worker.on_task_started(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
 
     assert len(client.sets) == 2
     lease_key, lease_value, lease_expiry = client.sets[1]
@@ -45,7 +45,7 @@ async def test_on_task_completed_deletes_lease_key():
     worker._task_entry_ids[t_id] = b"1-0"
 
     await worker.on_task_completed(
-        t_id, TaskData(task="dummy", payload=b"{}"), TaskResult(status="success", payload=b"done")
+        TaskData(task_id=str(t_id), task="dummy", payload=b"{}"), TaskResult(status="success", payload=b"done")
     )
 
     assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
@@ -64,8 +64,7 @@ async def test_on_task_completed_retryable_does_not_delete_lease():
     worker._task_entry_ids[t_id] = b"1-0"
 
     await worker.on_task_completed(
-        t_id,
-        TaskData(task="dummy", payload=b"{}"),
+        TaskData(task_id=str(t_id), task="dummy", payload=b"{}"),
         TaskResult(status="error", error="transient", retryable=True),
     )
 
@@ -83,7 +82,7 @@ async def test_requeue_deletes_lease():
     client = DummyClient()
     worker = _make_tracking_worker(client)
 
-    await worker._transport.requeue(t_id, TaskData(task="dummy", payload=b"{}"))
+    await worker._transport.requeue(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
 
     assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
     assert len(client.added) == 1
@@ -110,7 +109,7 @@ async def test_watchdog_refreshes_leases_for_running_tasks():
             t1,
             TaskTracker(
                 worker_task=task_a,
-                data=TaskData(task="dummy", payload=b"{}"),
+                data=TaskData(task_id=str(t1), task="dummy", payload=b"{}"),
                 started=time.monotonic(),
             ),
         )
@@ -118,7 +117,7 @@ async def test_watchdog_refreshes_leases_for_running_tasks():
             t2,
             TaskTracker(
                 worker_task=task_b,
-                data=TaskData(task="dummy", payload=b"{}"),
+                data=TaskData(task_id=str(t2), task="dummy", payload=b"{}"),
                 started=time.monotonic(),
             ),
         )
@@ -168,7 +167,7 @@ async def test_on_task_started_honours_configured_lease_ttl():
     client = DummyClient()
     worker = _make_tracking_worker(client, task_lease_ttl=5)
 
-    await worker.on_task_started(t_id, TaskData(task="dummy", payload=b"{}"))
+    await worker.on_task_started(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
 
     assert client.sets[1][2] == ExpirySet(ExpiryType.SEC, 5)
 
@@ -205,7 +204,7 @@ async def test_refresh_task_leases_covers_queued_and_running():
             running_id,
             TaskTracker(
                 worker_task=task,
-                data=TaskData(task="dummy", payload=b"{}"),
+                data=TaskData(task_id=str(running_id), task="dummy", payload=b"{}"),
                 started=time.monotonic(),
             ),
         )

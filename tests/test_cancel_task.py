@@ -73,7 +73,9 @@ async def test_cancel_task_handler_success_returns_response_payload():
 
     handler = CancelTaskHandler("CancelTaskHandler", _context(), cancel=cancel)
     payload = msgspec.msgpack.encode(CancelTaskRequest(target_task_id=str(target_id)))
-    result = await handler.handle(TaskData(task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities())
+    result = await handler.handle(
+        TaskData(task_id=str(uuid4()), task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities()
+    )
 
     assert seen == [target_id]
     assert result.status == "success"
@@ -91,7 +93,9 @@ async def test_cancel_task_handler_not_running_returns_error():
 
     handler = CancelTaskHandler("CancelTaskHandler", _context(), cancel=cancel)
     payload = msgspec.msgpack.encode(CancelTaskRequest(target_task_id=str(uuid4())))
-    result = await handler.handle(TaskData(task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities())
+    result = await handler.handle(
+        TaskData(task_id=str(uuid4()), task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities()
+    )
 
     assert result.status == "error"
     assert result.error_code == "TASK_NOT_RUNNING"
@@ -107,7 +111,9 @@ async def test_cancel_task_handler_ignored_returns_error():
 
     handler = CancelTaskHandler("CancelTaskHandler", _context(), cancel=cancel)
     payload = msgspec.msgpack.encode(CancelTaskRequest(target_task_id=str(uuid4())))
-    result = await handler.handle(TaskData(task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities())
+    result = await handler.handle(
+        TaskData(task_id=str(uuid4()), task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities()
+    )
 
     assert result.status == "error"
     assert result.error_code == "CANCEL_IGNORED"
@@ -119,7 +125,9 @@ async def test_cancel_task_handler_malformed_payload_returns_invalid_code():
     """A payload that is not a CancelTaskRequest yields INVALID_CANCEL_PAYLOAD
     without raising."""
     handler = CancelTaskHandler("CancelTaskHandler", _context(), cancel=_noop_cancel)
-    result = await handler.handle(TaskData(task=CANCEL_TASK_TYPE, payload=b"not-msgpack"), capabilities=_capabilities())
+    result = await handler.handle(
+        TaskData(task_id=str(uuid4()), task=CANCEL_TASK_TYPE, payload=b"not-msgpack"), capabilities=_capabilities()
+    )
 
     assert result.status == "error"
     assert result.error_code == "INVALID_CANCEL_PAYLOAD"
@@ -132,7 +140,9 @@ async def test_cancel_task_handler_invalid_uuid_returns_invalid_code():
     INVALID_CANCEL_PAYLOAD without raising."""
     handler = CancelTaskHandler("CancelTaskHandler", _context(), cancel=_noop_cancel)
     payload = msgspec.msgpack.encode(CancelTaskRequest(target_task_id="not-a-uuid"))
-    result = await handler.handle(TaskData(task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities())
+    result = await handler.handle(
+        TaskData(task_id=str(uuid4()), task=CANCEL_TASK_TYPE, payload=payload), capabilities=_capabilities()
+    )
 
     assert result.status == "error"
     assert result.error_code == "INVALID_CANCEL_PAYLOAD"

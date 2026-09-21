@@ -11,10 +11,10 @@ import pytest
 from scietex.service.health import TransportHealth
 from scietex.service.mqtt._aiomqtt import MqttError, Properties
 from scietex.service.mqtt.config import MqttWorkerConfig
-from scietex.service.mqtt.transport import TASK_ID_PROPERTY, MqttPublish, MqttTransport
+from scietex.service.mqtt.transport import MqttPublish, MqttTransport
 from scietex.service.task_handler import CANCEL_TASK_TYPE
-from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus
-from scietex.service.task_handler.wire import encode_task_envelope
+from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus, task_data_id
+from scietex.service.task_handler.wire import decode_task_envelope, encode_task_envelope
 
 _LOGGER = "test_transport"
 _TOPIC = "scietex/svc/tasks"
@@ -76,16 +76,16 @@ class FakeInbox:
         self._terminal.add(task_id)
         self._entries.pop(task_id, None)
 
-    async def pending(self) -> list[tuple[UUID, TaskData]]:
+    async def pending(self) -> list[TaskData]:
         self.pending_calls += 1
         return self._non_terminal()
 
-    async def recover(self) -> list[tuple[UUID, TaskData]]:
+    async def recover(self) -> list[TaskData]:
         self.recover_calls += 1
         return self._non_terminal()
 
-    def _non_terminal(self) -> list[tuple[UUID, TaskData]]:
-        return [(task_id, data) for task_id, data in self._entries.items() if task_id not in self._terminal]
+    def _non_terminal(self) -> list[TaskData]:
+        return [data for task_id, data in self._entries.items() if task_id not in self._terminal]
 
 
 class FakeSink:
@@ -99,7 +99,8 @@ class FakeSink:
     def task_queue_full(self) -> bool:
         return self.full
 
-    def enqueue_task(self, task_id: UUID, task_data: TaskData) -> bool:
+    def enqueue_task(self, task_data: TaskData) -> bool:
+        task_id = task_data_id(task_data)
         if task_id in self.reject:
             return False
         self.items.append((task_id, task_data))
@@ -166,7 +167,7 @@ async def test_fetch_drains_inbox_and_reports():
     """fetch drains pending entries into the sink in order and reports True;
     a second fetch does not re-enqueue already-handed-over tasks."""
     t1, t2 = uuid4(), uuid4()
-    d1, d2 = TaskData(task="a"), TaskData(task="b")
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
     inbox = FakeInbox()
     inbox.seed((t1, d1), (t2, d2))
     transport, _, _ = _transport(inbox)
@@ -194,7 +195,7 @@ async def test_fetch_respects_backpressure_and_does_not_lose_rejected_task():
     """A full or rejecting sink stops the drain; the rejected task stays pending
     and is redelivered on the next fetch instead of being lost."""
     t1, t2 = uuid4(), uuid4()
-    d1, d2 = TaskData(task="a"), TaskData(task="b")
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
     inbox = FakeInbox()
     inbox.seed((t1, d1), (t2, d2))
     transport, _, _ = _transport(inbox)
@@ -218,8 +219,8 @@ async def test_fetch_delivers_control_when_data_lane_full():
     """A full data lane still delivers a pending control command (returns True),
     while the blocked data task stays pending in the inbox."""
     t_data, t_ctrl = uuid4(), uuid4()
-    d_data = TaskData(task="data")
-    d_ctrl = TaskData(task=CANCEL_TASK_TYPE)
+    d_data = TaskData(task_id=str(t_data), task="data")
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
     inbox = FakeInbox()
     inbox.seed((t_data, d_data), (t_ctrl, d_ctrl))
     transport, _, _ = _transport(inbox)
@@ -228,7 +229,7 @@ async def test_fetch_delivers_control_when_data_lane_full():
     sink = FakeSink(full=True)
     assert await transport.fetch(sink) is True
     assert sink.items == [(t_ctrl, d_ctrl)]
-    assert await inbox.pending() == [(t_data, d_data), (t_ctrl, d_ctrl)]
+    assert await inbox.pending() == [d_data, d_ctrl]
 
 
 @pytest.mark.asyncio
@@ -236,7 +237,7 @@ async def test_first_fetch_triggers_recovery_once():
     """The first fetch runs recovery and marks it done; later fetches do not
     re-run recovery."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     inbox = FakeInbox()
     inbox.seed((t1, d1))
     transport, _, _ = _transport(inbox)
@@ -257,7 +258,7 @@ async def test_fetch_keeps_recovery_pending_when_incomplete():
     """A queue-full interruption leaves recovery incomplete, so the next fetch
     retries the remainder (AR-051 mirror)."""
     t1, t2 = uuid4(), uuid4()
-    d1, d2 = TaskData(task="a"), TaskData(task="b")
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
     inbox = FakeInbox()
     inbox.seed((t1, d1), (t2, d2))
     transport, _, _ = _transport(inbox)
@@ -278,38 +279,39 @@ async def test_requeue_publishes_encoded_envelope_and_leaves_entry_pending():
     """requeue publishes the versioned envelope at task_qos and leaves the inbox
     entry non-terminal (not marked terminal)."""
     t1 = uuid4()
-    d1 = TaskData(task="a", payload=b"{}")
+    d1 = TaskData(task_id=str(t1), task="a", payload=b"{}")
     inbox = FakeInbox()
     inbox.seed((t1, d1))
     transport, used_inbox, published = _transport(inbox, task_qos=1)
 
-    await transport.requeue(t1, d1)
+    await transport.requeue(d1)
 
-    # The envelope re-publish carries the task-id user property (without it the
-    # worker's own message loop would reject the retry copy) and no expiry; the
+    # The envelope re-publish carries no user property: the task id now travels
+    # inside the encoded TaskData payload, so the worker's message loop decodes
+    # the id from the envelope rather than from an MQTT 5 user property. The
     # follow-up ``queued`` status is retained and carries the message-expiry
     # property.
     assert len(published) == 2
     topic, payload, qos, retain, envelope_properties = published[0]
     assert (topic, payload, qos, retain) == (_TOPIC, encode_task_envelope(d1), 1, False)
-    assert envelope_properties is not None
-    assert envelope_properties.UserProperty == [(TASK_ID_PROPERTY, str(t1))]
+    assert envelope_properties is None  # no user property on the re-published copy
+    assert decode_task_envelope(payload) == d1  # the id travels inside the payload
     queued_properties = published[1][4]
     assert queued_properties is not None
     assert queued_properties.MessageExpiryInterval == 86400
     assert used_inbox.mark_terminal_calls == []
-    assert await used_inbox.pending() == [(t1, d1)]
+    assert await used_inbox.pending() == [d1]
 
 
 @pytest.mark.asyncio
 async def test_on_started_marks_in_flight():
     """on_started marks the inbox entry in-flight."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     inbox = FakeInbox()
     transport, used_inbox, _ = _transport(inbox)
 
-    await transport.on_started(t1, d1)
+    await transport.on_started(d1)
 
     assert used_inbox.mark_in_flight_calls == [t1]
 
@@ -318,12 +320,12 @@ async def test_on_started_marks_in_flight():
 async def test_ack_marks_terminal():
     """ack marks the inbox entry terminal and releases the in-process claim."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     inbox = FakeInbox()
     inbox.seed((t1, d1))
     transport, used_inbox, _ = _transport(inbox)
 
-    await transport.ack(t1, d1, None)
+    await transport.ack(d1, None)
 
     assert used_inbox.mark_terminal_calls == [t1]
     assert await used_inbox.pending() == []
@@ -363,16 +365,16 @@ async def test_on_drain_leaves_entry_pending_and_does_not_reenqueue():
     """on_drain leaves the inbox entry non-terminal and neither publishes nor
     marks it terminal, so a restart redelivers it."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     inbox = FakeInbox()
     inbox.seed((t1, d1))
     transport, used_inbox, published = _transport(inbox)
 
-    await transport.on_drain(t1, d1)
+    await transport.on_drain(d1)
 
     assert published == []
     assert used_inbox.mark_terminal_calls == []
-    assert await used_inbox.pending() == [(t1, d1)]
+    assert await used_inbox.pending() == [d1]
 
 
 @pytest.mark.asyncio
@@ -380,7 +382,7 @@ async def test_recover_pending_tasks_replays_oldest_first():
     """recover_pending_tasks enqueues entries in inbox order and reports a
     complete, productive recovery."""
     older, newer = uuid4(), uuid4()
-    d_old, d_new = TaskData(task="old"), TaskData(task="new")
+    d_old, d_new = TaskData(task_id=str(older), task="old"), TaskData(task_id=str(newer), task="new")
     inbox = FakeInbox()
     inbox.seed((older, d_old), (newer, d_new))
     transport, _, _ = _transport(inbox)
@@ -397,7 +399,7 @@ async def test_recover_pending_tasks_reports_incomplete_on_queue_full():
     """recover_pending_tasks stops at a rejected entry and reports recovery
     incomplete so the remainder is retried."""
     t1, t2 = uuid4(), uuid4()
-    d1, d2 = TaskData(task="a"), TaskData(task="b")
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
     inbox = FakeInbox()
     inbox.seed((t1, d1), (t2, d2))
     transport, _, _ = _transport(inbox)
@@ -415,8 +417,8 @@ async def test_recover_pending_tasks_delivers_control_when_data_blocked():
     """A full data lane still recovers a control command, so recovery reports
     incomplete (data blocked) while the control task was enqueued."""
     t_data, t_ctrl = uuid4(), uuid4()
-    d_data = TaskData(task="data")
-    d_ctrl = TaskData(task=CANCEL_TASK_TYPE)
+    d_data = TaskData(task_id=str(t_data), task="data")
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
     inbox = FakeInbox()
     inbox.seed((t_data, d_data), (t_ctrl, d_ctrl))
     transport, _, _ = _transport(inbox)
@@ -441,10 +443,10 @@ async def test_on_started_publishes_running_status():
     """on_started publishes a retained QoS 1 ``running`` TaskStatus to the
     per-task status topic."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     transport, _, published = _transport()
 
-    await transport.on_started(t1, d1)
+    await transport.on_started(d1)
 
     assert len(published) == 1
     topic, payload, qos, retain, _ = published[0]
@@ -469,10 +471,10 @@ async def test_status_publish_carries_message_expiry():
     """A retained status publish carries an MQTT 5 message-expiry property set
     to ``status_ttl``, so the broker ages out the per-task marker."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     transport, _, published = _transport(status_ttl=3600)
 
-    await transport.on_started(t1, d1)
+    await transport.on_started(d1)
 
     assert len(published) == 1
     properties = published[0][4]
@@ -485,10 +487,10 @@ async def test_status_publish_without_ttl_has_no_expiry():
     """``status_ttl=None`` publishes the retained status with no properties, so
     no message expiry is set."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     transport, _, published = _transport(status_ttl=None)
 
-    await transport.on_started(t1, d1)
+    await transport.on_started(d1)
 
     assert len(published) == 1
     assert published[0][4] is None
@@ -499,10 +501,10 @@ async def test_ack_success_publishes_completed_with_result():
     """ack with a success TaskResult publishes ``completed`` with ``result`` set
     to the result payload."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     transport, _, published = _transport()
 
-    await transport.ack(t1, d1, TaskResult(status="success", payload=b"done"))
+    await transport.ack(d1, TaskResult(status="success", payload=b"done"))
 
     assert len(published) == 1
     topic, payload, qos, retain, _ = published[0]
@@ -521,10 +523,10 @@ async def test_ack_non_retryable_error_publishes_failed():
     """ack with a non-retryable error publishes ``failed`` with ``error`` and
     ``error_code`` populated."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     transport, _, published = _transport()
 
-    await transport.ack(t1, d1, TaskResult(status="error", error="boom", error_code="PERMANENT"))
+    await transport.ack(d1, TaskResult(status="error", error="boom", error_code="PERMANENT"))
 
     assert len(published) == 1
     _, payload, _, _, _ = published[0]
@@ -541,10 +543,10 @@ async def test_ack_deliberate_cancel_publishes_cancelled_with_data():
     """ack with ``cancel_reason="deliberate"`` publishes ``cancelled`` with the
     original TaskData embedded in ``data``."""
     t1 = uuid4()
-    d1 = TaskData(task="a", payload=b"{}")
+    d1 = TaskData(task_id=str(t1), task="a", payload=b"{}")
     transport, _, published = _transport()
 
-    await transport.ack(t1, d1, None, cancel_reason="deliberate")
+    await transport.ack(d1, None, cancel_reason="deliberate")
 
     assert len(published) == 1
     _, payload, _, _, _ = published[0]
@@ -561,10 +563,10 @@ async def test_ack_timeout_or_shutdown_cancel_publishes_failed(cancel_reason):
     """ack with a timeout/shutdown cancel reason publishes ``failed`` (not
     ``cancelled``) with no ``data``."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     transport, _, published = _transport()
 
-    await transport.ack(t1, d1, None, cancel_reason=cancel_reason)
+    await transport.ack(d1, None, cancel_reason=cancel_reason)
 
     assert len(published) == 1
     _, payload, _, _, _ = published[0]
@@ -580,16 +582,16 @@ async def test_ack_retryable_error_publishes_nothing_and_leaves_entry_non_termin
     non-terminal (AR-077b mirror): ``requeue`` already re-published the task
     under the same id, so a tombstone would suppress the retry copy."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     inbox = FakeInbox()
     inbox.seed((t1, d1))
     transport, used_inbox, published = _transport(inbox)
 
-    await transport.ack(t1, d1, TaskResult(status="error", error="transient", retryable=True))
+    await transport.ack(d1, TaskResult(status="error", error="transient", retryable=True))
 
     assert published == []
     assert used_inbox.mark_terminal_calls == []
-    assert await used_inbox.pending() == [(t1, d1)]
+    assert await used_inbox.pending() == [d1]
 
 
 @pytest.mark.asyncio
@@ -597,10 +599,10 @@ async def test_requeue_publishes_queued_status_after_envelope():
     """requeue publishes a retained QoS 1 ``queued`` status in addition to the
     non-retained envelope, advertising the task's return to the source queue."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     transport, _, published = _transport()
 
-    await transport.requeue(t1, d1)
+    await transport.requeue(d1)
 
     assert len(published) == 2
     envelope_topic, _, _, envelope_retain, _ = published[0]
@@ -618,7 +620,7 @@ async def test_fetch_publishes_queued_once_per_accepted_task():
     """fetch publishes a retained QoS 1 ``queued`` status once per accepted task
     and never republishes on a repeat poll."""
     t1, t2 = uuid4(), uuid4()
-    d1, d2 = TaskData(task="a"), TaskData(task="b")
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
     inbox = FakeInbox()
     inbox.seed((t1, d1), (t2, d2))
     transport, _, published = _transport(inbox)
@@ -640,7 +642,7 @@ async def test_recovery_publishes_queued_for_replayed_tasks():
     """recover_pending_tasks publishes ``queued`` once per recovered task, so a
     task redelivered after a restart re-advertises itself."""
     t1, t2 = uuid4(), uuid4()
-    d1, d2 = TaskData(task="a"), TaskData(task="b")
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
     inbox = FakeInbox()
     inbox.seed((t1, d1), (t2, d2))
     transport, _, published = _transport(inbox)
@@ -660,7 +662,7 @@ async def test_publish_status_failure_is_reported_not_raised(caplog):
     """A status publish that raises MqttError is logged at WARNING, reported to
     health, and never raised into the hook."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     health = _health()
 
     async def failing_publish(
@@ -676,7 +678,7 @@ async def test_publish_status_failure_is_reported_not_raised(caplog):
     transport, _, _ = _transport(health=health, publish=failing_publish)
 
     with caplog.at_level(logging.WARNING):
-        await transport.on_started(t1, d1)
+        await transport.on_started(d1)
 
     assert health.degraded is True
     assert health.last_error == "boom"
@@ -788,7 +790,7 @@ async def test_ack_flushes_pending_progress_before_terminal_status():
     """ack flushes a coalesced pending value to the progress topic immediately
     before the terminal status, then drops the throttle state."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     clock = FakeClock()
     transport, _, published = _transport(clock=clock, progress_min_interval=1.0)
 
@@ -796,7 +798,7 @@ async def test_ack_flushes_pending_progress_before_terminal_status():
     await transport.on_progress(t1, 20.0)  # coalesces to pending
     assert len(published) == 1
 
-    await transport.ack(t1, d1, TaskResult(status="success", payload=b"ok"))
+    await transport.ack(d1, TaskResult(status="success", payload=b"ok"))
 
     assert [p[0] for p in published] == [_progress_topic(t1), _progress_topic(t1), _status_topic(t1)]
     assert msgspec.msgpack.decode(published[1][1], type=TaskProgress) == TaskProgress(progress=True, value=20.0)
@@ -808,7 +810,7 @@ async def test_requeue_drops_pending_progress_without_flushing():
     """requeue drops the throttle state without flushing the pending tick: the
     fresh run must not inherit a stale progress value."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     clock = FakeClock()
     transport, _, published = _transport(clock=clock, progress_min_interval=1.0)
 
@@ -816,7 +818,7 @@ async def test_requeue_drops_pending_progress_without_flushing():
     await transport.on_progress(t1, 20.0)  # coalesces to pending
     assert [p[0] for p in published] == [_progress_topic(t1)]
 
-    await transport.requeue(t1, d1)
+    await transport.requeue(d1)
 
     # Envelope + queued status go out, but the pending tick is not flushed.
     assert [p[0] for p in published] == [_progress_topic(t1), _TOPIC, _status_topic(t1)]
@@ -830,7 +832,7 @@ async def test_on_drain_drops_pending_progress():
     """on_drain drops the throttle state without flushing the pending tick
     and publishes nothing."""
     t1 = uuid4()
-    d1 = TaskData(task="a")
+    d1 = TaskData(task_id=str(t1), task="a")
     clock = FakeClock()
     transport, _, published = _transport(clock=clock, progress_min_interval=1.0)
 
@@ -838,7 +840,7 @@ async def test_on_drain_drops_pending_progress():
     await transport.on_progress(t1, 20.0)  # coalesces to pending
     assert [p[0] for p in published] == [_progress_topic(t1)]
 
-    await transport.on_drain(t1, d1)
+    await transport.on_drain(d1)
 
     # on_drain publishes neither the pending tick nor anything else.
     assert [p[0] for p in published] == [_progress_topic(t1)]

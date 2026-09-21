@@ -110,7 +110,6 @@ the same `{service}` substitution; see
 
 | Constant | Default | Description |
 |---|---|---|
-| `TASK_ID_PROPERTY` (`transport.py`) | `"scietex-task-id"` | MQTT 5 user property carrying the task id alongside the envelope payload |
 | `_REGISTRY_QOS` (`worker.py`) | `1` | QoS for retained registry/heartbeat messages |
 | `MIN_TASK_QOS` / `MAX_TASK_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.task_qos` |
 | `MIN_LOG_QOS` / `MAX_LOG_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.log_qos` |
@@ -136,12 +135,12 @@ the same `{service}` substitution; see
 client with `protocol=ProtocolVersion.V5`, so MQTT 5 user properties are
 available. There is no 3.1.1 code path.
 
-The task id travels as the MQTT 5 user property `scietex-task-id` alongside
-the envelope payload. The envelope itself is unchanged: the payload is the
-same transport-agnostic `msgpack(TaskEnvelope(version=1,
+The task id travels inside the `TaskData` itself — `TaskData.task_id` is a
+required `str` field (v5.0.0) — so the message payload is the same
+transport-agnostic `msgpack(TaskEnvelope(version=1,
 data=msgpack(TaskData)))` used by every transport (see
-[Wire Format](#wire-format) below). MQTT needs the user property because,
-unlike a Valkey stream entry, an MQTT message has no key to carry the task id.
+[Wire Format](#wire-format) below). There is no separate user property: MQTT
+needs no out-of-band id channel because the id is part of the encoded payload.
 
 ## Lifecycle
 
@@ -384,9 +383,7 @@ into the processor queue. Persist-before-enqueue therefore always holds.
 Mark the inbox entry terminal for a completed task.
 
 ```python
-async def on_task_completed(
-    self, task_id, task_data, task_result, *, cancel_reason=None
-):
+async def on_task_completed(self, task_data, task_result, *, cancel_reason=None):
     """Mark the inbox entry terminal and drop the in-process claim."""
 ```
 
@@ -485,11 +482,10 @@ durable wire value is therefore:
 msgpack(TaskEnvelope(version=1, data=msgpack(TaskData)))
 ```
 
-The task id is **not** in the envelope. It travels in the MQTT 5 user
-property `scietex-task-id`, set by the publisher and read by
-`_extract_task_id` when the message arrives. A message missing the property
-or carrying an undecodable envelope is logged and skipped without crashing
-the message loop. The handler contract (`TaskData`) is unchanged, and
+The task id **is** part of the envelope: `TaskData.task_id` is a required
+`str` field (v5.0.0), so the id travels inside the decoded `TaskData`. A
+message carrying an undecodable envelope is logged and skipped without
+crashing the message loop. The handler contract (`TaskData`) is unchanged, and
 handlers **never see the envelope** — they receive the decoded `TaskData`.
 
 Encoding and decoding are centralized in the shared, transport-agnostic
@@ -522,9 +518,9 @@ message to a durable inbox **before** it is handed to the processor, and
 dedupes on replay. The flow:
 
 1. The aiomqtt message loop receives a message.
-2. `_handle_message` reads the task id from the `scietex-task-id` user
-   property, decodes the envelope, and calls `inbox.put(task_id, task_data)`,
-   which persists the envelope with a `pending` marker.
+2. `_handle_message` decodes the envelope and calls `inbox.put(task_id,
+   task_data)` — the task id comes from the decoded `TaskData.task_id` — which
+   persists the envelope with a `pending` marker.
 3. `MqttTransport.fetch` drains the inbox into the processor queue, and
    `on_started` marks the entry `in-flight`.
 4. On terminal completion, `ack` writes a tombstone and removes the entry.
@@ -602,7 +598,7 @@ progress_topic = f"{status_topic_prefix}/{task_id}/progress"
 | Task progress | `scietex/{service}/tasks/{task_id}/progress` | `progress_qos` (default `0`) | no |
 
 `{task_id}` is the string form of the task `UUID` — the same value carried in
-the `scietex-task-id` user property. Every status publish is retained, so the
+`TaskData.task_id`. Every status publish is retained, so the
 broker keeps the latest `TaskStatus` per task and a late subscriber still sees
 the final state. Retained status also carries an MQTT 5 message-expiry interval
 (`status_ttl`, default 24h; `None` disables expiry), so the broker ages out the

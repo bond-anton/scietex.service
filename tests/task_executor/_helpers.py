@@ -7,7 +7,7 @@ from uuid import UUID
 from scietex.service.config_reload import ReloadableSettings
 from scietex.service.task_executor import DEFAULT_CONTROL_CONCURRENCY, TaskExecutor
 from scietex.service.task_handler.runtime import TaskTracker
-from scietex.service.task_handler.schemas import TaskData, TaskResult
+from scietex.service.task_handler.schemas import TaskData, TaskResult, task_data_id
 from scietex.service.task_lifecycle import TaskLifecycle
 
 _logger = logging.getLogger("scietex.service.task_executor.tests")
@@ -45,23 +45,23 @@ class Recording:
         self.processed: list = []
         self.process_result = process_result
 
-    async def process_task(self, task_id: UUID, task_data: TaskData) -> TaskResult:
-        self.processed.append((task_id, task_data))
+    async def process_task(self, task_data: TaskData) -> TaskResult:
+        self.processed.append((task_data_id(task_data), task_data))
         if isinstance(self.process_result, Exception):
             raise self.process_result
         return self.process_result if self.process_result is not None else TaskResult(status="success")
 
-    async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
-        self.started.append((task_id, task_data))
+    async def on_started(self, task_data: TaskData) -> None:
+        self.started.append((task_data_id(task_data), task_data))
 
-    async def on_completed(self, task_id, task_data, result, *, cancel_reason=None):
-        self.completed.append((task_id, task_data, result, cancel_reason))
+    async def on_completed(self, task_data, result, *, cancel_reason=None):
+        self.completed.append((task_data_id(task_data), task_data, result, cancel_reason))
 
-    async def requeue(self, task_id: UUID, task_data: TaskData) -> None:
-        self.requeued.append((task_id, task_data))
+    async def requeue(self, task_data: TaskData) -> None:
+        self.requeued.append((task_data_id(task_data), task_data))
 
-    async def on_drain(self, task_id: UUID, task_data: TaskData) -> None:
-        self.drained.append((task_id, task_data))
+    async def on_drain(self, task_data: TaskData) -> None:
+        self.drained.append((task_data_id(task_data), task_data))
 
 
 def build_executor(

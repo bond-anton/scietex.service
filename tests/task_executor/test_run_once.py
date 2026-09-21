@@ -19,8 +19,8 @@ async def test_run_once_dequeues_and_dispatches():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task="dummy")
-    await queue.put((task_id, task_data))
+    task_data = TaskData(task_id=str(task_id), task="dummy")
+    await queue.put(task_data)
 
     await executor.run_once()
 
@@ -42,11 +42,11 @@ async def test_run_once_respects_concurrency_limit():
     executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
 
     blocker_id = uuid4()
-    await register_finished(lifecycle, blocker_id, TaskData(task="blocker"))
+    await register_finished(lifecycle, blocker_id, TaskData(task_id=str(blocker_id), task="blocker"))
 
     task_id = uuid4()
-    task_data = TaskData(task="dummy")
-    await queue.put((task_id, task_data))
+    task_data = TaskData(task_id=str(task_id), task="dummy")
+    await queue.put(task_data)
 
     await executor.run_once()
 
@@ -87,15 +87,15 @@ async def test_run_once_admits_control_when_data_budget_full():
     )
 
     blocker_id = uuid4()
-    register_running(lifecycle, blocker_id, TaskData(task="blocker"))
+    register_running(lifecycle, blocker_id, TaskData(task_id=str(blocker_id), task="blocker"))
 
     control_id = uuid4()
-    control_data = TaskData(task=CANCEL_TASK_TYPE)
-    await control_queue.put((control_id, control_data))
+    control_data = TaskData(task_id=str(control_id), task=CANCEL_TASK_TYPE)
+    await control_queue.put(control_data)
 
     data_id = uuid4()
-    data_data = TaskData(task="dummy")
-    await queue.put((data_id, data_data))
+    data_data = TaskData(task_id=str(data_id), task="dummy")
+    await queue.put(data_data)
 
     await executor.run_once()
 
@@ -125,12 +125,12 @@ async def test_control_concurrency_ceiling():
     )
 
     running_id = uuid4()
-    running_tracker = register_running(lifecycle, running_id, TaskData(task=CANCEL_TASK_TYPE))
+    running_tracker = register_running(lifecycle, running_id, TaskData(task_id=str(running_id), task=CANCEL_TASK_TYPE))
     executor._control_running.add(running_id)
 
     queued_id = uuid4()
-    queued_data = TaskData(task=CANCEL_TASK_TYPE)
-    await control_queue.put((queued_id, queued_data))
+    queued_data = TaskData(task_id=str(queued_id), task=CANCEL_TASK_TYPE)
+    await control_queue.put(queued_data)
 
     await executor.run_once()
 

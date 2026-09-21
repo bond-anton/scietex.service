@@ -146,7 +146,7 @@ def make_capabilities() -> TaskCapabilities:
 
 
 def _task(task_type: str, payload: bytes) -> TaskData:
-    return TaskData(task=task_type, payload=payload)
+    return TaskData(task_id=str(uuid4()), task=task_type, payload=payload)
 
 
 # --------------------------------------------------------------------------- #

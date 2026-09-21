@@ -13,7 +13,7 @@ from collections import deque
 from typing import Protocol
 from uuid import UUID
 
-from .task_handler.schemas import CancelReason, TaskData, TaskResult, is_control_task
+from .task_handler.schemas import CancelReason, TaskData, TaskResult, is_control_task, task_data_id
 
 
 class TaskSink(Protocol):
@@ -26,7 +26,7 @@ class TaskSink(Protocol):
 
     def task_queue_full(self) -> bool: ...
 
-    def enqueue_task(self, task_id: UUID, task_data: TaskData) -> bool: ...
+    def enqueue_task(self, task_data: TaskData) -> bool: ...
 
 
 class TaskTransport(Protocol):
@@ -39,13 +39,12 @@ class TaskTransport(Protocol):
 
     async def fetch(self, sink: TaskSink) -> bool: ...
 
-    async def requeue(self, task_id: UUID, task_data: TaskData) -> None: ...
+    async def requeue(self, task_data: TaskData) -> None: ...
 
-    async def on_started(self, task_id: UUID, task_data: TaskData) -> None: ...
+    async def on_started(self, task_data: TaskData) -> None: ...
 
     async def ack(
         self,
-        task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
         *,
@@ -70,7 +69,7 @@ class TaskTransport(Protocol):
         """
         ...
 
-    async def on_drain(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_drain(self, task_data: TaskData) -> None:
         """Release the transport-side claim for a queued-but-undispatched task.
 
         The release is unconditional. Re-delivery policy is transport-owned: a
@@ -130,11 +129,11 @@ class InMemoryTransport:
 
     def __init__(self, *, logger: logging.Logger) -> None:
         self._logger = logger
-        self._pending: deque[tuple[UUID, TaskData]] = deque()
+        self._pending: deque[TaskData] = deque()
 
-    def submit(self, task_id: UUID, task_data: TaskData) -> None:
+    def submit(self, task_data: TaskData) -> None:
         """Append a task for delivery on the next :meth:`fetch`."""
-        self._pending.append((task_id, task_data))
+        self._pending.append(task_data)
 
     async def fetch(self, sink: TaskSink) -> bool:
         """Drain pending tasks into ``sink``, preferring control-plane commands.
@@ -146,34 +145,33 @@ class InMemoryTransport:
         enqueued = False
         data_blocked = False
         for _ in range(len(self._pending)):
-            task_id, task_data = self._pending.popleft()
+            task_data = self._pending.popleft()
             if is_control_task(task_data):
-                if sink.enqueue_task(task_id, task_data):
+                if sink.enqueue_task(task_data):
                     enqueued = True
                 else:
-                    self._pending.append((task_id, task_data))
+                    self._pending.append(task_data)
                 continue
             if data_blocked or sink.task_queue_full():
-                self._pending.append((task_id, task_data))
+                self._pending.append(task_data)
                 data_blocked = True
                 continue
-            if sink.enqueue_task(task_id, task_data):
+            if sink.enqueue_task(task_data):
                 enqueued = True
             else:
-                self._pending.append((task_id, task_data))
+                self._pending.append(task_data)
                 data_blocked = True
         return enqueued
 
-    async def requeue(self, task_id: UUID, task_data: TaskData) -> None:
+    async def requeue(self, task_data: TaskData) -> None:
         """Re-append a task so the next :meth:`fetch` re-delivers it."""
-        self._pending.append((task_id, task_data))
+        self._pending.append(task_data)
 
-    async def on_started(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_started(self, task_data: TaskData) -> None:
         """No-op: an in-memory transport publishes no tracking records."""
 
     async def ack(
         self,
-        task_id: UUID,
         task_data: TaskData,
         task_result: TaskResult | None,
         *,
@@ -191,12 +189,12 @@ class InMemoryTransport:
         """Nothing is pending across restarts, so recovery is trivially complete."""
         return True, False
 
-    async def on_drain(self, task_id: UUID, task_data: TaskData) -> None:
+    async def on_drain(self, task_data: TaskData) -> None:
         """Return a drained task to the queue when its action is ``requeue``.
 
         Reproduces the base ``TaskProcessor`` shutdown-drain policy: a
         non-durable transport would otherwise silently lose the work (AR-041).
         """
         if task_data.canceled_action == "requeue":
-            self._logger.log(logging.WARNING, "Task %s will be returned to queue.", task_id)
-            await self.requeue(task_id, task_data)
+            self._logger.log(logging.WARNING, "Task %s will be returned to queue.", task_data_id(task_data))
+            await self.requeue(task_data)

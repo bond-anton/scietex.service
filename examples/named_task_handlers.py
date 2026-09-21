@@ -12,7 +12,7 @@ this is the caller's responsibility when choosing names.
 
 import asyncio
 import logging
-from uuid import UUID
+from uuid import uuid4
 
 from scietex.service import TaskProcessor, TaskProcessorConfig
 from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskResult
@@ -54,12 +54,11 @@ class InMemoryTaskSource:
     """Simulates an external task source (e.g. database, message queue)."""
 
     def __init__(self) -> None:
-        self._tasks: list[tuple[UUID, TaskData]] = []
+        self._tasks: list[TaskData] = []
 
     def add_task(self, task_data: TaskData) -> None:
-        task_id = UUID(int=len(self._tasks))
-        self._tasks.append((task_id, task_data))
-        logging.getLogger("TaskSource").info("Task source: queued task '%s' (id=%s)", task_data.task, task_id)
+        self._tasks.append(task_data)
+        logging.getLogger("TaskSource").info("Task source: queued task '%s' (id=%s)", task_data.task, task_data.task_id)
 
 
 # ── Processor ────────────────────────────────────────────────────────────
@@ -75,8 +74,8 @@ class NamedTaskProcessor(TaskProcessor):
     async def fetch_tasks(self) -> bool:
         enqueued = False
         while self._task_source._tasks and not self.task_queue_full():
-            task_id, task_data = self._task_source._tasks.pop(0)
-            self.enqueue_task(task_id, task_data)
+            task_data = self._task_source._tasks.pop(0)
+            self.enqueue_task(task_data)
             enqueued = True
         return enqueued
 
@@ -87,8 +86,8 @@ class NamedTaskProcessor(TaskProcessor):
 async def main() -> None:
     # Enqueue tasks of both types; each is handled by the matching named slice.
     task_source = InMemoryTaskSource()
-    task_source.add_task(TaskData(task="alpha_task", payload=b"hello alpha"))
-    task_source.add_task(TaskData(task="beta_task", payload=b"hello beta"))
+    task_source.add_task(TaskData(task_id=str(uuid4()), task="alpha_task", payload=b"hello alpha"))
+    task_source.add_task(TaskData(task_id=str(uuid4()), task="beta_task", payload=b"hello beta"))
 
     processor = NamedTaskProcessor(
         task_source=task_source,

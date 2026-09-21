@@ -41,7 +41,7 @@ async def test_task_manager_consumes_handler_exception_without_leaking():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="exploding", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="exploding", payload=b"{}"))
         # Wait until task_manager has consumed the task from the queue.
         for _ in range(100):
             if proc.task_queue_empty():
@@ -68,7 +68,7 @@ async def test_handle_task_invokes_completion_hook():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="dummy", payload=b'{"value": 5}'))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="dummy", payload=b'{"value": 5}'))
         for _ in range(100):
             if proc.completed:
                 break
@@ -93,7 +93,7 @@ async def test_handle_task_requeues_retryable_error_before_ack():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="retryable_err", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="retryable_err", payload=b"{}"))
         for _ in range(100):
             if proc.completed:
                 break
@@ -122,7 +122,7 @@ async def test_retryable_error_retries_once_then_acks_terminal():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="retryable_err", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="retryable_err", payload=b"{}"))
         for _ in range(300):
             if len(proc.completed) >= 2:
                 break
@@ -150,7 +150,7 @@ async def test_handle_task_drops_permanent_error_without_requeue():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="permanent_err", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="permanent_err", payload=b"{}"))
         for _ in range(100):
             if proc.completed:
                 break
@@ -173,7 +173,7 @@ async def test_handle_task_does_not_requeue_raised_handler():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="raiser", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="raiser", payload=b"{}"))
         for _ in range(100):
             if proc.completed:
                 break
@@ -195,7 +195,7 @@ async def test_handle_task_calls_on_task_started_before_process_task():
     await proc.start()
     try:
         t_id = uuid4()
-        proc.enqueue_task(t_id, TaskData(task="dummy", payload=b"{}"))
+        proc.enqueue_task(TaskData(task_id=str(t_id), task="dummy", payload=b"{}"))
         for _ in range(100):
             if len(proc.call_order) >= 2:
                 break

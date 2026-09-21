@@ -14,7 +14,6 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar, cast
-from uuid import UUID
 
 import msgspec
 from scietex.logging import AsyncMqttHandler
@@ -22,6 +21,7 @@ from scietex.logging import AsyncMqttHandler
 from ..config import DEFAULT_CONFIG_STARTUP_TIMEOUT
 from ..config_reload import CONFIG_SOURCE_UNAVAILABLE, ConfigApplyOutcome
 from ..heartbeat import Heartbeat
+from ..task_handler.schemas import task_data_id
 from ..task_handler.wire import decode_task_envelope
 from ..transport_worker import TransportWorker
 from ._aiomqtt import Client, Message, MqttError, Properties, ProtocolVersion
@@ -29,7 +29,7 @@ from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
 from .config_source import MqttConfigSource
 from .inbox import FileMqttInbox, MemoryInbox, MqttInbox
 from .logging import logging_handler_config
-from .transport import TASK_ID_PROPERTY, MqttTransport
+from .transport import MqttTransport
 
 #: QoS for the retained heartbeat/registry messages. Retained liveness should
 #: be at-least-once so the marker is reliably set; each beat refreshes it.
@@ -643,51 +643,33 @@ class MqttWorker(TransportWorker):
         """Route one received MQTT message: config snapshot or task.
 
         A message on ``_config_topic`` is the retained remote-config snapshot
-        (design §2) and is recorded by the config source — it carries no
-        ``scietex-task-id`` user property and must not follow the task path,
-        which would log a spurious "missing task id" warning.
+        (design §2) and is recorded by the config source — it is not a
+        ``TaskData`` envelope and must not follow the task path.
 
-        Everything else is a task: the id is read from the ``scietex-task-id``
-        user property and the payload decoded as a versioned envelope. A message
-        missing the property or carrying an undecodable envelope is logged and
-        skipped without crashing the loop. The loop persists only:
-        :meth:`MqttTransport.fetch` is the single intake path that drains the
-        inbox into the processor queue, so persist-before-enqueue still holds
-        (the inbox write precedes any enqueue via the transport's next poll) and
-        a task is never enqueued twice (design §3.2).
+        Everything else is a task: the payload is decoded as a versioned
+        envelope first, which yields the ``TaskData`` (and its ``task_id``). A
+        message carrying an undecodable envelope — including a pre-v5 payload
+        without a ``task_id`` — is logged and skipped without crashing the loop.
+        The loop persists only: :meth:`MqttTransport.fetch` is the single intake
+        path that drains the inbox into the processor queue, so
+        persist-before-enqueue still holds (the inbox write precedes any enqueue
+        via the transport's next poll) and a task is never enqueued twice
+        (design §3.2).
         """
         if str(message.topic) == self._config_topic:
             self._mqtt_config_source.record(message.payload)
             return
-        task_id = self._extract_task_id(message)
-        if task_id is None:
-            self.logger.warning("Skipping MQTT message without a %s user property", TASK_ID_PROPERTY)
-            return
         task_data = decode_task_envelope(message.payload)
         if task_data is None:
-            self.logger.warning("Skipping MQTT message %s with an undecodable envelope", task_id)
+            self.logger.warning("Skipping MQTT message with an undecodable envelope")
             return
+        task_id = task_data_id(task_data)
         if self._inbox is not None:
             await self._inbox.put(task_id, task_data)
         else:
             # At-most-once opt-out: buffer in memory so the transport's next
             # fetch drains it. Nothing survives a restart, by design.
             await self._intake_inbox.put(task_id, task_data)
-
-    @staticmethod
-    def _extract_task_id(message: Message) -> UUID | None:
-        """Return the ``scietex-task-id`` user property value as a UUID, or ``None``."""
-        properties = message.properties
-        user_properties = getattr(properties, "UserProperty", None)
-        if not user_properties:
-            return None
-        for key, value in user_properties:
-            if key == TASK_ID_PROPERTY:
-                try:
-                    return UUID(value)
-                except ValueError:
-                    return None
-        return None
 
     async def _register_instance(self) -> None:
         """Publish this instance's retained liveness marker to the registry topic.

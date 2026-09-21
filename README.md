@@ -109,7 +109,7 @@ class MyProcessor(TaskProcessor):
         # NOTE: fetch_tasks is a compatibility shim; prefer a TaskTransport via transport=.
         # Pull tasks from your source (DB, API, queue, etc.)
         # and enqueue them for processing:
-        #     self.enqueue_task(task_id, task_data)
+        #     self.enqueue_task(task_data)
         # Return True when at least one task was enqueued so the
         # task_queue_manager drains a backlog back-to-back.
         return False
@@ -228,7 +228,8 @@ if __name__ == "__main__":
 ```
 
 Tasks are published to the topic `scietex/{service_name}/tasks`; the task id
-travels as the MQTT 5 user property `scietex-task-id`. Because aiomqtt v2.5.1
+travels inside the encoded `TaskData` (its required `task_id` field), not as a
+separate user property. Because aiomqtt v2.5.1
 auto-acks at the broker when a message is received, the worker persists every
 message to a durable file-backed inbox before processing it, restoring
 at-least-once delivery. Set `inbox_backend="memory"` (or its alias `"none"`)
@@ -280,7 +281,7 @@ Task delivery is abstracted behind the `TaskTransport` protocol
 `TaskProcessor` composes a transport rather than inheriting delivery hooks:
 
 - **`InMemoryTransport`** is the default: a deque-backed in-process transport.
-  Feed it with `transport.submit(task_id, task_data)`; `fetch` drains it into
+  Feed it with `transport.submit(task_data)`; `fetch` drains it into
   the processor's queue. A bare `TaskProcessor` therefore works with no
   external backend.
 - **`ValkeyTransport`** (in `scietex.service.valkey`) implements the same
@@ -296,7 +297,7 @@ from scietex.service import InMemoryTransport, TaskProcessor, TaskProcessorConfi
 
 transport = InMemoryTransport(logger=logging.getLogger("transport"))
 processor = TaskProcessor(TaskProcessorConfig(service_name="svc"), transport=transport)
-transport.submit(task_id, task_data)
+transport.submit(task_data)
 ```
 
 The legacy template-method hooks (`fetch_tasks`, `return_task_to_queue`,

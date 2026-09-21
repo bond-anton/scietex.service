@@ -308,7 +308,7 @@ non-blocking `put_nowait`/`get_nowait` underneath). State:
 `__task_handlers_map`/`__task_handlers` (130–131; the map holds
 `(class, handler_kwargs)` tuples keyed by resolved name), `_task_lifecycle`
 (116, the composed per-task lifecycle state), `__task_queue` (139, bounded
-`asyncio.Queue[(UUID, TaskData)]`).
+`asyncio.Queue[TaskData]`).
 Managers: `@Manager("TaskManager") task_manager` 818,
 `@Manager("TaskQueueManager") task_queue_manager` 850.
 Hooks: `fetch_tasks` 830, `return_task_to_queue` 618, `on_task_completed` 653
@@ -386,16 +386,16 @@ than on subclass overrides.
 
 **Main symbols:** `TaskSink` Protocol (19) — the enqueue surface a transport
 delivers into: `task_queue_full() -> bool` and
-`enqueue_task(task_id, task_data) -> bool` (a `TaskProcessor` satisfies it
+`enqueue_task(task_data) -> bool` (a `TaskProcessor` satisfies it
 structurally, no adapter). `TaskTransport` Protocol (32) — all async:
-`fetch(sink) -> bool`, `requeue(task_id, task_data)`,
-`on_started(task_id, task_data)`,
-`ack(task_id, task_data, task_result, *, cancel_reason=None)`,
+`fetch(sink) -> bool`, `requeue(task_data)`,
+`on_started(task_data)`,
+`ack(task_data, task_result, *, cancel_reason=None)`,
 `on_progress(task_id, value)`,
 `refresh_leases()`, `recover_pending_tasks(sink) -> tuple[bool, bool]`,
-`on_drain(task_id, task_data)`.
+`on_drain(task_data)`.
 `InMemoryTransport` (62) — the default, deque-backed implementation; public
-`submit(task_id, task_data)` feeds it (not part of the Protocol), `fetch` drains
+`submit(task_data)` feeds it (not part of the Protocol), `fetch` drains
 while the sink is not full, `refresh_leases`/`recover_pending_tasks` are the
 no-op/`(True, False)` defaults, and `on_drain` requeues iff
 `canceled_action == "requeue"`.
@@ -584,9 +584,9 @@ injection (`config`, `service_name`, `consumer_name`, `stream_name`,
 `TransportHealth` and triggers `recover()`), `recover_pending_tasks(sink)`
 (`XAUTOCLAIM` pending entries on first fetch; decodes via
 `decode_task_envelope`, skipping unknown-version/invalid entries with an ERROR
-log), `requeue(task_id, task_data)` (`xadd` re-queue via `encode_task_envelope`,
+log), `requeue(task_data)` (`xadd` re-queue via `encode_task_envelope`,
 then deletes the lease — AR-077b),
-`on_started`, `ack(task_id, task_data, task_result, *, cancel_reason=None)`
+`on_started`, `ack(task_data, task_result, *, cancel_reason=None)`
 (`xack`+`xdel` the entry after the handler finishes; skips the lease delete for
 a retryable error result — AR-077b), `on_progress`, `on_drain` (durable drain:
 deletes the lease without re-enqueueing), and `refresh_leases()` (rewrites
@@ -765,9 +765,9 @@ injection (`config`, `service_name`, `topic`, `inbox`, `health`, `publish`,
 entries via `recover_pending_tasks`, then drains the inbox's non-terminal
 snapshot into `sink.enqueue_task`, stopping on backpressure and skipping
 already-enqueued ids), `recover_pending_tasks(sink)` (returns a
-`(recovery_complete, enqueued)` tuple), `requeue(task_id, task_data)`
-(re-publishes the envelope at `task_qos` under the same id), `on_started(task_id, task_data)` (marks the
-inbox entry in-flight), `ack(task_id, task_data, task_result, *,
+`(recovery_complete, enqueued)` tuple), `requeue(task_data)`
+(re-publishes the envelope at `task_qos` under the same id), `on_started(task_data)` (marks the
+inbox entry in-flight), `ack(task_data, task_result, *,
 cancel_reason=None)` (tombstones the entry; a retryable error result skips the
 tombstone so the requeued copy is accepted — AR-077b mirror), `on_progress`
 (no-op), `on_drain` (drops the marker, leaving the entry pending for recovery),
@@ -778,11 +778,10 @@ terminal, so the inbox snapshot is not re-enqueued on every poll). The
 `recovered` flag and the recovery-once guard are inherited from the shared
 `RecoverableTransport` scaffold (`transport.py`), not owned here.
 
-`TASK_ID_PROPERTY` (`"scietex-task-id"`, `mqtt/transport.py:52`, exported in
-`__all__` at `:44`) carries the task id as an MQTT 5 user property;
-`MqttTransport.requeue` re-publishes the envelope with that user property set
-(`mqtt/transport.py:313`), so a retried copy is indistinguishable from the
-original on the wire.
+The task id travels inside `TaskData.task_id` (a required `str` field as of
+v5.0.0), so `MqttTransport.requeue` re-publishes the envelope with the same
+encoded payload, and a retried copy is indistinguishable from the original on
+the wire.
 
 **Composition:** `MqttWorker` builds `FileMqttInbox` → `MqttTransport`
 (the `TransportHealth` is inherited from `TransportWorker`), then assigns the

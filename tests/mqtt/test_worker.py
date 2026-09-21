@@ -16,8 +16,8 @@ from scietex.service.mqtt._aiomqtt import MqttError, PacketTypes, Properties
 from scietex.service.mqtt.config import MqttConfig, MqttWorkerConfig
 from scietex.service.mqtt.inbox import FileMqttInbox, MemoryInbox
 from scietex.service.mqtt.transport import MqttTransport
-from scietex.service.mqtt.worker import TASK_ID_PROPERTY, MqttWorker
-from scietex.service.task_handler.schemas import TaskData, TaskResult
+from scietex.service.mqtt.worker import MqttWorker
+from scietex.service.task_handler.schemas import TaskData, TaskEnvelope, TaskResult
 from scietex.service.task_handler.wire import encode_task_envelope
 
 _LOGGER = "test_worker"
@@ -27,23 +27,16 @@ _LOGGER = "test_worker"
 _DISCONNECT = object()
 
 
-class _FakeProperties:
-    """Stand-in for a paho ``Properties`` carrying MQTT 5 user properties."""
-
-    def __init__(self, user_property):
-        self.UserProperty = user_property
-
-
 class _FakeMessage:
-    """Minimal aiomqtt ``Message``: a payload plus optional user properties."""
+    """Minimal aiomqtt ``Message``: a payload plus a topic."""
 
-    def __init__(self, payload, user_properties=None, topic="scietex/svc/tasks"):
+    def __init__(self, payload, topic="scietex/svc/tasks"):
         self.topic = topic
         self.payload = payload
         self.qos = 2
         self.retain = False
         self.mid = 0
-        self.properties = _FakeProperties(user_properties) if user_properties is not None else None
+        self.properties = None
 
 
 class _FakeMessages:
@@ -258,14 +251,14 @@ async def test_initialize_defers_recovery_to_first_fetch(monkeypatch, tmp_path):
         client_factory=factory,
     )
     task_id = uuid4()
-    task_data = TaskData(task="send_email")
+    task_data = TaskData(task_id=str(task_id), task="send_email")
     await worker._inbox.put(task_id, task_data)
 
     assert await worker.initialize() is True
     assert worker.dequeue_task() is None
 
     assert await worker.fetch_tasks() is True
-    assert worker.dequeue_task() == (task_id, task_data)
+    assert worker.dequeue_task() == task_data
 
     await worker.cleanup()
 
@@ -276,12 +269,12 @@ async def test_message_persists_without_enqueueing(tmp_path):
     but NOT enqueued directly; the transport's fetch() drains it (design §3.2)."""
     worker = _make_worker(tmp_path)
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b'{"to":"a@b.c"}')
-    message = _FakeMessage(encode_task_envelope(task_data), [(TASK_ID_PROPERTY, str(task_id))])
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to":"a@b.c"}')
+    message = _FakeMessage(encode_task_envelope(task_data))
 
     await worker._handle_message(message)
 
-    assert await worker._inbox.pending() == [(task_id, task_data)]
+    assert await worker._inbox.pending() == [task_data]
     assert worker.dequeue_task() is None
 
 
@@ -291,13 +284,13 @@ async def test_fetch_drains_persisted_message_exactly_once(tmp_path):
     exactly once; a second fetch does not re-enqueue it (double-delivery fix)."""
     worker = _make_worker(tmp_path)
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b'{"to":"a@b.c"}')
-    message = _FakeMessage(encode_task_envelope(task_data), [(TASK_ID_PROPERTY, str(task_id))])
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to":"a@b.c"}')
+    message = _FakeMessage(encode_task_envelope(task_data))
 
     await worker._handle_message(message)
 
     assert await worker._mqtt_transport.fetch(worker) is True
-    assert worker.dequeue_task() == (task_id, task_data)
+    assert worker.dequeue_task() == task_data
     assert worker.dequeue_task() is None
 
     assert await worker._mqtt_transport.fetch(worker) is False
@@ -313,14 +306,14 @@ async def test_none_backend_message_is_buffered_and_drained(tmp_path):
     dropped every task and the worker never processed anything."""
     worker = _make_worker(tmp_path, inbox_backend="none")
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b'{"to":"a@b.c"}')
-    message = _FakeMessage(encode_task_envelope(task_data), [(TASK_ID_PROPERTY, str(task_id))])
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to":"a@b.c"}')
+    message = _FakeMessage(encode_task_envelope(task_data))
 
     await worker._handle_message(message)
 
     assert worker._inbox is None
     assert await worker._mqtt_transport.fetch(worker) is True
-    assert worker.dequeue_task() == (task_id, task_data)
+    assert worker.dequeue_task() == task_data
     assert worker.dequeue_task() is None
 
 
@@ -340,28 +333,32 @@ async def test_memory_backend_message_is_buffered_and_drained(tmp_path):
     message in the MemoryInbox and the transport's fetch drains it."""
     worker = _make_worker(tmp_path, inbox_backend="memory")
     task_id = uuid4()
-    task_data = TaskData(task="send_email", payload=b'{"to":"a@b.c"}')
-    message = _FakeMessage(encode_task_envelope(task_data), [(TASK_ID_PROPERTY, str(task_id))])
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to":"a@b.c"}')
+    message = _FakeMessage(encode_task_envelope(task_data))
 
     await worker._handle_message(message)
 
     assert await worker._mqtt_transport.fetch(worker) is True
-    assert worker.dequeue_task() == (task_id, task_data)
+    assert worker.dequeue_task() == task_data
     assert worker.dequeue_task() is None
 
 
 @pytest.mark.asyncio
 async def test_message_without_task_id_is_skipped(tmp_path, caplog):
-    """A message missing the task-id user property is skipped with a warning."""
+    """A message whose payload lacks a task_id (a pre-v5 wire payload) is
+    skipped with a warning; the loop never crashes."""
     worker = _make_worker(tmp_path)
-    message = _FakeMessage(encode_task_envelope(TaskData(task="send_email")), None)
+    # A pre-v5 envelope wraps a TaskData payload without the (now required) id,
+    # so the inner decode fails and intake skips it.
+    envelope = TaskEnvelope(version=1, data=msgspec.msgpack.encode({"task": "send_email"}))
+    message = _FakeMessage(msgspec.msgpack.encode(envelope))
 
     with caplog.at_level(logging.WARNING):
         await worker._handle_message(message)
 
     assert worker.task_queue_empty()
     assert await worker._inbox.pending() == []
-    assert any("without a scietex-task-id" in r.getMessage() for r in caplog.records)
+    assert any("undecodable envelope" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -369,8 +366,7 @@ async def test_message_with_bad_envelope_is_skipped(tmp_path, caplog):
     """A message whose payload is not a decodable envelope is skipped with a
     warning; the loop never crashes."""
     worker = _make_worker(tmp_path)
-    task_id = uuid4()
-    message = _FakeMessage(b"not-an-envelope", [(TASK_ID_PROPERTY, str(task_id))])
+    message = _FakeMessage(b"not-an-envelope")
 
     with caplog.at_level(logging.WARNING):
         await worker._handle_message(message)
@@ -472,15 +468,15 @@ async def test_retryable_error_does_not_tombstone(tmp_path):
     inbox = FileMqttInbox(tmp_path / "inbox", logger=logging.getLogger(_LOGGER))
     transport = _transport(inbox)
     task_id = uuid4()
-    task_data = TaskData(task="send_email")
+    task_data = TaskData(task_id=str(task_id), task="send_email")
 
     await inbox.put(task_id, task_data)
-    await transport.ack(task_id, task_data, TaskResult(status="error", retryable=True))
+    await transport.ack(task_data, TaskResult(status="error", retryable=True))
 
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
     # The retry copy is accepted rather than skipped as a duplicate.
     await inbox.put(task_id, task_data)
-    assert await inbox.pending() == [(task_id, task_data)]
+    assert await inbox.pending() == [task_data]
 
 
 @pytest.mark.asyncio
@@ -489,10 +485,10 @@ async def test_terminal_error_still_tombstones(tmp_path):
     inbox = FileMqttInbox(tmp_path / "inbox", logger=logging.getLogger(_LOGGER))
     transport = _transport(inbox)
     task_id = uuid4()
-    task_data = TaskData(task="send_email")
+    task_data = TaskData(task_id=str(task_id), task="send_email")
 
     await inbox.put(task_id, task_data)
-    await transport.ack(task_id, task_data, TaskResult(status="error", retryable=False))
+    await transport.ack(task_data, TaskResult(status="error", retryable=False))
 
     assert await inbox.pending() == []
 
@@ -704,11 +700,11 @@ async def test_status_publish_disabled_suppresses_publishes(tmp_path):
     worker = _make_worker(tmp_path, inbox_backend="none", status_publish_enabled=False)
     worker._client = fake
     task_id = uuid4()
-    task_data = TaskData(task="send_email")
+    task_data = TaskData(task_id=str(task_id), task="send_email")
 
     await worker._mqtt_transport.on_progress(task_id, 42.0)
-    await worker._mqtt_transport.on_started(task_id, task_data)
-    await worker._mqtt_transport.ack(task_id, task_data, TaskResult(status="success"))
+    await worker._mqtt_transport.on_started(task_data)
+    await worker._mqtt_transport.ack(task_data, TaskResult(status="success"))
 
     assert fake.published == []
 

@@ -44,8 +44,6 @@ from uuid import uuid4
 
 import aiomqtt
 import msgspec
-from paho.mqtt.packettypes import PacketTypes
-from paho.mqtt.properties import Properties
 
 from scietex.service import MqttConfig, MqttWorker, MqttWorkerConfig
 from scietex.service.config_reload import ConfigSections, ReloadableSettings, encode_config_envelope
@@ -63,9 +61,6 @@ from scietex.service.task_handler import (
     TaskStatus,
     encode_task_envelope,
 )
-
-#: MQTT 5 user property carrying the task id (see ``examples/mqtt_worker.py``).
-TASK_ID_PROPERTY = "scietex-task-id"
 
 #: Section name the demo settings are registered under.
 DEMO_SECTION = "demo"
@@ -138,13 +133,10 @@ async def submit_command(
     """
     task_id = uuid4()
     await client.subscribe(f"{status_topic_prefix}/{task_id}/status", qos=1)
-    props = Properties(PacketTypes.PUBLISH)
-    props.UserProperty = [(TASK_ID_PROPERTY, str(task_id))]
     await client.publish(
         task_topic,
-        encode_task_envelope(TaskData(task=task_type, payload=msgspec.msgpack.encode(request))),
+        encode_task_envelope(TaskData(task_id=str(task_id), task=task_type, payload=msgspec.msgpack.encode(request))),
         qos=2,
-        properties=props,
     )
 
     async def _await_reply() -> bytes | None:
