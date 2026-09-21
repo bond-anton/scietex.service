@@ -15,7 +15,7 @@ import msgspec
 from .basic import TaskHandler
 from .capabilities import TaskCapabilities
 from .context import TaskHandlerContext
-from .schemas import CANCEL_TASK_NAME, TaskData, TaskResult
+from .schemas import TASK_CANCEL_TASK_NAME, TaskData, TaskResult
 
 #: Result of a cancellation attempt.
 #:
@@ -89,7 +89,7 @@ class CancelTaskHandler(TaskHandler):
     @property
     def supported_tasks(self) -> list[str]:
         """Task names handled by this handler."""
-        return [CANCEL_TASK_NAME]
+        return [TASK_CANCEL_TASK_NAME]
 
     async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Cancel the target task named in the payload.

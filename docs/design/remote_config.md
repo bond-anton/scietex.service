@@ -574,7 +574,7 @@ New constants in `config.py`: `MIN_CONFIG_STARTUP_TIMEOUT = 0.0`,
 New constants in `mqtt/config.py`: `MIN_CONFIG_QOS = 0`, `MAX_CONFIG_QOS = 2`,
 `MIN_CONFIG_TTL = 1`, `MAX_CONFIG_TTL = 30 * 24 * 3600`.
 
-### Task-name constants (`task_handler/schemas.py`, beside `CANCEL_TASK_NAME`)
+### Task-name constants (`task_handler/schemas.py`, beside `TASK_CANCEL_TASK_NAME`)
 
 `CONFIG_APPLY_TASK_NAME`, `CONFIG_STORE_TASK_NAME`, `CONFIG_SHOW_TASK_NAME`,
 `CONFIG_ENVELOPE_VERSION`.

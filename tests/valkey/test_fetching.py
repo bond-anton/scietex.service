@@ -6,7 +6,7 @@ import pytest
 
 import scietex.service.valkey.worker as mod
 from scietex.service import ValkeyWorker
-from scietex.service.task_handler import CANCEL_TASK_NAME
+from scietex.service.task_handler import TASK_CANCEL_TASK_NAME
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.task_handler.wire import encode_task_envelope
 from scietex.service.valkey._glide import ExpirySet, ExpiryType
@@ -229,7 +229,7 @@ async def test_fetch_tasks_delivers_control_when_data_full():
     data_id = UUID("11111111-1111-1111-1111-111111111111")
     control_id = UUID("22222222-2222-2222-2222-222222222222")
     data_payload = encode_task_envelope(TaskData(task_id=str(data_id), task="dummy", payload=b"{}"))
-    control_payload = encode_task_envelope(TaskData(task_id=str(control_id), task=CANCEL_TASK_NAME))
+    control_payload = encode_task_envelope(TaskData(task_id=str(control_id), task=TASK_CANCEL_TASK_NAME))
     # The data entry arrives on the XREADGROUP task stream; the control command
     # arrives on the directed control stream via the plain XREAD poll (the first
     # of the two control reads; the broadcast read returns nothing).

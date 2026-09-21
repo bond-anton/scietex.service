@@ -223,7 +223,7 @@ datetime.now(timezone.utc))` (128) so each instance gets its own timestamp
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
 
-`schemas.py` also defines `CANCEL_TASK_NAME = "task:cancel"`,
+`schemas.py` also defines `TASK_CANCEL_TASK_NAME = "task:cancel"`,
 `CONFIG_APPLY_TASK_NAME = "config:apply"`,
 `CONFIG_STORE_TASK_NAME = "config:store"`,
 `CONFIG_SHOW_TASK_NAME = "config:show"`,

@@ -21,7 +21,7 @@ transport wire helpers.
 .. autodata:: scietex.service.task_handler.CancelOutcome
 .. autodata:: scietex.service.task_handler.CancelReason
 .. autodata:: scietex.service.task_handler.CancelCallback
-.. autodata:: scietex.service.task_handler.CANCEL_TASK_NAME
+.. autodata:: scietex.service.task_handler.TASK_CANCEL_TASK_NAME
 .. autoclass:: scietex.service.task_handler.WorkerControlHandler
    :members:
 .. autoclass:: scietex.service.task_handler.WorkerControlRequest

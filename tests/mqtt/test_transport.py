@@ -12,7 +12,7 @@ from scietex.service.health import TransportHealth
 from scietex.service.mqtt._aiomqtt import MqttError, Properties
 from scietex.service.mqtt.config import MqttWorkerConfig
 from scietex.service.mqtt.transport import MqttPublish, MqttTransport
-from scietex.service.task_handler import CANCEL_TASK_NAME
+from scietex.service.task_handler import TASK_CANCEL_TASK_NAME
 from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus, task_data_id
 from scietex.service.task_handler.wire import decode_task_envelope, encode_task_envelope
 
@@ -238,7 +238,7 @@ async def test_fetch_delivers_control_inbox_when_data_lane_full():
     """A control entry in the control inbox is enqueued even when the data lane
     is full: the control drain never consults data backpressure (design §5.1)."""
     t_ctrl = uuid4()
-    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_NAME)
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=TASK_CANCEL_TASK_NAME)
     control_inbox = FakeInbox()
     control_inbox.seed((t_ctrl, d_ctrl))
     transport, _, _ = _transport(control_inbox=control_inbox)
@@ -255,7 +255,7 @@ async def test_ack_control_marks_control_inbox_terminal():
     """ack on a control entry marks the *control* inbox terminal, not the data
     inbox: the owning inbox is chosen by which enqueued set holds the id."""
     t_ctrl = uuid4()
-    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_NAME)
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=TASK_CANCEL_TASK_NAME)
     control_inbox = FakeInbox()
     control_inbox.seed((t_ctrl, d_ctrl))
     data_inbox = FakeInbox()
@@ -275,7 +275,7 @@ async def test_recover_pending_tasks_replays_control_inbox_entry():
     """recover_pending_tasks replays a non-terminal control entry from the
     control inbox (control recovery is not subject to data backpressure)."""
     t_ctrl = uuid4()
-    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_NAME)
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=TASK_CANCEL_TASK_NAME)
     control_inbox = FakeInbox()
     control_inbox.seed((t_ctrl, d_ctrl))
     transport, _, _ = _transport(control_inbox=control_inbox)
@@ -293,7 +293,7 @@ async def test_fetch_does_not_double_deliver_control_inbox_entry():
     records it in ``_control_enqueued`` so a repeat poll does not re-enqueue it,
     and the data drain never sees it (it is not in the data inbox)."""
     t_ctrl = uuid4()
-    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_NAME)
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=TASK_CANCEL_TASK_NAME)
     control_inbox = FakeInbox()
     control_inbox.seed((t_ctrl, d_ctrl))
     transport, _, _ = _transport(control_inbox=control_inbox)

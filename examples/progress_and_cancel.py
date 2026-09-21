@@ -42,7 +42,7 @@ from scietex.service import (
     ValkeyWorkerConfig,
 )
 from scietex.service.task_handler import (
-    CANCEL_TASK_NAME,
+    TASK_CANCEL_TASK_NAME,
     CancelTaskRequest,
     CancelTaskResponse,
     TaskCapabilities,
@@ -122,7 +122,7 @@ def with_task_id(task_data: TaskData, task_id: UUID) -> TaskData:
 async def submit_cancel(client: GlideClient, target_id: UUID, reason: str) -> UUID:
     """Submit a ``task:cancel`` request targeting ``target_id``."""
     payload = msgspec.msgpack.encode(CancelTaskRequest(target_task_id=str(target_id), reason=reason))
-    return await submit(client, TaskData(task_id=str(uuid4()), task=CANCEL_TASK_NAME, payload=payload))
+    return await submit(client, TaskData(task_id=str(uuid4()), task=TASK_CANCEL_TASK_NAME, payload=payload))
 
 
 async def read_status(client: GlideClient, task_id: UUID) -> TaskStatus | None:

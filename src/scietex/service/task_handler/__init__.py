@@ -37,11 +37,11 @@ from .config import (
 from .context import TaskHandlerContext
 from .runtime import TaskTracker
 from .schemas import (
-    CANCEL_TASK_NAME,
     CONFIG_APPLY_TASK_NAME,
     CONFIG_SHOW_TASK_NAME,
     CONFIG_STORE_TASK_NAME,
     CONTROL_TASK_NAMES,
+    TASK_CANCEL_TASK_NAME,
     WORKER_EXIT_TASK_NAME,
     WORKER_RESTART_TASK_NAME,
     WORKER_START_TASK_NAME,
@@ -64,7 +64,7 @@ from .worker import (
 )
 
 __all__ = [
-    "CANCEL_TASK_NAME",
+    "TASK_CANCEL_TASK_NAME",
     "CONFIG_APPLY_TASK_NAME",
     "CONFIG_SHOW_TASK_NAME",
     "CONFIG_STORE_TASK_NAME",

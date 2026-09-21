@@ -540,7 +540,7 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `CancelTaskResponse` | Success payload schema for a `task:cancel` task (`target_task_id`, `outcome`) |
 | `CancelOutcome` | Cancellation outcome literal (`cancelled`/`not_running`/`ignored`/`not_found`) |
 | `CancelReason` | Why a task was cancelled (`deliberate`/`timeout`/`shutdown`) |
-| `CANCEL_TASK_NAME` | Task name that selects the built-in cancel handler (`"task:cancel"`) |
+| `TASK_CANCEL_TASK_NAME` | Task name that selects the built-in cancel handler (`"task:cancel"`) |
 | `WorkerControlHandler` | Built-in handler for the `worker:*` control task names |
 | `WorkerControlRequest` | Payload schema for a `worker:*` task (`reason`) |
 | `WorkerControlResponse` | Success payload schema for a `worker:*` task (`action`, `accepted`) |

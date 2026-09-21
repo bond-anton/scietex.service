@@ -13,7 +13,7 @@ from uuid import UUID
 import msgspec
 
 #: Task name that selects the built-in cancellation handler.
-CANCEL_TASK_NAME: str = "task:cancel"
+TASK_CANCEL_TASK_NAME: str = "task:cancel"
 
 #: Task name that selects the built-in remote-config apply handler.
 CONFIG_APPLY_TASK_NAME: str = "config:apply"
@@ -44,7 +44,7 @@ WORKER_EXIT_TASK_NAME: str = "worker:exit"
 #: ``config:*`` handlers exist only when remote config is enabled.
 CONTROL_TASK_NAMES: frozenset[str] = frozenset(
     {
-        CANCEL_TASK_NAME,
+        TASK_CANCEL_TASK_NAME,
         CONFIG_APPLY_TASK_NAME,
         CONFIG_STORE_TASK_NAME,
         CONFIG_SHOW_TASK_NAME,

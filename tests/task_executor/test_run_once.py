@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import CANCEL_TASK_NAME, TaskData
+from scietex.service.task_handler.schemas import TASK_CANCEL_TASK_NAME, TaskData
 from scietex.service.task_lifecycle import TaskLifecycle
 
 from ._helpers import Recording, build_executor, make_settings, register_finished, register_running
@@ -90,7 +90,7 @@ async def test_run_once_admits_control_when_data_budget_full():
     register_running(lifecycle, blocker_id, TaskData(task_id=str(blocker_id), task="blocker"))
 
     control_id = uuid4()
-    control_data = TaskData(task_id=str(control_id), task=CANCEL_TASK_NAME)
+    control_data = TaskData(task_id=str(control_id), task=TASK_CANCEL_TASK_NAME)
     await control_queue.put(control_data)
 
     data_id = uuid4()
@@ -125,11 +125,13 @@ async def test_control_concurrency_ceiling():
     )
 
     running_id = uuid4()
-    running_tracker = register_running(lifecycle, running_id, TaskData(task_id=str(running_id), task=CANCEL_TASK_NAME))
+    running_tracker = register_running(
+        lifecycle, running_id, TaskData(task_id=str(running_id), task=TASK_CANCEL_TASK_NAME)
+    )
     executor._control_running.add(running_id)
 
     queued_id = uuid4()
-    queued_data = TaskData(task_id=str(queued_id), task=CANCEL_TASK_NAME)
+    queued_data = TaskData(task_id=str(queued_id), task=TASK_CANCEL_TASK_NAME)
     await control_queue.put(queued_data)
 
     await executor.run_once()

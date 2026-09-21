@@ -163,7 +163,7 @@ is created.
 - `TaskStatus`: per-task tracking record — `task_id`, `service`, `task`, `status: "queued"|"running"|"completed"|"failed"|"cancelled"`, `progress: TaskProgress`, `result`, `data`, `error`, `error_code`, `created_at`/`updated_at`
 - `TaskProgress`: `progress: bool = False`, `value: float = 0.0` — granular progress; `value` is meaningful only when `progress` is True
 - `CancelReason`: `Literal["deliberate", "timeout", "shutdown"]` — why a task was cancelled
-- `CANCEL_TASK_NAME`: built-in `task:cancel` task-name string, served by `CancelTaskHandler`
+- `TASK_CANCEL_TASK_NAME`: built-in `task:cancel` task-name string, served by `CancelTaskHandler`
 - `CancelTaskRequest`: `target_task_id: str`, `reason: str = ""` — payload of a `task:cancel` task
 - `CancelTaskResponse`: `target_task_id: str`, `outcome: str` — payload returned by a successful `task:cancel`
 - `WORKER_START_TASK_NAME` / `WORKER_STOP_TASK_NAME` / `WORKER_RESTART_TASK_NAME` / `WORKER_EXIT_TASK_NAME`: built-in `worker:start`/`worker:stop`/`worker:restart`/`worker:exit` task-name strings, served by `WorkerControlHandler`

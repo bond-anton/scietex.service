@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import CANCEL_TASK_NAME, TaskData
+from scietex.service.task_handler.schemas import TASK_CANCEL_TASK_NAME, TaskData
 from scietex.service.task_lifecycle import TaskLifecycle
 
 from ._helpers import Recording, build_executor, make_settings, register_running
@@ -122,7 +122,7 @@ async def test_cancel_removes_queued_control_task():
         lifecycle=lifecycle,
     )
     target_id = uuid4()
-    task_data = TaskData(task_id=str(target_id), task=CANCEL_TASK_NAME)
+    task_data = TaskData(task_id=str(target_id), task=TASK_CANCEL_TASK_NAME)
     await control_queue.put(task_data)
 
     outcome = await executor.cancel(target_id)
@@ -198,7 +198,7 @@ async def test_shutdown_drains_control_lane():
         lifecycle=lifecycle,
     )
     control_id = uuid4()
-    control_data = TaskData(task_id=str(control_id), task=CANCEL_TASK_NAME)
+    control_data = TaskData(task_id=str(control_id), task=TASK_CANCEL_TASK_NAME)
     await control_queue.put(control_data)
 
     await executor.shutdown()
