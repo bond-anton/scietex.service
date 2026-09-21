@@ -37,6 +37,7 @@ class DummyClient:
         xread_result=None,
         xread_results=None,
         xread_error=None,
+        expire_error=None,
     ):
         self._ping_ok = ping_ok
         self.closed = False
@@ -57,6 +58,8 @@ class DummyClient:
         # first; xread_result stays the fallback for single-result tests.
         self.xread_results = list(xread_results) if xread_results is not None else None
         self.xread_error = xread_error
+        self.expire_error = expire_error
+        self.expired: list = []
         self.acked: list = []
         self.deleted: list = []
         self.added: list = []
@@ -142,6 +145,11 @@ class DummyClient:
     async def xautoclaim(self, *args, **kwargs):
         self.xautoclaim_calls.append(args)
         return self.xautoclaim_result
+
+    async def expire(self, *args, **kwargs):
+        if self.expire_error is not None:
+            raise self.expire_error
+        self.expired.append(args)
 
     async def ping(self):
         return self._ping_ok

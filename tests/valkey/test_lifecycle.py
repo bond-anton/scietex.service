@@ -2,10 +2,12 @@
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
 
+import scietex.service.valkey.worker as mod
 from scietex.service import ValkeyWorker
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
@@ -188,6 +190,50 @@ async def test_first_heartbeat_writes_status_key_promptly():
         )
     finally:
         await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_refreshes_directed_control_stream_ttl():
+    """heartbeat() refreshes the directed control stream TTL on the same tick
+    as the status key, so a live worker keeps its stream alive (AR-123 §4.3)."""
+    client = DummyClient()
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._lifecycle.start_time = datetime.now(timezone.utc)
+
+    await worker.heartbeat()
+
+    assert client.expired == [(worker._control_stream_name, int(worker.active_ttl))]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_does_not_expire_broadcast_control_stream():
+    """The broadcast control stream is service-scoped: it has no owner to
+    refresh a TTL, so heartbeat() must leave it untouched (AR-123 §4.3)."""
+    client = DummyClient()
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._lifecycle.start_time = datetime.now(timezone.utc)
+
+    await worker.heartbeat()
+
+    assert client.expired
+    assert all(name != worker._control_broadcast_stream_name for name, *_ in client.expired)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_expire_failure_is_reported_not_raised():
+    """A glide error from the directed-stream EXPIRE is caught by the status
+    write's handler and reported into health, never raised (AR-123 §4.3)."""
+    client = DummyClient(expire_error=mod.RequestError("expire failed"))
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._lifecycle.start_time = datetime.now(timezone.utc)
+
+    await worker.heartbeat()
+
+    assert worker.transport_health.degraded is True
+    assert worker.transport_health.last_error == "expire failed"
 
 
 @pytest.mark.asyncio

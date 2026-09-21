@@ -384,8 +384,11 @@ class ValkeyWorker(TransportWorker):
         """Publish a heartbeat entry to the Valkey status key.
 
         Encodes a ``Heartbeat`` struct with service metadata and writes it
-        to ``self._heartbeat_key`` with a TTL of ``self.active_ttl``. Logs the
-        duration at DEBUG and any failure at WARNING.
+        to ``self._heartbeat_key`` with a TTL of ``self.active_ttl``. On the
+        same tick it refreshes the TTL of the directed control stream
+        (``self._control_stream_name``), so a live worker keeps its directed
+        stream alive while a departed worker's expires on its own (AR-123
+        §4.3). Logs the duration at DEBUG and any failure at WARNING.
 
         The write is guarded by ``self.client and self.start_time``. The start
         time is set in ``_startup`` before the managers start, so the first
@@ -417,6 +420,12 @@ class ValkeyWorker(TransportWorker):
                 )
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(logging.DEBUG, "Heartbeat set in Valkey, duration: %.2f ms", duration)
+                # The directed control stream is self-expiring state like the
+                # status key: a live worker refreshes its TTL on the same tick,
+                # so a departed worker's stream expires on its own (AR-123
+                # §4.3). The broadcast stream is service-scoped and has no owner
+                # to refresh it, so it has no TTL.
+                await client.expire(self._control_stream_name, int(self.active_ttl))
             except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(
