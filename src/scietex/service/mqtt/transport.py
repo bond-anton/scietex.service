@@ -104,6 +104,7 @@ class MqttTransport(RecoverableTransport):
         topic: str,
         status_topic_prefix: str | None = None,
         inbox: MqttInbox,
+        control_inbox: MqttInbox,
         health: TransportHealth,
         publish: MqttPublish,
         logger: logging.Logger,
@@ -122,6 +123,10 @@ class MqttTransport(RecoverableTransport):
             else config.status_topic_prefix.format(service=service_name)
         )
         self._inbox = inbox
+        # Control inbox (design §5.1): a second durable store, drained
+        # independently of the data inbox so control delivery never consults
+        # data backpressure.
+        self._control_inbox = control_inbox
         # Connection-health supervisor (design §13.7): the status/progress
         # publish helpers report failures here, so the dependency is
         # load-bearing rather than API parity with ``ValkeyTransport``.
@@ -137,6 +142,10 @@ class MqttTransport(RecoverableTransport):
         # re-enqueue an already-queued task on every poll. An id is added on
         # enqueue accept and discarded on ack/on_drain.
         self._enqueued: set[UUID] = set()
+        # Control ids handed to the sink but not yet terminal, mirroring
+        # ``_enqueued`` for the control inbox. Kept separate so a control entry
+        # owned by the control inbox routes its ack/on_started to that inbox.
+        self._control_enqueued: set[UUID] = set()
         # Per-task progress-coalescing state (design §13.5), keyed by task id.
         # In-process only: a restart loses it, which is correct because a
         # restart also resets the in-flight task set.
@@ -201,24 +210,62 @@ class MqttTransport(RecoverableTransport):
             )
             self._health.report_failure(exc)
 
+    async def _enqueue_control(self, task_id: UUID, task_data: TaskData, sink: TaskSink) -> bool:
+        """Enqueue one control task and advertise it, bypassing data backpressure.
+
+        Control never consults ``task_queue_full`` (design §5.1): the in-process
+        control lane has its own concurrency ceiling, so the only rejection
+        signal is ``enqueue_task`` returning ``False`` (control lane full). On
+        accept the id is recorded in ``_control_enqueued`` so ``ack``/
+        ``on_started`` route to the control inbox, and a ``queued`` status is
+        published.
+
+        Returns:
+            ``True`` when the sink accepted the task (and it was newly
+            enqueued); ``False`` when the control lane is full and the entry
+            stays pending for the next poll.
+        """
+        if not sink.enqueue_task(task_data):
+            return False
+        self._control_enqueued.add(task_id)
+        await self._publish_status(
+            build_running_status(task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id)
+        )
+        return True
+
     async def fetch(self, sink: TaskSink) -> bool:
         """Fetch inbox entries and enqueue them into ``sink``.
 
         On the first call, replays every non-terminal inbox entry
         (:meth:`recover_pending_tasks`) before draining, so tasks persisted by a
-        previous run are redelivered exactly once. The drain then walks the
-        inbox's non-terminal snapshot, skipping task ids already handed over
-        this run. Data tasks stop at backpressure: a rejected data task is left
-        pending in the inbox (not recorded as enqueued), so it is redelivered,
-        never lost, while the scan keeps walking so a control-plane command
-        queued behind it still bypasses the full data lane (AR-108). Each
-        accepted task is advertised as ``queued`` (design §13.4).
+        previous run are redelivered exactly once.
+
+        The drain is split (design §5.1): the control inbox is drained first,
+        independently of data backpressure, then the data inbox is drained with
+        existing data backpressure. Data tasks stop at backpressure: a rejected
+        data task is left pending in the inbox (not recorded as enqueued), so it
+        is redelivered, never lost. Each accepted task is advertised as
+        ``queued`` (design §13.4).
+
+        The data drain still carries an ``is_control_task`` branch: a control
+        task published to the legacy *data* topic lands in the data inbox and
+        must not be lost, so it bypasses data backpressure here exactly as
+        before the split (design §9; removed in step 9).
 
         Returns:
-            ``True`` if at least one task was enqueued (from recovery or the
+            ``True`` if at least one task was enqueued (from recovery or either
             drain), ``False`` otherwise.
         """
         enqueued = await self.ensure_recovered(sink)
+        # Control first: a saturated data lane must not delay a control command
+        # at the transport layer (design §5.1). A rejected control entry (its
+        # lane is full) stays pending for the next poll.
+        for task_data in await self._control_inbox.pending():
+            task_id = task_data_id(task_data)
+            if task_id in self._control_enqueued:
+                continue
+            if await self._enqueue_control(task_id, task_data, sink):
+                enqueued = True
         data_blocked = False
         for task_data in await self._inbox.pending():
             task_id = task_data_id(task_data)
@@ -258,18 +305,32 @@ class MqttTransport(RecoverableTransport):
         before a crash are redelivered (at-least-once). Called once from the
         first :meth:`fetch`, before any new drain, when no tasks are in flight.
 
-        A task id already enqueued this run is skipped, so an interrupted
-        recovery retries only the remainder. When the data lane is full the
-        stop is immediate for data tasks and recovery reports incomplete, so
-        the next poll retries, but a control-plane command still bypasses the
-        full data lane and is enqueued (AR-108). Each accepted task is
-        advertised as ``queued`` (design §13.4), so a task redelivered after a
-        restart re-advertises itself.
+        Both inboxes are recovered (design §5.1): the control inbox first, with
+        no backpressure, then the data inbox. A task id already enqueued this
+        run is skipped, so an interrupted recovery retries only the remainder.
+        When the data lane is full the stop is immediate for data tasks and
+        recovery reports incomplete, so the next poll retries. Each accepted
+        task is advertised as ``queued`` (design §13.4), so a task redelivered
+        after a restart re-advertises itself.
+
+        The data recovery still carries an ``is_control_task`` branch for the
+        back-compat case of a control task persisted on the legacy data topic
+        (design §9; removed in step 9).
 
         Returns:
-            A ``(recovery_complete, enqueued)`` tuple.
+            A ``(recovery_complete, enqueued)`` tuple. ``recovery_complete`` is
+            ``False`` when a full sink interrupted *data* recovery; control
+            recovery never sets it false because control bypasses backpressure.
         """
         enqueued = False
+        # Control recovery first: never blocked by data backpressure, so a
+        # control entry persisted before a crash is replayed unconditionally.
+        for task_data in await self._control_inbox.recover():
+            task_id = task_data_id(task_data)
+            if task_id in self._control_enqueued:
+                continue
+            if await self._enqueue_control(task_id, task_data, sink):
+                enqueued = True
         data_blocked = False
         for task_data in await self._inbox.recover():
             task_id = task_data_id(task_data)
@@ -326,13 +387,18 @@ class MqttTransport(RecoverableTransport):
         )
 
     async def on_started(self, task_data: TaskData) -> None:
-        """Record that a task began processing (the inbox entry is in-flight).
+        """Record that a task began processing (the owning inbox entry is in-flight).
 
-        The task is advertised as ``running`` and its progress throttle is reset
-        so a re-delivered task starts clean (design §13.4).
+        Routes to the control inbox when the id was enqueued from the control
+        inbox, otherwise to the data inbox (design §5.1). The task is advertised
+        as ``running`` and its progress throttle is reset so a re-delivered task
+        starts clean (design §13.4).
         """
         task_id = task_data_id(task_data)
-        await self._inbox.mark_in_flight(task_id)
+        if task_id in self._control_enqueued:
+            await self._control_inbox.mark_in_flight(task_id)
+        else:
+            await self._inbox.mark_in_flight(task_id)
         self._progress.pop(task_id, None)
         await self._publish_status(
             build_running_status(task_id, self._service_name, task_data, instance_id=self._instance_id)
@@ -345,12 +411,13 @@ class MqttTransport(RecoverableTransport):
         *,
         cancel_reason: CancelReason | None = None,
     ) -> None:
-        """Mark the inbox entry terminal once the handler's work on it is done.
+        """Mark the owning inbox entry terminal once the handler's work is done.
 
         ``task_result`` is ``None`` when the task was cancelled before producing
         a result. Marking terminal writes a tombstone that dedupes any
         re-delivered copy of this task id, and releases the in-process enqueued
-        marker.
+        marker. The owning inbox is chosen by which enqueued set holds the id
+        (design §5.1).
 
         On the non-retryable path, any coalesced progress value is flushed and a
         terminal ``TaskStatus`` is published first (design §13.4). The retryable
@@ -380,9 +447,14 @@ class MqttTransport(RecoverableTransport):
         )
         self._progress.pop(task_id, None)
         # Mark terminal (persist the tombstone) before releasing the in-process
-        # claim, so a crash mid-ack redelivers rather than loses the task.
-        await self._inbox.mark_terminal(task_id)
-        self._enqueued.discard(task_id)
+        # claim, so a crash mid-ack redelivers rather than loses the task. The
+        # owning inbox is chosen by which enqueued set holds the id (design §5.1).
+        if task_id in self._control_enqueued:
+            await self._control_inbox.mark_terminal(task_id)
+            self._control_enqueued.discard(task_id)
+        else:
+            await self._inbox.mark_terminal(task_id)
+            self._enqueued.discard(task_id)
 
     async def on_progress(self, task_id: UUID, value: float) -> None:
         """Publish a throttled ``TaskProgress`` tick (design §13.5).
@@ -420,14 +492,18 @@ class MqttTransport(RecoverableTransport):
     async def on_drain(self, task_data: TaskData) -> None:
         """Release the in-process claim for a drained task without re-enqueueing it.
 
-        The inbox entry is left non-terminal (the broker still holds the
+        The owning inbox entry is left non-terminal (the broker still holds the
         message), so a restart redelivers it via recovery; re-publishing here
-        would duplicate it (the MQTT analogue of AR-041). No status is
+        would duplicate it (the MQTT analogue of AR-041). The in-process claim
+        is released from the owning enqueued set (design §5.1). No status is
         published and the throttle state is dropped: the task is neither
         terminal nor restarted (design §13.4).
         """
         task_id = task_data_id(task_data)
-        self._enqueued.discard(task_id)
+        if task_id in self._control_enqueued:
+            self._control_enqueued.discard(task_id)
+        else:
+            self._enqueued.discard(task_id)
         self._progress.pop(task_id, None)
 
     async def refresh_leases(self) -> None:

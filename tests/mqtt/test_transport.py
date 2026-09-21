@@ -121,6 +121,7 @@ def _health() -> TransportHealth:
 def _transport(
     inbox: FakeInbox | None = None,
     *,
+    control_inbox: FakeInbox | None = None,
     task_qos: int = 2,
     topic: str = _TOPIC,
     clock: Callable[[], float] | None = None,
@@ -128,14 +129,17 @@ def _transport(
     publish: MqttPublish | None = None,
     **config_kwargs,
 ) -> tuple[MqttTransport, FakeInbox, list[tuple[str, bytes, int, bool, Properties | None]]]:
-    """Build a ``MqttTransport`` with a fake inbox and a recording publisher.
+    """Build a ``MqttTransport`` with a fake data inbox and a recording publisher.
 
     The recording publisher captures ``(topic, payload, qos, retain, properties)``;
     extra ``config_kwargs`` override ``MqttWorkerConfig`` fields (e.g. the
     throttling thresholds), and ``clock``/``health``/``publish`` are injectable
-    seams.
+    seams. ``control_inbox`` defaults to a fresh :class:`FakeInbox`; tests that
+    assert on the control drain pass their own and reach it via
+    ``transport._control_inbox``.
     """
     inbox = inbox if inbox is not None else FakeInbox()
+    control_inbox = control_inbox if control_inbox is not None else FakeInbox()
     published: list[tuple[str, bytes, int, bool, Properties | None]] = []
 
     async def record(
@@ -154,6 +158,7 @@ def _transport(
         service_name="svc",
         topic=topic,
         inbox=inbox,
+        control_inbox=control_inbox,
         health=health if health is not None else _health(),
         publish=publish if publish is not None else record,
         logger=logging.getLogger(_LOGGER),
@@ -231,6 +236,79 @@ async def test_fetch_delivers_control_when_data_lane_full():
     assert await transport.fetch(sink) is True
     assert sink.items == [(t_ctrl, d_ctrl)]
     assert await inbox.pending() == [d_data, d_ctrl]
+
+
+@pytest.mark.asyncio
+async def test_fetch_delivers_control_inbox_when_data_lane_full():
+    """A control entry in the control inbox is enqueued even when the data lane
+    is full: the control drain never consults data backpressure (design §5.1)."""
+    t_ctrl = uuid4()
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
+    control_inbox = FakeInbox()
+    control_inbox.seed((t_ctrl, d_ctrl))
+    transport, _, _ = _transport(control_inbox=control_inbox)
+    transport.recovered = True  # skip recovery; exercise the control drain only
+
+    sink = FakeSink(full=True)
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t_ctrl, d_ctrl)]
+
+
+@pytest.mark.asyncio
+async def test_ack_control_marks_control_inbox_terminal():
+    """ack on a control entry marks the *control* inbox terminal, not the data
+    inbox: the owning inbox is chosen by which enqueued set holds the id."""
+    t_ctrl = uuid4()
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
+    control_inbox = FakeInbox()
+    control_inbox.seed((t_ctrl, d_ctrl))
+    data_inbox = FakeInbox()
+    transport, _, _ = _transport(inbox=data_inbox, control_inbox=control_inbox)
+    transport.recovered = True
+
+    sink = FakeSink()
+    assert await transport.fetch(sink) is True
+    await transport.ack(d_ctrl, None)
+
+    assert control_inbox.mark_terminal_calls == [t_ctrl]
+    assert data_inbox.mark_terminal_calls == []
+
+
+@pytest.mark.asyncio
+async def test_recover_pending_tasks_replays_control_inbox_entry():
+    """recover_pending_tasks replays a non-terminal control entry from the
+    control inbox (control recovery is not subject to data backpressure)."""
+    t_ctrl = uuid4()
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
+    control_inbox = FakeInbox()
+    control_inbox.seed((t_ctrl, d_ctrl))
+    transport, _, _ = _transport(control_inbox=control_inbox)
+
+    sink = FakeSink()
+    complete, enqueued = await transport.recover_pending_tasks(sink)
+
+    assert (complete, enqueued) == (True, True)
+    assert sink.items == [(t_ctrl, d_ctrl)]
+
+
+@pytest.mark.asyncio
+async def test_fetch_does_not_double_deliver_control_inbox_entry():
+    """A control entry in the control inbox is delivered once: the control drain
+    records it in ``_control_enqueued`` so a repeat poll does not re-enqueue it,
+    and the data drain never sees it (it is not in the data inbox)."""
+    t_ctrl = uuid4()
+    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
+    control_inbox = FakeInbox()
+    control_inbox.seed((t_ctrl, d_ctrl))
+    transport, _, _ = _transport(control_inbox=control_inbox)
+    transport.recovered = True
+
+    sink = FakeSink()
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t_ctrl, d_ctrl)]
+
+    assert await transport.fetch(sink) is False
+    assert sink.items == [(t_ctrl, d_ctrl)]
 
 
 @pytest.mark.asyncio

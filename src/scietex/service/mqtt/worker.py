@@ -116,6 +116,10 @@ class MqttWorker(TransportWorker):
     Attributes:
         client (Client | None): aiomqtt client instance, initialized
             during ``initialize()``.
+        _control_inbox (MqttInbox | None): durable control inbox, or ``None``
+            for the ``inbox_backend="memory"``/``"none"`` at-most-once opt-out.
+        _control_intake_inbox (MqttInbox): effective control intake target (the
+            durable control inbox, or an in-memory fallback for the opt-out).
     """
 
     # Concrete config struct for this worker. The base stores it into
@@ -173,8 +177,12 @@ class MqttWorker(TransportWorker):
                 instance, embedding both the service name and instance id.
             _control_broadcast_topic (str): Resolved service-scoped broadcast
                 control topic.
-            _inbox (MqttInbox | None): Durable inbox, or ``None`` for the
+            _inbox (MqttInbox | None): Durable data inbox, or ``None`` for the
                 ``inbox_backend="memory"``/``"none"`` at-most-once opt-out.
+            _control_inbox (MqttInbox | None): Durable control inbox, or
+                ``None`` for the same at-most-once opt-out.
+            _control_intake_inbox (MqttInbox): Effective control intake target
+                (the durable control inbox or an in-memory fallback).
         """
         factory = client_factory if client_factory is not None else _create_client
         super().__init__(config, client_factory=factory)
@@ -227,6 +235,12 @@ class MqttWorker(TransportWorker):
         # the null adapter below, while initialize()'s at-least-once guard
         # refuses to start when a real inbox was expected but could not be built.
         self._inbox: MqttInbox | None = self._build_inbox(cfg)
+        # Control inbox (design §5.1): a second durable store, isolated from the
+        # data inbox so a saturated data lane cannot delay a control command.
+        # Built with the same backend semantics; ``None`` is the at-most-once
+        # opt-out or a failed file build, guarded by initialize() exactly as the
+        # data inbox is.
+        self._control_inbox: MqttInbox | None = self._build_control_inbox(cfg)
 
         # Next monotonic timestamp at which the watchdog may prune the inbox
         # (AR-115). Zero so the first watchdog tick reclaims tombstones left by
@@ -238,6 +252,9 @@ class MqttWorker(TransportWorker):
         # that effective target, so the message loop persists through the same
         # path in both modes and ``fetch`` stays the single enqueue point.
         self._intake_inbox: MqttInbox = self._inbox if self._inbox is not None else MemoryInbox()
+        self._control_intake_inbox: MqttInbox = (
+            self._control_inbox if self._control_inbox is not None else MemoryInbox()
+        )
 
         # Transport extension seam (AR-072): the delivery/ack/drain hooks the
         # processor calls now live on MqttTransport, which receives the health
@@ -249,6 +266,7 @@ class MqttWorker(TransportWorker):
             topic=self._task_topic,
             status_topic_prefix=self._status_topic_prefix,
             inbox=self._intake_inbox,
+            control_inbox=self._control_intake_inbox,
             health=self._health,
             publish=self._publish,
             logger=self.logger,
@@ -262,7 +280,7 @@ class MqttWorker(TransportWorker):
         self._message_task: asyncio.Task[None] | None = None
 
     def _build_inbox(self, cfg: MqttWorkerConfig) -> MqttInbox | None:
-        """Build the durable inbox for the configured backend.
+        """Build the durable data inbox for the configured backend.
 
         ``inbox_backend="file"`` builds a :class:`FileMqttInbox` under the
         resolved ``inbox_path`` (defaulting to ``<conf_dir>/inbox``). A build
@@ -276,6 +294,30 @@ class MqttWorker(TransportWorker):
         if cfg.inbox_backend in ("memory", "none"):
             return None
         path = Path(cfg.inbox_path) if cfg.inbox_path is not None else self.conf_dir / "inbox"
+        return self._build_file_inbox(path, cfg)
+
+    def _build_control_inbox(self, cfg: MqttWorkerConfig) -> MqttInbox | None:
+        """Build the durable control inbox for the configured backend.
+
+        Mirrors :meth:`_build_inbox` with a distinct path so the two stores
+        cannot collide: ``control_inbox_path`` when set, otherwise a
+        ``control-inbox`` sibling of the data inbox under ``conf_dir``. The
+        backend semantics are identical — ``"memory"``/``"none"`` opt out to
+        ``None``, ``"file"`` builds a :class:`FileMqttInbox`, and a build
+        failure returns ``None`` for :meth:`initialize`'s at-least-once guard.
+        """
+        if cfg.inbox_backend in ("memory", "none"):
+            return None
+        path = Path(cfg.control_inbox_path) if cfg.control_inbox_path is not None else self.conf_dir / "control-inbox"
+        return self._build_file_inbox(path, cfg)
+
+    def _build_file_inbox(self, path: Path, cfg: MqttWorkerConfig) -> MqttInbox | None:
+        """Build a :class:`FileMqttInbox` at ``path``, returning ``None`` on failure.
+
+        Shared by the data and control inbox builders so the ``OSError`` handling
+        (and its log message) is defined once. A failure returns ``None`` rather
+        than raising, so the caller's at-least-once guard can refuse to start.
+        """
         try:
             return FileMqttInbox(path, logger=self.logger, ttl=cfg.inbox_ttl)
         except OSError as exc:
@@ -295,14 +337,22 @@ class MqttWorker(TransportWorker):
         await self._maybe_prune_inbox()
 
     async def _maybe_prune_inbox(self) -> None:
-        """Prune the file inbox at most once per :data:`INBOX_PRUNE_INTERVAL`."""
-        if self._inbox is None:
+        """Prune both file inboxes at most once per :data:`INBOX_PRUNE_INTERVAL`.
+
+        The throttle is shared: the data and control stores each get one
+        maintenance pass per interval, so the tombstone scan cost stays O(files)
+        regardless of the inbox split.
+        """
+        if self._inbox is None and self._control_inbox is None:
             return  # at-most-once opt-out: no durable files to prune
         now = time.monotonic()
         if now < self._next_inbox_prune:
             return
         self._next_inbox_prune = now + INBOX_PRUNE_INTERVAL
-        await self._inbox.prune_expired()
+        if self._inbox is not None:
+            await self._inbox.prune_expired()
+        if self._control_inbox is not None:
+            await self._control_inbox.prune_expired()
 
     @property
     def mqtt_config(self) -> MqttConfig | None:
@@ -433,17 +483,18 @@ class MqttWorker(TransportWorker):
             self.logger.info("MQTT client disconnected")
 
     async def _start_intake(self) -> bool:
-        """Subscribe to the task and config topics and start the message loop.
+        """Subscribe to the task, config, and control topics and start the loop.
 
-        Subscribes to ``_task_topic`` at ``task_qos`` and to ``_config_topic``
-        at ``config_qos`` (the retained config snapshot is delivered on SUBACK,
-        design §2), then starts the background message loop unless one is
-        already running. Called from :meth:`_connect_locked` after the client is
-        assigned and the logging handler is ensured, so both the initial connect
-        and a reconnect restore intake. The loop is only (re)created when the
-        previous task is missing or done, which is how a reconnect after a loop
-        exit (``MqttError``) starts a fresh loop without double-starting one
-        that is still running.
+        Subscribes to ``_task_topic`` at ``task_qos``, to ``_config_topic`` at
+        ``config_qos`` (the retained config snapshot is delivered on SUBACK,
+        design §2), and to ``_control_topic``/``_control_broadcast_topic`` at
+        ``control_qos`` (design §5.3), then starts the background message loop
+        unless one is already running. Called from :meth:`_connect_locked` after
+        the client is assigned and the logging handler is ensured, so both the
+        initial connect and a reconnect restore intake. The loop is only
+        (re)created when the previous task is missing or done, which is how a
+        reconnect after a loop exit (``MqttError``) starts a fresh loop without
+        double-starting one that is still running.
 
         Returns:
             ``True`` when subscribed and the loop is running; ``False`` when the
@@ -457,8 +508,10 @@ class MqttWorker(TransportWorker):
         try:
             await client.subscribe(self._task_topic, qos=cfg.task_qos)
             await client.subscribe(self._config_topic, qos=cfg.config_qos)
+            await client.subscribe(self._control_topic, qos=cfg.control_qos)
+            await client.subscribe(self._control_broadcast_topic, qos=cfg.control_qos)
         except MqttError as exc:
-            self.logger.error("Failed to subscribe to task topic %s: %s", self._task_topic, exc)
+            self.logger.error("Failed to subscribe to task/control topics: %s", exc)
             return False
         if self._message_task is None or self._message_task.done():
             self._message_task = asyncio.create_task(self._message_loop(), name=f"mqtt-{self.instance_id}-messages")
@@ -599,9 +652,9 @@ class MqttWorker(TransportWorker):
         """
         cfg = cast(MqttWorkerConfig, self._config)
         # At-least-once guard (design §10 #3): refuse before starting handlers
-        # or connecting when a durable inbox was expected but could not be
-        # built, so the durability guarantee is never silently lost.
-        if cfg.inbox_backend == "file" and self._inbox is None:
+        # or connecting when a durable inbox (data or control) was expected but
+        # could not be built, so the durability guarantee is never silently lost.
+        if cfg.inbox_backend == "file" and (self._inbox is None or self._control_inbox is None):
             self.logger.error(
                 "MQTT worker configured with inbox_backend=%r but no inbox could be built; "
                 "refusing to start rather than silently losing at-least-once delivery",
@@ -702,23 +755,32 @@ class MqttWorker(TransportWorker):
             self._health.report_failure(exc)
 
     async def _handle_message(self, message: Message) -> None:
-        """Route one received MQTT message: config snapshot or task.
+        """Route one received MQTT message: config snapshot, control, or data task.
 
-        A message on ``_config_topic`` is the retained remote-config snapshot
-        (design §2) and is recorded by the config source — it is not a
-        ``TaskData`` envelope and must not follow the task path.
+        The topic is the address (design §3.1), so routing is by topic first:
 
-        Everything else is a task: the payload is decoded as a versioned
-        envelope first, which yields the ``TaskData`` (and its ``task_id``). A
-        message carrying an undecodable envelope — including a pre-v5 payload
-        without a ``task_id`` — is logged and skipped without crashing the loop.
-        The loop persists only: :meth:`MqttTransport.fetch` is the single intake
-        path that drains the inbox into the processor queue, so
-        persist-before-enqueue still holds (the inbox write precedes any enqueue
-        via the transport's next poll) and a task is never enqueued twice
-        (design §3.2).
+        - ``_config_topic`` is the retained remote-config snapshot (design §2)
+          and is recorded by the config source — it is not a ``TaskData``
+          envelope and must not follow the task path.
+        - ``_control_topic`` (this instance's directed topic) and
+          ``_control_broadcast_topic`` persist to the control inbox.
+        - everything else persists to the data inbox.
+
+        A control task published to the legacy *data* topic still lands in the
+        data inbox; the transport's ``is_control_task`` branch handles that
+        back-compat path (design §9).
+
+        The payload is decoded as a versioned envelope first, which yields the
+        ``TaskData`` (and its ``task_id``). A message carrying an undecodable
+        envelope — including a pre-v5 payload without a ``task_id`` — is logged
+        and skipped without crashing the loop. The loop persists only:
+        :meth:`MqttTransport.fetch` is the single intake path that drains the
+        inboxes into the processor queue, so persist-before-enqueue still holds
+        (the inbox write precedes any enqueue via the transport's next poll) and
+        a task is never enqueued twice (design §3.2).
         """
-        if str(message.topic) == self._config_topic:
+        topic = str(message.topic)
+        if topic == self._config_topic:
             self._mqtt_config_source.record(message.payload)
             return
         task_data = decode_task_envelope(message.payload)
@@ -726,6 +788,9 @@ class MqttWorker(TransportWorker):
             self.logger.warning("Skipping MQTT message with an undecodable envelope")
             return
         task_id = task_data_id(task_data)
+        if topic in (self._control_topic, self._control_broadcast_topic):
+            await self._control_intake_inbox.put(task_id, task_data)
+            return
         if self._inbox is not None:
             await self._inbox.put(task_id, task_data)
         else:

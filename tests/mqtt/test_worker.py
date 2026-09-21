@@ -135,7 +135,13 @@ def _patch_handler(monkeypatch):
 
 
 def _make_worker(tmp_path, *, inbox_backend="file", **config_kwargs):
-    """Build a worker with an explicit MQTT config and a tmp_path-backed inbox."""
+    """Build a worker with an explicit MQTT config and a tmp_path-backed inbox.
+
+    The control inbox defaults to a sibling under ``tmp_path`` so the two
+    stores are isolated per test; an explicit ``control_inbox_path`` in
+    ``config_kwargs`` overrides it.
+    """
+    config_kwargs.setdefault("control_inbox_path", str(tmp_path / "control-inbox"))
     return MqttWorker(
         MqttWorkerConfig(
             service_name="svc",
@@ -169,6 +175,7 @@ def _transport(inbox) -> MqttTransport:
         service_name="svc",
         topic="scietex/svc/tasks",
         inbox=inbox,
+        control_inbox=MemoryInbox(),
         health=_health(),
         publish=publish,
         logger=logging.getLogger(_LOGGER),
@@ -197,6 +204,69 @@ def test_control_topics_resolve_placeholders(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_topic_message_lands_in_control_inbox(tmp_path):
+    """A message on the directed control topic persists to the control inbox,
+    not the data inbox (the topic is the address, design §5.2)."""
+    worker = _make_worker(tmp_path)
+    task_id = uuid4()
+    task_data = TaskData(task_id=str(task_id), task="cancel_task")
+    message = _FakeMessage(encode_task_envelope(task_data), topic=worker._control_topic)
+
+    await worker._handle_message(message)
+
+    assert await worker._control_inbox.pending() == [task_data]
+    assert await worker._inbox.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_control_broadcast_topic_message_lands_in_control_inbox(tmp_path):
+    """A message on the broadcast control topic persists to the control inbox."""
+    worker = _make_worker(tmp_path)
+    task_id = uuid4()
+    task_data = TaskData(task_id=str(task_id), task="config:apply")
+    message = _FakeMessage(encode_task_envelope(task_data), topic=worker._control_broadcast_topic)
+
+    await worker._handle_message(message)
+
+    assert await worker._control_inbox.pending() == [task_data]
+    assert await worker._inbox.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_data_topic_message_still_lands_in_data_inbox(tmp_path):
+    """A message on the data topic still persists to the data inbox, never the
+    control inbox."""
+    worker = _make_worker(tmp_path)
+    task_id = uuid4()
+    task_data = TaskData(task_id=str(task_id), task="send_email")
+    message = _FakeMessage(encode_task_envelope(task_data), topic=worker._task_topic)
+
+    await worker._handle_message(message)
+
+    assert await worker._inbox.pending() == [task_data]
+    assert await worker._control_inbox.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_control_inbox_path_is_honored(tmp_path):
+    """An explicit ``control_inbox_path`` scopes the control inbox, distinct from
+    the data inbox path, and receives persisted control entries."""
+    control_path = tmp_path / "control-inbox-explicit"
+    worker = _make_worker(tmp_path, control_inbox_path=str(control_path))
+
+    assert worker._control_inbox is not None
+
+    task_id = uuid4()
+    task_data = TaskData(task_id=str(task_id), task="cancel_task")
+    message = _FakeMessage(encode_task_envelope(task_data), topic=worker._control_topic)
+    await worker._handle_message(message)
+
+    # The entry lands under the explicit control path, not the data inbox path.
+    assert any(control_path.glob("*.json"))
+    assert not any((tmp_path / "inbox").glob("*.json"))
+
+
+@pytest.mark.asyncio
 async def test_initialize_refuses_when_file_inbox_unbuildable(tmp_path):
     """inbox_backend="file" with an unbuildable path (an existing file) must
     refuse to start rather than silently drop at-least-once (design §10 #3)."""
@@ -211,6 +281,28 @@ async def test_initialize_refuses_when_file_inbox_unbuildable(tmp_path):
         )
     )
 
+    assert await worker.initialize() is False
+    assert worker.client is None
+
+
+@pytest.mark.asyncio
+async def test_initialize_refuses_when_control_inbox_unbuildable(tmp_path):
+    """inbox_backend="file" with an unbuildable *control* inbox path must also
+    refuse to start: the at-least-once guard covers both inboxes (design §5.1)."""
+    blocker = tmp_path / "control-blocker"
+    blocker.write_text("not a directory")
+    worker = MqttWorker(
+        MqttWorkerConfig(
+            service_name="svc",
+            mqtt_config=MqttConfig(),
+            inbox_backend="file",
+            inbox_path=str(tmp_path / "inbox"),
+            control_inbox_path=str(blocker),
+        )
+    )
+
+    assert worker._inbox is not None  # the data inbox built fine
+    assert worker._control_inbox is None  # the control inbox did not
     assert await worker.initialize() is False
     assert worker.client is None
 
@@ -232,8 +324,14 @@ async def test_initialize_none_backend_proceeds(monkeypatch):
 
     assert await worker.initialize() is True
     assert worker.client is fake
-    assert fake.subscriptions == [("scietex/svc/tasks", 2), ("scietex/svc/config", 1)]
+    assert fake.subscriptions == [
+        ("scietex/svc/tasks", 2),
+        ("scietex/svc/config", 1),
+        (f"scietex/svc/workers/{worker.instance_id}/control", 1),
+        ("scietex/svc/control", 1),
+    ]
     assert worker._inbox is None
+    assert worker._control_inbox is None
 
     await worker._stop_message_loop()
     await worker.disconnect()
@@ -426,7 +524,12 @@ async def test_reconnect_resubscribes_and_restarts_loop(monkeypatch):
     assert await worker.connect() is True
     first_loop = worker._message_task
     assert first_loop is not None
-    assert clients[0].subscriptions == [("scietex/svc/tasks", 2), ("scietex/svc/config", 1)]
+    assert clients[0].subscriptions == [
+        ("scietex/svc/tasks", 2),
+        ("scietex/svc/config", 1),
+        (f"scietex/svc/workers/{worker.instance_id}/control", 1),
+        ("scietex/svc/control", 1),
+    ]
 
     # Simulate a broker drop: the loop exits on MqttError and reports to health.
     clients[0].feed_disconnect()
@@ -436,7 +539,12 @@ async def test_reconnect_resubscribes_and_restarts_loop(monkeypatch):
     await worker._reconnect()
 
     assert len(clients) == 2
-    assert clients[1].subscriptions == [("scietex/svc/tasks", 2), ("scietex/svc/config", 1)]
+    assert clients[1].subscriptions == [
+        ("scietex/svc/tasks", 2),
+        ("scietex/svc/config", 1),
+        (f"scietex/svc/workers/{worker.instance_id}/control", 1),
+        ("scietex/svc/control", 1),
+    ]
     assert worker._message_task is not None
     assert worker._message_task is not first_loop
     assert not worker._message_task.done()

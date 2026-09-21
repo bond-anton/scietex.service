@@ -182,6 +182,7 @@ def _mqtt_transport():
         service_name="svc",
         topic="scietex/svc/tasks",
         inbox=MemoryInbox(),
+        control_inbox=MemoryInbox(),
         health=_health(),
         publish=record,
         logger=logging.getLogger("test_task_status"),
