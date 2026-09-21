@@ -5,9 +5,9 @@ name: Python package
 
 on:
   push:
-    branches: ["main", "v3"]
+    branches: ["main", "v3", "v5"]
   pull_request:
-    branches: ["main", "v3"]
+    branches: ["main", "v3", "v5"]
 
 jobs:
   build:
@@ -28,6 +28,16 @@ jobs:
         ports:
           # Maps port 6379 on service container to the host
           - 6379:6379
+      # Broker backing the opt-in MQTT integration tier
+      mosquitto:
+        image: eclipse-mosquitto:2
+        options: >-
+          --health-cmd "mosquitto_sub -t '$SYS/broker/version' -C 1 -W 3"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 1883:1883
 
     strategy:
       fail-fast: false
@@ -50,3 +60,9 @@ jobs:
       - name: Test with pytest
         run: |
           pytest
+        env:
+          # Opt the real-server integration tiers in; both services above are
+          # reachable on their default ports.
+          SCIETEX_TEST_VALKEY_URL: localhost:6379
+          SCIETEX_TEST_MQTT_HOST: localhost
+          SCIETEX_TEST_MQTT_PORT: "1883"

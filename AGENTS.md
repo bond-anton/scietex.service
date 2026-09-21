@@ -182,6 +182,15 @@ is created.
 - `pytest-asyncio` enabled
 - Valkey worker tests live in `tests/valkey/` and mock `GlideClient` via a shared `DummyClient` in `tests/valkey/_helpers.py` — no Valkey server required for unit tests
 
+**Integration tier (opt-in, real servers):**
+- `tests/valkey/integration/` and `tests/mqtt/integration/` run end-to-end flows against a real server: worker start → enqueue → process → ack, control-plane directed/broadcast routing, MQTT inbox durability across reconnect. They prove what the mocked unit tests structurally cannot.
+- Gated by env vars; unset means the whole directory skips, so the default suite stays hermetic:
+  - `SCIETEX_TEST_VALKEY_URL` (`host:port`, default port 6379)
+  - `SCIETEX_TEST_MQTT_HOST` / `SCIETEX_TEST_MQTT_PORT` (default 1883)
+- Run them with: `SCIETEX_TEST_VALKEY_URL=localhost:6379 SCIETEX_TEST_MQTT_HOST=localhost pytest tests/`
+- CI runs both tiers via the `redis` and `mosquitto` service containers in `.github/workflows/python-package.yml`.
+- The mocked unit tests remain the primary coverage; the integration tier is additive, never a replacement.
+
 ## Quirks & Gotchas
 
 - **Import-time `ImportError` in `scietex.service.valkey` is swallowed** — package remains importable without `valkey-glide`; a non-`ImportError` bug (e.g. a broken glide install) propagates

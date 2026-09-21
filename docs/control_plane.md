@@ -76,8 +76,14 @@ The MQTT marker is published once per task delivery, when the task first enters
 ## Read model
 
 Control is read with plain `XREAD` (Valkey) or a subscription (MQTT) plus an
-in-memory cursor seeded to the stream tail (`$`) at startup. There is **no
+in-memory cursor seeded to the stream tail at startup. There is **no
 consumer group, no PEL, no lease, and no local cursor file**.
+
+The tail is resolved once, at startup, to a concrete entry id (`XINFO STREAM`'s
+`last-generated-id`, or `0-0` for a stream that does not exist yet). The cursor
+is never left as the literal `$`: `XREAD` re-resolves `$` to the live tail on
+every call, so a `$` cursor would skip any command published between polls. The
+read itself is non-blocking — no `BLOCK` argument is sent.
 
 The consequence is deliberate: a command published while a worker is down is
 **skipped, not replayed**. Stale replay is structurally impossible, and control

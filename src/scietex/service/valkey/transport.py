@@ -21,6 +21,7 @@ from ..task_handler.wire import decode_task_envelope, decode_task_envelope_versi
 from ..transport import RecoverableTransport, TaskSink
 from ._glide import (
     ClientProvider,
+    GlideClient,
     GlideConnectionError,
     GlideTimeoutError,
     RequestError,
@@ -286,6 +287,23 @@ class ValkeyTransport(RecoverableTransport):
         )
         return enqueued
 
+    async def _resolve_stream_tail(self, client: GlideClient, stream_name: str) -> str | bytes:
+        """Resolve the ``$`` seed to a concrete entry id for a control stream.
+
+        ``XREAD`` treats ``$`` as "the stream tail at read time", so a cursor
+        left as the literal ``$`` would re-resolve on every poll and skip any
+        command published between polls. Pinning the tail once, at startup,
+        gives the cursor a fixed position to advance from. A stream that does
+        not exist yet has no tail, so the cursor starts at ``0-0`` and the
+        first published command is read normally.
+        """
+        try:
+            info = await client.xinfo_stream(stream_name)
+        except RequestError:
+            return "0-0"
+        last_id = info.get(b"last-generated-id") if isinstance(info, dict) else None
+        return last_id if isinstance(last_id, (str, bytes)) else "0-0"
+
     async def _read_control_stream(
         self,
         sink: TaskSink,
@@ -297,11 +315,13 @@ class ValkeyTransport(RecoverableTransport):
         """Read one control stream with plain ``XREAD`` (AR-123 §4.4).
 
         Control uses no consumer group, so the read is ``XREAD`` with an
-        in-memory cursor rather than ``XREADGROUP``. The cursor is seeded to
-        ``$`` (the stream tail) on the first read, so any command published
-        before startup is skipped (§4.2); each subsequent read advances it to
-        the last entry id returned. The read is non-blocking (``block=0``): it
-        runs every poll after the data read, never delaying data latency.
+        in-memory cursor rather than ``XREADGROUP``. The cursor is seeded from
+        the stream tail on the first read, so any command published before
+        startup is skipped (§4.2); each subsequent read advances it to the last
+        entry id returned. The read is non-blocking: ``block_ms`` is left
+        ``None`` so no ``BLOCK`` argument is sent, and an empty stream returns
+        immediately. It runs every poll after the data read, never delaying
+        data latency.
 
         Each decoded ``TaskData`` is enqueued via ``sink.enqueue_control_task``,
         so anything read from a control stream is dispatched against the control
@@ -322,10 +342,13 @@ class ValkeyTransport(RecoverableTransport):
         if client is None:
             return False, cursor
         enqueued = False
-        if cursor is None:
-            cursor = "$"
         try:
-            res = await client.xread({stream_name: cursor}, StreamReadOptions(block_ms=0))
+            if cursor is None:
+                cursor = await self._resolve_stream_tail(client, stream_name)
+            # block_ms=None omits BLOCK entirely (non-blocking). block_ms=0
+            # would emit "BLOCK 0", which the server reads as "block forever",
+            # parking the connection whenever the stream is empty.
+            res = await client.xread({stream_name: cursor}, StreamReadOptions(block_ms=None))
             if res:
                 for _stream, entries in res.items():
                     for entry_id, pairs in entries.items():

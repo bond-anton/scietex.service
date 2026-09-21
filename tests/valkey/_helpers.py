@@ -12,7 +12,7 @@ import asyncio
 import logging
 
 from scietex.service import ValkeyWorker
-from scietex.service.valkey._glide import ConditionalChange
+from scietex.service.valkey._glide import ConditionalChange, RequestError
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 from scietex.service.valkey.transport import TASK_FIELD
 
@@ -38,11 +38,10 @@ class _SharedStreams:
     - Keys: a ``str -> bytes`` map backing ``get``/``put``, so ``resolve_owner``
       reads the same tracking record a worker (or the test) wrote.
 
-    ``$`` is treated as the stream *start*, not a live tail-seek: the transport's
-    first control read passes ``$`` before it holds any cursor and the tests
-    publish before that read, so a strict tail-seek would drop the command under
-    test. Tail-seek staleness (design §4.2) is orthogonal to the routing gap
-    these tests prove and is covered by the transport unit tests.
+    ``xinfo_stream`` reports the last entry id, so the transport's first read
+    seeds its cursor from the real tail rather than the literal ``$``. Tests
+    that publish before the first read therefore seed the cursor first (an
+    empty ``fetch``), matching the design's skip-before-startup rule (§4.2).
     """
 
     def __init__(self) -> None:
@@ -61,18 +60,19 @@ class _SharedStreams:
         """Return the entries after each stream's cursor, or ``None`` if none.
 
         Emits the same ``{stream: {entry_id: [[TASK_FIELD, payload]]}}`` shape
-        ``ValkeyTransport._read_control_stream`` consumes.
+        ``ValkeyTransport._read_control_stream`` consumes. ``0-0`` reads from
+        the stream start (the transport's seed for a stream that did not exist
+        at startup); a bytes cursor is a previously-returned entry id.
         """
         result: dict[str, dict[bytes, list[list[bytes]]]] = {}
         for stream_name, cursor in streams.items():
             stored = self._streams.get(stream_name, [])
-            # The only string cursor is ``$`` (stream start); a bytes cursor is a
-            # previously-returned entry id, so any other value yields no entries.
-            visible = (
-                stored
-                if cursor == "$"
-                else [e for e in stored if isinstance(cursor, bytes) and _entry_id_gt(e[0], cursor)]
-            )
+            if cursor == "0-0":
+                visible = stored
+            elif isinstance(cursor, bytes):
+                visible = [e for e in stored if _entry_id_gt(e[0], cursor)]
+            else:
+                visible = []
             if visible:
                 result[stream_name] = {entry_id: [[TASK_FIELD, payload]] for entry_id, payload in visible}
         return result or None
@@ -84,6 +84,17 @@ class _SharedStreams:
     def put(self, key: str, value: bytes) -> None:
         """Seed a key so ``get`` (and therefore ``resolve_owner``) sees it."""
         self._keys[key] = value
+
+    def xinfo_stream(self, stream_name: str) -> dict[bytes, bytes]:
+        """Return the stream's ``last-generated-id``, or raise for a missing stream.
+
+        Mirrors the real server: ``XINFO STREAM`` on an absent key raises
+        ``RequestError``, which the transport maps to a ``0-0`` cursor seed.
+        """
+        stored = self._streams.get(stream_name)
+        if not stored:
+            raise RequestError("no such key")
+        return {b"last-generated-id": stored[-1][0]}
 
 
 class DummyClient:
@@ -106,6 +117,7 @@ class DummyClient:
         xread_result=None,
         xread_results=None,
         xread_error=None,
+        xinfo_stream_result=None,
         expire_error=None,
         streams=None,
     ):
@@ -128,6 +140,9 @@ class DummyClient:
         # first; xread_result stays the fallback for single-result tests.
         self.xread_results = list(xread_results) if xread_results is not None else None
         self.xread_error = xread_error
+        # Canned XINFO STREAM reply for the cursor-seed read. Tests that do not
+        # set it get ``None``, which the transport maps to a ``0-0`` seed.
+        self.xinfo_stream_result = xinfo_stream_result
         self.expire_error = expire_error
         # Shared-mode backend (approach (a)): when set, stream reads/appends and
         # key gets are delegated to it so several clients see one shared store.
@@ -140,6 +155,7 @@ class DummyClient:
         self.xautoclaim_calls: list = []
         self.xreadgroup_calls: list = []
         self.xread_calls: list = []
+        self.xinfo_stream_calls: list = []
         self.sets: list = []
         self.set_calls: list = []  # (key, conditional_set) per set() call
         self.gets: list = []
@@ -221,6 +237,12 @@ class DummyClient:
         if self.xread_results is not None:
             return self.xread_results.pop(0) if self.xread_results else None
         return self.xread_result
+
+    async def xinfo_stream(self, *args, **kwargs):
+        self.xinfo_stream_calls.append(args)
+        if self._streams is not None:
+            return self._streams.xinfo_stream(args[0])
+        return self.xinfo_stream_result
 
     async def xautoclaim(self, *args, **kwargs):
         self.xautoclaim_calls.append(args)

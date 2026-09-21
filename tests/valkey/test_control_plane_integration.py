@@ -162,6 +162,9 @@ async def test_directed_cancel_crosses_workers():
     assert not tracker.worker_task.done()
 
     # Publish the directed cancel to A's stream and drive A's control intake.
+    # Seed A's cursor at the stream tail first: the first read resolves the
+    # tail, so a command published earlier would be skipped (AR-123 §4.2).
+    assert await worker_a._transport.fetch(worker_a) is False
     await publisher.direct(worker_a.instance_id, _cancel_task(uuid4(), data_id))
     assert await worker_a._transport.fetch(worker_a) is True
     await worker_a._executor.run_once()
@@ -185,6 +188,11 @@ async def test_broadcast_reaches_both_workers():
     publisher = _publisher(DummyClient(streams=backend))
 
     config_id = uuid4()
+    # Seed both cursors at the stream tail before publishing: the first read
+    # resolves the tail, so a command published earlier would be skipped by
+    # design (AR-123 §4.2).
+    assert await worker_a._transport.fetch(worker_a) is False
+    assert await worker_b._transport.fetch(worker_b) is False
     await publisher.broadcast(_config_apply_task(config_id))
 
     assert await worker_a._transport.fetch(worker_a) is True

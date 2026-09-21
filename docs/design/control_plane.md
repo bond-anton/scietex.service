@@ -214,15 +214,21 @@ Why not `XREADGROUP`:
 
 ### 4.2 Startup position: seek to the tail
 
-On startup the read position is the **stream tail (`$`)**, not a persisted
-cursor. Every control command published while the worker was down is **skipped**
-— stale commands are structurally impossible to replay.
+On startup the read position is the **stream tail**, not a persisted cursor.
+Every control command published while the worker was down is **skipped** —
+stale commands are structurally impossible to replay.
+
+The tail is resolved once to a concrete entry id (`XINFO STREAM`'s
+`last-generated-id`, or `0-0` when the stream does not exist yet) rather than
+left as the literal `$`. `XREAD` re-resolves `$` to the live tail on every
+call, so a `$` cursor would skip any command published between polls — the
+cursor must pin a fixed position to advance from.
 
 | Event | Read position |
 |---|---|
-| Worker startup | `$` (tail) — skip everything published while down |
+| Worker startup | resolved tail — skip everything published while down |
 | Running | advance from the in-memory last-seen id |
-| Restart | `$` again — stale commands dropped |
+| Restart | resolved tail again — stale commands dropped |
 
 This applies to **both** the directed and the broadcast stream. A directed
 `task:cancel` published while the target worker is restarting is therefore

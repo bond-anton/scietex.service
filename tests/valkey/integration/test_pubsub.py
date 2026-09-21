@@ -2,10 +2,8 @@
 
 These tests exercise the real PubSub capability (AR-044) via
 ``ValkeyConfig(pubsub_config=ValkeyPubSubConfig(listening=True))`` against a
-running server. They are skipped when no server is reachable on
-``localhost:6379``, so the suite stays green in environments without one (plain
-local dev). CI provides a ``redis`` service container on port 6379, so they run
-there.
+running server. They are gated by ``SCIETEX_TEST_VALKEY_URL`` (see
+``conftest.py``), so the suite stays green in environments without a server.
 """
 
 import asyncio
@@ -15,36 +13,8 @@ import pytest
 from scietex.service.valkey.config import ValkeyConfig, ValkeyPubSubConfig, generate_glide_config
 
 
-def _server_reachable() -> bool:
-    """Return ``True`` if a Valkey/Redis server answers on localhost:6379."""
-
-    async def probe() -> bool:
-        from glide import GlideClient
-
-        client = None
-        try:
-            client = await GlideClient.create(generate_glide_config(ValkeyConfig(), "probe"))
-            return await client.ping() == b"PONG"
-        except Exception:
-            return False
-        finally:
-            if client is not None:
-                await client.close()
-
-    try:
-        return asyncio.run(probe())
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _server_reachable(),
-    reason="no Valkey/Redis server reachable on localhost:6379",
-)
-
-
 @pytest.mark.asyncio
-async def test_pubsub_directed_and_broadcast_delivery():
+async def test_pubsub_directed_and_broadcast_delivery(valkey_config: ValkeyConfig, service_name: str):
     """A client built with ``listening=True`` receives directed and broadcast
     messages published on its subscribed channels."""
 
@@ -55,14 +25,14 @@ async def test_pubsub_directed_and_broadcast_delivery():
     def parse_control_message(message, context) -> None:
         received.append((message.channel, message.message))
 
-    service_name = "pubsub-itest"
     client = await GlideClient.create(
         generate_glide_config(
             ValkeyConfig(
+                base_config=valkey_config.base_config,
                 pubsub_config=ValkeyPubSubConfig(
                     listening=True,
                     parse_control_message=parse_control_message,
-                )
+                ),
             ),
             service_name=service_name,
         )

@@ -248,7 +248,11 @@ async def test_control_cursor_advances_to_last_entry_id():
     await worker._transport.fetch(sink)
 
     directed_calls = [c for c in client.xread_calls if worker._control_stream_name in c[0]]
-    assert directed_calls[0][0] == {worker._control_stream_name: "$"}
+    # The first read seeds from the resolved stream tail (``0-0`` for a stream
+    # the mock reports as absent), not the literal ``$``: a ``$`` cursor would
+    # re-resolve to the live tail on every poll and skip entries published
+    # between polls.
+    assert directed_calls[0][0] == {worker._control_stream_name: "0-0"}
     assert directed_calls[1][0] == {worker._control_stream_name: b"1-0"}
 
 
@@ -273,7 +277,7 @@ async def test_broadcast_read_enqueues_control_task():
 @pytest.mark.asyncio
 async def test_broadcast_read_uses_broadcast_stream_name():
     """The broadcast read issues ``XREAD`` against the broadcast stream with a
-    ``$``-seeded cursor (AR-123 §4.2/§4.4)."""
+    cursor seeded from the resolved stream tail (AR-123 §4.2/§4.4)."""
     control_id = UUID("33333333-3333-3333-3333-333333333333")
     task_data = _broadcast_task(control_id)
     client = DummyClient(xread_results=[None, _entry(b"7-0", encode_task_envelope(task_data))])
@@ -283,7 +287,7 @@ async def test_broadcast_read_uses_broadcast_stream_name():
     await worker._transport.fetch(sink)
 
     broadcast_calls = [c for c in client.xread_calls if worker._control_broadcast_stream_name in c[0]]
-    assert broadcast_calls[0][0] == {worker._control_broadcast_stream_name: "$"}
+    assert broadcast_calls[0][0] == {worker._control_broadcast_stream_name: "0-0"}
 
 
 @pytest.mark.asyncio
@@ -344,7 +348,7 @@ async def test_directed_and_broadcast_cursors_are_independent():
 
     await worker._transport.fetch(sink)
     assert worker._transport._control_cursor == b"1-0"
-    assert worker._transport._broadcast_cursor == "$"
+    assert worker._transport._broadcast_cursor == "0-0"
 
     client.xread_results = [None, _entry(b"9-0", encode_task_envelope(_broadcast_task(broadcast_id)))]
     await worker._transport.fetch(sink)
