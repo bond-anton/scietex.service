@@ -241,6 +241,7 @@ class ValkeyWorker(TransportWorker):
             status=self._task_status,
             entry_ids=self._task_entry_ids,
             control_stream_name=self._control_stream_name,
+            control_broadcast_stream_name=self._control_broadcast_stream_name,
             control_entry_ids=self._control_entry_ids,
             logger=self.logger,
         )

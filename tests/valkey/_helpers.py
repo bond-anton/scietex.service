@@ -35,6 +35,7 @@ class DummyClient:
         sadd_error=None,
         srem_error=None,
         xread_result=None,
+        xread_results=None,
         xread_error=None,
     ):
         self._ping_ok = ping_ok
@@ -51,6 +52,10 @@ class DummyClient:
         self.sadd_error = sadd_error
         self.srem_error = srem_error
         self.xread_result = xread_result
+        # Optional per-call queue for xread results (the directed and broadcast
+        # control reads each issue one xread per fetch). When set it is consumed
+        # first; xread_result stays the fallback for single-result tests.
+        self.xread_results = list(xread_results) if xread_results is not None else None
         self.xread_error = xread_error
         self.acked: list = []
         self.deleted: list = []
@@ -130,6 +135,8 @@ class DummyClient:
         if self.xread_error is not None:
             raise self.xread_error
         self.xread_calls.append(args)
+        if self.xread_results is not None:
+            return self.xread_results.pop(0) if self.xread_results else None
         return self.xread_result
 
     async def xautoclaim(self, *args, **kwargs):

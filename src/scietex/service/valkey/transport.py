@@ -60,6 +60,7 @@ class ValkeyTransport(RecoverableTransport):
         status: TaskStatusStore,
         entry_ids: dict[UUID, str | bytes],
         control_stream_name: str,
+        control_broadcast_stream_name: str,
         control_entry_ids: dict[UUID, tuple[str, str | bytes]],
         logger: logging.Logger,
     ) -> None:
@@ -74,6 +75,7 @@ class ValkeyTransport(RecoverableTransport):
         self._status = status
         self._entry_ids = entry_ids
         self._control_stream_name = control_stream_name
+        self._control_broadcast_stream_name = control_broadcast_stream_name
         self._control_entry_ids = control_entry_ids
         self._logger = logger
 
@@ -108,6 +110,13 @@ class ValkeyTransport(RecoverableTransport):
         # persisted, matching the event-only, no-recovery control contract.
         self._control_cursor: str | bytes | None = None
 
+        # The broadcast stream is service-scoped and read by every worker, so it
+        # needs its own cursor and deferred buffer independent of the directed
+        # stream: a worker's position on one must never affect the other, and a
+        # full directed lane must not block broadcast delivery (AR-123 §4.4).
+        self._broadcast_deferred: deque[tuple[UUID, TaskData, str | bytes]] = deque()
+        self._broadcast_cursor: str | bytes | None = None
+
     async def fetch(self, sink: TaskSink) -> bool:
         """Fetch new tasks from the Valkey task stream and enqueue them.
 
@@ -128,15 +137,15 @@ class ValkeyTransport(RecoverableTransport):
         retried on the next poll instead of being dropped; its entry id and
         lease are recorded only on successful enqueue.
 
-        After the data read, the directed control stream is polled with plain
-        ``XREAD`` (non-blocking) and any deferred control entries are flushed
-        first (AR-123 §4.4). Control is read every poll even when the data lane
-        is full or backpressured, so a saturated data plane cannot delay control
-        delivery.
+        After the data read, the directed and broadcast control streams are
+        polled with plain ``XREAD`` (non-blocking) and any deferred control
+        entries are flushed first (AR-123 §4.4). Control is read every poll even
+        when the data lane is full or backpressured, so a saturated data plane
+        cannot delay control delivery.
 
         Returns:
             ``True`` if at least one task was enqueued (from recovery, the
-            deferred buffers, or either read), ``False`` otherwise.
+            deferred buffers, or any read), ``False`` otherwise.
         """
         client = self._client_provider()
         if client is None:
@@ -197,6 +206,8 @@ class ValkeyTransport(RecoverableTransport):
         # backpressure guard above (AR-123 §4.4).
         enqueued = await self._flush_control_deferred(sink) or enqueued
         enqueued = await self._read_control(sink) or enqueued
+        enqueued = await self._flush_broadcast_deferred(sink) or enqueued
+        enqueued = await self._read_broadcast(sink) or enqueued
         return enqueued
 
     async def _flush_deferred(self, sink: TaskSink) -> bool:
@@ -219,26 +230,71 @@ class ValkeyTransport(RecoverableTransport):
         return enqueued
 
     async def _flush_control_deferred(self, sink: TaskSink) -> bool:
-        """Re-attempt enqueueing of entries held in the control deferred buffer.
+        """Flush the directed control deferred buffer (AR-123 §4.4)."""
+        return await self._flush_control_deferred_stream(
+            sink, stream_name=self._control_stream_name, deferred=self._control_deferred
+        )
 
-        Mirrors :meth:`_flush_deferred` for the directed control stream: the
-        first entry that is still rejected stops the flush so ordering is
-        preserved, and the (stream, entry id) pair is recorded only once the
-        sink accepts the entry. No lease is written — control entries are never
-        leased (AR-123 §4.6).
+    async def _flush_broadcast_deferred(self, sink: TaskSink) -> bool:
+        """Flush the broadcast control deferred buffer (AR-123 §4.4)."""
+        return await self._flush_control_deferred_stream(
+            sink, stream_name=self._control_broadcast_stream_name, deferred=self._broadcast_deferred
+        )
+
+    async def _flush_control_deferred_stream(
+        self,
+        sink: TaskSink,
+        *,
+        stream_name: str,
+        deferred: deque[tuple[UUID, TaskData, str | bytes]],
+    ) -> bool:
+        """Re-attempt enqueueing of entries held in a control deferred buffer.
+
+        Mirrors :meth:`_flush_deferred` for a control stream: the first entry
+        that is still rejected stops the flush so ordering is preserved, and the
+        (stream, entry id) pair is recorded only once the sink accepts the
+        entry. No lease is written — control entries are never leased
+        (AR-123 §4.6).
         """
         enqueued = False
-        while self._control_deferred:
-            task_id, task_data, entry_id = self._control_deferred[0]
+        while deferred:
+            task_id, task_data, entry_id = deferred[0]
             if not sink.enqueue_task(task_data):
                 break
-            self._control_deferred.popleft()
-            self._control_entry_ids[task_id] = (self._control_stream_name, entry_id)
+            deferred.popleft()
+            self._control_entry_ids[task_id] = (stream_name, entry_id)
             enqueued = True
         return enqueued
 
     async def _read_control(self, sink: TaskSink) -> bool:
-        """Read the directed control stream with plain ``XREAD`` (AR-123 §4.4).
+        """Read the directed control stream (AR-123 §4.4)."""
+        enqueued, self._control_cursor = await self._read_control_stream(
+            sink,
+            stream_name=self._control_stream_name,
+            cursor=self._control_cursor,
+            deferred=self._control_deferred,
+        )
+        return enqueued
+
+    async def _read_broadcast(self, sink: TaskSink) -> bool:
+        """Read the service-scoped broadcast control stream (AR-123 §4.4)."""
+        enqueued, self._broadcast_cursor = await self._read_control_stream(
+            sink,
+            stream_name=self._control_broadcast_stream_name,
+            cursor=self._broadcast_cursor,
+            deferred=self._broadcast_deferred,
+        )
+        return enqueued
+
+    async def _read_control_stream(
+        self,
+        sink: TaskSink,
+        *,
+        stream_name: str,
+        cursor: str | bytes | None,
+        deferred: deque[tuple[UUID, TaskData, str | bytes]],
+    ) -> tuple[bool, str | bytes | None]:
+        """Read one control stream with plain ``XREAD`` (AR-123 §4.4).
 
         Control uses no consumer group, so the read is ``XREAD`` with an
         in-memory cursor rather than ``XREADGROUP``. The cursor is seeded to
@@ -248,30 +304,34 @@ class ValkeyTransport(RecoverableTransport):
         runs every poll after the data read, never delaying data latency.
 
         Each decoded ``TaskData`` is enqueued via ``sink``. A non-control entry
-        on the control stream is a misroute and is skipped (logged, never
-        enqueued). A rejected entry (control lane full) is held in the bounded
-        ``_control_deferred`` buffer and retried next poll; the cursor still
+        on a control stream is a misroute and is skipped (logged, never
+        enqueued). A rejected entry (control lane full) is held in the stream's
+        bounded ``deferred`` buffer and retried next poll; the cursor still
         advances past it so it is not re-read. No lease is written (§4.6).
 
+        The explicit ``cursor`` parameter and ``(enqueued, cursor)`` return keep
+        the directed and broadcast streams independent without attribute-name
+        strings, so one stream's position can never advance the other's.
+
         Returns:
-            ``True`` if at least one control command was enqueued.
+            ``(enqueued, new_cursor)``: whether a control command was enqueued,
+            and the cursor to resume from on the next read.
         """
         client = self._client_provider()
         if client is None:
-            return False
+            return False, cursor
         enqueued = False
-        if self._control_cursor is None:
-            self._control_cursor = "$"
-        cursor = self._control_cursor
+        if cursor is None:
+            cursor = "$"
         try:
-            res = await client.xread({self._control_stream_name: cursor}, StreamReadOptions(block_ms=0))
+            res = await client.xread({stream_name: cursor}, StreamReadOptions(block_ms=0))
             if res:
                 for _stream, entries in res.items():
                     for entry_id, pairs in entries.items():
                         # Advance the cursor before deciding the entry's fate: a
                         # deferred entry must never be re-read from the stream,
                         # because the deferred buffer owns its retry.
-                        self._control_cursor = entry_id
+                        cursor = entry_id
                         if pairs is None:
                             continue
                         for field, payload_bytes in pairs:
@@ -290,25 +350,25 @@ class ValkeyTransport(RecoverableTransport):
                                 self._logger.error(
                                     "Non-control task %s misrouted to control stream %s",
                                     task_data_id(task_data),
-                                    self._control_stream_name,
+                                    stream_name,
                                 )
                                 continue
                             uuid = task_data_id(task_data)
                             if sink.enqueue_task(task_data):
-                                self._control_entry_ids[uuid] = (self._control_stream_name, entry_id)
+                                self._control_entry_ids[uuid] = (stream_name, entry_id)
                                 enqueued = True
                             else:
                                 # Control lane full: hold the entry and retry next
                                 # poll, preserving order by stopping this poll's read.
-                                self._control_deferred.append((uuid, task_data, entry_id))
+                                deferred.append((uuid, task_data, entry_id))
                                 self._logger.log(logging.DEBUG, "Control queue full; deferring task %s", uuid)
-                                return enqueued
+                                return enqueued, cursor
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self._logger.debug("Failed to fetch/parse control task from Valkey stream: %s", exc)
             self._health.report_failure(exc)
             await self._health.recover()
-            return False
-        return enqueued
+            return False, cursor
+        return enqueued, cursor
 
     async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:
         """Re-enqueue stream entries left pending by a previous run.
