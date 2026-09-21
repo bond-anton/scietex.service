@@ -2,7 +2,7 @@
 
 The control plane travels on channels separate from the data plane on every
 transport, so a submitter that wants to address a control command
-(``cancel_task``, ``config:*``) must publish to the *control* channel, not the
+(``task:cancel``, ``worker:*``, ``config:*``) must publish to the *control* channel, not the
 data channel. This module defines the minimal producer contract that lets a
 submitter do that without knowing which transport is in use.
 
@@ -34,7 +34,7 @@ class ControlPublisher(Protocol):
     that worker's dedicated control channel); ``broadcast`` targets every
     worker; and ``resolve_owner`` maps a ``task_id`` to the ``instance_id`` of
     the worker that currently owns it, so a submitter can direct a
-    ``cancel_task`` to the right worker (design §3.4).
+    ``task:cancel`` to the right worker (design §3.4).
     """
 
     async def direct(self, instance_id: str, task_data: TaskData) -> None: ...

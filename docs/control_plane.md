@@ -1,10 +1,34 @@
 # Control Plane
 
 The control plane carries the commands that steer a running fleet —
-`cancel_task`, `config:apply`, `config:store`, `config:show` — on channels
+`task:cancel`, `worker:start`, `worker:stop`, `worker:restart`, `worker:exit`,
+`config:apply`, `config:store`, `config:show` — on channels
 separate from the data lane. It is the delivery half of AR-123: the worker
 registry (see [Worker Registry](worker_registry.md)) lets a client *see* the
 fleet; the control plane lets it *address* one worker or all of them.
+
+## Built-in commands
+
+| Command | Scope | Effect |
+|---|---|---|
+| `task:cancel` | directed | Cancel a running or queued task on the owning worker |
+| `worker:start` | directed | Start the worker if it is not already running (idempotent) |
+| `worker:stop` | directed | Stop the worker |
+| `worker:restart` | directed | Stop, then start, the worker |
+| `worker:exit` | directed | Request worker exit (sets `exit_requested`, then stops) |
+| `config:apply` | broadcast | Apply a desired-state config envelope |
+| `config:store` | broadcast | Persist a desired-state config envelope |
+| `config:show` | broadcast | Report the current effective config |
+
+`task:cancel` and the `worker:*` commands are always registered. The `config:*`
+commands exist only when remote config is enabled.
+
+A `worker:*` command targets the worker executing it, so the handler schedules
+the lifecycle transition as a background task and returns immediately: the
+command's result is acknowledged **before** shutdown begins. The response reports
+the action as *accepted*, not as completed. `worker:stop` does not set the
+`exit` event — only `worker:exit` does — so a stopped worker is observed through
+its state, not through `events["exit"]`.
 
 ## The channel is the address
 
@@ -17,7 +41,7 @@ command is structurally impossible.
 | Valkey | `scietex:{service}:control:{instance_id}` | `scietex:{service}:control` |
 | MQTT | `scietex/{service}/control/{instance_id}` | `scietex/{service}/control` |
 
-A `cancel_task` published to a worker's directed channel cancels a task running
+A `task:cancel` published to a worker's directed channel cancels a task running
 on that worker. A `config:apply` published to the broadcast channel reaches
 every worker. The two channels are read independently of the data lane, so a
 saturated data queue cannot delay a control command.

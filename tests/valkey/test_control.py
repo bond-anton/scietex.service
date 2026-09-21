@@ -13,7 +13,7 @@ from uuid import UUID
 import pytest
 
 from scietex.service import ValkeyWorker
-from scietex.service.task_handler import CANCEL_TASK_TYPE, CONFIG_APPLY_TASK_TYPE
+from scietex.service.task_handler import CANCEL_TASK_NAME, CONFIG_APPLY_TASK_NAME
 from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeout
 from scietex.service.task_handler.wire import encode_task_envelope
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
@@ -55,7 +55,7 @@ def _control_task(task_id: UUID) -> TaskData:
     """Build a directed control ``TaskData`` (a ``cancel_task`` command)."""
     return TaskData(
         task_id=str(task_id),
-        task=CANCEL_TASK_TYPE,
+        task=CANCEL_TASK_NAME,
         payload=b"",
         timeout=TaskTimeout(timeout=None, timeout_action="discard"),
         canceled_action="discard",
@@ -66,7 +66,7 @@ def _broadcast_task(task_id: UUID) -> TaskData:
     """Build a broadcast control ``TaskData`` (a ``config:apply`` command)."""
     return TaskData(
         task_id=str(task_id),
-        task=CONFIG_APPLY_TASK_TYPE,
+        task=CONFIG_APPLY_TASK_NAME,
         payload=b"",
         timeout=TaskTimeout(timeout=None, timeout_action="discard"),
         canceled_action="discard",
@@ -222,7 +222,7 @@ async def test_control_read_happens_when_data_lane_is_full():
     for i in range(2):
         d_id = UUID(f"aaaaaaaa-aaaa-aaaa-aaaa-{i:012d}")
         worker._transport._deferred.append((d_id, TaskData(task_id=str(d_id), task="dummy", payload=b"{}"), b"1-0"))
-    sink = _Sink(accept=lambda t: t.task == CANCEL_TASK_TYPE)
+    sink = _Sink(accept=lambda t: t.task == CANCEL_TASK_NAME)
 
     enqueued = await worker._transport.fetch(sink)
 

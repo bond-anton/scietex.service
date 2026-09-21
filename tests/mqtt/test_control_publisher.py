@@ -76,7 +76,7 @@ async def test_direct_publishes_envelope_to_directed_topic():
     event-only (not retained), formatting the {instance_id} placeholder."""
     client = FakeClient()
     publisher = _publisher(client)
-    task_data = TaskData(task_id=str(uuid4()), task="cancel_task", payload=b"{}")
+    task_data = TaskData(task_id=str(uuid4()), task="task:cancel", payload=b"{}")
 
     await publisher.direct("worker-7", task_data)
 

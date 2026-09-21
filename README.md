@@ -353,10 +353,14 @@ See the [Task Handler docs](docs/task_handler.md) for the full handler lifecycle
 6. **Timeout**: Tasks exceeding their `timeout` (default 3s) are
    canceled and either re-queued or discarded per
    `TaskTimeout.timeout_action`.
-7. **Cancel**: A built-in `cancel_task` handler cancels a running or
+7. **Cancel**: A built-in `task:cancel` handler cancels a running or
    queued task by id. A deliberate cancel writes `status="cancelled"`
    with the original `TaskData` embedded, so the caller can modify and
    resubmit it under a new task id.
+8. **Worker control**: Built-in `worker:start`, `worker:stop`,
+   `worker:restart`, and `worker:exit` handlers steer the worker's own
+   lifecycle. Each is acknowledged before the transition begins, so the
+   response reports acceptance, not completion.
 
 ### Task Schemas
 
@@ -531,15 +535,23 @@ Valkey quick-start above), not only from `scietex.service.valkey`.
 | `TaskHandler` | Abstract base class for task handlers |
 | `TaskHandlerContext` | Narrow read-only context passed to handlers (service name, instance id, logger) |
 | `TaskCapabilities` | Per-call capabilities passed to `handle` (task id + `report_progress(value)`) |
-| `CancelTaskHandler` | Built-in handler for the `cancel_task` task type |
-| `CancelTaskRequest` | Payload schema for a `cancel_task` task (`target_task_id`, `reason`) |
-| `CancelTaskResponse` | Success payload schema for a `cancel_task` task (`target_task_id`, `outcome`) |
+| `CancelTaskHandler` | Built-in handler for the `task:cancel` task name |
+| `CancelTaskRequest` | Payload schema for a `task:cancel` task (`target_task_id`, `reason`) |
+| `CancelTaskResponse` | Success payload schema for a `task:cancel` task (`target_task_id`, `outcome`) |
 | `CancelOutcome` | Cancellation outcome literal (`cancelled`/`not_running`/`ignored`/`not_found`) |
 | `CancelReason` | Why a task was cancelled (`deliberate`/`timeout`/`shutdown`) |
-| `CANCEL_TASK_TYPE` | Task type string that selects the built-in cancel handler (`"cancel_task"`) |
-| `CONFIG_APPLY_TASK_TYPE` | Task type string for `config:apply` (`"config:apply"`) |
-| `CONFIG_STORE_TASK_TYPE` | Task type string for `config:store` (`"config:store"`) |
-| `CONFIG_SHOW_TASK_TYPE` | Task type string for `config:show` (`"config:show"`) |
+| `CANCEL_TASK_NAME` | Task name that selects the built-in cancel handler (`"task:cancel"`) |
+| `WorkerControlHandler` | Built-in handler for the `worker:*` control task names |
+| `WorkerControlRequest` | Payload schema for a `worker:*` task (`reason`) |
+| `WorkerControlResponse` | Success payload schema for a `worker:*` task (`action`, `accepted`) |
+| `WORKER_START_TASK_NAME` | Task name for `worker:start` (`"worker:start"`) |
+| `WORKER_STOP_TASK_NAME` | Task name for `worker:stop` (`"worker:stop"`) |
+| `WORKER_RESTART_TASK_NAME` | Task name for `worker:restart` (`"worker:restart"`) |
+| `WORKER_EXIT_TASK_NAME` | Task name for `worker:exit` (`"worker:exit"`) |
+| `CONTROL_TASK_NAMES` | Canonical enumeration of built-in control task names (a catalogue, not a routing table) |
+| `CONFIG_APPLY_TASK_NAME` | Task name for `config:apply` (`"config:apply"`) |
+| `CONFIG_STORE_TASK_NAME` | Task name for `config:store` (`"config:store"`) |
+| `CONFIG_SHOW_TASK_NAME` | Task name for `config:show` (`"config:show"`) |
 | `ConfigApplyHandler` | Built-in handler for `config:apply` |
 | `ConfigStoreHandler` | Built-in handler for `config:store` |
 | `ConfigShowHandler` | Built-in handler for `config:show` |

@@ -305,7 +305,7 @@ registry, a control command in the control registry:
 handler = processor._find_task_handler("email")
 # Returns the EmailHandler instance, or None
 
-handler = processor._find_task_handler("cancel_task", control=True)
+handler = processor._find_task_handler("task:cancel", control=True)
 # Returns the CancelTaskHandler instance from the control registry, or None
 ```
 
@@ -316,7 +316,7 @@ goes to the data registry (`task_handlers`). The two registries are disjoint.
 ### Built-in Cancellation Handler
 
 `TaskProcessor.__init__` auto-registers `CancelTaskHandler` for the
-`cancel_task` task type and injects its own bound `_cancel_task` method as the
+`task:cancel` task type and injects its own bound `_cancel_task` method as the
 cancellation callback:
 
 ```python
@@ -332,10 +332,32 @@ target (the same `cancel()` plus bounded `asyncio.wait` pattern as
 format and result contract; reliable cancellation needs
 `max_concurrent_tasks >= 2`.
 
-Cancellation is **worker-local**: a `cancel_task` only cancels a task running on
+Cancellation is **worker-local**: a `task:cancel` only cancels a task running on
 the worker that reads the command. The handler resolves the target against that
 worker's own running/queued tasks, so a target owned by another worker returns
 `TASK_NOT_RUNNING`. Cross-worker cancel routing is planned for v5.0.0.
+
+### Built-in Worker Control Handler
+
+`TaskProcessor.__init__` also auto-registers `WorkerControlHandler` for the four
+`worker:*` control task names, injecting its own bound lifecycle methods:
+
+```python
+self.add_task_handler(
+    WorkerControlHandler,
+    start=self._start_worker,
+    stop=self._stop_worker,
+    restart=self._restart_worker,
+    exit=self._exit_worker,
+)
+```
+
+Each callback schedules the transition as a background task and returns
+immediately, so the command is acknowledged before the worker begins shutting
+down. `worker:restart` composes `stop()` then `start()` — there is no restart
+primitive, and `start()` waits out an in-flight shutdown, so the sequence is
+safe. See the [Task Handler docs](task_handler.md#worker-control) for the
+submission format and result contract.
 
 ## Task Processing
 

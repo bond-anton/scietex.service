@@ -40,8 +40,8 @@ from scietex.service.task_handler.basic import TaskHandler
 from scietex.service.task_handler.cancel import CancelTaskRequest
 from scietex.service.task_handler.capabilities import TaskCapabilities
 from scietex.service.task_handler.schemas import (
-    CANCEL_TASK_TYPE,
-    CONFIG_APPLY_TASK_TYPE,
+    CANCEL_TASK_NAME,
+    CONFIG_APPLY_TASK_NAME,
     TaskData,
     TaskResult,
     TaskStatus,
@@ -86,7 +86,7 @@ def _cancel_task(task_id: UUID, target_id: UUID) -> TaskData:
     """A directed ``cancel_task`` command targeting ``target_id``."""
     return TaskData(
         task_id=str(task_id),
-        task=CANCEL_TASK_TYPE,
+        task=CANCEL_TASK_NAME,
         payload=msgspec.msgpack.encode(CancelTaskRequest(target_task_id=str(target_id))),
         timeout=TaskTimeout(timeout=None, timeout_action="discard"),
         canceled_action="discard",
@@ -97,7 +97,7 @@ def _config_apply_task(task_id: UUID) -> TaskData:
     """A broadcast control command (``config:apply``)."""
     return TaskData(
         task_id=str(task_id),
-        task=CONFIG_APPLY_TASK_TYPE,
+        task=CONFIG_APPLY_TASK_NAME,
         payload=b"{}",
         timeout=TaskTimeout(timeout=None, timeout_action="discard"),
         canceled_action="discard",

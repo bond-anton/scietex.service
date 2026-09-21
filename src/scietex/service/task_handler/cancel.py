@@ -1,4 +1,4 @@
-"""Built-in handler for the ``cancel_task`` task type.
+"""Built-in handler for the ``task:cancel`` task name.
 
 The handler is transport-agnostic: it decodes a :class:`CancelTaskRequest`
 from the task payload and delegates the actual cancellation to an async
@@ -15,7 +15,7 @@ import msgspec
 from .basic import TaskHandler
 from .capabilities import TaskCapabilities
 from .context import TaskHandlerContext
-from .schemas import CANCEL_TASK_TYPE, TaskData, TaskResult
+from .schemas import CANCEL_TASK_NAME, TaskData, TaskResult
 
 #: Result of a cancellation attempt.
 #:
@@ -33,7 +33,7 @@ CancelCallback = Callable[[UUID], Awaitable[CancelOutcome]]
 
 
 class CancelTaskRequest(msgspec.Struct, frozen=True):
-    """Payload of a ``cancel_task`` task.
+    """Payload of a ``task:cancel`` task.
 
     Args:
         target_task_id: UUID (as a string) of the task to cancel.
@@ -45,7 +45,7 @@ class CancelTaskRequest(msgspec.Struct, frozen=True):
 
 
 class CancelTaskResponse(msgspec.Struct, frozen=True):
-    """Payload returned by a successful ``cancel_task`` task.
+    """Payload returned by a successful ``task:cancel`` task.
 
     Args:
         target_task_id: UUID (as a string) of the task that was cancelled.
@@ -57,7 +57,7 @@ class CancelTaskResponse(msgspec.Struct, frozen=True):
 
 
 class CancelTaskHandler(TaskHandler):
-    """Handler for the built-in ``cancel_task`` task type.
+    """Handler for the built-in ``task:cancel`` task name.
 
     Decodes a :class:`CancelTaskRequest` and calls the injected ``cancel``
     callback. A malformed payload yields a non-retryable error result rather
@@ -88,8 +88,8 @@ class CancelTaskHandler(TaskHandler):
 
     @property
     def supported_tasks(self) -> list[str]:
-        """Task types handled by this handler."""
-        return [CANCEL_TASK_TYPE]
+        """Task names handled by this handler."""
+        return [CANCEL_TASK_NAME]
 
     async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Cancel the target task named in the payload.
@@ -111,7 +111,7 @@ class CancelTaskHandler(TaskHandler):
         except (msgspec.DecodeError, ValueError) as exc:
             return TaskResult(
                 status="error",
-                error=f"invalid cancel_task payload: {exc}",
+                error=f"invalid task:cancel payload: {exc}",
                 error_code="INVALID_CANCEL_PAYLOAD",
                 retryable=False,
             )

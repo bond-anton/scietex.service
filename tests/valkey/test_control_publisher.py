@@ -36,7 +36,7 @@ async def test_direct_xadds_envelope_to_directed_stream_with_maxlen_trim():
     a MAXLEN ~ N trim, formatting the {instance_id} placeholder."""
     client = DummyClient()
     publisher = _publisher(client)
-    task_data = TaskData(task_id=str(uuid4()), task="cancel_task", payload=b"{}")
+    task_data = TaskData(task_id=str(uuid4()), task="task:cancel", payload=b"{}")
 
     await publisher.direct("worker-7", task_data)
 

@@ -12,34 +12,51 @@ from uuid import UUID
 
 import msgspec
 
-#: Task type string that selects the built-in cancellation handler.
-CANCEL_TASK_TYPE: str = "cancel_task"
+#: Task name that selects the built-in cancellation handler.
+CANCEL_TASK_NAME: str = "task:cancel"
 
-#: Task type string that selects the built-in remote-config apply handler.
-CONFIG_APPLY_TASK_TYPE: str = "config:apply"
+#: Task name that selects the built-in remote-config apply handler.
+CONFIG_APPLY_TASK_NAME: str = "config:apply"
 
-#: Task type string that selects the built-in remote-config store handler.
-CONFIG_STORE_TASK_TYPE: str = "config:store"
+#: Task name that selects the built-in remote-config store handler.
+CONFIG_STORE_TASK_NAME: str = "config:store"
 
-#: Task type string that selects the built-in remote-config show handler.
-CONFIG_SHOW_TASK_TYPE: str = "config:show"
+#: Task name that selects the built-in remote-config show handler.
+CONFIG_SHOW_TASK_NAME: str = "config:show"
 
-#: Task types that form the control plane and bypass the data-plane queue and
-#: concurrency budget (AR-108). ``cancel_task`` is always registered; the
-#: ``config:*`` handlers exist only when remote config is enabled, but routing
-#: them here is harmless when disabled (dispatch yields the permanent
-#: no-handler result).
-CONTROL_TASK_TYPES: frozenset[str] = frozenset(
+#: Task name that selects the built-in worker start handler.
+WORKER_START_TASK_NAME: str = "worker:start"
+
+#: Task name that selects the built-in worker stop handler.
+WORKER_STOP_TASK_NAME: str = "worker:stop"
+
+#: Task name that selects the built-in worker restart handler.
+WORKER_RESTART_TASK_NAME: str = "worker:restart"
+
+#: Task name that selects the built-in worker exit handler.
+WORKER_EXIT_TASK_NAME: str = "worker:exit"
+
+#: The canonical enumeration of built-in control-plane task names. This is a
+#: catalogue, not a routing table: a task reaches the control lane because it
+#: was delivered on a control channel, and it is served because its handler
+#: declares ``control = True``. Nothing consults this set to decide routing.
+#: ``task:cancel`` and the ``worker:*`` handlers are always registered; the
+#: ``config:*`` handlers exist only when remote config is enabled.
+CONTROL_TASK_NAMES: frozenset[str] = frozenset(
     {
-        CANCEL_TASK_TYPE,
-        CONFIG_APPLY_TASK_TYPE,
-        CONFIG_STORE_TASK_TYPE,
-        CONFIG_SHOW_TASK_TYPE,
+        CANCEL_TASK_NAME,
+        CONFIG_APPLY_TASK_NAME,
+        CONFIG_STORE_TASK_NAME,
+        CONFIG_SHOW_TASK_NAME,
+        WORKER_START_TASK_NAME,
+        WORKER_STOP_TASK_NAME,
+        WORKER_RESTART_TASK_NAME,
+        WORKER_EXIT_TASK_NAME,
     }
 )
 
 #: Why a running task was cancelled. Only ``"deliberate"`` (an explicit
-#: ``cancel_task`` request) produces a ``cancelled`` status; ``"timeout"`` and
+#: ``task:cancel`` request) produces a ``cancelled`` status; ``"timeout"`` and
 #: ``"shutdown"`` keep the existing ``failed`` status.
 CancelReason = Literal["deliberate", "timeout", "shutdown"]
 
@@ -69,7 +86,7 @@ class TaskData(msgspec.Struct, frozen=True):
         timeout: Timeout configuration for this task.
         canceled_action: Action when task is canceled: ``"requeue"``
             or ``"discard"``. Applies to shutdown drain and running-task
-            cleanup only; a deliberate ``cancel_task`` is never requeued
+            cleanup only; a deliberate ``task:cancel`` is never requeued
             automatically — the external process decides.
         payload: Raw bytes payload associated with the task.
     """
@@ -165,7 +182,7 @@ class TaskStatus(msgspec.Struct, frozen=True):
     Written as ``queued`` when the task is accepted (by the submitter under the
     Valkey split, or by the worker itself for MQTT), overwritten by the worker
     as ``running`` when the task starts and as ``completed``/``failed`` when it
-    finishes. A deliberate ``cancel_task`` request produces ``cancelled`` and
+    finishes. A deliberate ``task:cancel`` request produces ``cancelled`` and
     embeds the original :class:`TaskData` in ``data`` so an external process
     can read it, modify it, and resubmit under a new task id.
 

@@ -209,7 +209,7 @@ async def test_control_topic_message_lands_in_control_inbox(tmp_path):
     not the data inbox (the topic is the address, design §5.2)."""
     worker = _make_worker(tmp_path)
     task_id = uuid4()
-    task_data = TaskData(task_id=str(task_id), task="cancel_task")
+    task_data = TaskData(task_id=str(task_id), task="task:cancel")
     message = _FakeMessage(encode_task_envelope(task_data), topic=worker._control_topic)
 
     await worker._handle_message(message)
@@ -257,7 +257,7 @@ async def test_control_inbox_path_is_honored(tmp_path):
     assert worker._control_inbox is not None
 
     task_id = uuid4()
-    task_data = TaskData(task_id=str(task_id), task="cancel_task")
+    task_data = TaskData(task_id=str(task_id), task="task:cancel")
     message = _FakeMessage(encode_task_envelope(task_data), topic=worker._control_topic)
     await worker._handle_message(message)
 

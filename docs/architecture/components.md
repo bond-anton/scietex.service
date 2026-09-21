@@ -223,16 +223,24 @@ datetime.now(timezone.utc))` (128) so each instance gets its own timestamp
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
 
-`schemas.py` also defines `CANCEL_TASK_TYPE = "cancel_task"` (15),
-`CONFIG_APPLY_TASK_TYPE = "config:apply"` (18),
-`CONFIG_STORE_TASK_TYPE = "config:store"` (21),
-`CONFIG_SHOW_TASK_TYPE = "config:show"` (24), and
-`CancelReason` (43). The built-in handler for the cancellation task type lives in
-`task_handler/cancel.py`: `CancelTaskHandler` (59), `CancelTaskRequest` (35),
-`CancelTaskResponse` (47), `CancelOutcome` (29), and `CancelCallback` (32).
+`schemas.py` also defines `CANCEL_TASK_NAME = "task:cancel"`,
+`CONFIG_APPLY_TASK_NAME = "config:apply"`,
+`CONFIG_STORE_TASK_NAME = "config:store"`,
+`CONFIG_SHOW_TASK_NAME = "config:show"`,
+`WORKER_START_TASK_NAME = "worker:start"`,
+`WORKER_STOP_TASK_NAME = "worker:stop"`,
+`WORKER_RESTART_TASK_NAME = "worker:restart"`,
+`WORKER_EXIT_TASK_NAME = "worker:exit"`,
+`CONTROL_TASK_NAMES` (the canonical enumeration of the above — a catalogue, not
+a routing table), and `CancelReason`. The built-in handler for the cancellation
+task name lives in `task_handler/cancel.py`: `CancelTaskHandler`,
+`CancelTaskRequest`, `CancelTaskResponse`, `CancelOutcome`, and `CancelCallback`.
 `TaskProcessor` auto-registers the handler in `__init__` and injects its own
-`_cancel_task` callback. The three remote-config task types are served by the
-handlers in `task_handler/config.py` (see §25).
+`_cancel_task` callback. The four `worker:*` names are served by
+`WorkerControlHandler` in `task_handler/worker.py` (`WorkerControlRequest`,
+`WorkerControlResponse`, `WorkerAction`, `WorkerActionCallback`), also
+auto-registered with injected lifecycle callbacks. The three remote-config task
+names are served by the handlers in `task_handler/config.py` (see §25).
 
 `TaskEnvelope` is the durable wire format (AR-064): the transport persists a
 versioned envelope, not a bare `TaskData`, so the handler contract and the
@@ -916,7 +924,7 @@ reloader), `task_handler/config.py` (outcome constants), `valkey/worker.py` and
 
 **File:** `src/scietex/service/task_handler/config.py`
 
-**Purpose:** The three built-in `config:*` handlers, mirroring the `cancel_task`
+**Purpose:** The three built-in `config:*` handlers, mirroring the `task:cancel`
 control path. Each decodes its request struct and delegates the work to a
 callback injected by the owning `ConfigManager` (which owns the
 `ConfigReloader` and the transport source), so the handlers never reach into

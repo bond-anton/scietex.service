@@ -250,14 +250,14 @@ construction), and the connection configs `valkey_config`/`mqtt_config`
 
 ## Commands
 
-Three task types, registered exactly like the built-in `cancel_task` handler
+Three task types, registered exactly like the built-in `task:cancel` handler
 (but only when `remote_config_enabled=True`), with async callbacks injected at
 construction:
 
 ```python
-CONFIG_APPLY_TASK_TYPE: str = "config:apply"
-CONFIG_STORE_TASK_TYPE: str = "config:store"
-CONFIG_SHOW_TASK_TYPE: str = "config:show"
+CONFIG_APPLY_TASK_NAME: str = "config:apply"
+CONFIG_STORE_TASK_NAME: str = "config:store"
+CONFIG_SHOW_TASK_NAME: str = "config:show"
 ```
 
 Replies ride the normal task result payload (`TaskResult.payload`, msgpack),

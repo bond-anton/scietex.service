@@ -36,6 +36,7 @@ from .task_handler import (
     TaskHandlerContext,
     TaskResult,
     TaskTracker,
+    WorkerControlHandler,
 )
 from .task_handler.schemas import task_data_id
 from .task_lifecycle import TaskLifecycle
@@ -164,11 +165,23 @@ class TaskProcessor(BasicWorker):
         # stays transport-agnostic and never reaches into processor internals.
         self.add_task_handler(CancelTaskHandler, cancel=self._cancel_task)
 
+        # Built-in worker lifecycle handlers. A stop/restart/exit command targets
+        # the worker executing it, so each callback schedules the transition as a
+        # background task and returns immediately: the handler's result is
+        # acknowledged before shutdown begins.
+        self.add_task_handler(
+            WorkerControlHandler,
+            start=self._start_worker,
+            stop=self._stop_worker,
+            restart=self._restart_worker,
+            exit=self._exit_worker,
+        )
+
         # Remote configuration channel. The ConfigManager collaborator owns the
         # reloader, the local config.yml path/reads/writes, the attached source,
         # and the three config:* handler callbacks (AR-105). Handler registration
         # is gated on the feature switch: a disabled processor serves no
-        # config:* task type, so dispatch yields the permanent no-handler result.
+        # config:* task name, so dispatch yields the permanent no-handler result.
         self._config_manager = ConfigManager(
             conf_dir=self.conf_dir,
             config_file=cfg.config_file,
@@ -237,7 +250,7 @@ class TaskProcessor(BasicWorker):
     def max_concurrent_tasks(self) -> int:
         """Maximum number of data-plane tasks processed concurrently.
 
-        Bounds the data plane only: control-plane commands (``cancel_task`` and
+        Bounds the data plane only: control-plane commands (``task:cancel``, ``worker:*``, and
         the ``config:*`` types) run on a reserved priority lane with their own
         concurrency ceiling, so they are never blocked behind data-plane work.
         """
@@ -719,6 +732,51 @@ class TaskProcessor(BasicWorker):
         """
         return await self._executor.cancel(target_id)
 
+    async def _start_worker(self) -> None:
+        """Start the worker if it is not already running.
+
+        Injected into the built-in ``WorkerControlHandler``. ``BasicWorker.start``
+        is idempotent: it returns immediately when the worker is RUNNING or
+        STARTING, and schedules startup otherwise. The call is not awaited to
+        completion, so the command is acknowledged before the worker transitions.
+        """
+        asyncio.create_task(self.start(), name="WorkerStart")
+
+    async def _stop_worker(self) -> None:
+        """Stop the worker, scheduling the shutdown in the background.
+
+        Injected into the built-in ``WorkerControlHandler``. The handler runs
+        inside the worker it is stopping, so the shutdown is scheduled rather
+        than awaited: the command's result is acknowledged before the worker
+        begins tearing down.
+        """
+        asyncio.create_task(self.stop(), name="WorkerStop")
+
+    async def _restart_worker(self) -> None:
+        """Stop and then start the worker, in the background.
+
+        Injected into the built-in ``WorkerControlHandler``. There is no restart
+        primitive: ``start`` waits out an in-flight shutdown, so composing
+        ``stop`` then ``start`` is safe. The sequence runs as one background task
+        so the command is acknowledged before the worker transitions.
+        """
+        asyncio.create_task(self._restart_worker_sequence(), name="WorkerRestart")
+
+    async def _restart_worker_sequence(self) -> None:
+        """Run the stop-then-start restart sequence to completion."""
+        await self.stop()
+        await self.start()
+
+    async def _exit_worker(self) -> None:
+        """Request worker exit, scheduling the shutdown in the background.
+
+        Injected into the built-in ``WorkerControlHandler``. ``exit`` sets the
+        ``exit_requested`` event and stops the worker; the ``exit`` event fires
+        only after full shutdown. The call is scheduled rather than awaited so
+        the command is acknowledged first.
+        """
+        asyncio.create_task(self.exit(), name="WorkerExit")
+
     async def on_task_completed(
         self,
         task_data: TaskData,
@@ -742,7 +800,7 @@ class TaskProcessor(BasicWorker):
             task_result: The handler's result, or ``None`` on cancellation.
             cancel_reason: Why the task was cancelled, when it was. ``None``
                 for a normal completion. ``"deliberate"`` marks an explicit
-                ``cancel_task`` request; ``"timeout"``/``"shutdown"`` mark
+                ``task:cancel`` request; ``"timeout"``/``"shutdown"`` mark
                 framework-driven cancellation.
         """
         await self._transport.ack(task_data, task_result, cancel_reason=cancel_reason)

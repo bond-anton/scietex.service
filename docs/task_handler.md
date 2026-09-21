@@ -14,7 +14,8 @@ from scietex.service.task_handler import TaskHandler, TaskData, TaskResult
 The system consists of:
 
 - **`TaskHandler`** — Abstract base class that all handlers must extend
-- **`CancelTaskHandler`** — Built-in handler for the `cancel_task` task type (in `task_handler/cancel.py`)
+- **`CancelTaskHandler`** — Built-in handler for the `task:cancel` task name (in `task_handler/cancel.py`)
+- **`WorkerControlHandler`** — Built-in handler for the `worker:*` control task names (in `task_handler/worker.py`)
 - **`TaskData`** — Immutable task payload passed to handlers
 - **`TaskResult`** — Standardized result returned by handlers
 - **`TaskTimeout`** — Configuration for task timeout behavior
@@ -130,7 +131,7 @@ command the control registry.
 handler = processor._find_task_handler("send_email")
 # Returns the EmailHandler instance above
 
-handler = processor._find_task_handler("cancel_task", control=True)
+handler = processor._find_task_handler("task:cancel", control=True)
 # Returns the CancelTaskHandler instance from the control registry
 ```
 
@@ -148,11 +149,11 @@ a data task is never dispatched against a control handler.
 ## Task Cancellation
 
 `TaskProcessor` auto-registers a built-in `CancelTaskHandler` for the
-`cancel_task` task type. It is transport-agnostic: the processor injects an
+`task:cancel` task type. It is transport-agnostic: the processor injects an
 async callback (its own `_cancel_task`) at registration, so the handler never
 reaches into processor internals.
 
-A cancellation is submitted like any other task — a `cancel_task` `TaskData`
+A cancellation is submitted like any other task — a `task:cancel` `TaskData`
 wrapped in the usual `TaskEnvelope` via `encode_task_envelope`:
 
 ```python
@@ -161,7 +162,7 @@ from scietex.service.task_handler import CancelTaskRequest, TaskData
 
 task_data = TaskData(
     task_id="<uuid>",
-    task="cancel_task",
+    task="task:cancel",
     payload=msgspec.msgpack.encode(
         CancelTaskRequest(target_task_id="<uuid>", reason="operator request")
     ),
@@ -201,7 +202,7 @@ Two constraints apply:
 
 ### CancelTaskRequest
 
-Payload of a `cancel_task` task (in `task_handler/cancel.py`).
+Payload of a `task:cancel` task (in `task_handler/cancel.py`).
 
 ```python
 class CancelTaskRequest(msgspec.Struct, frozen=True):
@@ -216,7 +217,7 @@ class CancelTaskRequest(msgspec.Struct, frozen=True):
 
 ### CancelTaskResponse
 
-Payload returned by a successful `cancel_task` task.
+Payload returned by a successful `task:cancel` task.
 
 ```python
 class CancelTaskResponse(msgspec.Struct, frozen=True):
@@ -228,6 +229,76 @@ class CancelTaskResponse(msgspec.Struct, frozen=True):
 |---|---|---|---|
 | `target_task_id` | `str` | *(required)* | UUID (as a string) of the task that was cancelled |
 | `outcome` | `str` | *(required)* | The `CancelOutcome` value |
+
+## Worker Control
+
+`TaskProcessor` auto-registers a built-in `WorkerControlHandler` for the four
+`worker:*` control task names. Like the cancel handler, it is
+transport-agnostic: the processor injects four async callbacks at registration
+(its own `_start_worker`, `_stop_worker`, `_restart_worker`, `_exit_worker`), so
+the handler never reaches into processor internals.
+
+| Task name | Effect |
+|---|---|
+| `worker:start` | Start the worker if it is not already running (idempotent) |
+| `worker:stop` | Stop the worker |
+| `worker:restart` | Stop, then start, the worker |
+| `worker:exit` | Request worker exit (sets `exit_requested`, then stops) |
+
+A `worker:*` command targets the worker executing it, so each callback schedules
+the lifecycle transition as a background task and returns immediately. The
+handler's result is therefore acknowledged **before** shutdown begins, and the
+response reports the action as *accepted*, not as completed:
+
+```python
+import msgspec
+from scietex.service.task_handler import TaskData, WorkerControlRequest
+
+task_data = TaskData(
+    task_id="<uuid>",
+    task="worker:restart",
+    payload=msgspec.msgpack.encode(WorkerControlRequest(reason="operator request")),
+)
+```
+
+The command's own result is:
+
+- **Success** with a msgpack-encoded `WorkerControlResponse` payload when the
+  action was accepted.
+- **Non-retryable error** (`retryable=False`) otherwise, with `error_code` one
+  of `UNKNOWN_WORKER_ACTION` or `INVALID_WORKER_PAYLOAD`.
+
+`worker:stop` does not set the `exit` event — only `worker:exit` does — so a
+stopped worker is observed through its state (`ServiceStatus.STOPPED`), not
+through `events["exit"]`.
+
+### WorkerControlRequest
+
+Payload of a `worker:*` task (in `task_handler/worker.py`).
+
+```python
+class WorkerControlRequest(msgspec.Struct, frozen=True):
+    reason: str = ""  # Optional operator note, for logging/audit only
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `reason` | `str` | `""` | Optional operator note, for logging/audit only |
+
+### WorkerControlResponse
+
+Payload returned by a successful `worker:*` task.
+
+```python
+class WorkerControlResponse(msgspec.Struct, frozen=True):
+    action: str  # The worker:* task name that was accepted
+    accepted: bool = True  # Acceptance, not completion
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `action` | `str` | *(required)* | The `worker:*` task name that was accepted |
+| `accepted` | `bool` | `True` | Acceptance, not completion; the transition runs in the background |
 
 ## Schemas
 
@@ -309,7 +380,7 @@ class TaskStatus(msgspec.Struct, frozen=True):
 | `task_id` | `str` | *(required)* | Task identifier |
 | `service` | `str` | *(required)* | Service name that owns the task |
 | `task` | `str` | *(required)* | Task type string |
-| `status` | `"queued"`, `"running"`, `"completed"`, `"failed"`, or `"cancelled"` | *(required)* | Tracking state; `"cancelled"` is written only for a deliberate `cancel_task` |
+| `status` | `"queued"`, `"running"`, `"completed"`, `"failed"`, or `"cancelled"` | *(required)* | Tracking state; `"cancelled"` is written only for a deliberate `task:cancel` |
 | `progress` | `TaskProgress` | `TaskProgress()` | Granular progress reported by the handler |
 | `result` | `bytes` or `None` | `None` | Handler result payload on success |
 | `data` | `TaskData` or `None` | `None` | Original task data, embedded only on a deliberate cancel so an external process can modify and resubmit it |

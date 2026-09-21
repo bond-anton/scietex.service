@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import CANCEL_TASK_TYPE, TaskData, TaskResult, task_data_id
+from scietex.service.task_handler.schemas import CANCEL_TASK_NAME, TaskData, TaskResult, task_data_id
 from scietex.service.task_lifecycle import TaskLifecycle
 
 from ._helpers import Recording, build_executor, register_finished
@@ -123,7 +123,7 @@ async def test_settle_balances_control_lane():
     lifecycle = TaskLifecycle()
     executor = build_executor(recording, queue=queue, control_queue=control_queue, lifecycle=lifecycle)
     task_id = uuid4()
-    task_data = TaskData(task_id=str(task_id), task=CANCEL_TASK_TYPE)
+    task_data = TaskData(task_id=str(task_id), task=CANCEL_TASK_NAME)
     control_queue.put_nowait(task_data)
     await register_finished(lifecycle, task_id, task_data, control=True)
     executor._control_running.add(task_id)

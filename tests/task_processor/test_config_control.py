@@ -41,9 +41,9 @@ from scietex.service.task_handler.config import (
 )
 from scietex.service.task_handler.context import TaskHandlerContext
 from scietex.service.task_handler.schemas import (
-    CONFIG_APPLY_TASK_TYPE,
-    CONFIG_SHOW_TASK_TYPE,
-    CONFIG_STORE_TASK_TYPE,
+    CONFIG_APPLY_TASK_NAME,
+    CONFIG_SHOW_TASK_NAME,
+    CONFIG_STORE_TASK_NAME,
     TaskData,
 )
 from scietex.service.task_processor import TaskProcessor
@@ -173,7 +173,7 @@ async def test_apply_handler_success_calls_callback_and_returns_response():
     handler = ConfigApplyHandler("apply", make_context(), apply=apply)
     envelope = make_envelope()
     result = await handler.handle(
-        _task(CONFIG_APPLY_TASK_TYPE, msgspec.msgpack.encode(ConfigApplyRequest(payload=envelope, persist=True))),
+        _task(CONFIG_APPLY_TASK_NAME, msgspec.msgpack.encode(ConfigApplyRequest(payload=envelope, persist=True))),
         capabilities=make_capabilities(),
     )
 
@@ -199,7 +199,7 @@ async def test_apply_handler_malformed_payload_is_not_retryable():
 
     handler = ConfigApplyHandler("apply", make_context(), apply=apply)
     result = await handler.handle(
-        _task(CONFIG_APPLY_TASK_TYPE, b"not-msgpack"),
+        _task(CONFIG_APPLY_TASK_NAME, b"not-msgpack"),
         capabilities=make_capabilities(),
     )
 
@@ -218,7 +218,7 @@ async def test_apply_handler_source_unavailable_is_retryable():
 
     handler = ConfigApplyHandler("apply", make_context(), apply=apply)
     result = await handler.handle(
-        _task(CONFIG_APPLY_TASK_TYPE, msgspec.msgpack.encode(ConfigApplyRequest(payload=None))),
+        _task(CONFIG_APPLY_TASK_NAME, msgspec.msgpack.encode(ConfigApplyRequest(payload=None))),
         capabilities=make_capabilities(),
     )
 
@@ -236,7 +236,7 @@ async def test_apply_handler_not_configured_is_not_retryable():
 
     handler = ConfigApplyHandler("apply", make_context(), apply=apply)
     result = await handler.handle(
-        _task(CONFIG_APPLY_TASK_TYPE, msgspec.msgpack.encode(ConfigApplyRequest(payload=None))),
+        _task(CONFIG_APPLY_TASK_NAME, msgspec.msgpack.encode(ConfigApplyRequest(payload=None))),
         capabilities=make_capabilities(),
     )
 
@@ -254,7 +254,7 @@ async def test_apply_handler_invalid_config_is_not_retryable():
 
     handler = ConfigApplyHandler("apply", make_context(), apply=apply)
     result = await handler.handle(
-        _task(CONFIG_APPLY_TASK_TYPE, msgspec.msgpack.encode(ConfigApplyRequest(payload=b"x"))),
+        _task(CONFIG_APPLY_TASK_NAME, msgspec.msgpack.encode(ConfigApplyRequest(payload=b"x"))),
         capabilities=make_capabilities(),
     )
 
@@ -272,7 +272,7 @@ async def test_apply_handler_callback_raises_is_not_retryable():
 
     handler = ConfigApplyHandler("apply", make_context(), apply=apply)
     result = await handler.handle(
-        _task(CONFIG_APPLY_TASK_TYPE, msgspec.msgpack.encode(ConfigApplyRequest(payload=b"x"))),
+        _task(CONFIG_APPLY_TASK_NAME, msgspec.msgpack.encode(ConfigApplyRequest(payload=b"x"))),
         capabilities=make_capabilities(),
     )
 
@@ -294,7 +294,7 @@ async def test_store_handler_success_calls_callback_and_returns_response():
 
     handler = ConfigStoreHandler("store", make_context(), store=store)
     result = await handler.handle(
-        _task(CONFIG_STORE_TASK_TYPE, msgspec.msgpack.encode(ConfigStoreRequest(target="disk"))),
+        _task(CONFIG_STORE_TASK_NAME, msgspec.msgpack.encode(ConfigStoreRequest(target="disk"))),
         capabilities=make_capabilities(),
     )
 
@@ -318,7 +318,7 @@ async def test_store_handler_malformed_payload_is_not_retryable():
 
     handler = ConfigStoreHandler("store", make_context(), store=store)
     result = await handler.handle(
-        _task(CONFIG_STORE_TASK_TYPE, b"not-msgpack"),
+        _task(CONFIG_STORE_TASK_NAME, b"not-msgpack"),
         capabilities=make_capabilities(),
     )
 
@@ -337,7 +337,7 @@ async def test_store_handler_store_failed_is_not_retryable():
 
     handler = ConfigStoreHandler("store", make_context(), store=store)
     result = await handler.handle(
-        _task(CONFIG_STORE_TASK_TYPE, msgspec.msgpack.encode(ConfigStoreRequest(target="disk"))),
+        _task(CONFIG_STORE_TASK_NAME, msgspec.msgpack.encode(ConfigStoreRequest(target="disk"))),
         capabilities=make_capabilities(),
     )
 
@@ -355,7 +355,7 @@ async def test_store_handler_remote_source_failure_is_retryable():
 
     handler = ConfigStoreHandler("store", make_context(), store=store)
     result = await handler.handle(
-        _task(CONFIG_STORE_TASK_TYPE, msgspec.msgpack.encode(ConfigStoreRequest(target="remote"))),
+        _task(CONFIG_STORE_TASK_NAME, msgspec.msgpack.encode(ConfigStoreRequest(target="remote"))),
         capabilities=make_capabilities(),
     )
 
@@ -373,7 +373,7 @@ async def test_store_handler_callback_raises_is_not_retryable():
 
     handler = ConfigStoreHandler("store", make_context(), store=store)
     result = await handler.handle(
-        _task(CONFIG_STORE_TASK_TYPE, msgspec.msgpack.encode(ConfigStoreRequest(target="disk"))),
+        _task(CONFIG_STORE_TASK_NAME, msgspec.msgpack.encode(ConfigStoreRequest(target="disk"))),
         capabilities=make_capabilities(),
     )
 
@@ -394,7 +394,7 @@ async def test_show_handler_success_calls_callback_and_returns_response():
 
     handler = ConfigShowHandler("show", make_context(), show=show)
     result = await handler.handle(
-        _task(CONFIG_SHOW_TASK_TYPE, msgspec.msgpack.encode(ConfigShowRequest(include_restart_required=False))),
+        _task(CONFIG_SHOW_TASK_NAME, msgspec.msgpack.encode(ConfigShowRequest(include_restart_required=False))),
         capabilities=make_capabilities(),
     )
 
@@ -418,7 +418,7 @@ async def test_show_handler_malformed_payload_is_not_retryable():
 
     handler = ConfigShowHandler("show", make_context(), show=show)
     result = await handler.handle(
-        _task(CONFIG_SHOW_TASK_TYPE, b"not-msgpack"),
+        _task(CONFIG_SHOW_TASK_NAME, b"not-msgpack"),
         capabilities=make_capabilities(),
     )
 
@@ -440,7 +440,7 @@ async def test_show_handler_disabled_response_is_not_retryable():
 
     handler = ConfigShowHandler("show", make_context(), show=show)
     result = await handler.handle(
-        _task(CONFIG_SHOW_TASK_TYPE, msgspec.msgpack.encode(ConfigShowRequest())),
+        _task(CONFIG_SHOW_TASK_NAME, msgspec.msgpack.encode(ConfigShowRequest())),
         capabilities=make_capabilities(),
     )
 
@@ -454,9 +454,9 @@ async def test_show_handler_disabled_response_is_not_retryable():
 @pytest.mark.parametrize(
     ("handler_cls", "task_type", "kwarg"),
     [
-        (ConfigApplyHandler, CONFIG_APPLY_TASK_TYPE, "apply"),
-        (ConfigStoreHandler, CONFIG_STORE_TASK_TYPE, "store"),
-        (ConfigShowHandler, CONFIG_SHOW_TASK_TYPE, "show"),
+        (ConfigApplyHandler, CONFIG_APPLY_TASK_NAME, "apply"),
+        (ConfigStoreHandler, CONFIG_STORE_TASK_NAME, "store"),
+        (ConfigShowHandler, CONFIG_SHOW_TASK_NAME, "show"),
     ],
 )
 def test_config_handlers_supported_tasks_is_single(handler_cls, task_type, kwarg):
@@ -487,9 +487,9 @@ async def test_enabled_processor_registers_config_handlers():
     await proc._start_task_handler("ConfigStoreHandler")
     await proc._start_task_handler("ConfigShowHandler")
 
-    assert isinstance(proc._find_task_handler(CONFIG_APPLY_TASK_TYPE, control=True), ConfigApplyHandler)
-    assert isinstance(proc._find_task_handler(CONFIG_STORE_TASK_TYPE, control=True), ConfigStoreHandler)
-    assert isinstance(proc._find_task_handler(CONFIG_SHOW_TASK_TYPE, control=True), ConfigShowHandler)
+    assert isinstance(proc._find_task_handler(CONFIG_APPLY_TASK_NAME, control=True), ConfigApplyHandler)
+    assert isinstance(proc._find_task_handler(CONFIG_STORE_TASK_NAME, control=True), ConfigStoreHandler)
+    assert isinstance(proc._find_task_handler(CONFIG_SHOW_TASK_NAME, control=True), ConfigShowHandler)
 
 
 @pytest.mark.asyncio
@@ -501,9 +501,9 @@ async def test_disabled_processor_does_not_register_config_handlers():
     await proc._start_task_handler("ConfigStoreHandler")
     await proc._start_task_handler("ConfigShowHandler")
 
-    assert proc._find_task_handler(CONFIG_APPLY_TASK_TYPE, control=True) is None
-    assert proc._find_task_handler(CONFIG_STORE_TASK_TYPE, control=True) is None
-    assert proc._find_task_handler(CONFIG_SHOW_TASK_TYPE, control=True) is None
+    assert proc._find_task_handler(CONFIG_APPLY_TASK_NAME, control=True) is None
+    assert proc._find_task_handler(CONFIG_STORE_TASK_NAME, control=True) is None
+    assert proc._find_task_handler(CONFIG_SHOW_TASK_NAME, control=True) is None
 
 
 @pytest.mark.asyncio

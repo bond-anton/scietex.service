@@ -4,9 +4,9 @@
 **Target release:** v5.0.0
 **Branch:** `v5`
 **Motivation:** AR-123 (`docs/reviews/architecture/2026-09-20-1.md`) — control
-commands (`cancel_task`, `config:apply`, `config:store`, `config:show`) are
+commands (`task:cancel`, `config:apply`, `config:store`, `config:show`) are
 single-worker-scoped because they travel the same single-consumer delivery path
-as data tasks. With a fleet sharing one task source, a `cancel_task` is handled
+as data tasks. With a fleet sharing one task source, a `task:cancel` is handled
 by whichever worker wins the read, not the worker running the target, and a
 `config:*` command reaches exactly one worker. AR-108's in-process priority lane
 solved *intra-process* starvation but left a transport-level head-of-line
@@ -26,7 +26,7 @@ from the data delivery path entirely.
   control delivery.
 - Provide exactly **two control addresses per service**:
   - one **directed** channel, owned by a single worker instance, for commands
-    that must reach a specific worker (`cancel_task`);
+    that must reach a specific worker (`task:cancel`);
   - one **broadcast** channel, observed by every worker instance, for commands
     that must fan out (`config:apply` / `config:store` / `config:show`).
 - Keep the change pure-Python with **no new dependencies**; reuse `msgspec`,
@@ -36,7 +36,7 @@ from the data delivery path entirely.
   intentionally dropped (tail-seek, §4.2); retention is bounded by `MAXLEN` and,
   for the directed stream, a heartbeat-refreshed TTL (§4.3).
 - Make the task → owning-worker resolution possible so a submitter can address a
-  `cancel_task` to the right worker (`TaskStatus.instance_id`, §3.4).
+  `task:cancel` to the right worker (`TaskStatus.instance_id`, §3.4).
 - Keep `TaskTransport` unchanged: the split is internal to each transport's
   `fetch`/`recover_pending_tasks` (§7).
 
@@ -57,7 +57,7 @@ from the data delivery path entirely.
   This design changes only *how the command is triggered*, not *where state
   lives*.
 - **No ordering guarantee across the two channels.** Directed and broadcast
-  commands are independent; a `config:apply` and a `cancel_task` have no mutual
+  commands are independent; a `config:apply` and a `task:cancel` have no mutual
   ordering obligation.
 
 ---
@@ -142,7 +142,7 @@ Why not an envelope field (e.g. `TaskData.target_worker`)?
 ### 3.2 Directed vs broadcast
 
 - **Directed** — the producer must know the target `instance_id`.
-  `cancel_task` is the canonical directed command: it is meaningful only on the
+  `task:cancel` is the canonical directed command: it is meaningful only on the
   worker that currently owns the target task.
 - **Broadcast** — the producer addresses the service, not a worker. `config:*`
   commands are broadcast: every worker must apply/store/show for itself.
@@ -154,7 +154,7 @@ Why not an envelope field (e.g. `TaskData.target_worker`)?
 After this change the documented scope boundary (`AGENTS.md:50`; the
 fleet note in `docs/remote_config.md:87`) is lifted:
 
-- `cancel_task` directed to the owning worker cancels across workers.
+- `task:cancel` directed to the owning worker cancels across workers.
 - `config:*` broadcast reaches every worker.
 - A command sent to the **wrong** address still behaves sensibly: a directed
   cancel to a non-owner returns `TASK_NOT_RUNNING`
@@ -164,7 +164,7 @@ fleet note in `docs/remote_config.md:87`) is lifted:
 
 ### 3.4 Task → owning-worker resolution
 
-To address a `cancel_task`, a submitter must map `target_task_id` → owning
+To address a `task:cancel`, a submitter must map `target_task_id` → owning
 `instance_id`. The resolution record already exists: the tracking record
 `TaskStatus` at `scietex:{service}:task:{task_id}` (Valkey,
 `valkey/tracking.py:56-58`) and the retained topic
@@ -225,7 +225,7 @@ cursor. Every control command published while the worker was down is **skipped**
 | Restart | `$` again — stale commands dropped |
 
 This applies to **both** the directed and the broadcast stream. A directed
-`cancel_task` published while the target worker is restarting is therefore
+`task:cancel` published while the target worker is restarting is therefore
 dropped; that is intended, because the task it targets died with the worker.
 
 The last-seen id is held **in memory only**. `XREAD ... BLOCK` already resumes
@@ -389,7 +389,7 @@ overlap the registry's `workers/+` subscription (`mqtt/watch.py:41`).
 
 ### 5.4 Publishing control commands
 
-A `cancel_task` is published to `scietex/{service}/control/{instance_id}`;
+A `task:cancel` is published to `scietex/{service}/control/{instance_id}`;
 a `config:*` command to `scietex/{service}/control`. Because the messages are
 not retained, the MQTT control plane is only meaningful while a worker is
 subscribed; a command published while a worker is offline is not replayed from
@@ -526,7 +526,7 @@ shims.
   an added field with a default. This is *not* a hard break (unlike
   `TaskData.task_id`), deliberately: status is observability.
 - **Control commands move off the data channel.** A submitter that currently
-  publishes a `cancel_task`/`config:*` to `scietex:{service}:tasks` /
+  publishes a `task:cancel`/`config:*` to `scietex:{service}:tasks` /
   `scietex/{service}/tasks` must switch to the directed/broadcast channel. A
   control command left on the data channel would still be handled locally by
   whichever worker reads it (the data path always worked that way), so this is a
@@ -570,7 +570,7 @@ shims.
    unlikely, but the `_control_deferred` buffer must be bounded and observable
    (log at DEBUG, as data does, `valkey/transport.py:163`).
 4. **Replay protection must cover broadcast.** `config:*` already carries
-   revision/hash replay protection (`ConfigReloader`). Confirm `cancel_task` is
+   revision/hash replay protection (`ConfigReloader`). Confirm `task:cancel` is
    idempotent across a recovered duplicate (it is: a second cancel of an
    already-terminal target returns `TASK_NOT_RUNNING`, `cancel.py:128-133`).
 5. **`instance_id` uniqueness.** The directed stream/topic keys on `instance_id`.
@@ -579,7 +579,7 @@ shims.
    in the control-plane docs.
 6. **Directed commands do not survive a restart.** Tail-seek means a directed
    command published while the target worker is down is dropped. Intended for
-   `cancel_task` (the target died with the worker); revisit if a future directed
+   `task:cancel` (the target died with the worker); revisit if a future directed
    command must be durable.
 
 ---
@@ -613,7 +613,7 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
    at startup; read the directed stream with `XREAD` (non-blocking) in `fetch`;
    bounded `_control_deferred`; branch `ack`/`on_started`/`on_drain`/`requeue`
    on control ownership; no lease for control. `V:` unit test with a
-   `DummyClient` that `XADD`s a `cancel_task` to the directed stream and asserts
+   `DummyClient` that `XADD`s a `task:cancel` to the directed stream and asserts
    enqueue → ack → `XDEL` on that stream with no lease key; a second test asserts
    an entry published before startup is skipped.
 5. **Valkey broadcast fan-out.** `W:` `valkey/transport.py`, `valkey/worker.py`.
@@ -652,7 +652,7 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
     `valkey/control.py`, `mqtt/control.py`; exports in `service/__init__.py`.
     `Y:` submitters can address commands. `H:` implement `ControlPublisher` per
     §7; resolve MQTT owner via the retained owner topic (§10.1). `V:` a
-    `cancel_task` directed to the owner cancels cross-worker; a `config:apply`
+    `task:cancel` directed to the owner cancels cross-worker; a `config:apply`
     broadcast reaches both workers.
     *Delivered:* the two publishers plus the MQTT retained owner marker
     (`MqttTransport._publish_owner`, gated on the `queued` status — the first

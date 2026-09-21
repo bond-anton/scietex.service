@@ -1,6 +1,6 @@
-"""Built-in handlers for the ``config:*`` remote-configuration task types.
+"""Built-in handlers for the ``config:*`` remote-configuration task names.
 
-Three handlers mirror the ``cancel_task`` control path: each decodes a
+Three handlers mirror the ``task:cancel`` control path: each decodes a
 request struct from the task payload and delegates the actual work to a
 callback injected by the owning processor. The processor owns the
 :class:`~scietex.service.config_reload.ConfigReloader` and the transport
@@ -22,7 +22,7 @@ from ..config_reload import (
 from .basic import TaskHandler
 from .capabilities import TaskCapabilities
 from .context import TaskHandlerContext
-from .schemas import CONFIG_APPLY_TASK_TYPE, CONFIG_SHOW_TASK_TYPE, CONFIG_STORE_TASK_TYPE, TaskData, TaskResult
+from .schemas import CONFIG_APPLY_TASK_NAME, CONFIG_SHOW_TASK_NAME, CONFIG_STORE_TASK_NAME, TaskData, TaskResult
 
 #: Label recorded on ``ConfigShowResponse.source`` naming where the effective
 #: config came from.
@@ -145,7 +145,7 @@ ConfigShowCallback = Callable[[bool], ConfigShowResponse]
 
 
 class ConfigApplyHandler(TaskHandler):
-    """Handler for the built-in ``config:apply`` task type.
+    """Handler for the built-in ``config:apply`` task name.
 
     Decodes a :class:`ConfigApplyRequest` and calls the injected ``apply``
     callback. A malformed payload yields a non-retryable error result rather
@@ -177,7 +177,7 @@ class ConfigApplyHandler(TaskHandler):
     @property
     def supported_tasks(self) -> list[str]:
         """Task types handled by this handler."""
-        return [CONFIG_APPLY_TASK_TYPE]
+        return [CONFIG_APPLY_TASK_NAME]
 
     async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Apply the config envelope named in the payload.
@@ -237,7 +237,7 @@ class ConfigApplyHandler(TaskHandler):
 
 
 class ConfigStoreHandler(TaskHandler):
-    """Handler for the built-in ``config:store`` task type.
+    """Handler for the built-in ``config:store`` task name.
 
     Decodes a :class:`ConfigStoreRequest` and calls the injected ``store``
     callback. A malformed payload yields a non-retryable error result rather
@@ -269,7 +269,7 @@ class ConfigStoreHandler(TaskHandler):
     @property
     def supported_tasks(self) -> list[str]:
         """Task types handled by this handler."""
-        return [CONFIG_STORE_TASK_TYPE]
+        return [CONFIG_STORE_TASK_NAME]
 
     async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Persist the effective config to the target named in the payload.
@@ -329,7 +329,7 @@ class ConfigStoreHandler(TaskHandler):
 
 
 class ConfigShowHandler(TaskHandler):
-    """Handler for the built-in ``config:show`` task type.
+    """Handler for the built-in ``config:show`` task name.
 
     Decodes a :class:`ConfigShowRequest` and calls the injected ``show``
     callback. A malformed payload yields a non-retryable error result rather
@@ -361,7 +361,7 @@ class ConfigShowHandler(TaskHandler):
     @property
     def supported_tasks(self) -> list[str]:
         """Task types handled by this handler."""
-        return [CONFIG_SHOW_TASK_TYPE]
+        return [CONFIG_SHOW_TASK_NAME]
 
     async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         """Return the effective config named in the payload.

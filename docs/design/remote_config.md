@@ -9,7 +9,7 @@ concurrency, cadence) are not on disk at all — they live only in the
 `TaskProcessorConfig` constructor (`config.py:226-321`). This document specifies
 a transport-delivered configuration channel plus three operator commands
 (`config:apply`, `config:store`, `config:show`), modelled on the existing
-built-in `cancel_task` control path (`task_handler/cancel.py:59-133`).
+built-in `task:cancel` control path (`task_handler/cancel.py:59-133`).
 
 ---
 
@@ -100,7 +100,7 @@ Valkey keys are colon-separated (`valkey/worker.py:188-192`), MQTT topics
 slash-separated (`mqtt/worker.py:198-208`).
 
 **Decision — commands are tasks, not a separate control path.** The repo already
-routes a control operation (`cancel_task`) through the task pipeline
+routes a control operation (`task:cancel`) through the task pipeline
 (`task_processor.py:171`) with an injected async callback
 (`task_handler/cancel.py:59-133`). Reusing it gives free delivery/retry/ack/
 backpressure and keeps the two transports identical. Trade-off vs a Celery-style
@@ -248,7 +248,7 @@ service field is rejected by `forbid_unknown_fields`, not silently ignored.
 
 ## 4. Command surface
 
-Three task types, registered exactly like `cancel_task`
+Three task types, registered exactly like `task:cancel`
 (`task_processor.py:186-188`), with async callbacks injected at construction.
 The three handlers are registered **only when `remote_config_enabled=True`**; on a
 disabled worker they are absent from the dispatch table, so a `config:*` task
@@ -257,9 +257,9 @@ instead of a `REMOTE_CONFIG_DISABLED` outcome (`ConfigManager.show_config`
 retains its `REMOTE_CONFIG_DISABLED` guard for direct calls).
 
 ```python
-CONFIG_APPLY_TASK_TYPE: str = "config:apply"
-CONFIG_STORE_TASK_TYPE: str = "config:store"
-CONFIG_SHOW_TASK_TYPE: str = "config:show"
+CONFIG_APPLY_TASK_NAME: str = "config:apply"
+CONFIG_STORE_TASK_NAME: str = "config:store"
+CONFIG_SHOW_TASK_NAME: str = "config:show"
 ```
 
 Dispatch is opaque string matching (`_find_task_handler` at
@@ -496,7 +496,7 @@ is deliberately excluded. An operator who needs to audit connection config reads
 it from the config directory, not over the task channel.
 
 The reply is delivered as the task's `TaskResult.payload` (msgpack), identical
-to `cancel_task` (`cancel.py:117-120`). On MQTT the same reply is additionally
+to `task:cancel` (`cancel.py:117-120`). On MQTT the same reply is additionally
 observable via the status publisher (`mqtt_worker.md` §13), with no new
 mechanism.
 
@@ -574,9 +574,9 @@ New constants in `config.py`: `MIN_CONFIG_STARTUP_TIMEOUT = 0.0`,
 New constants in `mqtt/config.py`: `MIN_CONFIG_QOS = 0`, `MAX_CONFIG_QOS = 2`,
 `MIN_CONFIG_TTL = 1`, `MAX_CONFIG_TTL = 30 * 24 * 3600`.
 
-### Task-type constants (`task_handler/schemas.py`, beside `CANCEL_TASK_TYPE` at `:15`)
+### Task-name constants (`task_handler/schemas.py`, beside `CANCEL_TASK_NAME`)
 
-`CONFIG_APPLY_TASK_TYPE`, `CONFIG_STORE_TASK_TYPE`, `CONFIG_SHOW_TASK_TYPE`,
+`CONFIG_APPLY_TASK_NAME`, `CONFIG_STORE_TASK_NAME`, `CONFIG_SHOW_TASK_NAME`,
 `CONFIG_ENVELOPE_VERSION`.
 
 ---
@@ -593,7 +593,7 @@ src/scietex/service/
                                      register_config_settings, register the 3 handlers,
                                      config_* properties
     task_handler/
-        schemas.py              EDIT config task-type constants
+        schemas.py              EDIT config task-name constants
         config.py               NEW  handlers + request/response structs (mirrors cancel.py)
         __init__.py             EDIT re-exports
     valkey/
@@ -730,7 +730,7 @@ the shadow-update logic verified carefully. Steps 1–5 deliver a usable core
 
 ## 14. Locked decisions
 
-1. **Command channel** — task-based, reusing the `cancel_task` precedent and the
+1. **Command channel** — task-based, reusing the `task:cancel` precedent and the
    existing task pipeline. Transport-parallel, free delivery/retry/ack.
 2. **Task-type naming** — `config:apply` / `config:store` / `config:show`.
 3. **`config:store` target** — new dedicated `config.yml` for reloadable

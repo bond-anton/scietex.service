@@ -1,14 +1,14 @@
 """Example: a progress-reporting task that is cancelled mid-flight.
 
 A ``ValkeyWorker`` runs a long ``long_job`` handler that reports granular
-progress, while a producer client submits the job and then a ``cancel_task``
+progress, while a producer client submits the job and then a ``task:cancel``
 request for it. The example shows the full round trip:
 
 1. The producer ``XADD``s a ``long_job`` task to ``scietex:{service}:tasks``.
 2. The worker picks it up and the handler calls ``report_progress`` on every
    step. ``ValkeyWorker`` writes each value into the task's tracking record
    (``scietex:{service}:task:{task_id}``), so the producer can poll it.
-3. After a few progress updates the producer submits a ``cancel_task`` task
+3. After a few progress updates the producer submits a ``task:cancel`` task
    whose payload is a msgpack ``CancelTaskRequest`` naming the target id.
 4. The built-in ``CancelTaskHandler`` cancels the running target; the target's
    terminal status becomes ``cancelled`` and embeds the original ``TaskData``
@@ -42,7 +42,7 @@ from scietex.service import (
     ValkeyWorkerConfig,
 )
 from scietex.service.task_handler import (
-    CANCEL_TASK_TYPE,
+    CANCEL_TASK_NAME,
     CancelTaskRequest,
     CancelTaskResponse,
     TaskCapabilities,
@@ -120,9 +120,9 @@ def with_task_id(task_data: TaskData, task_id: UUID) -> TaskData:
 
 
 async def submit_cancel(client: GlideClient, target_id: UUID, reason: str) -> UUID:
-    """Submit a ``cancel_task`` request targeting ``target_id``."""
+    """Submit a ``task:cancel`` request targeting ``target_id``."""
     payload = msgspec.msgpack.encode(CancelTaskRequest(target_task_id=str(target_id), reason=reason))
-    return await submit(client, TaskData(task_id=str(uuid4()), task=CANCEL_TASK_TYPE, payload=payload))
+    return await submit(client, TaskData(task_id=str(uuid4()), task=CANCEL_TASK_NAME, payload=payload))
 
 
 async def read_status(client: GlideClient, task_id: UUID) -> TaskStatus | None:
@@ -206,7 +206,7 @@ async def run(host: str, port: int) -> None:
             print(f"  status={status.status} progress={status.progress.value:.0f}%")
 
     cancel_id = await submit_cancel(producer, job_id, reason="operator requested")
-    print(f"Submitted cancel_task {cancel_id} for {job_id}")
+    print(f"Submitted task:cancel {cancel_id} for {job_id}")
 
     cancel_status = await wait_for_status(producer, cancel_id, {"completed", "failed"})
     if cancel_status is not None and cancel_status.result is not None:

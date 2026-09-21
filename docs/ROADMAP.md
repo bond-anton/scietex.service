@@ -36,7 +36,7 @@ and `TaskCapabilities.task_id` are unchanged.
 ## v5.0.0 — Cross-worker control plane
 
 **Motivation:** AR-123 (docs/reviews/architecture/2026-09-20-1.md) — control-plane
-commands are single-worker-scoped. `cancel_task` cancels only a task running on
+commands are single-worker-scoped. `task:cancel` cancels only a task running on
 the worker that reads the command (a target on another worker returns
 `TASK_NOT_RUNNING`); `config:apply`/`config:store`/`config:show` affect only the
 reading worker. With a fleet sharing one task source, a cancel silently no-ops
@@ -280,7 +280,7 @@ cancelled while still queued no longer leaks its error-path retry budget; a
 regression test pins that only the target's budget is cleared.
 
 **Follow-up (v4.5.0):** AR-108 — control-plane commands now run on a dedicated
-priority lane: the `cancel_task` and `config:*` types route through
+priority lane: the `task:cancel` and `config:*` types route through
 `enqueue_control_task` into `TaskProcessor.__control_queue`; `TaskExecutor`
 admits control first through
 its keyword-only `control_queue`/`control_concurrency` lane

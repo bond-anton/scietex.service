@@ -102,7 +102,7 @@ class MqttTransport(RecoverableTransport):
     ``{status_topic_prefix}/{task_id}/owner`` carrying the worker's
     ``instance_id`` (design §10.1). The owner marker is what a submitter reads
     back through ``MqttControlPublisher.resolve_owner`` to find where to direct a
-    ``cancel_task``.
+    ``task:cancel``.
     """
 
     def __init__(
@@ -207,7 +207,7 @@ class MqttTransport(RecoverableTransport):
         """Publish the retained owner marker for a task (design §10.1).
 
         The owner topic maps a task id to the worker that owns it, so a submitter
-        can resolve where to direct a ``cancel_task``
+        can resolve where to direct a ``task:cancel``
         (:meth:`scietex.service.mqtt.control.MqttControlPublisher.resolve_owner`).
         Published only at the ``queued`` transition — the first ownership-
         establishing write — so the marker is written once per task delivery, not

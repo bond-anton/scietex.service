@@ -48,9 +48,9 @@ import msgspec
 from scietex.service import MqttConfig, MqttWorker, MqttWorkerConfig
 from scietex.service.config_reload import ConfigSections, ReloadableSettings, encode_config_envelope
 from scietex.service.task_handler import (
-    CONFIG_APPLY_TASK_TYPE,
-    CONFIG_SHOW_TASK_TYPE,
-    CONFIG_STORE_TASK_TYPE,
+    CONFIG_APPLY_TASK_NAME,
+    CONFIG_SHOW_TASK_NAME,
+    CONFIG_STORE_TASK_NAME,
     ConfigApplyRequest,
     ConfigApplyResponse,
     ConfigShowRequest,
@@ -236,7 +236,7 @@ async def run(host: str, port: int, service_name: str) -> None:
             # recorded by the time this command is processed.
             payload = await submit_command(
                 operator,
-                CONFIG_APPLY_TASK_TYPE,
+                CONFIG_APPLY_TASK_NAME,
                 ConfigApplyRequest(),
                 task_topic=task_topic,
                 status_topic_prefix=status_topic_prefix,
@@ -253,7 +253,7 @@ async def run(host: str, port: int, service_name: str) -> None:
             # (c) config:show — inspect the effective config over the wire.
             payload = await submit_command(
                 operator,
-                CONFIG_SHOW_TASK_TYPE,
+                CONFIG_SHOW_TASK_NAME,
                 ConfigShowRequest(),
                 task_topic=task_topic,
                 status_topic_prefix=status_topic_prefix,
@@ -273,7 +273,7 @@ async def run(host: str, port: int, service_name: str) -> None:
             # (d) config:store — persist the effective config to config.yml.
             payload = await submit_command(
                 operator,
-                CONFIG_STORE_TASK_TYPE,
+                CONFIG_STORE_TASK_NAME,
                 ConfigStoreRequest(target="disk"),
                 task_topic=task_topic,
                 status_topic_prefix=status_topic_prefix,

@@ -27,7 +27,7 @@ async def test_enqueue_routes_control_and_data_to_separate_lanes():
     data_id = uuid4()
 
     assert proc.enqueue_control_task(
-        TaskData(task_id=str(control_id), task="cancel_task", payload=_cancel_payload(uuid4()))
+        TaskData(task_id=str(control_id), task="task:cancel", payload=_cancel_payload(uuid4()))
     )
     assert proc.enqueue_task(TaskData(task_id=str(data_id), task="dummy", payload=b"{}"))
 
@@ -71,7 +71,7 @@ async def test_cancel_task_bypasses_saturated_data_plane():
         # is still occupied, removing the queued target.
         cancel_id = uuid4()
         proc.enqueue_control_task(
-            TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id))
+            TaskData(task_id=str(cancel_id), task="task:cancel", payload=_cancel_payload(target_id))
         )
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):

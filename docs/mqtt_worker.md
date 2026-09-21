@@ -439,8 +439,8 @@ one CRITICAL message per down episode; when healthy it emits nothing.
 
 ### Task cancellation and external requeue
 
-`MqttWorker` inherits the built-in `cancel_task` handler from
-`TaskProcessor` (auto-registered in `TaskProcessor.__init__`). A `cancel_task`
+`MqttWorker` inherits the built-in `task:cancel` handler from
+`TaskProcessor` (auto-registered in `TaskProcessor.__init__`). A `task:cancel`
 message is published to the task topic like any other task, carrying a
 msgpack-encoded `CancelTaskRequest(target_task_id="<uuid>", reason="...")` as
 its payload. The worker cancels a running target or removes a queued-but-

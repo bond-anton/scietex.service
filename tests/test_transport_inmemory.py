@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from scietex.service.task_handler import CANCEL_TASK_TYPE
+from scietex.service.task_handler import CANCEL_TASK_NAME
 from scietex.service.task_handler.schemas import TaskData, task_data_id
 from scietex.service.transport import InMemoryTransport, RecoverableTransport, TaskSink
 
@@ -219,7 +219,7 @@ async def test_fetch_delivers_control_behind_full_data_lane():
     transport = InMemoryTransport(logger=_logger())
     t1, t2 = uuid4(), uuid4()
     data = TaskData(task_id=str(t1), task="a")
-    control = TaskData(task_id=str(t2), task=CANCEL_TASK_TYPE)
+    control = TaskData(task_id=str(t2), task=CANCEL_TASK_NAME)
     transport.submit(data)
     transport.submit_control(control)
 
@@ -236,7 +236,7 @@ async def test_fetch_preserves_data_fifo_when_control_interleaved():
     transport = InMemoryTransport(logger=_logger())
     t1, t2, t3 = uuid4(), uuid4(), uuid4()
     d1 = TaskData(task_id=str(t1), task="a")
-    c1 = TaskData(task_id=str(t2), task=CANCEL_TASK_TYPE)
+    c1 = TaskData(task_id=str(t2), task=CANCEL_TASK_NAME)
     d2 = TaskData(task_id=str(t3), task="b")
     transport.submit(d1)
     transport.submit_control(c1)
@@ -255,7 +255,7 @@ async def test_requeue_of_control_task_stays_on_control_deque():
     transport = InMemoryTransport(logger=_logger())
     sink = FakeSink()
     t1 = uuid4()
-    control = TaskData(task_id=str(t1), task=CANCEL_TASK_TYPE)
+    control = TaskData(task_id=str(t1), task=CANCEL_TASK_NAME)
     transport.submit_control(control)
     assert await transport.fetch(sink) is True
     assert sink.items == [(t1, control)]
@@ -278,7 +278,7 @@ async def test_on_drain_of_control_task_with_requeue_stays_on_control_deque():
     against the control registry on restart."""
     transport = InMemoryTransport(logger=_logger())
     t1 = uuid4()
-    control = TaskData(task_id=str(t1), task=CANCEL_TASK_TYPE, canceled_action="requeue")
+    control = TaskData(task_id=str(t1), task=CANCEL_TASK_NAME, canceled_action="requeue")
     transport.submit_control(control)
     assert await transport.fetch(FakeSink()) is True
     assert list(transport._control_pending) == []

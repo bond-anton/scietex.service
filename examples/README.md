@@ -26,7 +26,7 @@ joining on `events["exit"].wait()` only to confirm shutdown.
 | [`valkey_async_service.py`](#valkey_async_servicepy) | yes | `ValkeyWorker` consuming a task stream via a programmatic `ValkeyConfig` |
 | [`valkey_pubsub_worker.py`](#valkey_pubsub_workerpy) | yes | A `ValkeyWorker` that also subscribes to PubSub control channels via `ValkeyPubSubConfig` |
 | [`valkey_perf.py`](#valkey_perfpy) | yes | `ValkeyWorker` consumption-throughput benchmark (separate-process producer by default) |
-| [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `cancel_task` |
+| [`progress_and_cancel.py`](#progress_and_cancelpy) | yes | Progress reporting via `report_progress` and cancelling a running task with `task:cancel` |
 | [`mqtt_worker.py`](#mqtt_workerpy) | MQTT | `MqttWorker` consuming tasks from a broker, with retained status and throttled progress publishing |
 | [`remote_config.py`](#remote_configpy) | MQTT | `MqttWorker` remote configuration: retained config envelope + `config:apply`/`config:show`/`config:store` commands and a custom settings section |
 | [`mqtt_perf.py`](#mqtt_perfpy) | MQTT | `MqttWorker` consumption-throughput benchmark (separate-process producer by default) |
@@ -175,7 +175,7 @@ A `ValkeyWorker` runs a long `long_job` handler that reports granular progress,
 while a producer client submits the job and then cancels it. The producer
 `XADD`s the job, polls its tracking record
 (`scietex:{service_name}:task:{task_id}`) to watch `progress.value` climb, then
-submits a `cancel_task` task whose payload is a msgpack `CancelTaskRequest`
+submits a `task:cancel` task whose payload is a msgpack `CancelTaskRequest`
 naming the target id. The built-in `CancelTaskHandler` cancels the running
 target, whose terminal status becomes `cancelled` and embeds the original
 `TaskData` — the example decodes it and resubmits under a new id.

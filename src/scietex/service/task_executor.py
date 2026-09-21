@@ -88,7 +88,7 @@ class TaskExecutor:
 
         Control-plane work (AR-108) is admitted first on its own priority lane
         with its own concurrency ceiling, so a saturated data plane cannot starve
-        a ``cancel_task`` or ``config:*`` command. Data-plane work then uses the
+        a ``task:cancel``, ``worker:*``, or ``config:*`` command. Data-plane work then uses the
         remaining budget.
         """
         if self._admit_control():

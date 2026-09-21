@@ -365,7 +365,7 @@ completion).
 
 When `task_result` is `None`:
 
-- A deliberate `cancel_task` (`cancel_reason == "deliberate"`) writes
+- A deliberate `task:cancel` (`cancel_reason == "deliberate"`) writes
   `status="cancelled"` with the original `TaskData` embedded in the record's
   `data` field and `error="canceled"`.
 - Timeout and shutdown cancellations keep the existing `status="failed"` /
@@ -424,8 +424,8 @@ completed task stops being refreshed and its entry becomes reclaimable;
 
 ### Task cancellation and external requeue
 
-`ValkeyWorker` inherits the built-in `cancel_task` handler from
-`TaskProcessor` (auto-registered in `TaskProcessor.__init__`). A `cancel_task`
+`ValkeyWorker` inherits the built-in `task:cancel` handler from
+`TaskProcessor` (auto-registered in `TaskProcessor.__init__`). A `task:cancel`
 entry is submitted on the same stream as any other task, carrying a
 msgpack-encoded `CancelTaskRequest(target_task_id="<uuid>", reason="...")` as
 its payload. The worker cancels a running target (same pattern as the

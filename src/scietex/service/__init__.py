@@ -21,7 +21,7 @@ Client surface:
 
 Control plane:
     - ``ControlPublisher``: transport-agnostic producer protocol for addressing
-      control commands (``cancel_task``, ``config:*``). The concrete
+      control commands (``task:cancel``, ``worker:*``, ``config:*``). The concrete
       ``ValkeyControlPublisher`` / ``MqttControlPublisher`` live in the
       transport packages and require the matching extra.
 
