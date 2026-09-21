@@ -260,6 +260,9 @@ MAX_TASK_TRACKING_TTL: int = 30 * 24 * 3600
 DEFAULT_TASK_TRACKING_TTL: int = 24 * 3600
 MIN_TASK_LEASE_TTL: int = 1
 MAX_TASK_LEASE_TTL: int = 24 * 3600
+MIN_CONTROL_STREAM_MAXLEN: int = 1
+MAX_CONTROL_STREAM_MAXLEN: int = 100_000
+DEFAULT_CONTROL_STREAM_MAXLEN: int = 1000
 
 
 class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
@@ -286,6 +289,12 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
         task_lease_ttl: TTL in seconds for per-entry leases (``[1, 86400]``).
             ``None`` derives it from the heartbeat/watchdog cadence as
             ``max(1, int(max(2 * heartbeat_interval, 3 * watchdog_interval)))``.
+        control_stream_name: Name of the per-worker directed control stream.
+            Both ``{service}`` and ``{instance_id}`` are replaced.
+        control_broadcast_stream_name: Name of the service-scoped broadcast
+            control stream. ``{service}`` is replaced.
+        control_stream_maxlen: Maximum number of entries retained per control
+            stream via ``XADD ... MAXLEN ~ N`` (``[1, 100000]``).
     """
 
     valkey_config: "ValkeyConfig | None" = None
@@ -295,6 +304,9 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     claim_min_idle_ms: int | None = None
     task_tracking_ttl: int | None = None
     task_lease_ttl: int | None = None
+    control_stream_name: str = "scietex:{service}:{instance_id}:control"
+    control_broadcast_stream_name: str = "scietex:{service}:control:broadcast"
+    control_stream_maxlen: int = DEFAULT_CONTROL_STREAM_MAXLEN
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -316,6 +328,12 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
             "task_lease_ttl",
             minimum=MIN_TASK_LEASE_TTL,
             maximum=MAX_TASK_LEASE_TTL,
+        )
+        validate_range(
+            self.control_stream_maxlen,
+            "control_stream_maxlen",
+            minimum=MIN_CONTROL_STREAM_MAXLEN,
+            maximum=MAX_CONTROL_STREAM_MAXLEN,
         )
 
 

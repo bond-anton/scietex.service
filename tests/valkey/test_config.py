@@ -3,8 +3,12 @@ from pathlib import Path
 import msgspec
 import pytest
 
+from scietex.service import ValkeyWorker
 from scietex.service.valkey.config import (
+    DEFAULT_CONTROL_STREAM_MAXLEN,
+    MAX_CONTROL_STREAM_MAXLEN,
     MAX_TASK_TRACKING_TTL,
+    MIN_CONTROL_STREAM_MAXLEN,
     MIN_TASK_TRACKING_TTL,
     ValkeyBaseConfig,
     ValkeyConfig,
@@ -222,3 +226,46 @@ def test_worker_config_task_tracking_ttl_rejects_above_max():
 def test_worker_config_task_tracking_ttl_accepts_boundaries():
     assert ValkeyWorkerConfig(task_tracking_ttl=MIN_TASK_TRACKING_TTL).task_tracking_ttl == MIN_TASK_TRACKING_TTL
     assert ValkeyWorkerConfig(task_tracking_ttl=MAX_TASK_TRACKING_TTL).task_tracking_ttl == MAX_TASK_TRACKING_TTL
+
+
+def test_worker_config_control_stream_name_default_is_templated():
+    """control_stream_name defaults to a {service}/{instance_id}-templated name."""
+    assert ValkeyWorkerConfig().control_stream_name == "scietex:{service}:{instance_id}:control"
+
+
+def test_worker_config_control_broadcast_stream_name_default_is_templated():
+    """control_broadcast_stream_name defaults to a {service}-templated name."""
+    assert ValkeyWorkerConfig().control_broadcast_stream_name == "scietex:{service}:control:broadcast"
+
+
+def test_worker_config_control_stream_maxlen_default():
+    assert ValkeyWorkerConfig().control_stream_maxlen == DEFAULT_CONTROL_STREAM_MAXLEN
+
+
+def test_worker_config_control_stream_maxlen_rejects_zero():
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(control_stream_maxlen=0)
+
+
+def test_worker_config_control_stream_maxlen_rejects_above_max():
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(control_stream_maxlen=MAX_CONTROL_STREAM_MAXLEN + 1)
+
+
+def test_worker_config_control_stream_maxlen_accepts_boundaries():
+    assert (
+        ValkeyWorkerConfig(control_stream_maxlen=MIN_CONTROL_STREAM_MAXLEN).control_stream_maxlen
+        == MIN_CONTROL_STREAM_MAXLEN
+    )
+    assert (
+        ValkeyWorkerConfig(control_stream_maxlen=MAX_CONTROL_STREAM_MAXLEN).control_stream_maxlen
+        == MAX_CONTROL_STREAM_MAXLEN
+    )
+
+
+def test_control_stream_names_resolved_at_construction():
+    """Both template placeholders resolve: the directed stream embeds the
+    instance id, the broadcast stream is service-scoped (AR-123)."""
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    assert worker._control_stream_name == f"scietex:svc:{worker.instance_id}:control"
+    assert worker._control_broadcast_stream_name == "scietex:svc:control:broadcast"

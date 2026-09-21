@@ -126,6 +126,10 @@ class ValkeyWorker(TransportWorker):
                 with ``{service}`` substituted.
             _config_key (str): Resolved Valkey key holding the desired-state
                 remote config, with ``{service}`` substituted.
+            _control_stream_name (str): Resolved per-worker directed control
+                stream name, with ``{service}`` and ``{instance_id}`` substituted.
+            _control_broadcast_stream_name (str): Resolved service-scoped
+                broadcast control stream name, with ``{service}`` substituted.
             _task_stream_name (str): Valkey stream name for task entries.
             _task_group_name (str): Consumer group name for task fetching.
             _consumer_name (str): Consumer identifier within the task group.
@@ -144,6 +148,13 @@ class ValkeyWorker(TransportWorker):
         # The durable key is the source of truth for remote config (design §2);
         # it is resolved here like log_stream_name.
         self._config_key = cfg.config_key.format(service=self.service_name)
+        # The directed control stream embeds the instance id so the stream name
+        # itself is the worker's address; the broadcast stream stays
+        # service-scoped (AR-123).
+        self._control_stream_name = cfg.control_stream_name.format(
+            service=self.service_name, instance_id=self.instance_id
+        )
+        self._control_broadcast_stream_name = cfg.control_broadcast_stream_name.format(service=self.service_name)
         # AR-066: when no explicit config was given, defer the filesystem read
         # (and the default valkey.yml write / config-dir mkdir it triggers) to
         # the first connect, so construction is side-effect-free. Both
