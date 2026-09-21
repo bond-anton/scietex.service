@@ -45,7 +45,7 @@ remote source; an invalid remote config never fails startup
 (availability-first). `register_config_settings(name, struct_type, apply=...)`
 is the service-side extension point.
 
-**Status: implemented** (v4.5.0, merged to `main`).
+**Status: released** (v4.5.0).
 See [docs/design/remote_config.md](design/remote_config.md) and
 [docs/remote_config.md](remote_config.md).
 
