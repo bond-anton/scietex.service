@@ -256,7 +256,8 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, line 52).
 ## H15. Typed schemas contain time/identity defaults evaluated once at import
 
 - **Location:** was `task_handler/schemas.py` (`TaskResult.processed_at =
-  datetime.now(...)`) and `valkey/schemas.py` (`Heartbeat.timestamp`).
+  datetime.now(...)`) and `valkey/schemas.py` (`Heartbeat.timestamp`, now
+  `heartbeat.py`).
 - **What:** `msgspec.Struct` defaults were class-level; `datetime.now(...)` ran
   once at import, so instances without an explicit timestamp shared the import
   timestamp.
@@ -264,7 +265,7 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, line 52).
 
 **Resolved (AR-012):** both fields now use
 `msgspec.field(default_factory=lambda: datetime.now(timezone.utc))`
-(`task_handler/schemas.py:109`, `valkey/schemas.py:38`), producing a per-instance
+(`task_handler/schemas.py:109`, `heartbeat.py:41`), producing a per-instance
 value.
 
 ## H16. Task processing result/error policy is centralized but coarse

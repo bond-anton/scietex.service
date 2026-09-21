@@ -21,6 +21,7 @@ from scietex.logging import AsyncMqttHandler
 
 from ..config import DEFAULT_CONFIG_STARTUP_TIMEOUT
 from ..config_reload import CONFIG_SOURCE_UNAVAILABLE, ConfigApplyOutcome
+from ..heartbeat import Heartbeat
 from ..task_handler.wire import decode_task_envelope
 from ..transport_worker import TransportWorker
 from ._aiomqtt import Client, Message, MqttError, Properties, ProtocolVersion
@@ -472,18 +473,6 @@ class MqttWorker(TransportWorker):
             raise MqttError("No MQTT client is connected")
         await client.publish(topic, payload, qos=qos, retain=retain, properties=properties)
 
-    def _heartbeat_payload(self) -> bytes:
-        """Encode the retained heartbeat/registry payload for this instance."""
-        return msgspec.msgpack.encode(
-            {
-                "service": self.service_name,
-                "instance_id": self.instance_id,
-                "status": "active",
-                "start_time": self.start_time.isoformat() if self.start_time else None,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
     async def heartbeat(self) -> None:
         """Publish a retained heartbeat message to the registry topic.
 
@@ -499,7 +488,16 @@ class MqttWorker(TransportWorker):
             # it mid-await, but MqttError is swallowed and reported to
             # TransportHealth, which drives the reconnect (AR-083).
             client = self.client
-            payload = self._heartbeat_payload()
+            start_time = self.start_time
+            payload = msgspec.msgpack.encode(
+                Heartbeat(
+                    service=self.service_name,
+                    instance_id=self.instance_id,
+                    status="active",
+                    heartbeat_interval=self.heartbeat_interval,
+                    start_time=start_time,
+                )
+            )
             try:
                 await client.publish(self._registry_topic, payload, qos=_REGISTRY_QOS, retain=True)
             except MqttError as exc:
@@ -694,15 +692,27 @@ class MqttWorker(TransportWorker):
     async def _register_instance(self) -> None:
         """Publish this instance's retained liveness marker to the registry topic.
 
-        Best-effort: a failed publish must not fail startup (log WARNING and
-        continue). Only :class:`~aiomqtt.MqttError` is swallowed; other
-        exceptions propagate.
+        Uses the same :class:`Heartbeat` struct as :meth:`heartbeat`; at
+        registration the start time is not yet set (``_startup`` assigns it
+        after ``_register_instance``), so it falls back to the current instant
+        and is replaced by the first beat. Best-effort: a failed publish must
+        not fail startup (log WARNING and continue). Only
+        :class:`~aiomqtt.MqttError` is swallowed; other exceptions propagate.
         """
         client = self.client
         if client is None:
             return
+        payload = msgspec.msgpack.encode(
+            Heartbeat(
+                service=self.service_name,
+                instance_id=self.instance_id,
+                status="active",
+                heartbeat_interval=self.heartbeat_interval,
+                start_time=self.start_time or datetime.now(timezone.utc),
+            )
+        )
         try:
-            await client.publish(self._registry_topic, self._heartbeat_payload(), qos=_REGISTRY_QOS, retain=True)
+            await client.publish(self._registry_topic, payload, qos=_REGISTRY_QOS, retain=True)
         except MqttError as exc:
             self.logger.log(
                 logging.WARNING,

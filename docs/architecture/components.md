@@ -528,7 +528,7 @@ None`), `client`, `transport_health` (`TransportHealth`).
 
 **Dependencies:** `..task_processor`, `..task_handler.TaskData`,
 `..task_handler.wire` (`encode_task_envelope`/`decode_task_envelope`, AR-064),
-`.schemas.Heartbeat`, `.config` (`ValkeyWorkerConfig`), `.transport`
+`..heartbeat.Heartbeat`, `.config` (`ValkeyWorkerConfig`), `.transport`
 (`ValkeyTransport`), `.health` (`TransportHealth`), `.lease`
 (`TaskLeaseManager`), `.tracking` (`TaskStatusStore`), external
 `scietex.logging.AsyncValkeyHandler`, `._glide` (guarded glide names, AR-048),
@@ -669,13 +669,17 @@ drops the update when the record is absent (DEBUG log), silent on
 **Dependencies:** `._glide`, `..task_handler` (schemas). **Depended on by:**
 `ValkeyWorker`, `ValkeyTransport`.
 
-## 17. Valkey heartbeat schema
+## 17. Heartbeat schema (core)
 
-**File:** `src/scietex/service/valkey/schemas.py`
+**File:** `src/scietex/service/heartbeat.py`
 **Purpose/content:** `Heartbeat` (16) (frozen Struct) with `service`,
 `instance_id`, `status`, `heartbeat_interval`, `start_time`, `timestamp` —
 `timestamp` uses `msgspec.field(default_factory=...)` (38) for a per-instance
-value. msgpack-serialized by `ValkeyWorker.heartbeat`.
+value. msgpack-serialized by `ValkeyWorker.heartbeat` (stored at
+`scietex:{service}:{instance_id}:status` with a `2 × heartbeat_interval` TTL)
+and `MqttWorker.heartbeat` (retained on `scietex/{service}/workers/{instance_id}`).
+The struct moved from `valkey/schemas.py` to core in v4.6.0; `valkey/schemas.py`
+re-exports it for back-compat.
 
 ## 18. Valkey stream purge utility — `purge.py`
 

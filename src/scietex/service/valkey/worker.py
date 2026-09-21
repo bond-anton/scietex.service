@@ -18,6 +18,7 @@ import msgspec
 from scietex.logging import AsyncValkeyHandler
 
 from ..config_reload import CONFIG_SOURCE_UNAVAILABLE, ConfigApplyOutcome
+from ..heartbeat import Heartbeat
 from ..transport_worker import TransportWorker
 from ._glide import (
     ExpirySet,
@@ -39,7 +40,6 @@ from .config import (
 )
 from .config_source import ValkeyConfigSource
 from .lease import TaskLeaseManager, derive_task_lease_ttl
-from .schemas import Heartbeat
 from .tracking import TaskStatusStore
 from .transport import ValkeyTransport
 

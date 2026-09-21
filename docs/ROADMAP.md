@@ -25,6 +25,29 @@ transport level.
 
 **Status: planned** (not implemented). Reference: AR-123.
 
+## v4.6.0 — Heartbeat schema unification
+
+**Motivation:** `ValkeyWorker` published its liveness marker as a `Heartbeat`
+struct (`valkey/schemas.py`) while `MqttWorker` published a hand-rolled dict
+with a different field set and encoding: MQTT omitted `heartbeat_interval` and
+serialized `start_time`/`timestamp` as ISO-8601 strings instead of msgpack
+timestamp extensions. Consumers reading both transports saw two incompatible
+shapes for the same liveness signal.
+
+**Decision (v4.6.0):** promote the `Heartbeat` struct to the core module
+`src/scietex/service/heartbeat.py` and make both workers publish it. The MQTT
+registry/heartbeat payload is now the msgpack encoding of the struct (same
+field set and field order as Valkey), and `valkey/schemas.py` becomes a
+back-compat re-export of the struct.
+
+**Breaking:** MQTT heartbeat/registry consumers see a new `heartbeat_interval`
+field and msgpack timestamp extensions instead of ISO-8601 strings; the field
+set and order now match Valkey. Migration: consumers decoding the MQTT
+registry topic must decode `start_time`/`timestamp` as msgpack timestamps and
+should expect the new `heartbeat_interval` field.
+
+**Status: released** (v4.6.0).
+
 ## v4.5.1 — Retryable-error status parity
 
 **Motivation:** `ValkeyTransport.ack` published a terminal `failed` tracking

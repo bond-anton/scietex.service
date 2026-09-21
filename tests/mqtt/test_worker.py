@@ -11,6 +11,7 @@ import pytest
 
 import scietex.service.mqtt.worker as mod
 from scietex.service.health import TransportHealth
+from scietex.service.heartbeat import Heartbeat
 from scietex.service.mqtt._aiomqtt import MqttError, PacketTypes, Properties
 from scietex.service.mqtt.config import MqttConfig, MqttWorkerConfig
 from scietex.service.mqtt.inbox import FileMqttInbox, MemoryInbox
@@ -498,11 +499,12 @@ async def test_terminal_error_still_tombstones(tmp_path):
 
 @pytest.mark.asyncio
 async def test_heartbeat_publishes_retained_on_registry_topic():
-    """heartbeat publishes a retained marker on the per-instance registry topic."""
+    """heartbeat publishes a retained msgpack Heartbeat on the registry topic."""
     fake = FakeClient()
     worker = MqttWorker(MqttWorkerConfig(service_name="svc", mqtt_config=MqttConfig()))
     worker._client = fake
-    worker._lifecycle.start_time = datetime.now(timezone.utc)
+    start = datetime.now(timezone.utc)
+    worker._lifecycle.start_time = start
 
     await worker.heartbeat()
 
@@ -511,10 +513,24 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
     assert topic == f"scietex/svc/workers/{worker.instance_id}"
     assert qos == 1
     assert retain is True
-    decoded = msgspec.msgpack.decode(payload)
-    assert decoded["service"] == "svc"
-    assert decoded["instance_id"] == worker.instance_id
-    assert decoded["status"] == "active"
+    decoded = msgspec.msgpack.decode(payload, type=Heartbeat)
+    assert decoded.service == "svc"
+    assert decoded.instance_id == worker.instance_id
+    assert decoded.status == "active"
+    assert decoded.heartbeat_interval == worker.heartbeat_interval
+    assert isinstance(decoded.start_time, datetime)
+    assert isinstance(decoded.timestamp, datetime)
+    # Byte-identity parity: the MQTT payload is the exact msgpack encoding of
+    # the shared Heartbeat struct, matching what Valkey publishes field-for-field.
+    reference = Heartbeat(
+        service="svc",
+        instance_id=worker.instance_id,
+        status="active",
+        heartbeat_interval=worker.heartbeat_interval,
+        start_time=start,
+        timestamp=decoded.timestamp,
+    )
+    assert msgspec.msgpack.encode(reference) == payload
 
 
 @pytest.mark.asyncio
