@@ -31,19 +31,23 @@ async def test_base_registry_hooks_are_noop():
 
 class DummyClient:
     def __init__(self):
-        self.sadd_calls: list = []
-        self.srem_calls: list = []
+        self.set_calls: list = []
 
-    async def sadd(self, *args, **kwargs):
-        self.sadd_calls.append(args)
-
-    async def srem(self, *args, **kwargs):
-        self.srem_calls.append(args)
+    async def set(self, key, value=None, expiry=None, *args, **kwargs):
+        self.set_calls.append((key, value, expiry))
 
 
 @pytest.mark.asyncio
-async def test_valkey_register_unregister_issue_sadd_srem(monkeypatch):
+async def test_valkey_register_unregister_publish_status(monkeypatch):
+    """Registration and shutdown both write the status key; no registry Set.
+
+    The heartbeat key is the enumeration index (AR-123), so register publishes
+    ``active`` and shutdown publishes ``inactive`` — neither touches a Set.
+    """
+    import msgspec
+
     import scietex.service.valkey.worker as mod
+    from scietex.service.heartbeat import Heartbeat
 
     async def create_mock(cfg):
         return DummyClient()
@@ -60,7 +64,13 @@ async def test_valkey_register_unregister_issue_sadd_srem(monkeypatch):
     worker._client = client
 
     await worker._register_instance()
-    assert client.sadd_calls == [("scietex:svc:workers", [worker.instance_id])]
+    assert len(client.set_calls) == 1
+    key, value, _ = client.set_calls[0]
+    assert key == f"scietex:svc:{worker.instance_id}:status"
+    assert msgspec.msgpack.decode(value, type=Heartbeat).status == "active"
 
     await worker._unregister_instance()
-    assert client.srem_calls == [("scietex:svc:workers", [worker.instance_id])]
+    assert len(client.set_calls) == 2
+    key, value, _ = client.set_calls[1]
+    assert key == f"scietex:svc:{worker.instance_id}:status"
+    assert msgspec.msgpack.decode(value, type=Heartbeat).status == "inactive"

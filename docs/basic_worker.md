@@ -272,6 +272,8 @@ budget ends in the terminal `FAILED` state instead of stopping cleanly
 | Property | Type | Default | Description |
 |---|---|---|---|
 | `heartbeat_interval` | `float` | `10` | Seconds between heartbeat calls |
+| `active_ttl` | `float \| None` | `None` (→ `2 × heartbeat_interval`) | Lifetime of a worker's `active` heartbeat record, in seconds; bounded `[1, 86400]`, must exceed `heartbeat_interval` |
+| `inactive_ttl` | `float \| None` | `None` (→ `10 × heartbeat_interval`) | Lifetime of a worker's `inactive` heartbeat record, in seconds; bounded `[1, 86400]` |
 | `watchdog_interval` | `float` | `1` | Seconds between watchdog checks |
 | `logger_handler_timeout` | `float` | `2` | Timeout for logger handler operations |
 | `manager_shutdown_timeout` | `float` | `2` | Timeout for manager shutdown |

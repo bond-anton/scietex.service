@@ -85,12 +85,16 @@ shared across all replicas of a service; worker-scoped keys are unique per
 |---|---|---|
 | Task stream | `scietex:{service_name}:tasks` | service-scoped |
 | Consumer group | `scietex:{service_name}:task_group` | service-scoped |
-| Worker registry | `scietex:{service_name}:workers` | service-scoped |
 | Consumer name | `scietex:{service_name}:{instance_id}` | worker-scoped |
 | Task tracking key | `scietex:{service_name}:task:{task_id}` | per task |
 | Task lease key | `scietex:{service_name}:lease:{task_id}` | per task |
 | Heartbeat key | `scietex:{service_name}:{instance_id}:status` | worker-scoped |
 | Log stream | `scietex:{service_name}:log` (configurable via `log_stream_name`) | service-scoped |
+
+The heartbeat key is the worker's liveness record and carries its own expiry
+(`active_ttl` while running, `inactive_ttl` after a graceful shutdown). There is
+no separate registry Set: a client enumerates the fleet by `SCAN`-ing
+`scietex:{service_name}:*:status` (see {doc}`worker_registry`).
 
 ## Constants
 
@@ -244,12 +248,14 @@ Publish a heartbeat entry to the Valkey status key.
 
 ```python
 async def heartbeat(self) -> None:
-    """Encode Heartbeat struct, write to status key with TTL = 2 * interval."""
+    """Encode Heartbeat struct, write to status key with TTL = active_ttl."""
 ```
 
 The heartbeat is serialized as msgpack and stored at
-`scietex:{service_name}:{instance_id}:status` with a TTL set to twice the
-heartbeat interval.
+`scietex:{service_name}:{instance_id}:status` with a TTL of `active_ttl`
+(default `2 × heartbeat_interval`). The record carries `status="active"` while
+running and `status="inactive"` after a graceful shutdown, and is never
+deleted. See {doc}`worker_registry`.
 
 ### initialize()
 

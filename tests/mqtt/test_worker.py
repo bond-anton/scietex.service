@@ -212,7 +212,7 @@ async def test_initialize_none_backend_proceeds(monkeypatch):
     _patch_handler(monkeypatch)
     fake = FakeClient()
 
-    async def factory(cfg):
+    async def factory(cfg, will=None):
         return fake
 
     worker = MqttWorker(
@@ -237,7 +237,7 @@ async def test_initialize_defers_recovery_to_first_fetch(monkeypatch, tmp_path):
     _patch_handler(monkeypatch)
     fake = FakeClient()
 
-    async def factory(cfg):
+    async def factory(cfg, will=None):
         return fake
 
     worker = MqttWorker(
@@ -382,7 +382,7 @@ async def test_message_loop_exits_on_cancellation(monkeypatch):
     _patch_handler(monkeypatch)
     fake = FakeClient()
 
-    async def factory(cfg):
+    async def factory(cfg, will=None):
         return fake
 
     worker = MqttWorker(
@@ -404,7 +404,7 @@ async def test_reconnect_resubscribes_and_restarts_loop(monkeypatch):
     _patch_handler(monkeypatch)
     clients = []
 
-    async def factory(cfg):
+    async def factory(cfg, will=None):
         client = FakeClient()
         clients.append(client)
         return client
@@ -441,7 +441,7 @@ async def test_start_intake_does_not_double_start_loop(monkeypatch):
     _patch_handler(monkeypatch)
     fake = FakeClient()
 
-    async def factory(cfg):
+    async def factory(cfg, will=None):
         return fake
 
     worker = MqttWorker(
@@ -505,15 +505,18 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
     await worker.heartbeat()
 
     assert len(fake.published) == 1
-    topic, payload, qos, retain, _ = fake.published[0]
+    topic, payload, qos, retain, properties = fake.published[0]
     assert topic == f"scietex/svc/workers/{worker.instance_id}"
     assert qos == 1
     assert retain is True
+    # The broker drops the retained marker once the worker stops beating.
+    assert properties.MessageExpiryInterval == int(worker.active_ttl)
     decoded = msgspec.msgpack.decode(payload, type=Heartbeat)
     assert decoded.service == "svc"
     assert decoded.instance_id == worker.instance_id
     assert decoded.status == "active"
     assert decoded.heartbeat_interval == worker.heartbeat_interval
+    assert decoded.ttl == worker.active_ttl
     assert isinstance(decoded.start_time, datetime)
     assert isinstance(decoded.timestamp, datetime)
     # Byte-identity parity: the MQTT payload is the exact msgpack encoding of
@@ -524,6 +527,7 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
         status="active",
         heartbeat_interval=worker.heartbeat_interval,
         start_time=start,
+        ttl=worker.active_ttl,
         timestamp=decoded.timestamp,
     )
     assert msgspec.msgpack.encode(reference) == payload
@@ -546,8 +550,8 @@ async def test_heartbeat_failure_reports_to_health():
 
 @pytest.mark.asyncio
 async def test_register_and_unregister_publish_and_clear():
-    """_register_instance publishes the retained marker; _unregister_instance
-    clears it with an empty retained payload."""
+    """_register_instance publishes an active marker; _unregister_instance
+    publishes an inactive one that expires under inactive_ttl."""
     fake = FakeClient()
     worker = MqttWorker(MqttWorkerConfig(service_name="svc", mqtt_config=MqttConfig()))
     worker._client = fake
@@ -556,15 +560,19 @@ async def test_register_and_unregister_publish_and_clear():
     await worker._unregister_instance()
 
     assert len(fake.published) == 2
-    register_topic, register_payload, _, register_retain, _ = fake.published[0]
+    register_topic, register_payload, _, register_retain, register_props = fake.published[0]
     assert register_topic == f"scietex/svc/workers/{worker.instance_id}"
     assert register_retain is True
+    assert register_props.MessageExpiryInterval == int(worker.active_ttl)
     assert msgspec.msgpack.decode(register_payload)["status"] == "active"
 
-    unregister_topic, unregister_payload, _, unregister_retain, _ = fake.published[1]
+    unregister_topic, unregister_payload, _, unregister_retain, unregister_props = fake.published[1]
     assert unregister_topic == f"scietex/svc/workers/{worker.instance_id}"
     assert unregister_retain is True
-    assert unregister_payload is None  # empty retained payload clears the marker
+    # The marker is never cleared: it is left to expire under inactive_ttl so a
+    # monitoring client can observe the death before it disappears (AR-123).
+    assert unregister_props.MessageExpiryInterval == int(worker.inactive_ttl)
+    assert msgspec.msgpack.decode(unregister_payload)["status"] == "inactive"
 
 
 @pytest.mark.asyncio
@@ -579,7 +587,7 @@ async def test_register_instance_failure_is_best_effort(caplog):
         await worker._register_instance()
 
     assert worker.transport_health.degraded is True
-    assert any("Failed to register instance" in r.getMessage() for r in caplog.records)
+    assert any("Failed to publish active status" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -661,7 +669,7 @@ async def test_cleanup_stops_loop_handler_and_disconnects(monkeypatch):
     _patch_handler(monkeypatch)
     fake = FakeClient()
 
-    async def factory(cfg):
+    async def factory(cfg, will=None):
         return fake
 
     worker = MqttWorker(

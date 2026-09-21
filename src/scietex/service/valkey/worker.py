@@ -11,7 +11,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import ClassVar, cast
+from typing import ClassVar, Literal, cast
 from uuid import UUID
 
 import msgspec
@@ -170,7 +170,10 @@ class ValkeyWorker(TransportWorker):
         self._task_stream_name = f"scietex:{self.service_name}:tasks"
         self._task_group_name = f"scietex:{self.service_name}:task_group"
         self._consumer_name = f"scietex:{self.service_name}:{self.instance_id}"
-        self._registry_key = f"scietex:{self.service_name}:workers"
+        # No registry Set: the heartbeat keys are the enumeration index. A
+        # client SCANs ``scietex:{service}:*:status`` and reads each entry's
+        # ``ttl``, so a crashed replica's key expires on its own instead of
+        # leaving a stale member behind (AR-123).
         # Extracted collaborators (AR-073): the lease manager and tracking store
         # own the per-entry lease and status-record concerns this class used to
         # inline. Both reach the operational client through a late-bound
@@ -358,8 +361,8 @@ class ValkeyWorker(TransportWorker):
         """Publish a heartbeat entry to the Valkey status key.
 
         Encodes a ``Heartbeat`` struct with service metadata and writes it
-        to ``self._heartbeat_key`` with a TTL set to twice the heartbeat
-        interval. Logs the duration at DEBUG and any failure at WARNING.
+        to ``self._heartbeat_key`` with a TTL of ``self.active_ttl``. Logs the
+        duration at DEBUG and any failure at WARNING.
 
         The write is guarded by ``self.client and self.start_time``. The start
         time is set in ``_startup`` before the managers start, so the first
@@ -378,6 +381,7 @@ class ValkeyWorker(TransportWorker):
                 status="active",
                 heartbeat_interval=self.heartbeat_interval,
                 start_time=self.start_time,
+                ttl=self.active_ttl,
                 timestamp=datetime.now(timezone.utc),
             )
             self.logger.log(logging.DEBUG, "Sending heartbeat to Valkey: %s", heartbeat_data)
@@ -386,7 +390,7 @@ class ValkeyWorker(TransportWorker):
                 await client.set(
                     self._heartbeat_key,
                     value=self.__encoder.encode(heartbeat_data),
-                    expiry=ExpirySet(ExpiryType.SEC, int(self.heartbeat_interval * 2)),
+                    expiry=ExpirySet(ExpiryType.SEC, int(self.active_ttl)),
                 )
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(logging.DEBUG, "Heartbeat set in Valkey, duration: %.2f ms", duration)
@@ -492,49 +496,67 @@ class ValkeyWorker(TransportWorker):
         await self.disconnect()
 
     async def _register_instance(self) -> None:
-        """Add this instance id to the service-scoped worker registry set.
+        """Publish an ``active`` heartbeat so the instance is discoverable.
 
-        Best-effort: a failed SADD must not fail startup (log WARNING and
-        continue). The registry set is the enumeration index; liveness is the
-        status-key TTL refreshed by heartbeat(), so a stale member left by a
-        crashed replica is tolerated (the operator probes each member's
-        status key). Only glide connection, request, and timeout errors are
+        Called once by ``_startup()`` after ``initialize()`` succeeds and before
+        managers start. The heartbeat manager's first beat refreshes the same
+        entry; publishing here means a client that SCANs the status keys sees
+        the instance from the moment it is reachable, without waiting for the
+        first beat.
+
+        Best-effort: a failed write must not fail startup (log WARNING and
+        continue). Only glide connection, request, and timeout errors are
         swallowed; other exceptions propagate.
         """
-        client = self.client
-        if client is None:
-            return
-        try:
-            await client.sadd(self._registry_key, [self.instance_id])
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self.logger.log(
-                logging.WARNING,
-                "Failed to register instance %s in %s: %s",
-                self.instance_id,
-                self._registry_key,
-                exc,
-            )
-            self._health.report_failure(exc)
+        await self._publish_status("active", self.active_ttl)
 
     async def _unregister_instance(self) -> None:
-        """Remove this instance id from the service-scoped worker registry set.
+        """Publish an ``inactive`` heartbeat on shutdown.
 
-        Best-effort: a failed SREM must not fail shutdown (log WARNING and
-        continue). Called by _shutdown() before cleanup() disconnects the
-        client, so the client is still open here. Only glide connection,
-        request, and timeout errors are swallowed; other exceptions propagate.
+        Called once by ``_shutdown()`` after managers stop and before
+        ``cleanup()`` disconnects the client, so the client is still open here.
+        The entry is never deleted: it is left to expire under
+        ``inactive_ttl``, which gives a monitoring client a window to observe
+        the death before the key disappears (AR-123).
+
+        Best-effort: a failed write must not fail shutdown (log WARNING and
+        continue). Only glide connection, request, and timeout errors are
+        swallowed; other exceptions propagate.
+        """
+        await self._publish_status("inactive", self.inactive_ttl)
+
+    async def _publish_status(self, status: Literal["active", "inactive"], ttl: float) -> None:
+        """Write a heartbeat entry with an explicit ``status`` and ``ttl``.
+
+        Shared by ``_register_instance`` and ``_unregister_instance``, which
+        differ only in the status they publish. ``start_time`` may be unset
+        during a failed startup; fall back to the current time so the entry is
+        still well-formed.
         """
         client = self.client
         if client is None:
             return
+        heartbeat_data = Heartbeat(
+            service=self.service_name,
+            instance_id=self.instance_id,
+            status=status,
+            heartbeat_interval=self.heartbeat_interval,
+            start_time=self.start_time or datetime.now(timezone.utc),
+            ttl=ttl,
+            timestamp=datetime.now(timezone.utc),
+        )
         try:
-            await client.srem(self._registry_key, [self.instance_id])
+            await client.set(
+                self._heartbeat_key,
+                value=self.__encoder.encode(heartbeat_data),
+                expiry=ExpirySet(ExpiryType.SEC, int(ttl)),
+            )
         except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
             self.logger.log(
                 logging.WARNING,
-                "Failed to unregister instance %s from %s: %s",
+                "Failed to publish %s status for instance %s: %s",
+                status,
                 self.instance_id,
-                self._registry_key,
                 exc,
             )
             self._health.report_failure(exc)

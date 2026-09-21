@@ -18,7 +18,9 @@ from typing import ClassVar
 from scietex.logging import ConsoleHandler
 
 from .config import (
+    DEFAULT_ACTIVE_TTL_MULTIPLIER,
     DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_INACTIVE_TTL_MULTIPLIER,
     DEFAULT_LOGGER_HANDLER_TIMEOUT,
     DEFAULT_MANAGER_MAX_RETRIES,
     DEFAULT_MANAGER_RESTART_BACKOFF,
@@ -126,6 +128,14 @@ class BasicWorker:
         )
         self.__heartbeat_interval: float = (
             cfg.heartbeat_interval if cfg.heartbeat_interval is not None else DEFAULT_HEARTBEAT_INTERVAL
+        )
+        self.__active_ttl: float = (
+            cfg.active_ttl if cfg.active_ttl is not None else self.__heartbeat_interval * DEFAULT_ACTIVE_TTL_MULTIPLIER
+        )
+        self.__inactive_ttl: float = (
+            cfg.inactive_ttl
+            if cfg.inactive_ttl is not None
+            else self.__heartbeat_interval * DEFAULT_INACTIVE_TTL_MULTIPLIER
         )
         self.__watchdog_interval: float = (
             cfg.watchdog_interval if cfg.watchdog_interval is not None else DEFAULT_WATCHDOG_INTERVAL
@@ -306,6 +316,35 @@ class BasicWorker:
             The current heartbeat interval in seconds.
         """
         return self.__heartbeat_interval
+
+    @property
+    def active_ttl(self) -> float:
+        """Lifetime in seconds of an ``active`` heartbeat entry (read-only).
+
+        A ``None`` configuration value resolves to
+        ``DEFAULT_ACTIVE_TTL_MULTIPLIER × heartbeat_interval``; a non-``None``
+        value is validated against ``[MIN_HEARTBEAT_TTL, MAX_HEARTBEAT_TTL]``
+        and must exceed ``heartbeat_interval`` at construction. Resolution
+        happens eagerly in ``__init__`` (AR-080).
+
+        Returns:
+            The active heartbeat entry lifetime in seconds.
+        """
+        return self.__active_ttl
+
+    @property
+    def inactive_ttl(self) -> float:
+        """Lifetime in seconds of an ``inactive`` heartbeat entry (read-only).
+
+        A ``None`` configuration value resolves to
+        ``DEFAULT_INACTIVE_TTL_MULTIPLIER × heartbeat_interval``; a non-``None``
+        value is validated against ``[MIN_HEARTBEAT_TTL, MAX_HEARTBEAT_TTL]``
+        at construction. Resolution happens eagerly in ``__init__`` (AR-080).
+
+        Returns:
+            The inactive heartbeat entry lifetime in seconds.
+        """
+        return self.__inactive_ttl
 
     @property
     def watchdog_interval(self) -> float:

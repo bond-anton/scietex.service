@@ -54,6 +54,46 @@ transport level.
 
 **Status: planned** (not implemented). Reference: AR-123.
 
+## v5.0.0 — Worker registry and heartbeat TTL
+
+**Motivation:** AR-123 needs a client-side view of the worker fleet before
+cross-worker control routing can be built. The pre-v5 liveness signal was
+transport-specific and had no expiry contract: Valkey kept a registry Set plus
+per-worker status keys, MQTT published a retained heartbeat with no TTL, and
+neither carried the lifetime a consumer should apply. A consumer could not tell
+a live worker from a stale entry, and the two transports disagreed on how a
+worker left the fleet.
+
+**Decision (v5.0.0):** unify the liveness model around a single expiring
+heartbeat and a shared client-side registry.
+
+- `Heartbeat` gains a **required `ttl: float`** field (no default), placed above
+  `timestamp`. It carries the lifetime the consumer should apply to the record.
+  A pre-v5 heartbeat (no `ttl`) is rejected by the decoder — a deliberate hard
+  cut, consistent with the `TaskData.task_id` change.
+- **Valkey:** the registry Set is dropped. Enumeration is a `SCAN` over the
+  status keys (`scietex:{service}:*:status`); each heartbeat is written with
+  `ExpirySet(SEC, active_ttl)`, so a dead worker's key expires on its own.
+- **MQTT:** the retained heartbeat carries `MessageExpiryInterval`; a Last Will
+  (`Will` + `WillDelayInterval`) publishes `status="inactive"` on an ungraceful
+  disconnect, and a reconnect before the delay cancels the Will.
+- **Shutdown** sets `status="inactive"` and never deletes the record, so a
+  consumer sees a clean departure rather than a silent disappearance.
+- **TTL model:** `active` = `2 × heartbeat_interval`, `inactive` =
+  `10 × heartbeat_interval`, overridable via `active_ttl`/`inactive_ttl` on
+  `WorkerConfig` (bounded `[1, 86400]`, `active_ttl > heartbeat_interval`).
+- **Client surface:** a new `scietex.service.client` subpackage exposes
+  `WorkerWatcher` (snapshot + async change stream), `WorkerRegistry`, and the
+  `WatchBackend` Protocol. Backends are swappable: `PollingBackend` (Valkey
+  `SCAN`) and `SubscribeBackend` (MQTT wildcard `workers/+`). The core is
+  dependency-free; each backend lives in its transport package.
+
+**Breaking:** `Heartbeat` gains a required `ttl` field, so any consumer decoding
+the heartbeat payload must handle it, and pre-v5 payloads are rejected. This is
+the second wire break in v5.0.0, alongside `TaskData.task_id`.
+
+**Status: implemented** (v5.0.0). Reference: AR-123.
+
 ## v4.6.0 — Heartbeat schema unification
 
 **Motivation:** `ValkeyWorker` published its liveness marker as a `Heartbeat`

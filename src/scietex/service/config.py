@@ -97,6 +97,14 @@ DEFAULT_HEARTBEAT_INTERVAL: float = 10
 MIN_HEARTBEAT_INTERVAL: float = 0.1
 MAX_HEARTBEAT_INTERVAL: float = 600
 
+# Heartbeat entry lifetime. ``None`` derives the TTL from the heartbeat
+# interval: an active entry survives two missed beats, an inactive one lingers
+# long enough for a monitoring client to observe the death before it expires.
+DEFAULT_ACTIVE_TTL_MULTIPLIER: float = 2
+DEFAULT_INACTIVE_TTL_MULTIPLIER: float = 10
+MIN_HEARTBEAT_TTL: float = 1
+MAX_HEARTBEAT_TTL: float = 86400
+
 DEFAULT_WATCHDOG_INTERVAL: float = 1
 MIN_WATCHDOG_INTERVAL: float = 0.01
 MAX_WATCHDOG_INTERVAL: float = 600
@@ -172,6 +180,15 @@ class WorkerConfig(msgspec.Struct, frozen=True):
             ``parse_logging_level``; no bounds are enforced here.
         heartbeat_interval: Heartbeat interval in seconds (``[0.1, 600]``).
         watchdog_interval: Watchdog check interval in seconds (``[0.01, 600]``).
+        active_ttl: Lifetime in seconds of an ``active`` heartbeat entry
+            (``[1, 86400]``). ``None`` derives it as
+            ``2 × heartbeat_interval``. Must exceed ``heartbeat_interval``,
+            otherwise a live worker would expire between beats.
+        inactive_ttl: Lifetime in seconds of an ``inactive`` heartbeat entry
+            (``[1, 86400]``). ``None`` derives it as
+            ``10 × heartbeat_interval``. Longer than ``active_ttl`` so a
+            monitoring client can observe a worker's death before the entry
+            expires.
         logger_handler_timeout: Timeout for logger handler operations in
             seconds (``[1, 10]``).
         manager_shutdown_timeout: Timeout for manager shutdown in seconds
@@ -188,6 +205,8 @@ class WorkerConfig(msgspec.Struct, frozen=True):
     logging_level: int | str = logging.DEBUG
     heartbeat_interval: float | None = None
     watchdog_interval: float | None = None
+    active_ttl: float | None = None
+    inactive_ttl: float | None = None
     logger_handler_timeout: float | None = None
     manager_shutdown_timeout: float | None = None
     manager_max_retries: int | None = None
@@ -206,6 +225,27 @@ class WorkerConfig(msgspec.Struct, frozen=True):
             minimum=MIN_WATCHDOG_INTERVAL,
             maximum=MAX_WATCHDOG_INTERVAL,
         )
+        validate_range(
+            self.active_ttl,
+            "active_ttl",
+            minimum=MIN_HEARTBEAT_TTL,
+            maximum=MAX_HEARTBEAT_TTL,
+        )
+        validate_range(
+            self.inactive_ttl,
+            "inactive_ttl",
+            minimum=MIN_HEARTBEAT_TTL,
+            maximum=MAX_HEARTBEAT_TTL,
+        )
+        # An active entry must outlive the gap between two beats, or a live
+        # worker would expire from the registry between heartbeats. Compare
+        # against the resolved interval so the check holds when either side
+        # falls back to its default.
+        interval = self.heartbeat_interval if self.heartbeat_interval is not None else DEFAULT_HEARTBEAT_INTERVAL
+        if self.active_ttl is not None and self.active_ttl <= interval:
+            raise msgspec.ValidationError(
+                f"active_ttl must be > heartbeat_interval ({interval}), got {self.active_ttl!r}"
+            )
         validate_range(
             self.logger_handler_timeout,
             "logger_handler_timeout",

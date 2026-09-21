@@ -459,10 +459,19 @@ timeout/shutdown cancel publishes `failed` instead); see
 ### Instance registry
 
 `MqttWorker` overrides `_register_instance`/`_unregister_instance` (the
-`BasicWorker` hooks): it publishes this instance's retained liveness marker
-to `scietex/{service}/workers/{instance_id}` on startup and clears it (an
-empty retained payload) on shutdown. Both are best-effort; a failed publish
-logs a WARNING, reports into `TransportHealth`, and continues.
+`BasicWorker` hooks): it publishes this instance's retained liveness marker to
+`scietex/{service}/workers/{instance_id}` with `status="active"` on startup and
+`status="inactive"` on shutdown. The record is **never deleted** — a clean
+departure is visible as an `inactive` record that expires after `inactive_ttl`.
+Both publishes are best-effort; a failed publish logs a WARNING, reports into
+`TransportHealth`, and continues.
+
+The retained heartbeat carries a `MessageExpiryInterval` of `active_ttl`, so a
+worker that dies without shutting down leaves a record that expires on its own.
+An ungraceful disconnect is covered by a Last Will (`Will` with
+`WillDelayInterval` and `MessageExpiryInterval`) that publishes
+`status="inactive"`; a reconnect before the delay cancels the Will. See
+{doc}`worker_registry`.
 
 ## Wire Format
 
@@ -907,14 +916,20 @@ always raises `RuntimeError` and is left untouched.
 
 ### Registry / heartbeat payload
 
-The retained heartbeat message is a msgpack-encoded mapping (not a frozen
-struct) published to `scietex/{service_name}/workers/{instance_id}` at QoS 1
-with `retain=True`.
+The retained heartbeat message is the msgpack encoding of the shared
+`Heartbeat` struct (from `scietex.service.heartbeat`), published to
+`scietex/{service_name}/workers/{instance_id}` at QoS 1 with `retain=True` and
+a `MessageExpiryInterval` of `active_ttl`.
 
 | Field | Type | Description |
 |---|---|---|
 | `service` | `str` | Name of the publishing service |
 | `instance_id` | `str` | Unique identifier of the worker instance |
-| `status` | `str` | Always `"active"` for a live heartbeat |
-| `start_time` | `str \| None` | ISO-8601 UTC timestamp when the worker started |
-| `timestamp` | `str` | ISO-8601 UTC timestamp of this heartbeat |
+| `status` | `"active" \| "inactive"` | Liveness state |
+| `heartbeat_interval` | `float` | Seconds between heartbeats |
+| `start_time` | `datetime` | Worker start time (msgpack timestamp) |
+| `ttl` | `float` | Lifetime the consumer should apply to this record |
+| `timestamp` | `datetime` | Time this heartbeat was produced (msgpack timestamp) |
+
+The same struct is published by `ValkeyWorker`, so a client decodes one shape
+regardless of transport. See {doc}`worker_registry`.

@@ -10,3 +10,4 @@ Reference documentation for the public ``scietex.service`` API surface.
    task_handler
    valkey
    manager
+   client

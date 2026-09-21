@@ -11,6 +11,7 @@ basic_worker
 task_processor
 valkey_worker
 mqtt_worker
+worker_registry
 remote_config
 task_handler
 ```

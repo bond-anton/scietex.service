@@ -82,7 +82,7 @@ def _make_worker(tmp_path, fake, **config_kwargs) -> MqttWorker:
     }
     cfg_kwargs.update(config_kwargs)
 
-    async def factory(cfg):
+    async def factory(cfg, will=None):
         return fake
 
     return MqttWorker(MqttWorkerConfig(**cfg_kwargs), client_factory=factory)

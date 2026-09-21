@@ -5,6 +5,7 @@ from .config_source import MqttConfigSource
 from .inbox import FileMqttInbox, MemoryInbox, MqttInbox
 from .logging import logging_handler_config
 from .transport import MqttTransport
+from .watch import SubscribeBackend
 from .worker import MqttWorker
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "MqttTransport",
     "MqttWorker",
     "MqttWorkerConfig",
+    "SubscribeBackend",
     "logging_handler_config",
     "read_mqtt_config",
 ]

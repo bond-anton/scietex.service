@@ -85,22 +85,22 @@ async def test_heartbeat_failure_marks_degraded_and_watchdog_reconnects(monkeypa
 @pytest.mark.asyncio
 async def test_register_instance_failure_reports_into_health():
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
-    worker._client = DummyClient(sadd_error=mod.RequestError("sadd failed"))
+    worker._client = DummyClient(set_error=mod.RequestError("set failed"))
 
     await worker._register_instance()
 
     assert worker.transport_health.degraded is True
-    assert worker.transport_health.last_error == "sadd failed"
+    assert worker.transport_health.last_error == "set failed"
     assert worker.transport_health.failure_count == 1
 
 
 @pytest.mark.asyncio
 async def test_unregister_instance_failure_reports_into_health():
     worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig()))
-    worker._client = DummyClient(srem_error=mod.RequestError("srem failed"))
+    worker._client = DummyClient(set_error=mod.RequestError("set failed"))
 
     await worker._unregister_instance()
 
     assert worker.transport_health.degraded is True
-    assert worker.transport_health.last_error == "srem failed"
+    assert worker.transport_health.last_error == "set failed"
     assert worker.transport_health.failure_count == 1

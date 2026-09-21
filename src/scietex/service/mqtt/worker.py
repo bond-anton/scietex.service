@@ -13,7 +13,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar, Literal, cast
 
 import msgspec
 from scietex.logging import AsyncMqttHandler
@@ -24,7 +24,7 @@ from ..heartbeat import Heartbeat
 from ..task_handler.schemas import task_data_id
 from ..task_handler.wire import decode_task_envelope
 from ..transport_worker import TransportWorker
-from ._aiomqtt import Client, Message, MqttError, Properties, ProtocolVersion
+from ._aiomqtt import Client, Message, MqttError, PacketTypes, Properties, ProtocolVersion, Will
 from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
 from .config_source import MqttConfigSource
 from .inbox import FileMqttInbox, MemoryInbox, MqttInbox
@@ -42,11 +42,14 @@ INBOX_PRUNE_INTERVAL: float = 60.0
 
 # Client-construction injection seam (AR-074): connect() builds its client by
 # awaiting this callable with the resolved MqttConfig, so tests and embedders
-# can supply a fake or externally-built client without a live broker.
-ClientFactory = Callable[[MqttConfig], Awaitable[Client]]
+# can supply a fake or externally-built client without a live broker. The
+# optional ``will`` carries the worker's last-will message (AR-123): the worker
+# owns the identity and TTL policy the Will needs, so it builds the Will and
+# hands it to the factory rather than the factory re-deriving it.
+ClientFactory = Callable[..., Awaitable[Client]]
 
 
-async def _create_client(config: MqttConfig) -> Client:
+async def _create_client(config: MqttConfig, will: Will | None = None) -> Client:
     """Build and connect an ``aiomqtt.Client`` from a typed ``MqttConfig``.
 
     The default :data:`ClientFactory`. Maps the scalar ``MqttConfig`` fields to
@@ -57,6 +60,10 @@ async def _create_client(config: MqttConfig) -> Client:
     has no scalar ``Client`` kwarg in aiomqtt v2.5.1 (it would require paho
     CONNECT properties), so it is deliberately omitted, matching the log handler
     translation in :mod:`scietex.service.mqtt.logging`.
+
+    ``will`` is the worker's last-will message: the broker publishes it when the
+    connection drops without a clean DISCONNECT, which is how a crashed worker
+    is marked ``inactive`` (AR-123). ``None`` disables the Will.
     """
     client = Client(
         hostname=config.host,
@@ -71,6 +78,7 @@ async def _create_client(config: MqttConfig) -> Client:
         timeout=config.timeout,
         tls_insecure=config.tls_insecure,
         tls_context=config.tls_context,
+        will=will,
     )
     await client.__aenter__()
     return client
@@ -381,7 +389,7 @@ class MqttWorker(TransportWorker):
             return True
         mqtt_config = self._ensure_client_config()
         try:
-            client = await self._client_factory(mqtt_config)
+            client = await self._client_factory(mqtt_config, will=self._build_will())
         except MqttError as exc:
             self.logger.error("Error connecting to MQTT broker: %s", exc)
             return False
@@ -482,6 +490,11 @@ class MqttWorker(TransportWorker):
         ``_startup`` before the managers start, so the first beat fires promptly
         (AR-049). A publish failure is reported to :class:`TransportHealth`,
         which drives the reconnect.
+
+        The message carries a ``MessageExpiryInterval`` of ``self.active_ttl``
+        (AR-123): the broker drops the retained marker once the worker stops
+        beating, so a crashed instance disappears without any client-side
+        cleanup. The same ``ttl`` is in the payload for clients that read it.
         """
         if self.client and self.start_time:
             # Capture the client once: a concurrent _disconnect_locked may close
@@ -496,10 +509,19 @@ class MqttWorker(TransportWorker):
                     status="active",
                     heartbeat_interval=self.heartbeat_interval,
                     start_time=start_time,
+                    ttl=self.active_ttl,
                 )
             )
+            properties = Properties(PacketTypes.PUBLISH)
+            properties.MessageExpiryInterval = int(self.active_ttl)
             try:
-                await client.publish(self._registry_topic, payload, qos=_REGISTRY_QOS, retain=True)
+                await client.publish(
+                    self._registry_topic,
+                    payload,
+                    qos=_REGISTRY_QOS,
+                    retain=True,
+                    properties=properties,
+                )
             except MqttError as exc:
                 self.logger.log(
                     logging.WARNING,
@@ -508,6 +530,37 @@ class MqttWorker(TransportWorker):
                     exc,
                 )
                 self._health.report_failure(exc)
+
+    def _build_will(self) -> Will:
+        """Build the last-will message marking this instance ``inactive``.
+
+        The broker publishes the Will when the connection drops without a clean
+        DISCONNECT (crash, network loss), which is how a dead worker is
+        distinguished from a live one (AR-123). ``WillDelayInterval`` delays the
+        publish by ``inactive_ttl``: a reconnect within that window cancels the
+        Will, so a brief blip does not flap the registry. The Will payload
+        carries ``inactive_ttl`` as its own expiry, matching the shutdown path.
+        """
+        payload = msgspec.msgpack.encode(
+            Heartbeat(
+                service=self.service_name,
+                instance_id=self.instance_id,
+                status="inactive",
+                heartbeat_interval=self.heartbeat_interval,
+                start_time=self.start_time or datetime.now(timezone.utc),
+                ttl=self.inactive_ttl,
+            )
+        )
+        properties = Properties(PacketTypes.WILLMESSAGE)
+        properties.WillDelayInterval = int(self.inactive_ttl)
+        properties.MessageExpiryInterval = int(self.inactive_ttl)
+        return Will(
+            topic=self._registry_topic,
+            payload=payload,
+            qos=_REGISTRY_QOS,
+            retain=True,
+            properties=properties,
+        )
 
     async def initialize(self) -> bool:
         """Initialize the worker and connect.
@@ -681,6 +734,32 @@ class MqttWorker(TransportWorker):
         not fail startup (log WARNING and continue). Only
         :class:`~aiomqtt.MqttError` is swallowed; other exceptions propagate.
         """
+        await self._publish_status("active", self.active_ttl)
+
+    async def _unregister_instance(self) -> None:
+        """Publish an ``inactive`` marker on shutdown.
+
+        Called by ``_shutdown()`` before ``cleanup()`` disconnects the client,
+        so the client is still open here. The marker is never cleared: it is
+        left to expire under ``inactive_ttl``, which gives a monitoring client a
+        window to observe the death before the retained message disappears
+        (AR-123). A clean DISCONNECT also suppresses the Will, so this explicit
+        publish is the only death signal on a graceful stop.
+
+        Best-effort: a failed publish must not fail shutdown (log WARNING and
+        continue). Only :class:`~aiomqtt.MqttError` is swallowed; other
+        exceptions propagate.
+        """
+        await self._publish_status("inactive", self.inactive_ttl)
+
+    async def _publish_status(self, status: Literal["active", "inactive"], ttl: float) -> None:
+        """Publish a retained heartbeat entry with an explicit ``status``/``ttl``.
+
+        Shared by ``_register_instance`` and ``_unregister_instance``, which
+        differ only in the status they publish. ``start_time`` may be unset
+        during a failed startup; fall back to the current time so the entry is
+        still well-formed.
+        """
         client = self.client
         if client is None:
             return
@@ -688,41 +767,27 @@ class MqttWorker(TransportWorker):
             Heartbeat(
                 service=self.service_name,
                 instance_id=self.instance_id,
-                status="active",
+                status=status,
                 heartbeat_interval=self.heartbeat_interval,
                 start_time=self.start_time or datetime.now(timezone.utc),
+                ttl=ttl,
             )
         )
+        properties = Properties(PacketTypes.PUBLISH)
+        properties.MessageExpiryInterval = int(ttl)
         try:
-            await client.publish(self._registry_topic, payload, qos=_REGISTRY_QOS, retain=True)
-        except MqttError as exc:
-            self.logger.log(
-                logging.WARNING,
-                "Failed to register instance %s on %s: %s",
-                self.instance_id,
+            await client.publish(
                 self._registry_topic,
-                exc,
+                payload,
+                qos=_REGISTRY_QOS,
+                retain=True,
+                properties=properties,
             )
-            self._health.report_failure(exc)
-
-    async def _unregister_instance(self) -> None:
-        """Clear this instance's retained liveness marker from the registry topic.
-
-        Best-effort: a failed publish must not fail shutdown (log WARNING and
-        continue). A retained message with an empty payload clears the retained
-        state. Called by _shutdown() before cleanup() disconnects the client, so
-        the client is still open here. Only :class:`~aiomqtt.MqttError` is
-        swallowed; other exceptions propagate.
-        """
-        client = self.client
-        if client is None:
-            return
-        try:
-            await client.publish(self._registry_topic, None, qos=_REGISTRY_QOS, retain=True)
         except MqttError as exc:
             self.logger.log(
                 logging.WARNING,
-                "Failed to unregister instance %s from %s: %s",
+                "Failed to publish %s status for instance %s on %s: %s",
+                status,
                 self.instance_id,
                 self._registry_topic,
                 exc,

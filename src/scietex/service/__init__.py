@@ -12,9 +12,16 @@ Core classes:
       the ``aiomqtt`` client for distributed task queues.
       (Requires ``scietex.service[mqtt]`` extra.)
 
+Client surface:
+    - ``WorkerWatcher`` / ``WorkerRegistry``: read-only view over the worker
+      heartbeats published by the transports, with a snapshot and a change
+      stream. The core is dependency-free; the concrete backends
+      (``PollingBackend``, ``SubscribeBackend``) live in the transport
+      packages and require the matching extra.
+
 Module-level exports:
-    ``__version__``, ``BasicWorker``, ``TaskProcessor``, and
-    optionally ``ValkeyWorker``/``MqttWorker`` and their configuration
+    ``__version__``, ``BasicWorker``, ``TaskProcessor``, the client surface,
+    and optionally ``ValkeyWorker``/``MqttWorker`` and their configuration
     classes.
 
 The ``VALKEY_AVAILABLE`` and ``MQTT_AVAILABLE`` flags report whether the
@@ -24,6 +31,14 @@ respective surfaces could be imported at package load time.
 import logging
 
 from .basic_worker import BasicWorker
+from .client import (
+    WatchBackend,
+    WorkerEvent,
+    WorkerEventKind,
+    WorkerRecord,
+    WorkerRegistry,
+    WorkerWatcher,
+)
 from .config import TaskProcessorConfig, WorkerConfig
 from .manager import Manager, register_manager
 from .task_processor import TaskProcessor
@@ -43,6 +58,12 @@ __all__ = [
     "TaskSink",
     "InMemoryTransport",
     "TransportWorker",
+    "WatchBackend",
+    "WorkerEvent",
+    "WorkerEventKind",
+    "WorkerRecord",
+    "WorkerRegistry",
+    "WorkerWatcher",
 ]
 
 VALKEY_AVAILABLE = False

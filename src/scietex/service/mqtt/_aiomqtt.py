@@ -15,6 +15,7 @@ try:
         ProtocolVersion,
         TLSParameters,
         Topic,
+        Will,
     )
     from paho.mqtt.packettypes import PacketTypes
     from paho.mqtt.properties import Properties
@@ -33,5 +34,6 @@ __all__ = [
     "ProtocolVersion",
     "TLSParameters",
     "Topic",
+    "Will",
     "aiomqtt",
 ]
