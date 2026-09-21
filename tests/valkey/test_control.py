@@ -7,7 +7,6 @@ ack/requeue/on_started/on_drain control branches. Retention/TTL (step 6) is out
 of scope here.
 """
 
-import logging
 from collections.abc import Callable
 from uuid import UUID
 
@@ -15,7 +14,7 @@ import pytest
 
 from scietex.service import ValkeyWorker
 from scietex.service.task_handler import CANCEL_TASK_TYPE, CONFIG_APPLY_TASK_TYPE
-from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeout, is_control_task
+from scietex.service.task_handler.schemas import TaskData, TaskResult, TaskTimeout
 from scietex.service.task_handler.wire import encode_task_envelope
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
@@ -33,9 +32,17 @@ class _Sink:
         self.enqueued: list[TaskData] = []
         self._accept = accept
 
+    def _accepts(self, task_data: TaskData) -> bool:
+        return self._accept(task_data) if callable(self._accept) else self._accept
+
     def enqueue_task(self, task_data: TaskData) -> bool:
-        ok = self._accept(task_data) if callable(self._accept) else self._accept
-        if ok:
+        if self._accepts(task_data):
+            self.enqueued.append(task_data)
+            return True
+        return False
+
+    def enqueue_control_task(self, task_data: TaskData) -> bool:
+        if self._accepts(task_data):
             self.enqueued.append(task_data)
             return True
         return False
@@ -95,22 +102,21 @@ async def test_directed_read_enqueues_control_task_without_lease():
 
 
 @pytest.mark.asyncio
-async def test_non_control_entry_on_control_stream_is_skipped(caplog):
-    """A data task read from the control stream is a misroute: it is logged and
-    dropped, never enqueued."""
+async def test_non_control_entry_on_control_stream_is_enqueued_as_control():
+    """A task read from a control stream is delivered to the control lane
+    regardless of its task type: the lane is decided by the channel, not by
+    classifying the payload, so nothing is skipped at the transport."""
     data_id = UUID("11111111-1111-1111-1111-111111111111")
     data_task = TaskData(task_id=str(data_id), task="dummy", payload=b"{}")
     client = DummyClient(xread_results=[_entry(b"1-0", encode_task_envelope(data_task)), None])
     worker = _control_worker(client)
     sink = _Sink()
 
-    with caplog.at_level(logging.ERROR):
-        enqueued = await worker._transport.fetch(sink)
+    enqueued = await worker._transport.fetch(sink)
 
-    assert enqueued is False
-    assert sink.enqueued == []
-    assert data_id not in worker._control_entry_ids
-    assert any("misrouted" in record.getMessage() for record in caplog.records)
+    assert enqueued is True
+    assert sink.enqueued == [data_task]
+    assert worker._control_entry_ids[data_id] == (worker._control_stream_name, b"1-0")
 
 
 @pytest.mark.asyncio
@@ -216,7 +222,7 @@ async def test_control_read_happens_when_data_lane_is_full():
     for i in range(2):
         d_id = UUID(f"aaaaaaaa-aaaa-aaaa-aaaa-{i:012d}")
         worker._transport._deferred.append((d_id, TaskData(task_id=str(d_id), task="dummy", payload=b"{}"), b"1-0"))
-    sink = _Sink(accept=lambda t: is_control_task(t))
+    sink = _Sink(accept=lambda t: t.task == CANCEL_TASK_TYPE)
 
     enqueued = await worker._transport.fetch(sink)
 

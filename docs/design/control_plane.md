@@ -267,9 +267,10 @@ addition to the data read:
 3. Read the **broadcast** stream with `XREAD` from the in-memory cursor
    (non-blocking).
 
-Each decoded `TaskData` is enqueued via `sink.enqueue_task`; the sink routes to
-the control lane by task type (`task_processor.py:371-384`). Return `True` if any
-channel enqueued.
+Each decoded `TaskData` is enqueued via `sink.enqueue_control_task`, so anything
+read from a control stream is dispatched against the control registry regardless
+of its task type (`valkey/transport.py:351`). Return `True` if any channel
+enqueued.
 
 Control reads are **non-blocking** (`block=0`) and run **sequentially after** the
 data read in the existing `task_queue_manager` loop. Data keeps its 1000 ms
@@ -280,8 +281,8 @@ pattern.
 
 A control entry the sink rejects (control lane full) is held in a bounded
 `_control_deferred` buffer and retried on the next poll, mirroring the data
-`_deferred` (`valkey/transport.py:82-88, 170-187`). `enqueue_task` returning
-`False` is the only fullness signal needed, so `TaskSink` is unchanged.
+`_deferred` (`valkey/transport.py:82-88, 170-187`). `enqueue_control_task`
+returning `False` is the fullness signal for the control lane.
 
 ### 4.5 Entry tracking and acknowledgement
 
@@ -351,10 +352,11 @@ instances**, one for data and one for control, both file-backed by default.
   entries **received but not yet processed** (a crash mid-session); it does not
   resurrect commands missed while the worker was offline, because those were
   never received and never entered the inbox.
-- `on_started` / `ack` / `on_drain` route to the inbox that owns the task id.
-  Since each receives `task_data`, routing by `is_control_task(task_data)` is
-  sufficient and introduces no new state beyond what already exists
-  (`_enqueued`, `mqtt/transport.py:133-137`).
+- `on_started` / `ack` / `on_drain` route to the inbox that owns the task id by
+  `_control_enqueued` membership (not by task type, so a control task published
+  to the legacy data topic acks in the data inbox) — `mqtt/transport.py:421,475,526`.
+  This introduces no new state beyond what already exists
+  (`_control_enqueued`, `mqtt/transport.py:161`).
 
 Default paths: data inbox at the existing `inbox_path`, control inbox at a
 sibling directory (e.g. `{inbox_path}/control`), so the two TTL-pruned stores
@@ -400,8 +402,11 @@ is event-only, and a stale command must not be replayed.
 
 The in-process control lane is **kept**:
 
-- `TaskProcessor.__control_queue` (`task_processor.py:141`) and the
-  `enqueue_task` type-based routing (`task_processor.py:379`) are unchanged.
+- `TaskProcessor.__control_queue` (`task_processor.py:141`) remains, but routing
+  is now channel-driven: `enqueue_control_task` (`task_processor.py:402`) targets
+  the control lane and `enqueue_task` targets the data lane, and a handler
+  declares its lane with the `control` class attribute
+  (`task_handler/basic.py`).
 - `TaskExecutor` continues to admit control first on its own concurrency ceiling
   (`DEFAULT_CONTROL_CONCURRENCY = 4`, `task_executor.py:32, 95-115`), and
   `max_concurrent_tasks` continues to bound only the data plane
@@ -413,10 +418,9 @@ What changes is the **transport-level** special-casing:
   control-preference scan — it is the bare-processor default with no separate
   channel, and it is not a durable control plane.
 - `ValkeyTransport.fetch`/`recover_pending_tasks` and
-  `MqttTransport.fetch`/`recover_pending_tasks` **drop** the `is_control_task`
-  branches that scanned past a blocked data lane. Control arrives on its own
-  channel, so those branches are dead and are removed to keep a single delivery
-  story.
+  `MqttTransport.fetch`/`recover_pending_tasks` **drop** the type-based
+  scan-past-backpressure branches. Control arrives on its own channel, so those
+  branches are dead and are removed to keep a single delivery story.
 
 Net effect: the two lanes no longer interact at the transport layer at all;
 they interact only in-process, where the interaction is exactly the intended
@@ -426,7 +430,9 @@ concurrency isolation.
 
 ## 7. Transport Protocol impact
 
-**`TaskTransport` gains zero methods.** `TaskSink` is unchanged.
+**`TaskTransport` gains zero methods.** `TaskSink` gains one method,
+`enqueue_control_task`, so a transport addresses a task's lane by which surface
+it calls rather than by inspecting the task type.
 
 - `fetch` owns the channel split internally; its `bool` return keeps its
   meaning ("something was enqueued").
@@ -538,9 +544,9 @@ shims.
   directed stream expires on its own, exactly like its heartbeat key. The
   broadcast stream is service-scoped and bounded by `MAXLEN`. There are no
   consumer groups, so there is no group residue to reconcile.
-- **Removed transport code:** the `is_control_task` scan-past-backpressure
-  branches in `ValkeyTransport.fetch`/`recover_pending_tasks` and
-  `MqttTransport.fetch`/`recover_pending_tasks`, and the `is_control_task`
+- **Removed transport code:** the type-based scan-past-backpressure branches in
+  `ValkeyTransport.fetch`/`recover_pending_tasks` and
+  `MqttTransport.fetch`/`recover_pending_tasks`, and the now-dead control-type
   import in `mqtt/transport.py:35`. `InMemoryTransport` keeps its branch.
 
 ---
@@ -631,7 +637,7 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
    `Y:` correct inbox ownership and at-least-once within a session. `H:`
    drain/recover the control inbox; route `on_started`/`ack`/`on_drain` by
    **inbox ownership** (`_control_enqueued` membership), not by
-   `is_control_task` — a control task published to the legacy data topic lands
+   task type — a control task published to the legacy data topic lands
    in the data inbox and must ack there, so ownership is the correct key.
    `V:` control inbox test: persist → fetch → ack writes the control tombstone;
    recovery replays a non-terminal control entry.
@@ -639,7 +645,7 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
    necessary, so the two steps merged into one commit.
 9. **Remove transport-level control special-casing.** `W:`
    `valkey/transport.py` fetch/recover, `mqtt/transport.py:35, 202-288`. `Y:`
-   one delivery story. `H:` delete the `is_control_task` scan-past-backpressure
+   one delivery story. `H:` delete the type-based scan-past-backpressure
    branches and the unused import; leave `InMemoryTransport`. `V:` existing
    control-priority tests still pass; `ruff`/`ty`; grep confirms no dead import.
 10. **Producer surface (separable).** `W:` new `scietex/service/control.py`,
@@ -684,12 +690,13 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
    broadcast streams with `XREAD` in `fetch`; `XADD ... MAXLEN ~ N` on publish;
    refresh the directed TTL in `heartbeat()`; branch `ack`/`on_started`/
    `on_drain`/`requeue` on control ownership; no lease for control; remove the
-   `is_control_task` scan-past-backpressure branches.
+   type-based scan-past-backpressure branches.
 5. **MQTT worker/transport** — `mqtt/worker.py`: build `_control_inbox`, route
    control topics in `_handle_message:695`, subscribe `_control_topic` /
    `_control_broadcast_topic` in `_subscribe:448`. `mqtt/transport.py:99`: accept
-   `control_inbox`; drain/recover it; route ack hooks by `is_control_task`;
-   remove `is_control_task` scan branches
+   `control_inbox`; drain/recover it; route ack hooks by control-inbox
+   ownership (`_control_enqueued`);
+   remove the type-based scan branches
    (`fetch:202`, `recover_pending_tasks:245`) .
 6. **Producer surface (v5.0.0)** — new `scietex/service/control.py`
    `ControlPublisher` Protocol + `ValkeyControlPublisher` /

@@ -33,6 +33,13 @@ class FakeSink:
         self.items.append((task_id, task_data))
         return True
 
+    def enqueue_control_task(self, task_data: TaskData) -> bool:
+        task_id = task_data_id(task_data)
+        if task_id in self.reject:
+            return False
+        self.items.append((task_id, task_data))
+        return True
+
 
 @pytest.mark.asyncio
 async def test_fetch_drains_submitted_tasks_and_reports():
@@ -214,7 +221,7 @@ async def test_fetch_delivers_control_behind_full_data_lane():
     data = TaskData(task_id=str(t1), task="a")
     control = TaskData(task_id=str(t2), task=CANCEL_TASK_TYPE)
     transport.submit(data)
-    transport.submit(control)
+    transport.submit_control(control)
 
     sink = FakeSink(full=True)
     assert await transport.fetch(sink) is True
@@ -232,10 +239,54 @@ async def test_fetch_preserves_data_fifo_when_control_interleaved():
     c1 = TaskData(task_id=str(t2), task=CANCEL_TASK_TYPE)
     d2 = TaskData(task_id=str(t3), task="b")
     transport.submit(d1)
-    transport.submit(c1)
+    transport.submit_control(c1)
     transport.submit(d2)
 
     sink = FakeSink(full=True)
     assert await transport.fetch(sink) is True
     assert sink.items == [(t2, c1)]
     assert list(transport._pending) == [d1, d2]
+
+
+@pytest.mark.asyncio
+async def test_requeue_of_control_task_stays_on_control_deque():
+    """requeue routes a control command back to the control deque, so the next
+    fetch re-delivers it on the control lane, not the data lane."""
+    transport = InMemoryTransport(logger=_logger())
+    sink = FakeSink()
+    t1 = uuid4()
+    control = TaskData(task_id=str(t1), task=CANCEL_TASK_TYPE)
+    transport.submit_control(control)
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t1, control)]
+    assert list(transport._control_pending) == []
+    assert list(transport._pending) == []
+
+    await transport.requeue(control)
+
+    assert list(transport._control_pending) == [control]
+    assert list(transport._pending) == []
+    sink.items.clear()
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t1, control)]
+
+
+@pytest.mark.asyncio
+async def test_on_drain_of_control_task_with_requeue_stays_on_control_deque():
+    """A control command drained at shutdown with canceled_action='requeue' is
+    returned to the control deque, not the data deque, so it is re-dispatched
+    against the control registry on restart."""
+    transport = InMemoryTransport(logger=_logger())
+    t1 = uuid4()
+    control = TaskData(task_id=str(t1), task=CANCEL_TASK_TYPE, canceled_action="requeue")
+    transport.submit_control(control)
+    assert await transport.fetch(FakeSink()) is True
+    assert list(transport._control_pending) == []
+
+    await transport.on_drain(control)
+
+    assert list(transport._control_pending) == [control]
+    assert list(transport._pending) == []
+    sink = FakeSink()
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t1, control)]

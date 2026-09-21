@@ -36,7 +36,9 @@ async def test_cancel_task_cancels_running_target():
         assert target_id in proc.running_tasks
 
         cancel_id = uuid4()
-        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id)))
+        proc.enqueue_control_task(
+            TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id))
+        )
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -64,7 +66,9 @@ async def test_cancel_task_unknown_target_returns_not_running():
     await proc.start()
     try:
         cancel_id = uuid4()
-        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(uuid4())))
+        proc.enqueue_control_task(
+            TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(uuid4()))
+        )
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -88,7 +92,7 @@ async def test_cancel_task_malformed_payload_returns_invalid_code():
     await proc.start()
     try:
         cancel_id = uuid4()
-        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=b"not-msgpack"))
+        proc.enqueue_control_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=b"not-msgpack"))
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break
@@ -122,7 +126,9 @@ async def test_cancel_task_stubborn_target_reports_ignored():
             await asyncio.sleep(0.01)
 
         cancel_id = uuid4()
-        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id)))
+        proc.enqueue_control_task(
+            TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id))
+        )
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break

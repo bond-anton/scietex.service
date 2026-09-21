@@ -487,9 +487,9 @@ async def test_enabled_processor_registers_config_handlers():
     await proc._start_task_handler("ConfigStoreHandler")
     await proc._start_task_handler("ConfigShowHandler")
 
-    assert isinstance(proc._find_task_handler(CONFIG_APPLY_TASK_TYPE), ConfigApplyHandler)
-    assert isinstance(proc._find_task_handler(CONFIG_STORE_TASK_TYPE), ConfigStoreHandler)
-    assert isinstance(proc._find_task_handler(CONFIG_SHOW_TASK_TYPE), ConfigShowHandler)
+    assert isinstance(proc._find_task_handler(CONFIG_APPLY_TASK_TYPE, control=True), ConfigApplyHandler)
+    assert isinstance(proc._find_task_handler(CONFIG_STORE_TASK_TYPE, control=True), ConfigStoreHandler)
+    assert isinstance(proc._find_task_handler(CONFIG_SHOW_TASK_TYPE, control=True), ConfigShowHandler)
 
 
 @pytest.mark.asyncio
@@ -501,9 +501,9 @@ async def test_disabled_processor_does_not_register_config_handlers():
     await proc._start_task_handler("ConfigStoreHandler")
     await proc._start_task_handler("ConfigShowHandler")
 
-    assert proc._find_task_handler(CONFIG_APPLY_TASK_TYPE) is None
-    assert proc._find_task_handler(CONFIG_STORE_TASK_TYPE) is None
-    assert proc._find_task_handler(CONFIG_SHOW_TASK_TYPE) is None
+    assert proc._find_task_handler(CONFIG_APPLY_TASK_TYPE, control=True) is None
+    assert proc._find_task_handler(CONFIG_STORE_TASK_TYPE, control=True) is None
+    assert proc._find_task_handler(CONFIG_SHOW_TASK_TYPE, control=True) is None
 
 
 @pytest.mark.asyncio

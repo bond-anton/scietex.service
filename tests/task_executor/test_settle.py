@@ -96,7 +96,7 @@ async def test_execute_propagates_cancelled_error():
     while the settle step still runs and acks None."""
 
     class CancelRecording(Recording):
-        async def process_task(self, task_data):
+        async def process_task(self, task_data, *, control=False):
             self.processed.append((task_data_id(task_data), task_data))
             raise asyncio.CancelledError()
 
@@ -125,7 +125,7 @@ async def test_settle_balances_control_lane():
     task_id = uuid4()
     task_data = TaskData(task_id=str(task_id), task=CANCEL_TASK_TYPE)
     control_queue.put_nowait(task_data)
-    await register_finished(lifecycle, task_id, task_data)
+    await register_finished(lifecycle, task_id, task_data, control=True)
     executor._control_running.add(task_id)
 
     await executor._settle(task_data, TaskResult(status="success"))

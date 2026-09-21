@@ -48,7 +48,6 @@ from .schemas import (
     TaskResult,
     TaskStatus,
     TaskTimeout,
-    is_control_task,
 )
 from .wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
 
@@ -90,5 +89,4 @@ __all__ = [
     "decode_task_envelope",
     "decode_task_envelope_version",
     "encode_task_envelope",
-    "is_control_task",
 ]

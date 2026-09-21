@@ -93,11 +93,6 @@ def task_data_id(task_data: TaskData) -> UUID:
     return UUID(task_data.task_id)
 
 
-def is_control_task(task_data: TaskData) -> bool:
-    """Whether ``task_data`` is a control-plane command (AR-108)."""
-    return task_data.task in CONTROL_TASK_TYPES
-
-
 class TaskEnvelope(msgspec.Struct, frozen=True):
     """Versioned transport envelope wrapping a serialized task payload.
 

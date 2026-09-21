@@ -11,7 +11,6 @@ from scietex.service.task_handler.schemas import TaskData
 from scietex.service.task_handler.wire import encode_task_envelope
 from scietex.service.valkey._glide import ExpirySet, ExpiryType
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
-from scietex.service.valkey.transport import TASK_FIELD
 
 from ._helpers import DummyClient, FakeHandler, _entry
 
@@ -223,23 +222,24 @@ async def test_fetch_tasks_stops_reading_when_deferred_full():
 
 
 @pytest.mark.asyncio
-async def test_fetch_tasks_delivers_control_from_batch_when_data_full():
-    """A read batch containing a control task while the data lane is full
-    delivers the control task even though the data entries are deferred."""
+async def test_fetch_tasks_delivers_control_when_data_full():
+    """A control command read from the directed control stream is delivered even
+    when the data lane is full; the data entry is deferred, and neither writes a
+    lease (control entries are never leased)."""
     data_id = UUID("11111111-1111-1111-1111-111111111111")
     control_id = UUID("22222222-2222-2222-2222-222222222222")
     data_payload = encode_task_envelope(TaskData(task_id=str(data_id), task="dummy", payload=b"{}"))
     control_payload = encode_task_envelope(TaskData(task_id=str(control_id), task=CANCEL_TASK_TYPE))
-    result = {
-        b"stream": {
-            b"1-0": [[TASK_FIELD, data_payload]],
-            b"2-0": [[TASK_FIELD, control_payload]],
-        }
-    }
-    client = DummyClient(xreadgroup_result=result)
+    # The data entry arrives on the XREADGROUP task stream; the control command
+    # arrives on the directed control stream via the plain XREAD poll (the first
+    # of the two control reads; the broadcast read returns nothing).
+    client = DummyClient(
+        xreadgroup_result=_entry(b"1-0", data_payload),
+        xread_results=[_entry(b"1-0", control_payload), None],
+    )
     worker = ValkeyWorker(ValkeyWorkerConfig(queue_size=1, max_concurrent_tasks=1, valkey_config=ValkeyConfig()))
     worker._client = client
-    worker._transport.recovered = True  # skip recovery; exercise the XREADGROUP path only
+    worker._transport.recovered = True  # skip recovery; exercise the read paths only
     filler = UUID("99999999-9999-9999-9999-999999999999")
     assert worker.enqueue_task(TaskData(task_id=str(filler), task="dummy", payload=b"{}")) is True
 
@@ -247,7 +247,7 @@ async def test_fetch_tasks_delivers_control_from_batch_when_data_full():
 
     assert enqueued is True
     assert not worker.control_queue_empty(), "control task must be delivered despite a full data lane"
-    assert control_id in worker._task_entry_ids
+    assert control_id in worker._control_entry_ids
     assert data_id not in worker._task_entry_ids
     assert len(worker._transport._deferred) == 1
-    assert len(client.sets) == 1, "only the control entry may write a lease"
+    assert client.sets == [], "deferred data and control entries write no lease"

@@ -8,7 +8,7 @@ source, so the handlers never reach into processor internals.
 """
 
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import ClassVar, Literal
 
 import msgspec
 
@@ -152,6 +152,10 @@ class ConfigApplyHandler(TaskHandler):
     than raising, so a bad request never crashes the task loop.
     """
 
+    #: A config command is control-plane: it arrives on a control channel and is
+    #: served from the control registry, never the data registry.
+    control: ClassVar[bool] = True
+
     def __init__(
         self,
         name: str,
@@ -240,6 +244,10 @@ class ConfigStoreHandler(TaskHandler):
     than raising, so a bad request never crashes the task loop.
     """
 
+    #: A config command is control-plane: it arrives on a control channel and is
+    #: served from the control registry, never the data registry.
+    control: ClassVar[bool] = True
+
     def __init__(
         self,
         name: str,
@@ -327,6 +335,10 @@ class ConfigShowHandler(TaskHandler):
     callback. A malformed payload yields a non-retryable error result rather
     than raising, so a bad request never crashes the task loop.
     """
+
+    #: A config command is control-plane: it arrives on a control channel and is
+    #: served from the control registry, never the data registry.
+    control: ClassVar[bool] = True
 
     def __init__(
         self,

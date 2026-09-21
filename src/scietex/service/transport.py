@@ -13,7 +13,7 @@ from collections import deque
 from typing import Protocol
 from uuid import UUID
 
-from .task_handler.schemas import CancelReason, TaskData, TaskResult, is_control_task, task_data_id
+from .task_handler.schemas import CancelReason, TaskData, TaskResult, task_data_id
 
 
 class TaskSink(Protocol):
@@ -22,11 +22,16 @@ class TaskSink(Protocol):
     ``TaskProcessor`` satisfies this structurally: its bounded internal queue
     reports fullness via :meth:`task_queue_full` and accepts tasks via the
     non-blocking :meth:`enqueue_task` (returning ``False`` when full).
+    Control-plane commands are delivered through the separate
+    :meth:`enqueue_control_task`, so a transport addresses a task's lane by
+    which surface it calls rather than by inspecting the task type.
     """
 
     def task_queue_full(self) -> bool: ...
 
     def enqueue_task(self, task_data: TaskData) -> bool: ...
+
+    def enqueue_control_task(self, task_data: TaskData) -> bool: ...
 
 
 class TaskTransport(Protocol):
@@ -119,39 +124,56 @@ class RecoverableTransport:
 
 
 class InMemoryTransport:
-    """A working in-memory transport backed by a ``deque``.
+    """A working in-memory transport backed by two ``deque`` s.
 
-    ``submit`` queues a task for delivery; ``fetch`` drains it into the sink
-    subject to backpressure. A ``requeue`` re-appends a task so the next
-    ``fetch`` re-delivers it, matching the base ``TaskProcessor`` policy of
-    returning a task to its source queue when it cannot be processed.
+    ``submit`` queues a data task for delivery; ``submit_control`` queues a
+    control command. ``fetch`` drains control first (subject to the control
+    lane's own backpressure) then data (subject to data backpressure). A
+    ``requeue`` re-appends a task to the deque it came from, so the next
+    ``fetch`` re-delivers it on the correct lane, matching the base
+    ``TaskProcessor`` policy of returning a task to its source queue when it
+    cannot be processed.
     """
 
     def __init__(self, *, logger: logging.Logger) -> None:
         self._logger = logger
         self._pending: deque[TaskData] = deque()
+        self._control_pending: deque[TaskData] = deque()
+        # Ids delivered from the control deque. requeue/on_drain must route a
+        # control task back to the control deque, not the data deque, or a
+        # requeued control command would be re-dispatched against the data
+        # registry and fail as an unknown task type.
+        self._control_ids: set[UUID] = set()
 
     def submit(self, task_data: TaskData) -> None:
-        """Append a task for delivery on the next :meth:`fetch`."""
+        """Append a data task for delivery on the next :meth:`fetch`."""
         self._pending.append(task_data)
 
-    async def fetch(self, sink: TaskSink) -> bool:
-        """Drain pending tasks into ``sink``, preferring control-plane commands.
+    def submit_control(self, task_data: TaskData) -> None:
+        """Append a control command for delivery on the next :meth:`fetch`."""
+        self._control_pending.append(task_data)
 
-        Data delivery stops at the first rejected data task (backpressure, order
-        preserved); the scan continues so a control command queued behind it can
-        still be delivered (AR-108).
+    async def fetch(self, sink: TaskSink) -> bool:
+        """Drain pending tasks into ``sink``, control first.
+
+        A control command is delivered through :meth:`TaskSink.enqueue_control_task`
+        so it lands on the control lane; a data task goes through
+        :meth:`TaskSink.enqueue_task`. Data delivery stops at the first rejected
+        data task (backpressure, order preserved); control delivery is independent
+        of data backpressure so a saturated data plane never starves a control
+        command (AR-108).
         """
         enqueued = False
+        for _ in range(len(self._control_pending)):
+            task_data = self._control_pending.popleft()
+            if sink.enqueue_control_task(task_data):
+                self._control_ids.add(task_data_id(task_data))
+                enqueued = True
+            else:
+                self._control_pending.append(task_data)
         data_blocked = False
         for _ in range(len(self._pending)):
             task_data = self._pending.popleft()
-            if is_control_task(task_data):
-                if sink.enqueue_task(task_data):
-                    enqueued = True
-                else:
-                    self._pending.append(task_data)
-                continue
             if data_blocked or sink.task_queue_full():
                 self._pending.append(task_data)
                 data_blocked = True
@@ -164,8 +186,16 @@ class InMemoryTransport:
         return enqueued
 
     async def requeue(self, task_data: TaskData) -> None:
-        """Re-append a task so the next :meth:`fetch` re-delivers it."""
-        self._pending.append(task_data)
+        """Re-append a task to the deque it was delivered from.
+
+        A control task stays on the control deque, so a requeued control command
+        is re-dispatched against the control registry rather than the data
+        registry (where its task type would be unknown).
+        """
+        if task_data_id(task_data) in self._control_ids:
+            self._control_pending.append(task_data)
+        else:
+            self._pending.append(task_data)
 
     async def on_started(self, task_data: TaskData) -> None:
         """No-op: an in-memory transport publishes no tracking records."""
@@ -177,7 +207,12 @@ class InMemoryTransport:
         *,
         cancel_reason: CancelReason | None = None,
     ) -> None:
-        """No-op: an in-memory task has no transport entry to acknowledge."""
+        """No-op: an in-memory task has no transport entry to acknowledge.
+
+        Drops the delivered-from-control marker so the per-delivery routing set
+        stays bounded for a long-running transport.
+        """
+        self._control_ids.discard(task_data_id(task_data))
 
     async def on_progress(self, task_id: UUID, value: float) -> None:
         """No-op: an in-memory transport stores no progress records."""

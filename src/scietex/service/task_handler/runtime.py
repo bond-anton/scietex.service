@@ -22,8 +22,12 @@ class TaskTracker:
         worker_task: The ``asyncio.Task`` executing this task.
         data: The ``TaskData`` associated with the task.
         started: Monotonic timestamp when the task was created.
+        control: Whether the task was admitted on the control lane. Captured at
+            dispatch so the settle step can balance the correct queue without
+            re-classifying the task type or depending on mutable lane state.
     """
 
     worker_task: Task
     data: TaskData
     started: int | float
+    control: bool = False

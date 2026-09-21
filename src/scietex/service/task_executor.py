@@ -16,7 +16,6 @@ from .task_handler import (
     TaskData,
     TaskResult,
     TaskTracker,
-    is_control_task,
 )
 from .task_handler.schemas import task_data_id
 from .task_lifecycle import TaskLifecycle
@@ -53,7 +52,7 @@ class TaskExecutor:
         queue: asyncio.Queue[TaskData],
         lifecycle: TaskLifecycle,
         retry_attempts: dict[UUID, int],
-        process_task: Callable[[TaskData], Awaitable[TaskResult]],
+        process_task: Callable[..., Awaitable[TaskResult]],
         on_started: Callable[[TaskData], Awaitable[None]],
         on_completed: Callable[..., Awaitable[None]],
         requeue: Callable[[TaskData], Awaitable[None]],
@@ -120,20 +119,22 @@ class TaskExecutor:
 
     def _dispatch(self, task_data: TaskData, *, control: bool) -> None:
         task_id = task_data_id(task_data)
-        task = asyncio.create_task(self._handle_task(task_data))
-        self._lifecycle.register(task_id, TaskTracker(worker_task=task, data=task_data, started=time.monotonic()))
+        task = asyncio.create_task(self._handle_task(task_data, control=control))
+        self._lifecycle.register(
+            task_id, TaskTracker(worker_task=task, data=task_data, started=time.monotonic(), control=control)
+        )
         if control:
             self._control_running.add(task_id)
 
-    async def _handle_task(self, task_data: TaskData) -> None:
+    async def _handle_task(self, task_data: TaskData, *, control: bool = False) -> None:
         """Execute a single task, then settle its transport entry exactly once."""
         result: TaskResult | None = None
         try:
-            result = await self._execute(task_data)
+            result = await self._execute(task_data, control=control)
         finally:
             await self._settle(task_data, result)
 
-    async def _execute(self, task_data: TaskData) -> TaskResult | None:
+    async def _execute(self, task_data: TaskData, *, control: bool) -> TaskResult | None:
         """Run the on_started hook, dispatch to the handler, and log completion.
 
         Catches ``Exception`` (never ``BaseException``) so ``CancelledError``
@@ -143,7 +144,7 @@ class TaskExecutor:
         task_id = task_data_id(task_data)
         try:
             await self._on_started(task_data)
-            result = await self._process_task(task_data)
+            result = await self._process_task(task_data, control=control)
             self._logger.log(
                 logging.DEBUG,
                 "Task %s (%s) finished with status %s",
@@ -169,10 +170,15 @@ class TaskExecutor:
     async def _settle(self, task_data: TaskData, result: TaskResult | None) -> None:
         """Drop the tracker, balance the queue, apply retry policy, then ack."""
         task_id = task_data_id(task_data)
-        self._lifecycle.remove_tracker(task_id)
-        if self._control_queue is not None and is_control_task(task_data):
+        tracker = self._lifecycle.remove_tracker(task_id)
+        # The lane is read from the tracker captured at dispatch, not from
+        # ``_control_running``: shutdown clears that set, and a handler that
+        # outlives the cancellation timeout settles after the clear, which would
+        # otherwise balance the wrong queue.
+        if tracker is not None and tracker.control:
             self._control_running.discard(task_id)
-            self._control_queue.task_done()
+            if self._control_queue is not None:
+                self._control_queue.task_done()
         else:
             self._queue.task_done()
         cancel_reason = self._lifecycle.take_cancel_reason(task_id)

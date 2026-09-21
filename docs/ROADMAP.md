@@ -280,9 +280,9 @@ cancelled while still queued no longer leaks its error-path retry budget; a
 regression test pins that only the target's budget is cleared.
 
 **Follow-up (v4.5.0):** AR-108 — control-plane commands now run on a dedicated
-priority lane: a new `CONTROL_TASK_TYPES` frozenset + `is_control_task` predicate
-(classifying `cancel_task` and the three `config:*` types) route `enqueue_task`
-into `TaskProcessor.__control_queue`; `TaskExecutor` admits control first through
+priority lane: the `cancel_task` and `config:*` types route through
+`enqueue_control_task` into `TaskProcessor.__control_queue`; `TaskExecutor`
+admits control first through
 its keyword-only `control_queue`/`control_concurrency` lane
 (`DEFAULT_CONTROL_CONCURRENCY = 4`), and `max_concurrent_tasks` now bounds the
 data plane only. The transport drains are control-aware — `InMemoryTransport.fetch`,

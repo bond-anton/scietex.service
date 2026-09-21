@@ -45,7 +45,7 @@ class Recording:
         self.processed: list = []
         self.process_result = process_result
 
-    async def process_task(self, task_data: TaskData) -> TaskResult:
+    async def process_task(self, task_data: TaskData, *, control: bool = False) -> TaskResult:
         self.processed.append((task_data_id(task_data), task_data))
         if isinstance(self.process_result, Exception):
             raise self.process_result
@@ -108,11 +108,11 @@ def register_running(lifecycle: TaskLifecycle, task_id: UUID, task_data: TaskDat
 
 
 async def register_finished(
-    lifecycle: TaskLifecycle, task_id: UUID, task_data: TaskData, *, started=0.0
+    lifecycle: TaskLifecycle, task_id: UUID, task_data: TaskData, *, started=0.0, control: bool = False
 ) -> TaskTracker:
     """Register a tracker whose worker task is already done (no lingering task)."""
     task = asyncio.create_task(asyncio.sleep(0))
     await task
-    tracker = TaskTracker(worker_task=task, data=task_data, started=started)
+    tracker = TaskTracker(worker_task=task, data=task_data, started=started, control=control)
     lifecycle.register(task_id, tracker)
     return tracker

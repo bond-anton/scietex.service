@@ -19,14 +19,16 @@ from ._helpers import (
 
 
 @pytest.mark.asyncio
-async def test_enqueue_task_routes_control_and_data_to_separate_lanes():
-    """enqueue_task sends control-plane commands to the control lane and data
-    tasks to the data lane, without blocking (AR-108)."""
+async def test_enqueue_routes_control_and_data_to_separate_lanes():
+    """enqueue_control_task sends control-plane commands to the control lane and
+    enqueue_task sends data tasks to the data lane, without blocking (AR-108)."""
     proc = CancelRecordingProcessor()
     control_id = uuid4()
     data_id = uuid4()
 
-    assert proc.enqueue_task(TaskData(task_id=str(control_id), task="cancel_task", payload=_cancel_payload(uuid4())))
+    assert proc.enqueue_control_task(
+        TaskData(task_id=str(control_id), task="cancel_task", payload=_cancel_payload(uuid4()))
+    )
     assert proc.enqueue_task(TaskData(task_id=str(data_id), task="dummy", payload=b"{}"))
 
     # Both lanes hold their task; neither was dropped.
@@ -68,7 +70,9 @@ async def test_cancel_task_bypasses_saturated_data_plane():
         # The cancel travels the control lane and completes while the data slot
         # is still occupied, removing the queued target.
         cancel_id = uuid4()
-        proc.enqueue_task(TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id)))
+        proc.enqueue_control_task(
+            TaskData(task_id=str(cancel_id), task="cancel_task", payload=_cancel_payload(target_id))
+        )
         for _ in range(200):
             if any(tid == cancel_id for tid, *_ in proc.completed):
                 break

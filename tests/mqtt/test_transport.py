@@ -100,6 +100,7 @@ class FakeSink:
         self.full = full
         self.reject: set[UUID] = reject or set()
         self.items: list[tuple[UUID, TaskData]] = []
+        self.control_items: list[tuple[UUID, TaskData]] = []
 
     def task_queue_full(self) -> bool:
         return self.full
@@ -109,6 +110,13 @@ class FakeSink:
         if task_id in self.reject:
             return False
         self.items.append((task_id, task_data))
+        return True
+
+    def enqueue_control_task(self, task_data: TaskData) -> bool:
+        task_id = task_data_id(task_data)
+        if task_id in self.reject:
+            return False
+        self.control_items.append((task_id, task_data))
         return True
 
 
@@ -238,7 +246,8 @@ async def test_fetch_delivers_control_inbox_when_data_lane_full():
 
     sink = FakeSink(full=True)
     assert await transport.fetch(sink) is True
-    assert sink.items == [(t_ctrl, d_ctrl)]
+    assert sink.control_items == [(t_ctrl, d_ctrl)]
+    assert sink.items == []
 
 
 @pytest.mark.asyncio
@@ -275,7 +284,7 @@ async def test_recover_pending_tasks_replays_control_inbox_entry():
     complete, enqueued = await transport.recover_pending_tasks(sink)
 
     assert (complete, enqueued) == (True, True)
-    assert sink.items == [(t_ctrl, d_ctrl)]
+    assert sink.control_items == [(t_ctrl, d_ctrl)]
 
 
 @pytest.mark.asyncio
@@ -292,10 +301,10 @@ async def test_fetch_does_not_double_deliver_control_inbox_entry():
 
     sink = FakeSink()
     assert await transport.fetch(sink) is True
-    assert sink.items == [(t_ctrl, d_ctrl)]
+    assert sink.control_items == [(t_ctrl, d_ctrl)]
 
     assert await transport.fetch(sink) is False
-    assert sink.items == [(t_ctrl, d_ctrl)]
+    assert sink.control_items == [(t_ctrl, d_ctrl)]
 
 
 @pytest.mark.asyncio

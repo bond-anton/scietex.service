@@ -7,7 +7,7 @@ tasks and the queue, so the handler never reaches into processor internals.
 """
 
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import ClassVar, Literal
 from uuid import UUID
 
 import msgspec
@@ -63,6 +63,10 @@ class CancelTaskHandler(TaskHandler):
     callback. A malformed payload yields a non-retryable error result rather
     than raising, so a bad request never crashes the task loop.
     """
+
+    #: The cancel command is control-plane: it always arrives on a control
+    #: channel and is served from the control registry, never the data registry.
+    control: ClassVar[bool] = True
 
     def __init__(
         self,

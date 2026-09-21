@@ -76,6 +76,7 @@ concrete handlers must implement.
 | `context` | `TaskHandlerContext` | Narrow context exposing `service_name`, `instance_id`, `logger` |
 | `logger` | `logging.Logger` | Logger instance from the parent worker |
 | `is_ready` | `bool` | Whether the handler is initialized and ready |
+| `control` | `ClassVar[bool]` | Class-level flag (default `False`). `True` files the handler in the control registry so `add_task_handler` routes it to the control lane; see [Control-plane handlers](#control-plane-handlers) |
 
 The `worker` attribute no longer exists — handlers receive only the narrow
 `TaskHandlerContext`, which cannot reach processor internals.
@@ -119,14 +120,30 @@ class EmailHandler(TaskHandler):
 
 ### Task Type Selection
 
-When a task arrives, the processor iterates over all registered handlers
-and calls `handler.supports(task_type)`. The first handler returning
-`True` receives the task:
+When a task arrives, the processor iterates over the active handlers in the
+lane's registry and calls `handler.supports(task_type)`. The first handler
+returning `True` receives the task. Which registry is consulted depends on the
+lane the task arrived on: a data task looks up the data registry, a control
+command the control registry.
 
 ```python
 handler = processor._find_task_handler("send_email")
 # Returns the EmailHandler instance above
+
+handler = processor._find_task_handler("cancel_task", control=True)
+# Returns the CancelTaskHandler instance from the control registry
 ```
+
+### Control-plane handlers
+
+A handler opts into the control lane by declaring the class attribute
+`control: ClassVar[bool] = True` — `CancelTaskHandler` and the three
+`config:*` handlers set it. `add_task_handler` files such a handler in the
+control registry (`control_task_handlers`) instead of the data registry
+(`task_handlers`), and the processor dispatches it only for commands delivered
+on a control channel via `enqueue_control_task`. The two registries are
+disjoint, so a control command is never dispatched against a data handler and
+a data task is never dispatched against a control handler.
 
 ## Task Cancellation
 

@@ -269,8 +269,8 @@ class MqttTransport(RecoverableTransport):
 
         Control never consults ``task_queue_full`` (design §5.1): the in-process
         control lane has its own concurrency ceiling, so the only rejection
-        signal is ``enqueue_task`` returning ``False`` (control lane full). On
-        accept the id is recorded in ``_control_enqueued`` so ``ack``/
+        signal is ``enqueue_control_task`` returning ``False`` (control lane
+        full). On accept the id is recorded in ``_control_enqueued`` so ``ack``/
         ``on_started`` route to the control inbox, and a ``queued`` status is
         published.
 
@@ -279,7 +279,7 @@ class MqttTransport(RecoverableTransport):
             enqueued); ``False`` when the control lane is full and the entry
             stays pending for the next poll.
         """
-        if not sink.enqueue_task(task_data):
+        if not sink.enqueue_control_task(task_data):
             return False
         self._control_enqueued.add(task_id)
         await self._publish_status(

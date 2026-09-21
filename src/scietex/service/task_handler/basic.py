@@ -2,6 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
 from .capabilities import TaskCapabilities
 from .context import TaskHandlerContext
@@ -18,6 +19,12 @@ class TaskHandler(ABC):
     Subclasses must implement the :attr:`supported_tasks` property and
     the :meth:`handle` method.
     """
+
+    #: Which lane the handler serves. A task's lane is a function of the channel
+    #: it arrived on, not its task type, so this class attribute is the single
+    #: declaration that routes a handler into the control registry (when True)
+    #: or the data registry (when False) at ``add_task_handler`` time.
+    control: ClassVar[bool] = False
 
     def __init__(self, name: str, context: TaskHandlerContext) -> None:
         """Initialize the task handler.

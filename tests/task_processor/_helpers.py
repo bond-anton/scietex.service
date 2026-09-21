@@ -48,6 +48,19 @@ class DummyHandler(TaskHandler):
         return ["dummy"]
 
 
+class ControlHandler(TaskHandler):
+    """A control-lane handler, registered into the control registry."""
+
+    control = True
+
+    async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
+        return TaskResult(status="success", error="No error", payload=task_data.payload)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return ["control_dummy"]
+
+
 class SlowHandler(TaskHandler):
     async def handle(self, task_data: TaskData, *, capabilities: TaskCapabilities) -> TaskResult:
         # simulate long running task
@@ -325,9 +338,9 @@ class OrderRecordingProcessor(DemoProcessor):
     async def on_task_started(self, task_data):
         self.call_order.append("started")
 
-    async def process_task(self, task_data):
+    async def process_task(self, task_data, *, control=False):
         self.call_order.append("process")
-        return await super().process_task(task_data)
+        return await super().process_task(task_data, control=control)
 
 
 class ProgressReportingHandler(TaskHandler):

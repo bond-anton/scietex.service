@@ -7,6 +7,7 @@ import pytest
 from scietex.service.task_handler.schemas import TaskData, TaskResult
 
 from ._helpers import (
+    ControlHandler,
     DemoProcessor,
     DummyHandler,
     RaisingHandler,
@@ -82,3 +83,37 @@ async def test_process_task_no_handler_is_not_retryable():
     assert "No handler" in result.error
     assert result.retryable is False
     assert result.error_code == ""
+
+
+@pytest.mark.asyncio
+async def test_process_task_control_lane_uses_control_registry():
+    """A task dispatched on the control lane resolves against the control
+    registry, not the data registry."""
+    proc = DemoProcessor()
+    proc.add_task_handler(ControlHandler)
+    await proc._start_task_handler("ControlHandler")
+
+    result: TaskResult = await proc.process_task(
+        TaskData(task_id=str(uuid4()), task="control_dummy", payload=b"{}"), control=True
+    )
+
+    assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_process_task_data_task_on_control_lane_is_unknown():
+    """A data task delivered on the control lane finds no control handler and
+    fails as a permanent unknown-task error. This replaces the transport-level
+    misroute guard: the channel selects the registry, so a wrong-pipe task is
+    rejected by dispatch rather than by a type predicate."""
+    proc = DemoProcessor()
+    proc.add_task_handler(DummyHandler)
+    await proc._start_task_handler("DummyHandler")
+
+    result: TaskResult = await proc.process_task(
+        TaskData(task_id=str(uuid4()), task="dummy", payload=b"{}"), control=True
+    )
+
+    assert result.status == "error"
+    assert "No handler" in result.error
+    assert result.retryable is False

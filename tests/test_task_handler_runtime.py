@@ -10,7 +10,7 @@ from scietex.service.task_handler.runtime import TaskTracker
 
 def test_task_tracker_is_frozen_dataclass():
     assert dataclasses.is_dataclass(TaskTracker)
-    assert [f.name for f in dataclasses.fields(TaskTracker)] == ["worker_task", "data", "started"]
+    assert [f.name for f in dataclasses.fields(TaskTracker)] == ["worker_task", "data", "started", "control"]
 
 
 def test_task_tracker_is_frozen():

@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from ..health import TransportHealth
-from ..task_handler.schemas import CancelReason, TaskData, TaskResult, is_control_task, task_data_id
+from ..task_handler.schemas import CancelReason, TaskData, TaskResult, task_data_id
 from ..task_handler.wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
 from ..transport import RecoverableTransport, TaskSink
 from ._glide import (
@@ -132,10 +132,10 @@ class ValkeyTransport(RecoverableTransport):
         Before reading, entries deferred by a previously full data lane are
         flushed first: ``XREADGROUP ">"`` never redelivers a claimed-but-
         unenqueued entry and recovery runs only once, so those entries would
-        otherwise be stranded. An entry that cannot be enqueued (data lane, or
-        rarely control lane, full) is held in the bounded deferred buffer and
-        retried on the next poll instead of being dropped; its entry id and
-        lease are recorded only on successful enqueue.
+        otherwise be stranded. An entry that cannot be enqueued (data lane
+        full) is held in the bounded deferred buffer and retried on the next
+        poll instead of being dropped; its entry id and lease are recorded only
+        on successful enqueue.
 
         After the data read, the directed and broadcast control streams are
         polled with plain ``XREAD`` (non-blocking) and any deferred control
@@ -191,9 +191,9 @@ class ValkeyTransport(RecoverableTransport):
                                     await self._lease.write(uuid)
                                     enqueued = True
                                 else:
-                                    # Data lane (or, rarely, control lane) full: hold the
-                                    # claimed entry and retry next poll. Entry id/lease are
-                                    # recorded only on successful enqueue, preserving the
+                                    # Data lane full: hold the claimed entry and
+                                    # retry next poll. Entry id/lease are recorded
+                                    # only on successful enqueue, preserving the
                                     # existing "full queue leaves no lease" policy.
                                     self._deferred.append((uuid, task_data, entry_id))
                                     self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", uuid)
@@ -259,7 +259,7 @@ class ValkeyTransport(RecoverableTransport):
         enqueued = False
         while deferred:
             task_id, task_data, entry_id = deferred[0]
-            if not sink.enqueue_task(task_data):
+            if not sink.enqueue_control_task(task_data):
                 break
             deferred.popleft()
             self._control_entry_ids[task_id] = (stream_name, entry_id)
@@ -303,11 +303,12 @@ class ValkeyTransport(RecoverableTransport):
         the last entry id returned. The read is non-blocking (``block=0``): it
         runs every poll after the data read, never delaying data latency.
 
-        Each decoded ``TaskData`` is enqueued via ``sink``. A non-control entry
-        on a control stream is a misroute and is skipped (logged, never
-        enqueued). A rejected entry (control lane full) is held in the stream's
-        bounded ``deferred`` buffer and retried next poll; the cursor still
-        advances past it so it is not re-read. No lease is written (§4.6).
+        Each decoded ``TaskData`` is enqueued via ``sink.enqueue_control_task``,
+        so anything read from a control stream is dispatched against the control
+        registry regardless of its task type. A rejected entry (control lane
+        full) is held in the stream's bounded ``deferred`` buffer and retried
+        next poll; the cursor still advances past it so it is not re-read. No
+        lease is written (§4.6).
 
         The explicit ``cursor`` parameter and ``(enqueued, cursor)`` return keep
         the directed and broadcast streams independent without attribute-name
@@ -346,15 +347,8 @@ class ValkeyTransport(RecoverableTransport):
                                     version if version is not None else "malformed",
                                 )
                                 continue
-                            if not is_control_task(task_data):
-                                self._logger.error(
-                                    "Non-control task %s misrouted to control stream %s",
-                                    task_data_id(task_data),
-                                    stream_name,
-                                )
-                                continue
                             uuid = task_data_id(task_data)
-                            if sink.enqueue_task(task_data):
+                            if sink.enqueue_control_task(task_data):
                                 self._control_entry_ids[uuid] = (stream_name, entry_id)
                                 enqueued = True
                             else:

@@ -81,10 +81,19 @@ topic lands in the data inbox and is acked there.
 
 ## In-process lane
 
-The transport split is orthogonal to the in-process priority lane. Control task
-types still route to `TaskProcessor.__control_queue` and are not counted against
-`max_concurrent_tasks`, which bounds the data plane only. The lane has its own
-ceiling, `DEFAULT_CONTROL_CONCURRENCY = 4`.
+The transport split is orthogonal to the in-process priority lane. A command
+delivered on a control channel lands on `TaskProcessor.__control_queue` and is
+not counted against `max_concurrent_tasks`, which bounds the data plane only.
+The lane has its own ceiling, `DEFAULT_CONTROL_CONCURRENCY = 4`.
+
+Lane routing is **channel-driven, not type-driven**. `TaskSink` exposes two
+surfaces — `enqueue_control_task` for the control lane and `enqueue_task` for
+the data lane — and a transport addresses a task's lane by which surface it
+calls. On the handler side, a handler declares `control: ClassVar[bool]`
+(default `False`); `add_task_handler` files it in either the control registry
+(`control_task_handlers`) or the data registry (`task_handlers`), and
+`_find_task_handler` resolves a control command only against the control
+registry.
 
 ## Configuration
 

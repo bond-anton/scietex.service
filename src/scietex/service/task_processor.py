@@ -36,7 +36,6 @@ from .task_handler import (
     TaskHandlerContext,
     TaskResult,
     TaskTracker,
-    is_control_task,
 )
 from .task_handler.schemas import task_data_id
 from .task_lifecycle import TaskLifecycle
@@ -120,6 +119,8 @@ class TaskProcessor(BasicWorker):
 
         self.__task_handlers_map: dict[str, tuple[type[TaskHandler], dict[str, object]]] = {}
         self.__task_handlers: dict[str, TaskHandler] = {}
+        self.__control_handlers_map: dict[str, tuple[type[TaskHandler], dict[str, object]]] = {}
+        self.__control_handlers: dict[str, TaskHandler] = {}
 
         # Initialize queues and tracking structures
         self.__queue_size: int = cfg.queue_size if cfg.queue_size is not None else DEFAULT_MAX_TASKS_QUEUE_SIZE
@@ -185,17 +186,32 @@ class TaskProcessor(BasicWorker):
 
     @property
     def task_handlers(self) -> Mapping[str, TaskHandler]:
-        """Dictionary of currently active (started) task handlers.
+        """Dictionary of currently active (started) data-plane task handlers.
 
         Keys are the resolved handler keys — the ``name`` passed to
         ``add_task_handler`` when given, otherwise the handler class name —
         and values are the corresponding ``TaskHandler`` instances that have
-        been initialized.
+        been initialized. Control-plane handlers (those with
+        ``control = True``) are exposed separately via
+        :attr:`control_task_handlers`.
 
         Returns:
-            A read-only mapping view of the active task handlers.
+            A read-only mapping view of the active data-plane task handlers.
         """
         return MappingProxyType(self.__task_handlers)
+
+    @property
+    def control_task_handlers(self) -> Mapping[str, TaskHandler]:
+        """Dictionary of currently active (started) control-plane task handlers.
+
+        The control-registry counterpart of :attr:`task_handlers`: handlers whose
+        class declares ``control = True`` are started into this map and looked up
+        by :meth:`_find_task_handler` when a task arrives on a control channel.
+
+        Returns:
+            A read-only mapping view of the active control-plane task handlers.
+        """
+        return MappingProxyType(self.__control_handlers)
 
     @property
     def running_tasks(self) -> Mapping[UUID, TaskTracker]:
@@ -369,16 +385,30 @@ class TaskProcessor(BasicWorker):
         return changed
 
     def enqueue_task(self, task_data: TaskData) -> bool:
-        """Enqueue a task for processing without blocking.
+        """Enqueue a data-plane task for processing without blocking.
 
-        Control-plane commands (AR-108) are routed to the priority control lane
-        so they are never blocked behind data-plane work; all other tasks go to
-        the data queue. Non-blocking: returns ``False`` when the target lane is
-        full, so the caller can retry on the next intake poll.
+        Always targets the data queue: a task's lane is a function of the
+        channel it arrived on, so control commands are delivered through
+        :meth:`enqueue_control_task` instead. Non-blocking: returns ``False``
+        when the data lane is full, so the caller can retry on the next intake
+        poll.
         """
-        queue = self.__control_queue if is_control_task(task_data) else self.__task_queue
         try:
-            queue.put_nowait(task_data)
+            self.__task_queue.put_nowait(task_data)
+        except asyncio.QueueFull:
+            return False
+        return True
+
+    def enqueue_control_task(self, task_data: TaskData) -> bool:
+        """Enqueue a control-plane command for processing without blocking.
+
+        Always targets the control queue, so a command delivered on a control
+        channel runs on the reserved priority lane and is dispatched against the
+        control registry. Non-blocking: returns ``False`` when the control lane
+        is full.
+        """
+        try:
+            self.__control_queue.put_nowait(task_data)
         except asyncio.QueueFull:
             return False
         return True
@@ -503,19 +533,40 @@ class TaskProcessor(BasicWorker):
             ValueError: If the resolved handler name is already registered.
         """
         handler_name = name or handler_class.__name__
-        if handler_name in self.__task_handlers_map:
+        if handler_name in self.__task_handlers_map or handler_name in self.__control_handlers_map:
             raise ValueError(f"Task handler {handler_name!r} is already registered")
-        self.__task_handlers_map[handler_name] = (handler_class, handler_kwargs)
+        # The handler's lane is a class attribute, not a registration argument:
+        # a control handler (``control = True``) goes into the control registry,
+        # everything else into the data registry.
+        if handler_class.control:
+            self.__control_handlers_map[handler_name] = (handler_class, handler_kwargs)
+        else:
+            self.__task_handlers_map[handler_name] = (handler_class, handler_kwargs)
         self.logger.log(logging.INFO, "Added Task handler: %s", handler_name)
         if self.state in (ServiceStatus.RUNNING, ServiceStatus.STARTING):
             asyncio.create_task(self._start_task_handler(handler_name))
+
+    def _handler_registry(
+        self, handler_name: str
+    ) -> tuple[dict[str, tuple[type[TaskHandler], dict[str, object]]], dict[str, TaskHandler]] | None:
+        """Return the ``(registration_map, active_map)`` holding ``handler_name``.
+
+        Control is searched first so a name collision across the two registries
+        resolves toward the control registry (the built-in control handlers are
+        unambiguous).
+        """
+        if handler_name in self.__control_handlers_map:
+            return self.__control_handlers_map, self.__control_handlers
+        if handler_name in self.__task_handlers_map:
+            return self.__task_handlers_map, self.__task_handlers
+        return None
 
     async def _start_task_handler(self, handler_name) -> bool:
         """Start a registered task handler and initialize it.
 
         Creates an instance of the handler class, stores it in the
-        active handlers dictionary, and calls its ``start()`` method
-        with a timeout.
+        active handlers dictionary of the handler's registry (control or data),
+        and calls its ``start()`` method with a timeout.
 
         Args:
             handler_name: The name of the handler to start.
@@ -524,33 +575,35 @@ class TaskProcessor(BasicWorker):
             ``True`` if the handler started and became ready; ``False``
             if it timed out, raised, or was not registered.
         """
-        if handler_name in self.__task_handlers:
-            self.logger.log(logging.DEBUG, "Task handler %s is already started", handler_name)
-            return True
-        if handler_name not in self.__task_handlers_map:
+        registry = self._handler_registry(handler_name)
+        if registry is None:
             self.logger.log(logging.DEBUG, "Task handler %s not found", handler_name)
             return False
-        handler_class, handler_kwargs = self.__task_handlers_map[handler_name]
+        _reg_map, active = registry
+        if handler_name in active:
+            self.logger.log(logging.DEBUG, "Task handler %s is already started", handler_name)
+            return True
+        handler_class, handler_kwargs = _reg_map[handler_name]
         context = TaskHandlerContext(
             service_name=self.service_name,
             instance_id=self.instance_id,
             logger=self.logger,
         )
         handler_instance = handler_class(handler_name, context, **handler_kwargs)
-        self.__task_handlers[handler_name] = handler_instance
+        active[handler_name] = handler_instance
         try:
-            await asyncio.wait_for(self.__task_handlers[handler_name].start(), timeout=self.task_handler_start_timeout)
+            await asyncio.wait_for(active[handler_name].start(), timeout=self.task_handler_start_timeout)
         except asyncio.TimeoutError:
             self.logger.log(logging.ERROR, "Timeout while starting Task handler %s", handler_name)
-            del self.__task_handlers[handler_name]
+            del active[handler_name]
             return False
         except Exception as exc:
             self.logger.log(logging.ERROR, "Failed to start Task handler %s: %s", handler_name, exc)
-            del self.__task_handlers[handler_name]
+            del active[handler_name]
             return False
-        if not self.__task_handlers[handler_name].is_ready:
+        if not active[handler_name].is_ready:
             self.logger.log(logging.ERROR, "Task handler %s failed to become ready", handler_name)
-            del self.__task_handlers[handler_name]
+            del active[handler_name]
             return False
         return True
 
@@ -558,59 +611,76 @@ class TaskProcessor(BasicWorker):
         """Stop a running task handler and remove it from active handlers.
 
         Calls the handler's ``stop()`` method with a timeout and removes it
-        from the active handlers dictionary on success. If ``stop()`` times
-        out the handler is removed from the active handlers dictionary too
-        (with a WARNING), so it is not left in an ambiguous tracked-but-stuck
-        state; its ``stop()`` may still be finishing cleanup in the background.
+        from the active handlers dictionary of its registry on success. If
+        ``stop()`` times out the handler is removed from the active handlers
+        dictionary too (with a WARNING), so it is not left in an ambiguous
+        tracked-but-stuck state; its ``stop()`` may still be finishing cleanup
+        in the background.
 
         Args:
             handler_name: The name of the handler to stop.
         """
-        if handler_name not in self.__task_handlers:
+        registry = self._handler_registry(handler_name)
+        if registry is None:
+            self.logger.log(logging.DEBUG, "Task handler %s not found", handler_name)
+            return
+        _reg_map, active = registry
+        if handler_name not in active:
             self.logger.log(logging.DEBUG, "Task handler %s not found", handler_name)
             return
         # Perform cleanup before removal
         try:
-            await asyncio.wait_for(self.__task_handlers[handler_name].stop(), timeout=self.task_handler_stop_timeout)
-            self.__task_handlers.pop(handler_name, None)
+            await asyncio.wait_for(active[handler_name].stop(), timeout=self.task_handler_stop_timeout)
+            active.pop(handler_name, None)
         except asyncio.TimeoutError:
             # Do not leave the handler tracked-but-stuck: its stop() timed out,
             # so it is no longer reliably active. pop() guards against it having
             # already been removed concurrently.
-            self.__task_handlers.pop(handler_name, None)
+            active.pop(handler_name, None)
             self.logger.log(logging.WARNING, "Task handler %s removed after stop timeout", handler_name)
 
     def remove_task_handler(self, handler_name: str) -> None:
         """Remove a registered task handler.
 
         Stops the handler asynchronously if it is currently active, then
-        removes it from the registration map so it is no longer dispatched
+        removes it from its registration map so it is no longer dispatched
         to. Safe to call for a handler that is not registered.
 
         Args:
             handler_name: The class name of the handler to remove.
         """
-        if handler_name in self.__task_handlers:
+        active = self.__control_handlers if handler_name in self.__control_handlers else self.__task_handlers
+        if handler_name in active:
             asyncio.create_task(self._stop_task_handler(handler_name))
-        if handler_name in self.__task_handlers_map:
+        if handler_name in self.__control_handlers_map:
+            del self.__control_handlers_map[handler_name]
+            self.logger.log(logging.INFO, "Removed handler: %s", handler_name)
+        elif handler_name in self.__task_handlers_map:
             del self.__task_handlers_map[handler_name]
             self.logger.log(logging.INFO, "Removed handler: %s", handler_name)
 
-    def _find_task_handler(self, task: str) -> TaskHandler | None:
+    def _find_task_handler(self, task: str, *, control: bool = False) -> TaskHandler | None:
         """Find an active handler that supports the given task type.
 
-        Iterates over the active (started) task handlers and returns the first
-        one whose ``supports(task_type)`` method returns ``True``. A handler
-        that is registered but not yet started is not searched.
+        Iterates over the active (started) handlers of the requested registry —
+        the control registry when ``control`` is ``True``, otherwise the data
+        registry — and returns the first one whose ``supports(task_type)``
+        method returns ``True``. A handler that is registered but not yet
+        started is not searched. A task's lane is decided by the channel it
+        arrived on, so the caller passes the lane rather than the method
+        classifying the task type.
 
         Args:
             task: The task type string to look up.
+            control: Whether to search the control registry (``True``) or the
+                data registry (``False``).
 
         Returns:
             The matching ``TaskHandler`` instance, or ``None`` if no
             handler supports the given task type.
         """
-        for _, handler in self.task_handlers.items():
+        handlers = self.__control_handlers if control else self.__task_handlers
+        for _, handler in handlers.items():
             if handler.supports(task):
                 return handler
         return None
@@ -715,6 +785,9 @@ class TaskProcessor(BasicWorker):
         # as stale and no stale section/remote shadow survives. Registered
         # sections and handlers are preserved.
         self._config_manager.reset()
+        for handler_name in self.__control_handlers_map:
+            if not await self._start_task_handler(handler_name):
+                return False
         for handler_name in self.__task_handlers_map:
             if not await self._start_task_handler(handler_name):
                 return False
@@ -753,17 +826,20 @@ class TaskProcessor(BasicWorker):
         await super().cleanup()
         await self._executor.shutdown()
         # Cleanup task handlers
+        for handler_name in self.__control_handlers_map:
+            await self._stop_task_handler(handler_name)
         for handler_name in self.__task_handlers_map:
             await self._stop_task_handler(handler_name)
         self.logger.debug("All task handlers cleaned up")
 
-    async def process_task(self, task_data: TaskData) -> TaskResult:
+    async def process_task(self, task_data: TaskData, *, control: bool = False) -> TaskResult:
         """Process a single task by dispatching to the appropriate handler.
 
         Looks up a handler that supports the task type via
-        ``_find_task_handler()`` and calls its ``handle()`` method.
-        Returns a ``TaskResult`` with ``status="error"`` if no handler
-        is found or an exception occurs.
+        ``_find_task_handler()`` — searching the control registry when
+        ``control`` is ``True``, otherwise the data registry — and calls its
+        ``handle()`` method. Returns a ``TaskResult`` with ``status="error"``
+        if no handler is found or an exception occurs.
 
         A handler that raises produces an error result marked permanent
         (``retryable=False``): an unhandled exception is unclassified, so
@@ -775,6 +851,9 @@ class TaskProcessor(BasicWorker):
 
         Args:
             task_data: The data associated with the task.
+            control: Whether the task arrived on a control channel (``True``)
+                or a data channel (``False``); selects the registry used for
+                dispatch.
 
         Returns:
             A ``TaskResult`` with the processing outcome.
@@ -793,7 +872,7 @@ class TaskProcessor(BasicWorker):
             )
             return TaskResult(status="error", error="Task data must contain 'task' field")
 
-        handler = self._find_task_handler(task_type)
+        handler = self._find_task_handler(task_type, control=control)
         if handler and handler.is_ready:
             try:
                 capabilities = TaskCapabilities(task_id=task_id, _write_progress=self._write_task_progress)

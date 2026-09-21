@@ -97,10 +97,13 @@ methods:
 
 | Method | Returns | Description |
 |---|---|---|
-| `enqueue_task(task_data)` | `bool` | Non-blocking `put_nowait`; returns `False` if the queue is full |
-| `dequeue_task()` | `TaskData \| None` | Non-blocking `get_nowait`; returns `None` if empty |
-| `task_queue_empty()` | `bool` | `True` if the queue has no pending tasks |
-| `task_queue_full()` | `bool` | `True` if the queue has reached its maximum size |
+| `enqueue_task(task_data)` | `bool` | Non-blocking `put_nowait` on the **data** lane; returns `False` if the queue is full |
+| `enqueue_control_task(task_data)` | `bool` | Non-blocking `put_nowait` on the **control** lane; returns `False` if the control lane is full |
+| `dequeue_task()` | `TaskData \| None` | Non-blocking `get_nowait` from the data lane; returns `None` if empty |
+| `task_queue_empty()` | `bool` | `True` if the data lane has no pending tasks |
+| `task_queue_full()` | `bool` | `True` if the data lane has reached its maximum size |
+| `control_queue_empty()` | `bool` | `True` if the control lane has no pending commands |
+| `control_queue_full()` | `bool` | `True` if the control lane has reached its maximum size |
 
 ### Timing
 
@@ -115,7 +118,8 @@ methods:
 
 | Property | Type | Description |
 |---|---|---|
-| `task_handlers` | `Mapping[str, TaskHandler]` | Currently active (started) handlers, as a read-only `MappingProxyType` view |
+| `task_handlers` | `Mapping[str, TaskHandler]` | Currently active (started) **data-plane** handlers, as a read-only `MappingProxyType` view |
+| `control_task_handlers` | `Mapping[str, TaskHandler]` | Currently active (started) **control-plane** handlers (those whose class declares `control = True`), as a read-only `MappingProxyType` view |
 | `running_tasks` | `Mapping[UUID, TaskTracker]` | Snapshot of currently running tasks and their trackers, delegated to the composed `TaskLifecycle`; a copy, not a live view |
 
 All timing properties are read-only and derive from the immutable
@@ -292,14 +296,22 @@ class mapping is removed immediately.
 
 ### Runtime Handler Discovery
 
-When a task arrives, the processor iterates over all active handlers
-and calls `handler.supports(task_type)`. The first handler returning
-`True` receives the task:
+When a task arrives, the processor iterates over the active handlers in the
+task's lane registry and calls `handler.supports(task_type)`. The first handler
+returning `True` receives the task. A data task is looked up in the data
+registry, a control command in the control registry:
 
 ```python
 handler = processor._find_task_handler("email")
 # Returns the EmailHandler instance, or None
+
+handler = processor._find_task_handler("cancel_task", control=True)
+# Returns the CancelTaskHandler instance from the control registry, or None
 ```
+
+Handlers whose class declares `control = True` are filed in the control
+registry (`control_task_handlers`) by `add_task_handler`; every other handler
+goes to the data registry (`task_handlers`). The two registries are disjoint.
 
 ### Built-in Cancellation Handler
 
