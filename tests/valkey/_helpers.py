@@ -17,6 +17,75 @@ from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 from scietex.service.valkey.transport import TASK_FIELD
 
 
+def _entry_id_gt(a: bytes, b: bytes) -> bool:
+    """Compare two ``N-0`` entry ids numerically, ignoring the ``-0`` suffix."""
+    return int(a.split(b"-")[0]) > int(b.split(b"-")[0])
+
+
+class _SharedStreams:
+    """In-process Valkey backend shared by several ``DummyClient`` instances.
+
+    Models only the server features the control plane depends on, so two workers
+    (each with its own ``DummyClient``) read from the *same* store and the
+    stream/key name becomes the only routing decision — exactly as on a real
+    broker:
+
+    - Streams: each name maps to an ordered list of ``(entry_id, payload)``
+      pairs. ``xadd`` appends with a per-stream monotonically increasing id
+      (``b"{n}-0"``); ``xread`` returns the entries after the given cursor. A
+      directed command therefore lands in one worker's stream and is invisible
+      to the other, while a broadcast lands in a stream both workers read.
+    - Keys: a ``str -> bytes`` map backing ``get``/``put``, so ``resolve_owner``
+      reads the same tracking record a worker (or the test) wrote.
+
+    ``$`` is treated as the stream *start*, not a live tail-seek: the transport's
+    first control read passes ``$`` before it holds any cursor and the tests
+    publish before that read, so a strict tail-seek would drop the command under
+    test. Tail-seek staleness (design §4.2) is orthogonal to the routing gap
+    these tests prove and is covered by the transport unit tests.
+    """
+
+    def __init__(self) -> None:
+        self._streams: dict[str, list[tuple[bytes, bytes]]] = {}
+        self._keys: dict[str, bytes] = {}
+
+    def xadd(self, stream_name: str, pairs: list[tuple[bytes, bytes]]) -> bytes:
+        """Append one entry to ``stream_name`` and return its fresh entry id."""
+        entries = self._streams.setdefault(stream_name, [])
+        entry_id = f"{len(entries) + 1}-0".encode()
+        for _field, payload in pairs:
+            entries.append((entry_id, payload))
+        return entry_id
+
+    def xread(self, streams: dict[str, str | bytes]) -> dict | None:
+        """Return the entries after each stream's cursor, or ``None`` if none.
+
+        Emits the same ``{stream: {entry_id: [[TASK_FIELD, payload]]}}`` shape
+        ``ValkeyTransport._read_control_stream`` consumes.
+        """
+        result: dict[str, dict[bytes, list[list[bytes]]]] = {}
+        for stream_name, cursor in streams.items():
+            stored = self._streams.get(stream_name, [])
+            # The only string cursor is ``$`` (stream start); a bytes cursor is a
+            # previously-returned entry id, so any other value yields no entries.
+            visible = (
+                stored
+                if cursor == "$"
+                else [e for e in stored if isinstance(cursor, bytes) and _entry_id_gt(e[0], cursor)]
+            )
+            if visible:
+                result[stream_name] = {entry_id: [[TASK_FIELD, payload]] for entry_id, payload in visible}
+        return result or None
+
+    def get(self, key: str) -> bytes | None:
+        """Return the stored value for ``key``, or ``None`` when absent."""
+        return self._keys.get(key)
+
+    def put(self, key: str, value: bytes) -> None:
+        """Seed a key so ``get`` (and therefore ``resolve_owner``) sees it."""
+        self._keys[key] = value
+
+
 class DummyClient:
     """Mocking Valkey client."""
 
@@ -38,6 +107,7 @@ class DummyClient:
         xread_results=None,
         xread_error=None,
         expire_error=None,
+        streams=None,
     ):
         self._ping_ok = ping_ok
         self.closed = False
@@ -59,6 +129,10 @@ class DummyClient:
         self.xread_results = list(xread_results) if xread_results is not None else None
         self.xread_error = xread_error
         self.expire_error = expire_error
+        # Shared-mode backend (approach (a)): when set, stream reads/appends and
+        # key gets are delegated to it so several clients see one shared store.
+        # ``None`` keeps the per-call canned-result behaviour for existing tests.
+        self._streams = streams
         self.expired: list = []
         self.acked: list = []
         self.deleted: list = []
@@ -95,6 +169,8 @@ class DummyClient:
         self.gets.append(key)
         if self.get_error is not None:
             raise self.get_error
+        if self._streams is not None:
+            return self._streams.get(key)
         if self.get_values is not None:
             return self.get_values.get(key, self.get_value)
         return self.get_value
@@ -121,6 +197,8 @@ class DummyClient:
 
     async def xadd(self, *args, **kwargs):
         self.added.append(args)
+        if self._streams is not None:
+            return self._streams.xadd(args[0], args[1])
 
     async def xack(self, *args, **kwargs):
         self.acked.append(args)
@@ -138,6 +216,8 @@ class DummyClient:
         if self.xread_error is not None:
             raise self.xread_error
         self.xread_calls.append(args)
+        if self._streams is not None:
+            return self._streams.xread(args[0])
         if self.xread_results is not None:
             return self.xread_results.pop(0) if self.xread_results else None
         return self.xread_result
