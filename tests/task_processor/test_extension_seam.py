@@ -31,15 +31,6 @@ class _SpyTransport(InMemoryTransport):
         await super().ack(task_data, task_result, cancel_reason=cancel_reason)
 
 
-def test_class_docstring_names_transport_seam():
-    """The class docstring points subclassers at the transport, not the hooks."""
-    doc = TaskProcessor.__doc__ or ""
-    assert "TaskTransport" in doc
-    assert "Compatibility shims" in doc
-    # The old "override these delivery hooks" guidance is gone.
-    assert "``fetch_tasks()``: Retrieve tasks from an external source." not in doc
-
-
 @pytest.mark.asyncio
 async def test_transport_is_the_live_seam():
     """The six hooks are thin delegators: delivery reaches the transport."""

@@ -1,6 +1,6 @@
 """ValkeyWorker health-integration tests (AR-075).
 
-The pure ``TransportHealth`` unit tests live in ``tests/test_health.py`` (the
+The pure ``TransportHealth`` unit tests live in ``tests/core/test_transport_health.py`` (the
 supervisor moved to core in AR-089). These tests drive the real wiring:
 heartbeat/registry failures report into health, the watchdog reconnects, and a
 sustained outage surfaces CRITICAL once.

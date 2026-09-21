@@ -6,7 +6,6 @@ from uuid import UUID
 
 import msgspec
 import pytest
-from valkey._helpers import DummyClient
 
 from scietex.service.health import TransportHealth
 from scietex.service.mqtt.config import MqttWorkerConfig
@@ -15,6 +14,7 @@ from scietex.service.mqtt.transport import MqttTransport
 from scietex.service.task_handler.schemas import TaskData, TaskProgress, TaskResult, TaskStatus
 from scietex.service.task_status import build_running_status, build_terminal_status
 from scietex.service.valkey.tracking import TaskStatusStore
+from tests.valkey._helpers import DummyClient
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 TASK_ID = UUID("11111111-1111-1111-1111-111111111111")

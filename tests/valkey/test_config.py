@@ -1,3 +1,5 @@
+"""Configuration tests for the Valkey worker (``ValkeyWorkerConfig``)."""
+
 from pathlib import Path
 
 import msgspec

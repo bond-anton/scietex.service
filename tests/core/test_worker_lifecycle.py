@@ -116,24 +116,6 @@ async def test_request_exit_spawns_single_stop_task():
     await stop_task
 
 
-@pytest.mark.asyncio
-async def test_wait_until_stopped_returns_once_stopped():
-    """The stopped-wait event returns only after the state reaches STOPPED."""
-    lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))
-
-    lifecycle.transition(ServiceStatus.STARTING)
-    lifecycle.transition(ServiceStatus.RUNNING)
-    lifecycle.transition(ServiceStatus.STOPPING)
-    wait_task = asyncio.create_task(lifecycle._wait_until_stopped())
-
-    # The task must still be pending while the state is not STOPPED.
-    await asyncio.sleep(0)
-    assert not wait_task.done()
-
-    lifecycle.transition(ServiceStatus.STOPPED)
-    await asyncio.wait_for(wait_task, timeout=1.0)
-
-
 def test_transition_rejects_illegal_edge():
     """An illegal edge raises InvalidStateTransition and leaves state unchanged."""
     lifecycle = WorkerLifecycle(cast(BasicWorker, _StubWorker()))

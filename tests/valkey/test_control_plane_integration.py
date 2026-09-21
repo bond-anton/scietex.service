@@ -33,7 +33,6 @@ from uuid import UUID, uuid4
 
 import msgspec
 import pytest
-from valkey._helpers import DummyClient, _SharedStreams
 
 from scietex.service import ValkeyWorker
 from scietex.service.task_handler.basic import TaskHandler
@@ -50,6 +49,8 @@ from scietex.service.task_handler.schemas import (
 from scietex.service.valkey._glide import GlideClient
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 from scietex.service.valkey.control import ValkeyControlPublisher
+
+from ._helpers import DummyClient, _SharedStreams
 
 _SERVICE = "svc"
 
