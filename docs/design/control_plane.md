@@ -69,8 +69,8 @@ from the data delivery path entirely.
 | Purpose | Stream | Read model | Retention |
 |---|---|---|---|
 | Data (unchanged) | `scietex:{service}:tasks` | `XREADGROUP` on `scietex:{service}:task_group` | `XACK` + `XDEL` |
-| Directed control | `scietex:{service}:{instance_id}:control` | `XREAD` from tail, in-memory cursor | `MAXLEN ~ 1000` + TTL (`active_ttl`) |
-| Broadcast control | `scietex:{service}:control:broadcast` | `XREAD` from tail, in-memory cursor | `MAXLEN ~ 1000` |
+| Directed control | `scietex:{service}:control:{instance_id}` | `XREAD` from tail, in-memory cursor | `MAXLEN ~ 1000` + TTL (`active_ttl`) |
+| Broadcast control | `scietex:{service}:control` | `XREAD` from tail, in-memory cursor | `MAXLEN ~ 1000` |
 
 Rationale:
 
@@ -91,17 +91,19 @@ Rationale:
 | Purpose | Topic | QoS | Retained |
 |---|---|---|---|
 | Data (unchanged) | `scietex/{service}/tasks` | `task_qos` (2) | no |
-| Directed control | `scietex/{service}/workers/{instance_id}/control` | `control_qos` (1) | no |
+| Directed control | `scietex/{service}/control/{instance_id}` | `control_qos` (1) | no |
 | Broadcast control | `scietex/{service}/control` | `control_qos` (1) | no |
 | Config desired state (unchanged) | `scietex/{service}/config` | `config_qos` | yes |
 | Registry heartbeat (unchanged) | `scietex/{service}/workers/{instance_id}` | — | yes |
 
 Rationale:
 
-- The directed topic nests under the existing `workers/{instance_id}` registry
-  prefix. The registry backend subscribes `scietex/{service}/workers/+`
-  (`mqtt/watch.py:41`); MQTT `+` matches exactly one level, so it does **not**
-  match `workers/{instance_id}/control`. No collision, no backend change.
+- The directed topic is the broadcast topic plus `/{instance_id}`, so the whole
+  control plane lives in one `control` family (`scietex/{service}/control/...`)
+  and a wildcard/prefix enumeration covers exactly the directed channels. It
+  stays outside the registry's `workers/+` subscription (`mqtt/watch.py:41`):
+  MQTT `+` matches exactly one level, so `workers/+` does **not** match
+  `control/{instance_id}`. No collision, no backend change.
 - The broadcast topic is a sibling of the data/config topics, distinct from both.
 - Control messages are **not retained** and carry no message-expiry: a control
   command is an event, not a desired-state snapshot. A command published while a
@@ -237,8 +239,8 @@ refreshed by the owner's own activity**, not a cleanup job.
 
 | Stream | `MAXLEN` | TTL | Refresh |
 |---|---|---|---|
-| Directed `scietex:{service}:{instance_id}:control` | `~ 1000` | yes | refreshed inside `heartbeat()` |
-| Broadcast `scietex:{service}:control:broadcast` | `~ 1000` | no | n/a — service-scoped |
+| Directed `scietex:{service}:control:{instance_id}` | `~ 1000` | yes | refreshed inside `heartbeat()` |
+| Broadcast `scietex:{service}:control` | `~ 1000` | no | n/a — service-scoped |
 
 - Every control `XADD` uses `MAXLEN ~ 1000`, so the stream is a **bounded ring
   buffer**, not an unbounded log. The `~` makes the trim approximate and cheap.
@@ -385,7 +387,7 @@ overlap the registry's `workers/+` subscription (`mqtt/watch.py:41`).
 
 ### 5.4 Publishing control commands
 
-A `cancel_task` is published to `scietex/{service}/workers/{instance_id}/control`;
+A `cancel_task` is published to `scietex/{service}/control/{instance_id}`;
 a `config:*` command to `scietex/{service}/control`. Because the messages are
 not retained, the MQTT control plane is only meaningful while a worker is
 subscribed; a command published while a worker is offline is not replayed from
@@ -474,8 +476,8 @@ construction, like `log_stream_name` / `config_key`
 
 | Field | Default | Bounds |
 |---|---|---|
-| `control_stream_name` | `scietex:{service}:{instance_id}:control` | — |
-| `control_broadcast_stream_name` | `scietex:{service}:control:broadcast` | — |
+| `control_stream_name` | `scietex:{service}:control:{instance_id}` | — |
+| `control_broadcast_stream_name` | `scietex:{service}:control` | — |
 | `control_stream_maxlen` | `1000` | `[1, 100000]` |
 
 `control_stream_maxlen` bounds both control streams (`XADD ... MAXLEN ~ N`). The
@@ -487,7 +489,7 @@ control uses no consumer groups.
 
 | Field | Default | Bounds |
 |---|---|---|
-| `control_topic` | `scietex/{service}/workers/{instance_id}/control` | — |
+| `control_topic` | `scietex/{service}/control/{instance_id}` | — |
 | `control_broadcast_topic` | `scietex/{service}/control` | — |
 | `control_qos` | `1` | `[0, 2]` |
 | `control_inbox_path` | `None` (derive from `inbox_path`) | — |

@@ -304,8 +304,8 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     claim_min_idle_ms: int | None = None
     task_tracking_ttl: int | None = None
     task_lease_ttl: int | None = None
-    control_stream_name: str = "scietex:{service}:{instance_id}:control"
-    control_broadcast_stream_name: str = "scietex:{service}:control:broadcast"
+    control_stream_name: str = "scietex:{service}:control:{instance_id}"
+    control_broadcast_stream_name: str = "scietex:{service}:control"
     control_stream_maxlen: int = DEFAULT_CONTROL_STREAM_MAXLEN
 
     def __post_init__(self) -> None:

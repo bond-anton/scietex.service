@@ -83,7 +83,7 @@ Key names use transport-native separators, matching the existing scheme:
 colon-separated for Valkey, slash-separated for MQTT.
 
 > **Note:** the three `config:*` commands are addressed by channel. A command
-> published to the **broadcast** control channel (`scietex:{service}:control:broadcast`
+> published to the **broadcast** control channel (`scietex:{service}:control`
 > / `scietex/{service}/control`) reaches every worker; a command published to a
 > worker's **directed** control channel reaches only that worker. Submitters
 > address commands through the `ControlPublisher` protocol

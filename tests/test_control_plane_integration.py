@@ -69,8 +69,8 @@ def _publisher(client: DummyClient) -> ValkeyControlPublisher:
     """Build a publisher against the same control stream/status-key layout."""
     return ValkeyControlPublisher(
         client=cast(GlideClient, client),
-        control_stream_name=f"scietex:{_SERVICE}:{{instance_id}}:control",
-        control_broadcast_stream_name=f"scietex:{_SERVICE}:control:broadcast",
+        control_stream_name=f"scietex:{_SERVICE}:control:{{instance_id}}",
+        control_broadcast_stream_name=f"scietex:{_SERVICE}:control",
         control_stream_maxlen=1000,
         status_key_prefix=f"scietex:{_SERVICE}:task",
         logger=logging.getLogger("test_control_plane_integration"),

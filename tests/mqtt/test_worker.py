@@ -199,7 +199,7 @@ def test_control_topics_resolve_placeholders(tmp_path):
     the broadcast topic substitutes only {service}."""
     worker = _make_worker(tmp_path)
 
-    assert worker._control_topic == f"scietex/svc/workers/{worker.instance_id}/control"
+    assert worker._control_topic == f"scietex/svc/control/{worker.instance_id}"
     assert worker._control_broadcast_topic == "scietex/svc/control"
 
 
@@ -327,7 +327,7 @@ async def test_initialize_none_backend_proceeds(monkeypatch):
     assert fake.subscriptions == [
         ("scietex/svc/tasks", 2),
         ("scietex/svc/config", 1),
-        (f"scietex/svc/workers/{worker.instance_id}/control", 1),
+        (f"scietex/svc/control/{worker.instance_id}", 1),
         ("scietex/svc/control", 1),
     ]
     assert worker._inbox is None
@@ -527,7 +527,7 @@ async def test_reconnect_resubscribes_and_restarts_loop(monkeypatch):
     assert clients[0].subscriptions == [
         ("scietex/svc/tasks", 2),
         ("scietex/svc/config", 1),
-        (f"scietex/svc/workers/{worker.instance_id}/control", 1),
+        (f"scietex/svc/control/{worker.instance_id}", 1),
         ("scietex/svc/control", 1),
     ]
 
@@ -542,7 +542,7 @@ async def test_reconnect_resubscribes_and_restarts_loop(monkeypatch):
     assert clients[1].subscriptions == [
         ("scietex/svc/tasks", 2),
         ("scietex/svc/config", 1),
-        (f"scietex/svc/workers/{worker.instance_id}/control", 1),
+        (f"scietex/svc/control/{worker.instance_id}", 1),
         ("scietex/svc/control", 1),
     ]
     assert worker._message_task is not None

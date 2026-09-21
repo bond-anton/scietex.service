@@ -230,12 +230,12 @@ def test_worker_config_task_tracking_ttl_accepts_boundaries():
 
 def test_worker_config_control_stream_name_default_is_templated():
     """control_stream_name defaults to a {service}/{instance_id}-templated name."""
-    assert ValkeyWorkerConfig().control_stream_name == "scietex:{service}:{instance_id}:control"
+    assert ValkeyWorkerConfig().control_stream_name == "scietex:{service}:control:{instance_id}"
 
 
 def test_worker_config_control_broadcast_stream_name_default_is_templated():
     """control_broadcast_stream_name defaults to a {service}-templated name."""
-    assert ValkeyWorkerConfig().control_broadcast_stream_name == "scietex:{service}:control:broadcast"
+    assert ValkeyWorkerConfig().control_broadcast_stream_name == "scietex:{service}:control"
 
 
 def test_worker_config_control_stream_maxlen_default():
@@ -267,5 +267,5 @@ def test_control_stream_names_resolved_at_construction():
     """Both template placeholders resolve: the directed stream embeds the
     instance id, the broadcast stream is service-scoped (AR-123)."""
     worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
-    assert worker._control_stream_name == f"scietex:svc:{worker.instance_id}:control"
-    assert worker._control_broadcast_stream_name == "scietex:svc:control:broadcast"
+    assert worker._control_stream_name == f"scietex:svc:control:{worker.instance_id}"
+    assert worker._control_broadcast_stream_name == "scietex:svc:control"

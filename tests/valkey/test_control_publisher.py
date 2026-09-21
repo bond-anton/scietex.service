@@ -21,8 +21,8 @@ _LOGGER = "test_control_publisher"
 def _publisher(client: DummyClient, **kwargs) -> ValkeyControlPublisher:
     return ValkeyControlPublisher(
         client=cast(GlideClient, client),
-        control_stream_name="scietex:svc:{instance_id}:control",
-        control_broadcast_stream_name="scietex:svc:control:broadcast",
+        control_stream_name="scietex:svc:control:{instance_id}",
+        control_broadcast_stream_name="scietex:svc:control",
         control_stream_maxlen=1000,
         status_key_prefix="scietex:svc:task",
         logger=logging.getLogger(_LOGGER),
@@ -42,7 +42,7 @@ async def test_direct_xadds_envelope_to_directed_stream_with_maxlen_trim():
 
     assert len(client.added) == 1
     stream_name, fields, options = client.added[0]
-    assert stream_name == "scietex:svc:worker-7:control"
+    assert stream_name == "scietex:svc:control:worker-7"
     assert fields == [(TASK_FIELD, encode_task_envelope(task_data))]
     assert isinstance(options, StreamAddOptions)
     assert options.trim is not None
@@ -62,7 +62,7 @@ async def test_broadcast_xadds_envelope_to_broadcast_stream():
 
     assert len(client.added) == 1
     stream_name, fields, _ = client.added[0]
-    assert stream_name == "scietex:svc:control:broadcast"
+    assert stream_name == "scietex:svc:control"
     assert fields == [(TASK_FIELD, encode_task_envelope(task_data))]
 
 

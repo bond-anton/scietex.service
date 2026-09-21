@@ -61,7 +61,7 @@ class FakeClient:
 def _publisher(client: FakeClient, **kwargs) -> MqttControlPublisher:
     return MqttControlPublisher(
         client=cast(Client, client),
-        control_topic="scietex/svc/workers/{instance_id}/control",
+        control_topic="scietex/svc/control/{instance_id}",
         control_broadcast_topic="scietex/svc/control",
         control_qos=1,
         status_topic_prefix="scietex/svc/tasks",
@@ -82,7 +82,7 @@ async def test_direct_publishes_envelope_to_directed_topic():
 
     assert len(client.published) == 1
     topic, payload, qos, retain, _ = client.published[0]
-    assert topic == "scietex/svc/workers/worker-7/control"
+    assert topic == "scietex/svc/control/worker-7"
     assert payload == encode_task_envelope(task_data)
     assert qos == 1
     assert retain is False

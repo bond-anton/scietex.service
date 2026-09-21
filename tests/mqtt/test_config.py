@@ -30,7 +30,7 @@ def test_worker_config_inbox_ttl_default():
 def test_worker_config_control_defaults():
     """The four control-plane fields default to their documented values."""
     cfg = MqttWorkerConfig()
-    assert cfg.control_topic == "scietex/{service}/workers/{instance_id}/control"
+    assert cfg.control_topic == "scietex/{service}/control/{instance_id}"
     assert cfg.control_broadcast_topic == "scietex/{service}/control"
     assert cfg.control_qos == 1
     assert cfg.control_inbox_path is None

@@ -14,8 +14,8 @@ command is structurally impossible.
 
 | Transport | Directed (one worker) | Broadcast (every worker) |
 |---|---|---|
-| Valkey | `scietex:{service}:{instance_id}:control` | `scietex:{service}:control:broadcast` |
-| MQTT | `scietex/{service}/workers/{instance_id}/control` | `scietex/{service}/control` |
+| Valkey | `scietex:{service}:control:{instance_id}` | `scietex:{service}:control` |
+| MQTT | `scietex/{service}/control/{instance_id}` | `scietex/{service}/control` |
 
 A `cancel_task` published to a worker's directed channel cancels a task running
 on that worker. A `config:apply` published to the broadcast channel reaches
@@ -90,10 +90,10 @@ ceiling, `DEFAULT_CONTROL_CONCURRENCY = 4`.
 
 | Transport | Field | Default |
 |---|---|---|
-| Valkey | `control_stream_name` | `scietex:{service}:{instance_id}:control` |
-| Valkey | `control_broadcast_stream_name` | `scietex:{service}:control:broadcast` |
+| Valkey | `control_stream_name` | `scietex:{service}:control:{instance_id}` |
+| Valkey | `control_broadcast_stream_name` | `scietex:{service}:control` |
 | Valkey | `control_stream_maxlen` | `1000` |
-| MQTT | `control_topic` | `scietex/{service}/workers/{instance_id}/control` |
+| MQTT | `control_topic` | `scietex/{service}/control/{instance_id}` |
 | MQTT | `control_broadcast_topic` | `scietex/{service}/control` |
 | MQTT | `control_qos` | `1` |
 | MQTT | `control_inbox_path` | `<conf_dir>/control-inbox` |
