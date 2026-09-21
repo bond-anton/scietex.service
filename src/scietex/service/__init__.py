@@ -19,6 +19,12 @@ Client surface:
       (``PollingBackend``, ``SubscribeBackend``) live in the transport
       packages and require the matching extra.
 
+Control plane:
+    - ``ControlPublisher``: transport-agnostic producer protocol for addressing
+      control commands (``cancel_task``, ``config:*``). The concrete
+      ``ValkeyControlPublisher`` / ``MqttControlPublisher`` live in the
+      transport packages and require the matching extra.
+
 Module-level exports:
     ``__version__``, ``BasicWorker``, ``TaskProcessor``, the client surface,
     and optionally ``ValkeyWorker``/``MqttWorker`` and their configuration
@@ -40,6 +46,7 @@ from .client import (
     WorkerWatcher,
 )
 from .config import TaskProcessorConfig, WorkerConfig
+from .control import ControlPublisher
 from .manager import Manager, register_manager
 from .task_processor import TaskProcessor
 from .transport import InMemoryTransport, TaskSink, TaskTransport
@@ -58,6 +65,7 @@ __all__ = [
     "TaskSink",
     "InMemoryTransport",
     "TransportWorker",
+    "ControlPublisher",
     "WatchBackend",
     "WorkerEvent",
     "WorkerEventKind",
@@ -73,6 +81,7 @@ try:
         ValkeyBackoffStrategy,
         ValkeyBaseConfig,
         ValkeyConfig,
+        ValkeyControlPublisher,
         ValkeyNode,
         ValkeyPubSubConfig,
         ValkeyTlsAdvancedConfiguration,
@@ -94,6 +103,7 @@ try:
         "ValkeyPubSubConfig",
         "ValkeyTlsAdvancedConfiguration",
         "ValkeyWorkerConfig",
+        "ValkeyControlPublisher",
     ]
 except ImportError:
     # If the Valkey dependency (glide) is missing, swallow the ImportError so
@@ -108,6 +118,7 @@ MQTT_AVAILABLE = False
 try:
     from .mqtt import (
         MqttConfig,
+        MqttControlPublisher,
         MqttTransport,
         MqttWorker,
         MqttWorkerConfig,
@@ -122,6 +133,7 @@ try:
         "MqttConfig",
         "MqttWorkerConfig",
         "read_mqtt_config",
+        "MqttControlPublisher",
     ]
 except ImportError:
     # If the MQTT dependency (aiomqtt) is missing, swallow the ImportError so

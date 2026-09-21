@@ -7,9 +7,12 @@ acknowledgement, which aiomqtt v2.5.1 does not expose (design §3).
 
 Beyond delivery, the transport publishes each task's lifecycle — retained
 ``TaskStatus`` messages and throttled ``TaskProgress`` messages to per-task
-topics — as fire-and-forget observability (design §13). A publish failure is
-logged and reported to the connection-health supervisor, never raised into the
-task path.
+topics — as fire-and-forget observability (design §13). It also publishes a
+retained per-task owner marker (design §10.1) so a submitter can resolve which
+worker owns a task via
+:class:`~scietex.service.mqtt.control.MqttControlPublisher.resolve_owner`. A
+publish failure is logged and reported to the connection-health supervisor,
+never raised into the task path.
 
 Every collaborator is received by injection, so the transport holds no
 ownership over the inbox, health supervisor, or connection: those remain the
@@ -93,6 +96,13 @@ class MqttTransport(RecoverableTransport):
     failure is logged and reported to the health supervisor, never raised.
     Each retained status carries an MQTT 5 message-expiry property (``status_ttl``)
     so the broker ages out stale per-task markers instead of keeping one forever.
+
+    When the ``queued`` status is published — the first ownership-establishing
+    write — the transport also publishes a retained owner marker to
+    ``{status_topic_prefix}/{task_id}/owner`` carrying the worker's
+    ``instance_id`` (design §10.1). The owner marker is what a submitter reads
+    back through ``MqttControlPublisher.resolve_owner`` to find where to direct a
+    ``cancel_task``.
     """
 
     def __init__(
@@ -121,6 +131,10 @@ class MqttTransport(RecoverableTransport):
             if status_topic_prefix is not None
             else config.status_topic_prefix.format(service=service_name)
         )
+        # The owner topic (design §10.1) nests under the status prefix — it is
+        # the same resolved prefix, named separately so the ownership marker's
+        # address is explicit in ``_publish_owner`` rather than implicit.
+        self._owner_topic_prefix = self._status_topic_prefix
         self._inbox = inbox
         # Control inbox (design §5.1): a second durable store, drained
         # independently of the data inbox so control delivery never consults
@@ -183,6 +197,47 @@ class MqttTransport(RecoverableTransport):
                 "Failed to publish %s status for task %s: %s",
                 record.status,
                 record.task_id,
+                exc,
+            )
+            self._health.report_failure(exc)
+        if record.status == "queued":
+            await self._publish_owner(record.task_id)
+
+    async def _publish_owner(self, task_id: str) -> None:
+        """Publish the retained owner marker for a task (design §10.1).
+
+        The owner topic maps a task id to the worker that owns it, so a submitter
+        can resolve where to direct a ``cancel_task``
+        (:meth:`scietex.service.mqtt.control.MqttControlPublisher.resolve_owner`).
+        Published only at the ``queued`` transition — the first ownership-
+        establishing write — so the marker is written once per task delivery, not
+        on the later ``running``/terminal writes or on every progress tick. Every
+        ``running`` write is preceded by a ``queued`` write from the same worker
+        (fetch, recovery, control enqueue, and requeue all publish ``queued``
+        before ``on_started``), so the marker is always established before a task
+        can be observed as running. The payload is the worker's ``instance_id`` as
+        raw UTF-8 bytes, published retained at ``status_qos`` with the same
+        ``status_ttl`` expiry as the status, so a stale marker ages out. A failure
+        is logged at WARNING and reported to the health supervisor, never raised,
+        exactly like the status it follows.
+        """
+        properties = None
+        if self._config.status_ttl is not None:
+            properties = Properties(PacketTypes.PUBLISH)
+            properties.MessageExpiryInterval = self._config.status_ttl
+        try:
+            await self._publish(
+                f"{self._owner_topic_prefix}/{task_id}/owner",
+                self._instance_id.encode(),
+                self._config.status_qos,
+                retain=True,
+                properties=properties,
+            )
+        except Exception as exc:
+            self._logger.log(
+                logging.WARNING,
+                "Failed to publish owner marker for task %s: %s",
+                task_id,
                 exc,
             )
             self._health.report_failure(exc)

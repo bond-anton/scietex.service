@@ -42,6 +42,7 @@ from .config import (
     ValkeyWorkerConfig,
 )
 from .config_source import ValkeyConfigSource
+from .control import ValkeyControlPublisher
 from .purge import PurgeResult, purge_task_stream
 from .watch import PollingBackend
 from .worker import ValkeyWorker
@@ -57,6 +58,7 @@ __all__ = [
     "ValkeyConfig",
     "ValkeyWorkerConfig",
     "ValkeyConfigSource",
+    "ValkeyControlPublisher",
     "ValkeyWorker",
     "PollingBackend",
     "PurgeResult",

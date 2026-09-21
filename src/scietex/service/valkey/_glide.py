@@ -24,10 +24,12 @@ try:
         ReadFrom,
         RequestError,
         ServerCredentials,
+        StreamAddOptions,
         StreamGroupOptions,
         StreamReadGroupOptions,
         StreamReadOptions,
         TlsAdvancedConfiguration,
+        TrimByMaxLen,
     )
     from glide import (
         ConnectionError as GlideConnectionError,
@@ -62,9 +64,11 @@ __all__ = [
     "ReadFrom",
     "RequestError",
     "ServerCredentials",
+    "StreamAddOptions",
     "StreamGroupOptions",
     "StreamReadGroupOptions",
     "StreamReadOptions",
     "GlideTimeoutError",
     "TlsAdvancedConfiguration",
+    "TrimByMaxLen",
 ]

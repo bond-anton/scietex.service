@@ -646,6 +646,10 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
     §7; resolve MQTT owner via the retained owner topic (§10.1). `V:` a
     `cancel_task` directed to the owner cancels cross-worker; a `config:apply`
     broadcast reaches both workers.
+    *Delivered:* the two publishers plus the MQTT retained owner marker
+    (`MqttTransport._publish_owner`, gated on the `queued` status — the first
+    ownership-establishing write). The cross-worker cancel/broadcast proof is
+    step 11.
 11. **Multi-worker integration test.** `W:` `tests/` (new module). `Y:` prove the
     AR-123 gaps close. `H:` two workers on a shared fake/real backend; one runs a
     task; a directed cancel from the other stops it; a broadcast config reaches

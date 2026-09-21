@@ -40,6 +40,11 @@ def _progress_topic(task_id: UUID) -> str:
     return f"{_TOPIC}/{task_id}/progress"
 
 
+def _owner_topic(task_id: UUID) -> str:
+    """Per-task retained owner-marker topic (design §10.1)."""
+    return f"{_TOPIC}/{task_id}/owner"
+
+
 class FakeInbox:
     """In-memory ``MqttInbox`` for transport tests.
 
@@ -351,8 +356,8 @@ async def test_requeue_publishes_encoded_envelope_and_leaves_entry_pending():
     # inside the encoded TaskData payload, so the worker's message loop decodes
     # the id from the envelope rather than from an MQTT 5 user property. The
     # follow-up ``queued`` status is retained and carries the message-expiry
-    # property.
-    assert len(published) == 2
+    # property, and the retained owner marker follows it (design §10.1).
+    assert len(published) == 3
     topic, payload, qos, retain, envelope_properties = published[0]
     assert (topic, payload, qos, retain) == (_TOPIC, encode_task_envelope(d1), 1, False)
     assert envelope_properties is None  # no user property on the re-published copy
@@ -360,6 +365,7 @@ async def test_requeue_publishes_encoded_envelope_and_leaves_entry_pending():
     queued_properties = published[1][4]
     assert queued_properties is not None
     assert queued_properties.MessageExpiryInterval == 86400
+    assert published[2][0] == _owner_topic(t1)
     assert used_inbox.mark_terminal_calls == []
     assert await used_inbox.pending() == [d1]
 
@@ -647,7 +653,7 @@ async def test_requeue_publishes_queued_status_after_envelope():
 
     await transport.requeue(d1)
 
-    assert len(published) == 2
+    assert len(published) == 3
     envelope_topic, _, _, envelope_retain, _ = published[0]
     assert envelope_topic == _TOPIC
     assert envelope_retain is False
@@ -656,6 +662,7 @@ async def test_requeue_publishes_queued_status_after_envelope():
     assert qos == 1
     assert retain is True
     assert msgspec.msgpack.decode(payload, type=TaskStatus).status == "queued"
+    assert published[2][0] == _owner_topic(t1)
 
 
 @pytest.mark.asyncio
@@ -671,13 +678,21 @@ async def test_fetch_publishes_queued_once_per_accepted_task():
 
     sink = FakeSink()
     assert await transport.fetch(sink) is True
-    assert [p[0] for p in published] == [_status_topic(t1), _status_topic(t2)]
-    for _, payload, qos, retain, _ in published:
+    # Each accepted task publishes its ``queued`` status followed by its retained
+    # owner marker (design §10.1).
+    assert [p[0] for p in published] == [
+        _status_topic(t1),
+        _owner_topic(t1),
+        _status_topic(t2),
+        _owner_topic(t2),
+    ]
+    for topic, payload, qos, retain, _ in published:
         assert (qos, retain) == (1, True)
-        assert msgspec.msgpack.decode(payload, type=TaskStatus).status == "queued"
+        if topic.endswith("/status"):
+            assert msgspec.msgpack.decode(payload, type=TaskStatus).status == "queued"
 
     assert await transport.fetch(sink) is False
-    assert len(published) == 2  # repeat poll republishes nothing
+    assert len(published) == 4  # repeat poll republishes nothing
 
 
 @pytest.mark.asyncio
@@ -694,10 +709,40 @@ async def test_recovery_publishes_queued_for_replayed_tasks():
     complete, enqueued = await transport.recover_pending_tasks(sink)
 
     assert (complete, enqueued) == (True, True)
-    assert [p[0] for p in published] == [_status_topic(t1), _status_topic(t2)]
-    for _, payload, qos, retain, _ in published:
+    assert [p[0] for p in published] == [
+        _status_topic(t1),
+        _owner_topic(t1),
+        _status_topic(t2),
+        _owner_topic(t2),
+    ]
+    for topic, payload, qos, retain, _ in published:
         assert (qos, retain) == (1, True)
-        assert msgspec.msgpack.decode(payload, type=TaskStatus).status == "queued"
+        if topic.endswith("/status"):
+            assert msgspec.msgpack.decode(payload, type=TaskStatus).status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_queued_status_publishes_retained_owner_marker():
+    """The ``queued`` status is followed by a retained owner marker carrying the
+    worker's instance_id, so a submitter can resolve the task's owner (design
+    §10.1)."""
+    t1 = uuid4()
+    d1 = TaskData(task_id=str(t1), task="a")
+    inbox = FakeInbox()
+    inbox.seed((t1, d1))
+    transport, _, published = _transport(inbox)
+    transport.recovered = True  # skip recovery; exercise the drain path only
+
+    assert await transport.fetch(FakeSink()) is True
+
+    owner = [p for p in published if p[0] == _owner_topic(t1)]
+    assert len(owner) == 1
+    topic, payload, qos, retain, properties = owner[0]
+    assert topic == _owner_topic(t1)
+    assert payload == b"worker-1"
+    assert (qos, retain) == (1, True)
+    assert properties is not None
+    assert properties.MessageExpiryInterval == 86400
 
 
 @pytest.mark.asyncio
@@ -863,11 +908,18 @@ async def test_requeue_drops_pending_progress_without_flushing():
 
     await transport.requeue(d1)
 
-    # Envelope + queued status go out, but the pending tick is not flushed.
-    assert [p[0] for p in published] == [_progress_topic(t1), _TOPIC, _status_topic(t1)]
+    # Envelope + queued status + owner marker go out, but the pending tick is not
+    # flushed.
+    assert [p[0] for p in published] == [_progress_topic(t1), _TOPIC, _status_topic(t1), _owner_topic(t1)]
 
     await transport.on_progress(t1, 5.0)  # state dropped: publishes as a fresh first tick
-    assert [p[0] for p in published] == [_progress_topic(t1), _TOPIC, _status_topic(t1), _progress_topic(t1)]
+    assert [p[0] for p in published] == [
+        _progress_topic(t1),
+        _TOPIC,
+        _status_topic(t1),
+        _owner_topic(t1),
+        _progress_topic(t1),
+    ]
 
 
 @pytest.mark.asyncio
