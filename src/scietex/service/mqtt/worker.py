@@ -766,10 +766,6 @@ class MqttWorker(TransportWorker):
           ``_control_broadcast_topic`` persist to the control inbox.
         - everything else persists to the data inbox.
 
-        A control task published to the legacy *data* topic still lands in the
-        data inbox; the transport's ``is_control_task`` branch handles that
-        back-compat path (design §9).
-
         The payload is decoded as a versioned envelope first, which yields the
         ``TaskData`` (and its ``task_id``). A message carrying an undecodable
         envelope — including a pre-v5 payload without a ``task_id`` — is logged

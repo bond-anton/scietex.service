@@ -221,24 +221,6 @@ async def test_fetch_respects_backpressure_and_does_not_lose_rejected_task():
 
 
 @pytest.mark.asyncio
-async def test_fetch_delivers_control_when_data_lane_full():
-    """A full data lane still delivers a pending control command (returns True),
-    while the blocked data task stays pending in the inbox."""
-    t_data, t_ctrl = uuid4(), uuid4()
-    d_data = TaskData(task_id=str(t_data), task="data")
-    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
-    inbox = FakeInbox()
-    inbox.seed((t_data, d_data), (t_ctrl, d_ctrl))
-    transport, _, _ = _transport(inbox)
-    transport.recovered = True  # skip recovery; exercise the drain path only
-
-    sink = FakeSink(full=True)
-    assert await transport.fetch(sink) is True
-    assert sink.items == [(t_ctrl, d_ctrl)]
-    assert await inbox.pending() == [d_data, d_ctrl]
-
-
-@pytest.mark.asyncio
 async def test_fetch_delivers_control_inbox_when_data_lane_full():
     """A control entry in the control inbox is enqueued even when the data lane
     is full: the control drain never consults data backpressure (design §5.1)."""
@@ -489,24 +471,6 @@ async def test_recover_pending_tasks_reports_incomplete_on_queue_full():
     assert complete is False
     assert enqueued is True
     assert sink.items == [(t1, d1)]
-
-
-@pytest.mark.asyncio
-async def test_recover_pending_tasks_delivers_control_when_data_blocked():
-    """A full data lane still recovers a control command, so recovery reports
-    incomplete (data blocked) while the control task was enqueued."""
-    t_data, t_ctrl = uuid4(), uuid4()
-    d_data = TaskData(task_id=str(t_data), task="data")
-    d_ctrl = TaskData(task_id=str(t_ctrl), task=CANCEL_TASK_TYPE)
-    inbox = FakeInbox()
-    inbox.seed((t_data, d_data), (t_ctrl, d_ctrl))
-    transport, _, _ = _transport(inbox)
-
-    sink = FakeSink(full=True)
-    complete, enqueued = await transport.recover_pending_tasks(sink)
-
-    assert (complete, enqueued) == (False, True)
-    assert sink.items == [(t_ctrl, d_ctrl)]
 
 
 @pytest.mark.asyncio

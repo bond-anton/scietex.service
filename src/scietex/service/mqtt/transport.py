@@ -32,7 +32,6 @@ from ..task_handler.schemas import (
     TaskProgress,
     TaskResult,
     TaskStatus,
-    is_control_task,
     task_data_id,
 )
 from ..task_handler.wire import encode_task_envelope
@@ -247,11 +246,6 @@ class MqttTransport(RecoverableTransport):
         is redelivered, never lost. Each accepted task is advertised as
         ``queued`` (design §13.4).
 
-        The data drain still carries an ``is_control_task`` branch: a control
-        task published to the legacy *data* topic lands in the data inbox and
-        must not be lost, so it bypasses data backpressure here exactly as
-        before the split (design §9; removed in step 9).
-
         Returns:
             ``True`` if at least one task was enqueued (from recovery or either
             drain), ``False`` otherwise.
@@ -270,17 +264,6 @@ class MqttTransport(RecoverableTransport):
         for task_data in await self._inbox.pending():
             task_id = task_data_id(task_data)
             if task_id in self._enqueued:
-                continue
-            if is_control_task(task_data):
-                if not sink.enqueue_task(task_data):
-                    continue  # control lane full; retry next poll
-                self._enqueued.add(task_id)
-                await self._publish_status(
-                    build_running_status(
-                        task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id
-                    )
-                )
-                enqueued = True
                 continue
             if data_blocked or sink.task_queue_full():
                 data_blocked = True
@@ -313,10 +296,6 @@ class MqttTransport(RecoverableTransport):
         task is advertised as ``queued`` (design §13.4), so a task redelivered
         after a restart re-advertises itself.
 
-        The data recovery still carries an ``is_control_task`` branch for the
-        back-compat case of a control task persisted on the legacy data topic
-        (design §9; removed in step 9).
-
         Returns:
             A ``(recovery_complete, enqueued)`` tuple. ``recovery_complete`` is
             ``False`` when a full sink interrupted *data* recovery; control
@@ -335,17 +314,6 @@ class MqttTransport(RecoverableTransport):
         for task_data in await self._inbox.recover():
             task_id = task_data_id(task_data)
             if task_id in self._enqueued:
-                continue
-            if is_control_task(task_data):
-                if not sink.enqueue_task(task_data):
-                    continue
-                self._enqueued.add(task_id)
-                await self._publish_status(
-                    build_running_status(
-                        task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id
-                    )
-                )
-                enqueued = True
                 continue
             if data_blocked or sink.task_queue_full():
                 data_blocked = True

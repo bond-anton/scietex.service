@@ -628,8 +628,13 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
 8. **MQTT transport drain/ack routing.** `W:` `mqtt/transport.py:202-411`.
    `Y:` correct inbox ownership and at-least-once within a session. `H:`
    drain/recover the control inbox; route `on_started`/`ack`/`on_drain` by
-   `is_control_task`. `V:` control inbox test: persist → fetch → ack writes the
-   control tombstone; recovery replays a non-terminal control entry.
+   **inbox ownership** (`_control_enqueued` membership), not by
+   `is_control_task` — a control task published to the legacy data topic lands
+   in the data inbox and must ack there, so ownership is the correct key.
+   `V:` control inbox test: persist → fetch → ack writes the control tombstone;
+   recovery replays a non-terminal control entry.
+   *Delivered with step 7* — the partitioned inbox made the ownership routing
+   necessary, so the two steps merged into one commit.
 9. **Remove transport-level control special-casing.** `W:`
    `valkey/transport.py` fetch/recover, `mqtt/transport.py:35, 202-288`. `Y:`
    one delivery story. `H:` delete the `is_control_task` scan-past-backpressure
