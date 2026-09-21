@@ -25,6 +25,23 @@ transport level.
 
 **Status: planned** (not implemented). Reference: AR-123.
 
+## v4.5.1 — Retryable-error status parity
+
+**Motivation:** `ValkeyTransport.ack` published a terminal `failed` tracking
+record unconditionally, before its retryable early-return. A retryable error is
+requeued before ack, so the task is still in flight; any consumer polling the
+tracking key in that window saw a misleading terminal state. `MqttTransport.ack`
+already published nothing on the retryable path, so the two transports disagreed
+on the observable status of a retried task.
+
+**Decision (v4.5.1):** reorder `ValkeyTransport.ack` to XACK/XDEL the old stream
+entry first, then take the retryable early-return (skipping both the terminal
+record and the AR-077b lease delete), then write the terminal record and clear
+the lease. The non-retryable path still writes the terminal record before
+releasing the lease, preserving at-least-once.
+
+**Status: released** (v4.5.1).
+
 ## v4.5.0 — Remote configuration
 
 **Motivation:** operators change worker behaviour by editing `valkey.yml`/

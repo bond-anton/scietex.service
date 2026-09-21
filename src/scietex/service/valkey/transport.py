@@ -306,16 +306,17 @@ class ValkeyTransport(RecoverableTransport):
     ) -> None:
         """Acknowledge and delete the stream entry for a completed task.
 
-        Publishes a terminal tracking record, then looks up the stream entry id
-        recorded at fetch time and ``XACK``s + ``XDEL``s it, so the entry leaves
-        the consumer group's pending list only after the handler's work on it is
-        done (at-least-once). ``task_result`` is ``None`` when the task was
-        cancelled before producing a result.
+        Looks up the stream entry id recorded at fetch time and ``XACK``s +
+        ``XDEL``s it, so the entry leaves the consumer group's pending list only
+        after the handler's work on it is done (at-least-once). A retryable error
+        is not terminal: ``requeue`` has already advertised its new copy as
+        ``queued``, so publishing a terminal ``failed`` record here would
+        misreport a task that is still in flight. ``task_result`` is ``None``
+        when the task was cancelled before producing a result.
         """
-        # Publish the terminal tracking record, then look up the stream entry id
-        # recorded at fetch time and XACK + XDEL it. ``task_data`` is None only
-        # in unit tests that exercise the ack path in isolation.
-        await self._status.record_terminal(task_id, task_data, task_result, cancel_reason)
+        # The retry copy is a NEW stream entry with the same task id; the old
+        # entry must still be acked/deleted before returning. ``task_data`` is
+        # None only in unit tests that exercise the ack path in isolation.
         entry_id = self._entry_ids.pop(task_id, None)
         client = self._client_provider()
         if entry_id is not None and client is not None:
@@ -324,12 +325,15 @@ class ValkeyTransport(RecoverableTransport):
                 await client.xdel(self._stream_name, [entry_id])
             except Exception as exc:
                 self._logger.log(logging.ERROR, "Failed to acknowledge task %s: %s", task_id, exc)
-        # Ack/delete first, then clear the lease, to minimise the "unleased but
-        # still pending" window. A retryable error was already requeued (and its
-        # lease released) by ``requeue`` before this ack, so deleting again here
-        # would clobber a peer's fresh lease for the requeued copy (AR-077b).
+        # A retryable error was already requeued (and its lease released) by
+        # ``requeue`` before this ack, so deleting again here would clobber a
+        # peer's fresh lease for the requeued copy (AR-077b).
         if task_result is not None and task_result.status == "error" and task_result.retryable:
             return
+        # Terminal record goes first, then the lease is cleared, so a crash
+        # between the two leaves a recoverable pending entry rather than a lost
+        # terminal record (at-least-once).
+        await self._status.record_terminal(task_id, task_data, task_result, cancel_reason)
         await self._lease.delete(task_id)
 
     async def on_progress(self, task_id: UUID, value: float) -> None:
