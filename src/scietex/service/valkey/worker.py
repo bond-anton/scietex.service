@@ -133,7 +133,9 @@ class ValkeyWorker(TransportWorker):
             _task_stream_name (str): Valkey stream name for task entries.
             _task_group_name (str): Consumer group name for task fetching.
             _consumer_name (str): Consumer identifier within the task group.
-            _registry_key (str): Service-scoped worker registry set key.
+            _control_entry_ids (dict[UUID, tuple[str, str | bytes]]): Maps a
+                control task id to its directed-stream (stream name, entry id);
+                control entries are never leased.
         """
         factory = client_factory if client_factory is not None else GlideClient.create
         super().__init__(config, client_factory=factory)
@@ -215,6 +217,12 @@ class ValkeyWorker(TransportWorker):
         # Maps a task UUID to the stream entry id it was read from, so the
         # entry can be acknowledged when the handler completes (at-least-once).
         self._task_entry_ids: dict[UUID, str | bytes] = {}
+        # Maps a control task UUID to its (stream name, entry id) on the
+        # group-less directed control stream (AR-123 §4.5). Kept parallel to
+        # ``_task_entry_ids`` so the transport can branch ack/on_started/
+        # on_drain/requeue on control ownership; control entries are never
+        # leased.
+        self._control_entry_ids: dict[UUID, tuple[str, str | bytes]] = {}
 
         # Transport extension seam (AR-072): the stream operations this worker
         # used to override as TaskProcessor hooks now live on ValkeyTransport,
@@ -232,6 +240,8 @@ class ValkeyWorker(TransportWorker):
             lease=self._task_lease,
             status=self._task_status,
             entry_ids=self._task_entry_ids,
+            control_stream_name=self._control_stream_name,
+            control_entry_ids=self._control_entry_ids,
             logger=self.logger,
         )
         self._transport = self._valkey_transport

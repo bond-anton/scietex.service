@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from ..health import TransportHealth
-from ..task_handler.schemas import CancelReason, TaskData, TaskResult, task_data_id
+from ..task_handler.schemas import CancelReason, TaskData, TaskResult, is_control_task, task_data_id
 from ..task_handler.wire import decode_task_envelope, decode_task_envelope_version, encode_task_envelope
 from ..transport import RecoverableTransport, TaskSink
 from ._glide import (
@@ -25,6 +25,7 @@ from ._glide import (
     GlideTimeoutError,
     RequestError,
     StreamReadGroupOptions,
+    StreamReadOptions,
 )
 from .config import DEFAULT_CLAIM_MIN_IDLE_MS, ValkeyWorkerConfig
 from .lease import TaskLeaseManager
@@ -58,6 +59,8 @@ class ValkeyTransport(RecoverableTransport):
         lease: TaskLeaseManager,
         status: TaskStatusStore,
         entry_ids: dict[UUID, str | bytes],
+        control_stream_name: str,
+        control_entry_ids: dict[UUID, tuple[str, str | bytes]],
         logger: logging.Logger,
     ) -> None:
         self._config = config
@@ -70,6 +73,8 @@ class ValkeyTransport(RecoverableTransport):
         self._lease = lease
         self._status = status
         self._entry_ids = entry_ids
+        self._control_stream_name = control_stream_name
+        self._control_entry_ids = control_entry_ids
         self._logger = logger
 
         # Idle floor (ms) before XAUTOCLAIM reclaims a pending entry. With 0, a
@@ -86,6 +91,22 @@ class ValkeyTransport(RecoverableTransport):
         # and capped at ``task_fetch_batch_size`` so a saturated data plane
         # cannot grow it without bound.
         self._deferred: deque[tuple[UUID, TaskData, str | bytes]] = deque()
+
+        # Bounded buffer for directed control entries read via XREAD but not yet
+        # enqueued because the control lane was full. Plain XREAD never re-reads
+        # a consumed entry (the in-memory cursor has moved past it), so a
+        # rejected entry must be held here or it is dropped. The third element
+        # is the entry id; the stream is always ``_control_stream_name`` for the
+        # directed path. Flushed before each control read and capped by the same
+        # stop-on-reject discipline as ``_deferred``.
+        self._control_deferred: deque[tuple[UUID, TaskData, str | bytes]] = deque()
+
+        # In-memory last-seen id for the directed control stream (AR-123 §4.2).
+        # ``None`` means "not yet seeded": the first read passes ``$`` (the
+        # stream tail), so a command published before startup is skipped. After
+        # each read it advances to the last entry id returned; it is never
+        # persisted, matching the event-only, no-recovery control contract.
+        self._control_cursor: str | bytes | None = None
 
     async def fetch(self, sink: TaskSink) -> bool:
         """Fetch new tasks from the Valkey task stream and enqueue them.
@@ -107,9 +128,15 @@ class ValkeyTransport(RecoverableTransport):
         retried on the next poll instead of being dropped; its entry id and
         lease are recorded only on successful enqueue.
 
+        After the data read, the directed control stream is polled with plain
+        ``XREAD`` (non-blocking) and any deferred control entries are flushed
+        first (AR-123 §4.4). Control is read every poll even when the data lane
+        is full or backpressured, so a saturated data plane cannot delay control
+        delivery.
+
         Returns:
             ``True`` if at least one task was enqueued (from recovery, the
-            deferred buffer, or this read), ``False`` otherwise.
+            deferred buffers, or either read), ``False`` otherwise.
         """
         client = self._client_provider()
         if client is None:
@@ -118,53 +145,58 @@ class ValkeyTransport(RecoverableTransport):
         enqueued = await self._flush_deferred(sink) or enqueued
         # Backpressure: do not claim more entries than the deferred buffer holds,
         # or a full data plane would let unprocessable entries accumulate without
-        # bound.
-        if len(self._deferred) >= self._config.task_fetch_batch_size:
-            return enqueued
-        try:
-            res = await client.xreadgroup(
-                {self._stream_name: ">"},
-                self._group_name,
-                self._consumer_name,
-                StreamReadGroupOptions(count=self._config.task_fetch_batch_size, block_ms=1000),
-            )
-            if res:
-                for stream, entries in res.items():
-                    for entry_id, pairs in entries.items():
-                        if pairs is None:
-                            continue
-                        for field, payload_bytes in pairs:
-                            if payload_bytes is None:
+        # bound. Only the data read is gated here; the control read below runs
+        # regardless.
+        if len(self._deferred) < self._config.task_fetch_batch_size:
+            try:
+                res = await client.xreadgroup(
+                    {self._stream_name: ">"},
+                    self._group_name,
+                    self._consumer_name,
+                    StreamReadGroupOptions(count=self._config.task_fetch_batch_size, block_ms=1000),
+                )
+                if res:
+                    for stream, entries in res.items():
+                        for entry_id, pairs in entries.items():
+                            if pairs is None:
                                 continue
-                            task_data = decode_task_envelope(payload_bytes)
-                            if task_data is None:
-                                version = decode_task_envelope_version(payload_bytes)
-                                self._logger.error(
-                                    "Failed to decode task envelope for entry %s (version=%s)",
-                                    entry_id,
-                                    version if version is not None else "malformed",
-                                )
-                                continue
-                            uuid = task_data_id(task_data)
-                            if sink.enqueue_task(task_data):
-                                self._entry_ids[uuid] = entry_id
-                                # The entry id is recorded before the lease write so
-                                # the local ownership guard is active from the same
-                                # synchronous moment and this worker's own recovery
-                                # can never re-enqueue the entry during the await.
-                                await self._lease.write(uuid)
-                                enqueued = True
-                            else:
-                                # Data lane (or, rarely, control lane) full: hold the
-                                # claimed entry and retry next poll. Entry id/lease are
-                                # recorded only on successful enqueue, preserving the
-                                # existing "full queue leaves no lease" policy.
-                                self._deferred.append((uuid, task_data, entry_id))
-                                self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", uuid)
-        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
-            self._logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
-            self._health.report_failure(exc)
-            await self._health.recover()
+                            for field, payload_bytes in pairs:
+                                if payload_bytes is None:
+                                    continue
+                                task_data = decode_task_envelope(payload_bytes)
+                                if task_data is None:
+                                    version = decode_task_envelope_version(payload_bytes)
+                                    self._logger.error(
+                                        "Failed to decode task envelope for entry %s (version=%s)",
+                                        entry_id,
+                                        version if version is not None else "malformed",
+                                    )
+                                    continue
+                                uuid = task_data_id(task_data)
+                                if sink.enqueue_task(task_data):
+                                    self._entry_ids[uuid] = entry_id
+                                    # The entry id is recorded before the lease write so
+                                    # the local ownership guard is active from the same
+                                    # synchronous moment and this worker's own recovery
+                                    # can never re-enqueue the entry during the await.
+                                    await self._lease.write(uuid)
+                                    enqueued = True
+                                else:
+                                    # Data lane (or, rarely, control lane) full: hold the
+                                    # claimed entry and retry next poll. Entry id/lease are
+                                    # recorded only on successful enqueue, preserving the
+                                    # existing "full queue leaves no lease" policy.
+                                    self._deferred.append((uuid, task_data, entry_id))
+                                    self._logger.log(logging.DEBUG, "Task queue full; deferring task %s", uuid)
+            except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
+                self._logger.debug("Failed to fetch/parse task from Valkey stream: %s", exc)
+                self._health.report_failure(exc)
+                await self._health.recover()
+        # Control reads run after the data read so data keeps its 1000 ms block
+        # and control is polled every iteration; they are not gated by the data
+        # backpressure guard above (AR-123 §4.4).
+        enqueued = await self._flush_control_deferred(sink) or enqueued
+        enqueued = await self._read_control(sink) or enqueued
         return enqueued
 
     async def _flush_deferred(self, sink: TaskSink) -> bool:
@@ -184,6 +216,98 @@ class ValkeyTransport(RecoverableTransport):
             self._entry_ids[task_id] = entry_id
             await self._lease.write(task_id)
             enqueued = True
+        return enqueued
+
+    async def _flush_control_deferred(self, sink: TaskSink) -> bool:
+        """Re-attempt enqueueing of entries held in the control deferred buffer.
+
+        Mirrors :meth:`_flush_deferred` for the directed control stream: the
+        first entry that is still rejected stops the flush so ordering is
+        preserved, and the (stream, entry id) pair is recorded only once the
+        sink accepts the entry. No lease is written — control entries are never
+        leased (AR-123 §4.6).
+        """
+        enqueued = False
+        while self._control_deferred:
+            task_id, task_data, entry_id = self._control_deferred[0]
+            if not sink.enqueue_task(task_data):
+                break
+            self._control_deferred.popleft()
+            self._control_entry_ids[task_id] = (self._control_stream_name, entry_id)
+            enqueued = True
+        return enqueued
+
+    async def _read_control(self, sink: TaskSink) -> bool:
+        """Read the directed control stream with plain ``XREAD`` (AR-123 §4.4).
+
+        Control uses no consumer group, so the read is ``XREAD`` with an
+        in-memory cursor rather than ``XREADGROUP``. The cursor is seeded to
+        ``$`` (the stream tail) on the first read, so any command published
+        before startup is skipped (§4.2); each subsequent read advances it to
+        the last entry id returned. The read is non-blocking (``block=0``): it
+        runs every poll after the data read, never delaying data latency.
+
+        Each decoded ``TaskData`` is enqueued via ``sink``. A non-control entry
+        on the control stream is a misroute and is skipped (logged, never
+        enqueued). A rejected entry (control lane full) is held in the bounded
+        ``_control_deferred`` buffer and retried next poll; the cursor still
+        advances past it so it is not re-read. No lease is written (§4.6).
+
+        Returns:
+            ``True`` if at least one control command was enqueued.
+        """
+        client = self._client_provider()
+        if client is None:
+            return False
+        enqueued = False
+        if self._control_cursor is None:
+            self._control_cursor = "$"
+        cursor = self._control_cursor
+        try:
+            res = await client.xread({self._control_stream_name: cursor}, StreamReadOptions(block_ms=0))
+            if res:
+                for _stream, entries in res.items():
+                    for entry_id, pairs in entries.items():
+                        # Advance the cursor before deciding the entry's fate: a
+                        # deferred entry must never be re-read from the stream,
+                        # because the deferred buffer owns its retry.
+                        self._control_cursor = entry_id
+                        if pairs is None:
+                            continue
+                        for field, payload_bytes in pairs:
+                            if payload_bytes is None:
+                                continue
+                            task_data = decode_task_envelope(payload_bytes)
+                            if task_data is None:
+                                version = decode_task_envelope_version(payload_bytes)
+                                self._logger.error(
+                                    "Failed to decode control envelope for entry %s (version=%s)",
+                                    entry_id,
+                                    version if version is not None else "malformed",
+                                )
+                                continue
+                            if not is_control_task(task_data):
+                                self._logger.error(
+                                    "Non-control task %s misrouted to control stream %s",
+                                    task_data_id(task_data),
+                                    self._control_stream_name,
+                                )
+                                continue
+                            uuid = task_data_id(task_data)
+                            if sink.enqueue_task(task_data):
+                                self._control_entry_ids[uuid] = (self._control_stream_name, entry_id)
+                                enqueued = True
+                            else:
+                                # Control lane full: hold the entry and retry next
+                                # poll, preserving order by stopping this poll's read.
+                                self._control_deferred.append((uuid, task_data, entry_id))
+                                self._logger.log(logging.DEBUG, "Control queue full; deferring task %s", uuid)
+                                return enqueued
+        except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
+            self._logger.debug("Failed to fetch/parse control task from Valkey stream: %s", exc)
+            self._health.report_failure(exc)
+            await self._health.recover()
+            return False
         return enqueued
 
     async def recover_pending_tasks(self, sink: TaskSink) -> tuple[bool, bool]:
@@ -286,8 +410,16 @@ class ValkeyTransport(RecoverableTransport):
         either block a peer from claiming the copy or be clobbered by the
         peer's fresh lease (AR-077b). Releasing it here means the copy is
         immediately claimable by any worker.
+
+        Control commands are never retried (AR-123 §4.7): re-publishing a
+        control command on retry would re-deliver a command that is
+        event-only and, for broadcast, re-fan-out to the whole fleet. A control
+        task id in the control ownership map therefore returns without an
+        ``XADD``.
         """
         task_id = task_data_id(task_data)
+        if task_id in self._control_entry_ids:
+            return
         client = self._client_provider()
         if client:
             packed = encode_task_envelope(task_data)
@@ -295,12 +427,17 @@ class ValkeyTransport(RecoverableTransport):
         await self._lease.delete(task_id)
 
     async def on_started(self, task_data: TaskData) -> None:
-        """Publish a ``running`` tracking record when a task begins."""
+        """Publish a ``running`` tracking record when a task begins.
+
+        The lease is written for data entries only: a control entry has no
+        lease to write (AR-123 §4.6).
+        """
         task_id = task_data_id(task_data)
         await self._status.record_running(task_id, task_data)
-        # The lease marks this entry as owned by a live worker, so recovery on
-        # another replica skips it while processing is still in flight.
-        await self._lease.write(task_id)
+        if task_id not in self._control_entry_ids:
+            # The lease marks this entry as owned by a live worker, so recovery on
+            # another replica skips it while processing is still in flight.
+            await self._lease.write(task_id)
 
     async def ack(
         self,
@@ -318,8 +455,25 @@ class ValkeyTransport(RecoverableTransport):
         ``queued``, so publishing a terminal ``failed`` record here would
         misreport a task that is still in flight. ``task_result`` is ``None``
         when the task was cancelled before producing a result.
+
+        A control entry (in the control ownership map) takes a separate path:
+        it is ``XDEL``'d from its group-less control stream and a terminal
+        record is always written — no ``XACK`` (no group), no lease delete, and
+        no retryable-error early return, because control commands are never
+        retried (AR-123 §4.5/§4.7).
         """
         task_id = task_data_id(task_data)
+        control = self._control_entry_ids.pop(task_id, None)
+        if control is not None:
+            stream_name, entry_id = control
+            client = self._client_provider()
+            if client is not None:
+                try:
+                    await client.xdel(stream_name, [entry_id])
+                except Exception as exc:
+                    self._logger.log(logging.ERROR, "Failed to delete control entry for task %s: %s", task_id, exc)
+            await self._status.record_terminal(task_id, task_data, task_result, cancel_reason)
+            return
         # The retry copy is a NEW stream entry with the same task id; the old
         # entry must still be acked/deleted before returning. ``task_data`` is
         # None only in unit tests that exercise the ack path in isolation.
@@ -353,8 +507,13 @@ class ValkeyTransport(RecoverableTransport):
         redelivered on restart, so re-enqueueing here would duplicate it
         (AR-041). The lease is deleted so a restart or peer can reclaim the
         entry immediately instead of waiting for it to expire.
+
+        A control entry has no lease to release (AR-123 §4.6), so it is a no-op.
         """
-        await self._lease.delete(task_data_id(task_data))
+        task_id = task_data_id(task_data)
+        if task_id in self._control_entry_ids:
+            return
+        await self._lease.delete(task_id)
 
     async def refresh_leases(self) -> None:
         """Renew the lease for every task this worker owns.
@@ -362,5 +521,7 @@ class ValkeyTransport(RecoverableTransport):
         The shared entry-id map is the authoritative ownership map: an entry is
         recorded the moment this worker accepts it and is only popped in
         :meth:`ack`. Iterating it refreshes both queued and running tasks.
+        Control entries are deliberately absent from ``_entry_ids`` — they live
+        in ``_control_entry_ids`` and are never leased (AR-123 §4.6).
         """
         await self._lease.refresh(self._entry_ids)

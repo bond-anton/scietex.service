@@ -34,6 +34,8 @@ class DummyClient:
         delete_error=None,
         sadd_error=None,
         srem_error=None,
+        xread_result=None,
+        xread_error=None,
     ):
         self._ping_ok = ping_ok
         self.closed = False
@@ -48,11 +50,14 @@ class DummyClient:
         self.delete_error = delete_error
         self.sadd_error = sadd_error
         self.srem_error = srem_error
+        self.xread_result = xread_result
+        self.xread_error = xread_error
         self.acked: list = []
         self.deleted: list = []
         self.added: list = []
         self.xautoclaim_calls: list = []
         self.xreadgroup_calls: list = []
+        self.xread_calls: list = []
         self.sets: list = []
         self.set_calls: list = []  # (key, conditional_set) per set() call
         self.gets: list = []
@@ -120,6 +125,12 @@ class DummyClient:
             raise self.xreadgroup_error
         self.xreadgroup_calls.append(args)
         return self.xreadgroup_result
+
+    async def xread(self, *args, **kwargs):
+        if self.xread_error is not None:
+            raise self.xread_error
+        self.xread_calls.append(args)
+        return self.xread_result
 
     async def xautoclaim(self, *args, **kwargs):
         self.xautoclaim_calls.append(args)

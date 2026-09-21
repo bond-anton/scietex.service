@@ -26,6 +26,7 @@ try:
         ServerCredentials,
         StreamGroupOptions,
         StreamReadGroupOptions,
+        StreamReadOptions,
         TlsAdvancedConfiguration,
     )
     from glide import (
@@ -63,6 +64,7 @@ __all__ = [
     "ServerCredentials",
     "StreamGroupOptions",
     "StreamReadGroupOptions",
+    "StreamReadOptions",
     "GlideTimeoutError",
     "TlsAdvancedConfiguration",
 ]
