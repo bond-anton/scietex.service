@@ -40,6 +40,7 @@ from .task_handler import (
 )
 from .task_handler.schemas import task_data_id
 from .task_lifecycle import TaskLifecycle
+from .theme import Theme
 from .transport import InMemoryTransport, TaskTransport
 
 
@@ -77,7 +78,13 @@ class TaskProcessor(BasicWorker):
     # (AR-069) and no re-store / double-instantiation is needed.
     _config_type: ClassVar[type[TaskProcessorConfig]] = TaskProcessorConfig
 
-    def __init__(self, config: TaskProcessorConfig | None = None, *, transport: TaskTransport | None = None):
+    def __init__(
+        self,
+        config: TaskProcessorConfig | None = None,
+        *,
+        transport: TaskTransport | None = None,
+        theme: Theme | None = None,
+    ):
         """
         Initialize the TaskProcessor.
 
@@ -93,8 +100,12 @@ class TaskProcessor(BasicWorker):
                 a working :class:`~scietex.service.transport.InMemoryTransport`
                 that re-delivers requeued tasks on the next fetch. Subclasses
                 (e.g. ``ValkeyWorker``) inject their own transport.
+            theme: The rendering theme for the startup banner and console log
+                formatter. Defaults to :class:`ScietexMonochrome` when ``None``.
+                It is a live object, not a config field, so it is injected via
+                the constructor.
         """
-        super().__init__(config)
+        super().__init__(config, theme=theme)
         self._task_lifecycle = TaskLifecycle()
         # Error-path retry budget per task id (AR-022 v4: exactly one retry).
         # Keyed by the stable task id so it survives the requeue -> dequeue ->

@@ -19,6 +19,7 @@ from .config_reload import (
 )
 from .health import TransportHealth
 from .task_processor import TaskProcessor
+from .theme import Theme
 
 
 class TransportWorker(TaskProcessor):
@@ -42,6 +43,7 @@ class TransportWorker(TaskProcessor):
         config: TaskProcessorConfig | None = None,
         *,
         client_factory: Callable[[Any], Awaitable[Any]],
+        theme: Theme | None = None,
     ) -> None:
         """Initialize the worker with its broker client factory.
 
@@ -52,8 +54,12 @@ class TransportWorker(TaskProcessor):
             client_factory: Async factory that builds the broker client for
                 :meth:`connect`; the concrete worker supplies its own (e.g.
                 ``GlideClient.create`` or an ``aiomqtt.Client`` builder).
+            theme: The rendering theme for the startup banner and console log
+                formatter. Defaults to :class:`ScietexMonochrome` when ``None``.
+                It is a live object, not a config field, so it is injected via
+                the constructor.
         """
-        super().__init__(config)
+        super().__init__(config, theme=theme)
         self._client_factory = client_factory
         self._client_lock: asyncio.Lock = asyncio.Lock()
         self._health = TransportHealth(

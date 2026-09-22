@@ -25,10 +25,19 @@ Control plane:
       ``ValkeyControlPublisher`` / ``MqttControlPublisher`` live in the
       transport packages and require the matching extra.
 
+Theming:
+    - ``Theme``: the extension seam a theme implements (``banner`` /
+      ``console_formatter``). Three built-in variants ship with the package:
+      ``ScietexMonochrome`` (the default, injected via the ``theme=``
+      constructor argument), ``ScietexLight``, and ``ScietexDark``;
+      ``print_banner`` renders the startup banner. Dependency-free, so no
+      extra is required.
+
 Module-level exports:
     ``__version__``, ``BasicWorker``, ``TaskProcessor``, the client surface,
-    and optionally ``ValkeyWorker``/``MqttWorker`` and their configuration
-    classes.
+    the theme seam (``Theme`` / ``ScietexMonochrome`` / ``ScietexLight`` /
+    ``ScietexDark`` / ``print_banner``), and optionally
+    ``ValkeyWorker``/``MqttWorker`` and their configuration classes.
 
 The ``VALKEY_AVAILABLE`` and ``MQTT_AVAILABLE`` flags report whether the
 respective surfaces could be imported at package load time.
@@ -49,6 +58,7 @@ from .config import TaskProcessorConfig, WorkerConfig
 from .control import ControlPublisher
 from .manager import Manager, register_manager
 from .task_processor import TaskProcessor
+from .theme import ScietexDark, ScietexLight, ScietexMonochrome, Theme, print_banner
 from .transport import InMemoryTransport, TaskSink, TaskTransport
 from .transport_worker import TransportWorker
 from .version import __version__
@@ -61,6 +71,11 @@ __all__ = [
     "register_manager",
     "TaskProcessorConfig",
     "WorkerConfig",
+    "Theme",
+    "ScietexDark",
+    "ScietexLight",
+    "ScietexMonochrome",
+    "print_banner",
     "TaskTransport",
     "TaskSink",
     "InMemoryTransport",

@@ -59,7 +59,9 @@ config surface to it.
 | `basic_worker` | `.log_handlers` | import | `parse_logging_level` |
 | `basic_worker` | `.log_handlers.lifecycle` | import | `LoggingLifecycle` (owns `LoggerStatus` bookkeeping) |
 | `basic_worker` | `scietex.logging` | import (external) | `ConsoleHandler` |
-| `basic_worker` | `.version` | import | `__version__` (logo rendering) |
+| `basic_worker` | `.theme` | import | `Theme`, `ScietexMonochrome`, `ScietexLight`, `ScietexDark`, `print_banner` (banner + console formatter) |
+| `theme.scietex` | `.version` | import | `__version__` (banner rendering) |
+| `theme.scietex` | `scietex.logging` | import (external) | `MONOCHROME`/`SCIETEX_LIGHT`/`SCIETEX_DARK`, `Palette`, `ScietexFormatter`, `resolve_color` — each service theme wraps a `scietex.logging` theme and delegates its palette and formatter to it |
 | `task_processor` | `basic_worker` | inheritance | extends |
 | `task_processor` | `.config` | import | `TaskProcessorConfig`, `DEFAULT_*` constants |
 | `task_processor` | `.manager` | import | for `@Manager` decorators |
@@ -148,12 +150,12 @@ config surface to it.
 | Package | Declared in | Used for | Structurally significant? |
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
-| `scietex.logging>=2.0.0` | core deps | async console/Valkey log handlers | Yes — cross-package logging boundary |
+| `scietex.logging>=2.1.0` | core deps | async console/Valkey log handlers; palette/theme/color infrastructure the service theme composes | Yes — cross-package logging + theming boundary |
 | `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
-| `scietex.logging[valkey]>=2.0.0` | `[valkey]` extra (`pyproject.toml:40`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
+| `scietex.logging[valkey]>=2.1.0` | `[valkey]` extra (`pyproject.toml:40`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
 | `aiomqtt~=2.5.0` | `[mqtt]` and `[dev]` extras | MQTT 5 client (`MqttWorker`/`MqttTransport`) | Yes (optional) |
-| `scietex.logging[mqtt]>=2.0.0` | `[mqtt]` extra (`pyproject.toml:41`) | MQTT log-handler (`AsyncMqttHandler`) dependencies | Yes (optional) |
+| `scietex.logging[mqtt]>=2.1.0` | `[mqtt]` extra (`pyproject.toml:41`) | MQTT log-handler (`AsyncMqttHandler`) dependencies | Yes (optional) |
 
 ## Important dependency chains
 

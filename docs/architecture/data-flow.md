@@ -162,10 +162,11 @@ heartbeat never surfaces.
 **Processing:** standard `logging` → attached handlers:
 - `ConsoleHandler` (console; registered in `BasicWorker.__init__`
   via `LoggingLifecycle.register_logger_handler`
-  (`log_handlers/lifecycle.py:37`)) — `emit()` puts each record into an internal
-  `asyncio.Queue` per backend; worker task formats with `ScietexFormatter`
-  and writes to stdout. Identity comes from the stdlib logger name it is
-  registered on.
+  (`log_handlers/lifecycle.py:37`), constructed with
+  `formatter=theme.console_formatter()`) — `emit()` puts each record into an
+  internal `asyncio.Queue` per backend; the worker task formats with the
+  `ScietexFormatter` instance the theme supplied and writes to stdout. Identity
+  comes from the stdlib logger name it is registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
   `connect()` via `_ensure_logging_handler`,
   `worker.py:272`) — owns its own `GlideClient`, built from a `valkey_config=`

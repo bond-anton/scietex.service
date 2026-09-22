@@ -20,10 +20,13 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 **Main symbols:**
 - `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 39
 - `class BasicWorker` — line 55
-- Constructor — `__init__(config: WorkerConfig | None = None)`; stores the
-  immutable `WorkerConfig` (from `config.py`), resolves identity/conf_dir/
-  logging_level, and constructs all four components: `ManagerRuntime` +
-  `LoggingLifecycle` + `WorkerLifecycle` + `SignalHandler`.
+- Constructor — `__init__(config: WorkerConfig | None = None, *, theme: Theme |
+  None = None)`; stores the immutable `WorkerConfig` (from `config.py`),
+  resolves identity/conf_dir/logging_level, resolves the theme (default
+  `ScietexMonochrome()`), registers
+  `ConsoleHandler(formatter=theme.console_formatter())`, and constructs all
+  four components: `ManagerRuntime` + `LoggingLifecycle` + `WorkerLifecycle` +
+  `SignalHandler`.
   Timing/retry fields are validated at construction — an out-of-range value
   raises `msgspec.ValidationError`, and `None` resolves to the matching
   `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
@@ -58,14 +61,16 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
   `_remove_signal_handlers` called from `stop()` (567)
 
 **Public interface:** constructor takes a single immutable `WorkerConfig`
-(`config.py`) or `None`; all properties are read-only (no runtime setters):
+(`config.py`) or `None`, plus a keyword-only `theme=` (the `Theme` for the
+startup banner and console formatter, default `ScietexMonochrome()`); all properties
+are read-only (no runtime setters):
 `state`, `events` (read-only `MappingProxyType` of two `asyncio.Event`s:
 `"exit_requested"`, `"exit"`), `service_name`, `instance_id`, `version`,
 `conf_dir`, `logger`, `logging_level`, `heartbeat_interval`,
 `watchdog_interval`, `start_time`, `logger_handler_timeout`,
 `manager_shutdown_timeout`, `manager_max_retries`, `manager_restart_backoff`,
 `manager_runtime` (the `ManagerRuntime`, AR-071), `failed_managers` (list of
-`FAILED` manager names, AR-063).
+`FAILED` manager names, AR-063), `theme` (the resolved `Theme`).
 Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
 subclass hooks govern registry-set membership: `_register_instance` (682) —
@@ -78,8 +83,9 @@ managers stop and before `cleanup()` teardown. Both are no-ops in the base;
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
 (`LoggingLifecycle`), `.lifecycle` (`WorkerLifecycle`), `.signal_handler`
 (`SignalHandler`), `.manager` (`Manager`), `.log_handlers`
-(`parse_logging_level`), `.config` (`prepare_conf_dir`), `.version`
-(`__version__`, for the logo); external `scietex.logging.ConsoleHandler`.
+(`parse_logging_level`), `.config` (`prepare_conf_dir`), `.theme`
+(`Theme`, `ScietexMonochrome`, `ScietexLight`, `ScietexDark`, `print_banner` — the startup banner and console
+formatter); external `scietex.logging.ConsoleHandler`.
 
 **Depended on by:** `TaskProcessor` (extends); `ManagerRuntime`,
 `LoggingLifecycle`, `WorkerLifecycle`, and `SignalHandler` (back-reference to
@@ -709,28 +715,56 @@ consumer_name, logger=None)` (37) — orchestrates the purge and returns a
 `TYPE_CHECKING`); the caller supplies an open client. **Depended on by:**
 `valkey/__init__.py`.
 
-## 19. Config-dir resolution and service logo
+## 19. Config-dir resolution
 
 - **`config.py`** — `prepare_conf_dir()` (45): returns first existing dir
   in order `conf_dir` arg → `SCIETEX_CONFIG_DIR` env → `$XDG_CONFIG_HOME/scietex`
   → `~/.config/scietex` → `/etc/scietex` → `/usr/local/etc/scietex` →
   `./config` (CWD); creates `~/.config/scietex` if none exist. Moved here from
   the former `utils/config.py`.
-- **`basic_worker.py`** — `LOGO` + `print_scietex_logo(service_name, version)`
-  (679) prints the ASCII banner using `.version.__version__`. Moved here from
-  the former `utils/logo.py` (its only consumer).
+
+## 19a. Service theme — `theme/` subpackage
+
+The banner and console formatter moved out of `basic_worker.py` into a `theme/`
+subpackage (the old module-level logo literal and its module-level printer were
+removed, not aliased). Three concrete variants ship, each wrapping a
+`scietex.logging` theme:
+
+- **`theme/base.py`** — `Theme` Protocol: the extension seam a theme implements
+  (`banner(service_name, version) -> str`, a `palette` property returning the
+  `scietex.logging.Palette`, and `console_formatter() -> logging.Formatter`).
+- **`theme/scietex.py`** — `_BANNER` (the canonical ASCII logo, moved
+  verbatim) plus three `_LoggingBackedTheme` subclasses: `ScietexMonochrome`
+  (the default; backed by `scietex.logging.MONOCHROME`), `ScietexLight`
+  (backed by `SCIETEX_LIGHT`), and `ScietexDark` (backed by `SCIETEX_DARK`).
+  Each `banner()` substitutes the service/version/`__version__`; the `palette`
+  property returns the wrapped theme's brand palette (yellow `#FFDB1C`, dark
+  gray `#31313B`, black `#1F202A`); and `console_formatter()` returns a fresh
+  `ScietexFormatter` configured with the theme's palette and a TTY-auto-detected
+  color. Module-level `print_banner(service_name, version, theme=None)`
+  defaults to `ScietexMonochrome()`.
+- **`theme/__init__.py`** — re-exports `Theme`, `ScietexMonochrome`,
+  `ScietexLight`, `ScietexDark`, `print_banner`.
+
+`BasicWorker.__init__` accepts a keyword-only `theme=` (default
+`ScietexMonochrome()`), stores it as `self._theme`, exposes it via the read-only
+`theme` property, registers `ConsoleHandler(formatter=theme.console_formatter())`,
+and `_startup()` prints the banner through
+`print_banner(service_name=..., version=..., theme=...)`.
 
 ## 20. External async logging backend — `scietex.logging`
 
-Installed dependency (>=2.0.0). The package embeds this framework's log sink.
+Installed dependency (>=2.1.0). The package embeds this framework's log sink.
 Consumed classes:
 - `AsyncLoggingHandler(logging.Handler)` — pure machinery base class with
   per-backend `asyncio.Queue`s + worker coroutines;
   `start_logging()`/`stop_logging()`/`emit()`. Both concrete handlers subclass
   it.
-- `ConsoleHandler(AsyncLoggingHandler)` — console sink. Constructed with no
-  arguments; identity comes from the stdlib logger name it is registered on
-  (e.g. `f"{service_name}:{instance_id}"`).
+- `ConsoleHandler(AsyncLoggingHandler)` — console sink. Constructed with
+  `formatter=<theme.console_formatter()>` (the formatter is theme-owned;
+  scietex.logging defaults to `ScietexFormatter()` when `formatter=None`, so the
+  output is unchanged); identity comes from the stdlib logger name it is
+  registered on (e.g. `f"{service_name}:{instance_id}"`).
 - `AsyncBrokerHandler` — adds a broker queue + `_worker` that connects,
   formats records into dicts, `send_message()`; accepts an injected `client`
   and, when one is provided, never closes it (`_owns_client=False`).

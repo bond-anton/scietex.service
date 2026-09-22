@@ -35,7 +35,7 @@ from .log_handlers.lifecycle import LoggingLifecycle
 from .manager import Manager
 from .manager.runtime import ManagerRuntime
 from .signal_handler import SignalHandler
-from .version import __version__
+from .theme import ScietexMonochrome, Theme, print_banner
 
 
 class ServiceStatus(Enum):
@@ -72,7 +72,7 @@ class BasicWorker:
     # is ``None`` (AR-069). Subclasses no longer re-store / double-instantiate.
     _config_type: ClassVar[type[WorkerConfig]] = WorkerConfig
 
-    def __init__(self, config: WorkerConfig | None = None):
+    def __init__(self, config: WorkerConfig | None = None, *, theme: Theme | None = None):
         """
         Initialize the worker.
 
@@ -87,8 +87,13 @@ class BasicWorker:
                 ``None`` timing/retry field resolves to its ``DEFAULT_*``
                 constant at read time; an out-of-range value is rejected at
                 construction.
+            theme: The rendering theme for the startup banner and console log
+                formatter. Defaults to :class:`ScietexMonochrome` when ``None``.
+                It is a live object, not a config field, so it is injected via
+                the constructor.
         """
         cfg = config if config is not None else self._config_type()
+        self._theme: Theme = theme if theme is not None else ScietexMonochrome()
         self._config: WorkerConfig = cfg
         self.__service_name: str = cfg.service_name
         self.__instance_id: str = uuid.uuid4().hex
@@ -142,7 +147,9 @@ class BasicWorker:
         # Async handlers are restartable in place (scietex.logging >= 1.0), so a
         # single instance is registered once and restarted on each start cycle.
         # The console handler derives its identity from the logger name above.
-        self._logging_lifecycle.register_logger_handler(ConsoleHandler())
+        # The formatter is theme-owned; scietex.logging defaults to
+        # ScietexFormatter() when formatter=None, so this preserves today's output.
+        self._logging_lifecycle.register_logger_handler(ConsoleHandler(formatter=self._theme.console_formatter()))
 
     @property
     def state(self) -> ServiceStatus:
@@ -311,6 +318,11 @@ class BasicWorker:
         return self._logger
 
     @property
+    def theme(self) -> Theme:
+        """The rendering theme for the startup banner and console formatter (read-only)."""
+        return self._theme
+
+    @property
     def logging_level(self) -> int:
         """Current logging level for the worker (read-only).
 
@@ -362,7 +374,7 @@ class BasicWorker:
         """
         Execute the full startup sequence for the worker.
 
-        Waits for any previous shutdown to complete, prints the service logo,
+        Waits for any previous shutdown to complete, prints the service banner,
         starts logging handlers, runs custom initialization via initialize(),
         sets the start time, then starts all managers, and transitions to
         RUNNING state. The start time is set before the managers start so the
@@ -380,7 +392,7 @@ class BasicWorker:
             await self._lifecycle._wait_until_stopped()
             self.logger.log(logging.INFO, "Service is starting up.")
             self._lifecycle.transition(ServiceStatus.STARTING)
-            print_scietex_logo(service_name=self.service_name, version=self.version)
+            print_banner(service_name=self.service_name, version=self.version, theme=self._theme)
             # Init Logging Handlers
             await self._logging_lifecycle.start_handlers()
 
@@ -653,36 +665,3 @@ class BasicWorker:
         override to remove their instance id. Best-effort: a failure must
         not fail shutdown (log and continue).
         """
-
-
-LOGO = """
-
-          ########+                                                            
-          #########+                                                           
-          ##########-         Service: {service_name}
-          ###########-        Version: {version}
-           .##########-                      
-              .+#######-      
-     +#+..        .#####-                                                      
-   -##########.      .+##-                                                     
- -#################+-           
- ####################         Powered by scietex.service v{scietex_version}
-  .############-.    .-##-      
-    .####+.       .#####-     (c) ООО "Научные технологии и сервис"
-               -#######-      https://scietex.ru
-           .##########-                     
-          ###########-                      
-          ##########+                                                  
-          ##########                                                           
-          #########                                                            
- 
-"""
-
-
-def print_scietex_logo(service_name: str, version: str) -> None:
-    """Print the Scietex Service logo with service-specific details.
-
-    The scietex.service version is resolved automatically from
-    ``.version.__version__`` at call time.
-    """
-    print(LOGO.format(service_name=service_name, version=version, scietex_version=__version__))

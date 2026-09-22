@@ -197,7 +197,8 @@ from a timeout. The task manager consumes the reason with
 
 ## Async logging handler lifecycle
 
-- `BasicWorker.__init__` attaches `ConsoleHandler` (console);
+- `BasicWorker.__init__` attaches `ConsoleHandler` built with
+  `formatter=theme.console_formatter()` (console);
   `ValkeyWorker` builds and attaches the `AsyncValkeyHandler` lazily on the
   first successful `connect()` (via `_ensure_logging_handler`, not in
   `__init__`).

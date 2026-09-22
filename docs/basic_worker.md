@@ -296,7 +296,8 @@ budget ends in the terminal `FAILED` state instead of stopping cleanly
 
 `BasicWorker` takes a single immutable configuration object
 (`WorkerConfig`, from `scietex.service.config`), or `None` to use the
-struct defaults:
+struct defaults, plus an optional keyword-only `theme=` (see
+[Theme](#theme)):
 
 ```python
 import logging
@@ -315,7 +316,8 @@ worker = BasicWorker(
         manager_shutdown_timeout=None,
         manager_max_retries=None,
         manager_restart_backoff=None,
-    )
+    ),
+    theme=None,  # defaults to ScietexMonochrome()
 )
 ```
 
@@ -338,6 +340,33 @@ A `None` timing/retry field resolves to its `DEFAULT_*` constant when the
 worker reads it. Configuration is **immutable**: out-of-range values raise
 `msgspec.ValidationError` at construction (no silent clamping), and the
 worker exposes no runtime setters — all values are fixed at construction.
+
+### Theme
+
+The startup banner and the console-log formatter are rendered through a
+`Theme` (from `scietex.service`). `BasicWorker` accepts a keyword-only
+`theme=` argument; `None` (the default) selects `ScietexMonochrome`, the
+built-in colorless theme that prints the canonical Scietex logo banner and
+formats console records with `ScietexFormatter`. Three variants ship with the
+package — `ScietexMonochrome` (default), `ScietexLight` (white background,
+dark text), and `ScietexDark` (`#1F202A` background, white text) — each backed
+by the matching `scietex.logging` theme and sharing the brand palette (yellow
+`#FFDB1C`, dark gray `#31313B`, black `#1F202A`):
+
+```python
+from scietex.service import BasicWorker, ScietexDark, ScietexMonochrome
+
+worker = BasicWorker(
+    WorkerConfig(service_name="service", version="0.0.1"),
+    theme=ScietexDark(),  # or ScietexMonochrome() (default) / ScietexLight()
+)
+```
+
+A `Theme` is a live object, not a config field, so it is injected via the
+constructor rather than read from `WorkerConfig`; it is exposed read-only via
+the `theme` property. Implement the `Theme` Protocol to supply a custom
+`banner(service_name, version) -> str`, a `palette` property (the color
+palette), and `console_formatter() -> logging.Formatter`.
 
 ### Config Directory Precedence
 

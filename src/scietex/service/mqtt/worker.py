@@ -23,6 +23,7 @@ from ..config_reload import CONFIG_SOURCE_UNAVAILABLE, ConfigApplyOutcome
 from ..heartbeat import Heartbeat
 from ..task_handler.schemas import task_data_id
 from ..task_handler.wire import decode_task_envelope
+from ..theme import Theme
 from ..transport_worker import TransportWorker
 from ._aiomqtt import Client, Message, MqttError, PacketTypes, Properties, ProtocolVersion, Will
 from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
@@ -136,6 +137,7 @@ class MqttWorker(TransportWorker):
         config: MqttWorkerConfig | None = None,
         *,
         client_factory: ClientFactory | None = None,
+        theme: Theme | None = None,
     ) -> None:
         """Initialize the ``MqttWorker``.
 
@@ -157,6 +159,10 @@ class MqttWorker(TransportWorker):
                 connected :class:`~aiomqtt.Client`. Defaults to
                 :func:`_create_client`. Lets tests and embedders inject a fake
                 or externally-built client without a live broker.
+            theme: The rendering theme for the startup banner and console log
+                formatter. Defaults to :class:`ScietexMonochrome` when ``None``.
+                It is a live object, not a config field, so it is injected via
+                the constructor.
 
         Attributes:
             _client (Client | None): aiomqtt client, initialized during
@@ -185,7 +191,7 @@ class MqttWorker(TransportWorker):
                 (the durable control inbox or an in-memory fallback).
         """
         factory = client_factory if client_factory is not None else _create_client
-        super().__init__(config, client_factory=factory)
+        super().__init__(config, client_factory=factory, theme=theme)
         # The base already stored the concrete config into ``self._config``
         # (AR-069); keep a typed local reference for the synchronous setup
         # reads below.

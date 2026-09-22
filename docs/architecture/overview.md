@@ -9,7 +9,8 @@ is a library whose entry point is the consumer's own `main()`.
 
 | Subsystem | Location | Responsibility |
 |---|---|---|
-| Worker core | `src/scietex/service/basic_worker.py` | `BasicWorker`: identity, startup/shutdown/restart orchestration, default heartbeat/watchdog/cleanup hooks. Composes four components — `ManagerRuntime`, `LoggingLifecycle`, `WorkerLifecycle` (state machine + events), and `SignalHandler` (signal registration/removal); prints the service banner via `print_scietex_logo` |
+| Worker core | `src/scietex/service/basic_worker.py` | `BasicWorker`: identity, startup/shutdown/restart orchestration, default heartbeat/watchdog/cleanup hooks. Composes four components — `ManagerRuntime`, `LoggingLifecycle`, `WorkerLifecycle` (state machine + events), and `SignalHandler` (signal registration/removal); renders the service banner and the console log formatter through its injected `Theme` (keyword-only `theme=`, default `ScietexMonochrome`) |
+| Theme | `src/scietex/service/theme/` | `Theme` Protocol (`banner`/`palette`/`console_formatter`) + three built-in variants — `ScietexMonochrome` (the default), `ScietexLight`, `ScietexDark` — + `print_banner`; the rendering seam `BasicWorker` uses for the startup banner and console formatter (dependency-free) |
 | Manager runtime | `src/scietex/service/manager/runtime.py` | `ManagerRuntime`: discovers `@Manager` methods across the class MRO, runs each as a task with bounded restart-on-error, owns manager status/task/error bookkeeping |
 | Logging lifecycle | `src/scietex/service/log_handlers/lifecycle.py` | `LoggingLifecycle`: async logging-handler registration and start/stop with per-handler status bookkeeping |
 | Manager decorator | `src/scietex/service/manager/__init__.py` | `@Manager` class-decorator and `ManagerStatus`; wraps an async method into a managed loop |
@@ -24,7 +25,7 @@ is a library whose entry point is the consumer's own `main()`.
 | Heartbeat (core) | `src/scietex/service/heartbeat.py` | `Heartbeat` — the single msgpack liveness struct shared by `ValkeyWorker` and `MqttWorker`; Valkey stores it at `scietex:{service}:{instance_id}:status` (2 × `heartbeat_interval` TTL), MQTT publishes it retained to `scietex/{service}/workers/{instance_id}` |
 | Remote configuration (core) | `src/scietex/service/config_reload.py` | `ConfigReloader` + the `ConfigSource` Protocol + the `ConfigEnvelope`/`ConfigSections`/`ReloadableSettings` structs: a transport-delivered reloadable-behaviour envelope (a durable Valkey key or an MQTT retained topic) applied at startup and via the `config:apply`/`config:store`/`config:show` commands; `TaskProcessor` composes a `ConfigManager` (`config_manager.py`) that builds the reloader and registers the three `config:*` handlers when remote config is enabled, and each transport supplies its `ConfigSource` (`ValkeyConfigSource` / `MqttConfigSource`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional imports of Valkey and MQTT exports (`VALKEY_AVAILABLE`/`MQTT_AVAILABLE`) |
-| Async logging backend (external) | `scietex.logging` package (>=2.0.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
+| Async logging backend (external) | `scietex.logging` package (>=2.1.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
 
 ## How subsystems interact
 
