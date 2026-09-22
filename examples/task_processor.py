@@ -13,7 +13,7 @@ import json
 import logging
 from uuid import uuid4
 
-from scietex.service import TaskProcessor, TaskProcessorConfig
+from scietex.service import ScietexDark, TaskProcessor, TaskProcessorConfig, Theme
 from scietex.service.task_handler import TaskCapabilities, TaskData, TaskHandler, TaskResult, TaskTimeout
 
 # ── Handler implementations ──────────────────────────────────────────────
@@ -162,8 +162,14 @@ class InMemoryTaskSource:
 class TaskProcessorService(TaskProcessor):
     """Service that fetches tasks from an in-memory source and processes them."""
 
-    def __init__(self, task_source: InMemoryTaskSource, config: TaskProcessorConfig | None = None) -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        task_source: InMemoryTaskSource,
+        config: TaskProcessorConfig | None = None,
+        *,
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(config, theme=theme)
         self._task_source = task_source
 
     async def fetch_tasks(self) -> bool:
@@ -224,6 +230,7 @@ async def main() -> None:
             queue_size=10,
             max_concurrent_tasks=3,
         ),
+        theme=ScietexDark(),
     )
 
     # Register each handler class once: dispatch is driven by
