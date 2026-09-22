@@ -286,7 +286,7 @@ inbox compensates for.
 
 ```toml
 [project.optional-dependencies]
-mqtt = ["scietex.logging[mqtt]>=2.0.0", "aiomqtt~=2.5.0"]
+mqtt = ["scietex.logging[mqtt]>=2.1.0", "aiomqtt~=2.5.0"]
 ```
 
 `dev` should also include it so the full development environment can run the

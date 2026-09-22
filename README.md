@@ -29,7 +29,7 @@ pip install "scietex.service[valkey]"
 pip install "scietex.service[mqtt]"
 ```
 
-**Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=2.0.0`
+**Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=2.1.0`
 
 ## Quick Start
 
