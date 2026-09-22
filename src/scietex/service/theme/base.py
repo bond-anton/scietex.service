@@ -18,8 +18,19 @@ class Theme(Protocol):
     ``logging.Formatter`` the console log handler renders records with.
     """
 
-    def banner(self, service_name: str, version: str) -> str:
-        """Return the startup banner text (pure, no I/O)."""
+    def banner(
+        self,
+        service_name: str,
+        version: str,
+        *,
+        color: bool | None = None,
+    ) -> str:
+        """Return the startup banner text (pure, no I/O).
+
+        The returned text carries ANSI styling drawn from ``palette`` when color
+        is on (``None`` defers to the theme's own color policy), so the banner
+        matches the console formatter.
+        """
         ...
 
     @property
