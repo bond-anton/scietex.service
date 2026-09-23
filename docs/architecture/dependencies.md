@@ -150,12 +150,12 @@ config surface to it.
 | Package | Declared in | Used for | Structurally significant? |
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
-| `scietex.logging>=2.1.0` | core deps | async console/Valkey log handlers; palette/theme/color infrastructure the service theme composes | Yes — cross-package logging + theming boundary |
+| `scietex.logging>=2.2.0` | core deps | async console/Valkey log handlers; palette/theme/color infrastructure the service theme composes | Yes — cross-package logging + theming boundary |
 | `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
-| `scietex.logging[valkey]>=2.1.0` | `[valkey]` extra (`pyproject.toml:40`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
+| `scietex.logging[valkey]>=2.2.0` | `[valkey]` extra (`pyproject.toml:40`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
 | `aiomqtt~=2.5.0` | `[mqtt]` and `[dev]` extras | MQTT 5 client (`MqttWorker`/`MqttTransport`) | Yes (optional) |
-| `scietex.logging[mqtt]>=2.1.0` | `[mqtt]` extra (`pyproject.toml:41`) | MQTT log-handler (`AsyncMqttHandler`) dependencies | Yes (optional) |
+| `scietex.logging[mqtt]>=2.2.0` | `[mqtt]` extra (`pyproject.toml:41`) | MQTT log-handler (`AsyncMqttHandler`) dependencies | Yes (optional) |
 
 ## Important dependency chains
 

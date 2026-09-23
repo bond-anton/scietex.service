@@ -181,7 +181,8 @@ worker = ValkeyWorker(
         queue_size=None,
         max_concurrent_tasks=None,
         valkey_config=None,
-        log_stream_name="scietex:{service}:log",
+        log_stream_name="scietex:{service}:{instance_id}:log",
+        log_stream_maxlen=10000,
         task_fetch_batch_size=10,
         claim_min_idle_ms=None,
         task_tracking_ttl=None,
@@ -212,7 +213,8 @@ logging-handler construction, connectivity signal) is preserved.
 | Field | Default | Description |
 |---|---|---|
 | `valkey_config` | `None` | Custom Valkey configuration (`ValkeyConfig`). If `None`, `valkey.yml` is read lazily from the config directory at first connect (not at construction). PubSub listening is expressed via `ValkeyConfig.pubsub_config` (a `ValkeyPubSubConfig`) |
-| `log_stream_name` | `"scietex:{service}:log"` | Name of the Valkey stream used for log entries; `{service}` is substituted with `service_name` at construction |
+| `log_stream_name` | `"scietex:{service}:{instance_id}:log"` | Name of the Valkey stream used for log entries; both `{service}` and `{instance_id}` are substituted at construction, so each worker logs to its own stream |
+| `log_stream_maxlen` | `10000` | Approximate maximum number of entries retained per log stream, applied as `XADD ... MAXLEN ~ N` on every write. Valid range `[1, 100000]`; `None` leaves the stream unbounded |
 | `task_fetch_batch_size` | `10` | Maximum number of stream entries read per `XREADGROUP` call |
 | `claim_min_idle_ms` | `None` (default `1000`) | Outer idle floor (ms) before `XAUTOCLAIM` considers reclaiming a pending entry during startup recovery; the per-entry lease is the authoritative liveness check (see [Duplicate processing in scale-out](#duplicate-processing-in-scale-out)) |
 | `task_tracking_ttl` | `None` (default `86400`) | Server-side TTL in seconds for task tracking records; `None` resolves to `DEFAULT_TASK_TRACKING_TTL` (`86400` s / 24 h). Valid range `[1, 2592000]` |

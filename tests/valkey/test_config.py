@@ -8,9 +8,12 @@ import pytest
 from scietex.service import ValkeyWorker
 from scietex.service.valkey.config import (
     DEFAULT_CONTROL_STREAM_MAXLEN,
+    DEFAULT_LOG_STREAM_MAXLEN,
     MAX_CONTROL_STREAM_MAXLEN,
+    MAX_LOG_STREAM_MAXLEN,
     MAX_TASK_TRACKING_TTL,
     MIN_CONTROL_STREAM_MAXLEN,
+    MIN_LOG_STREAM_MAXLEN,
     MIN_TASK_TRACKING_TTL,
     ValkeyBaseConfig,
     ValkeyConfig,
@@ -201,8 +204,32 @@ def test_invalid_protocol_raises():
 
 
 def test_worker_config_log_stream_name_default_is_service_templated():
-    """log_stream_name defaults to a {service}-templated stream name."""
-    assert ValkeyWorkerConfig().log_stream_name == "scietex:{service}:log"
+    """log_stream_name defaults to a {service}/{instance_id}-templated stream name."""
+    assert ValkeyWorkerConfig().log_stream_name == "scietex:{service}:{instance_id}:log"
+
+
+def test_worker_config_log_stream_maxlen_default():
+    assert ValkeyWorkerConfig().log_stream_maxlen == DEFAULT_LOG_STREAM_MAXLEN
+
+
+def test_worker_config_log_stream_maxlen_accepts_none():
+    """None is the explicit unbounded-growth opt-out."""
+    assert ValkeyWorkerConfig(log_stream_maxlen=None).log_stream_maxlen is None
+
+
+def test_worker_config_log_stream_maxlen_rejects_zero():
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(log_stream_maxlen=0)
+
+
+def test_worker_config_log_stream_maxlen_rejects_above_max():
+    with pytest.raises(msgspec.ValidationError):
+        ValkeyWorkerConfig(log_stream_maxlen=MAX_LOG_STREAM_MAXLEN + 1)
+
+
+def test_worker_config_log_stream_maxlen_accepts_boundaries():
+    assert ValkeyWorkerConfig(log_stream_maxlen=MIN_LOG_STREAM_MAXLEN).log_stream_maxlen == MIN_LOG_STREAM_MAXLEN
+    assert ValkeyWorkerConfig(log_stream_maxlen=MAX_LOG_STREAM_MAXLEN).log_stream_maxlen == MAX_LOG_STREAM_MAXLEN
 
 
 def test_worker_config_task_tracking_ttl_default_is_none():
@@ -271,6 +298,12 @@ def test_control_stream_names_resolved_at_construction():
     worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
     assert worker._control_stream_name == f"scietex:svc:control:{worker.instance_id}"
     assert worker._control_broadcast_stream_name == "scietex:svc:control"
+
+
+def test_log_stream_name_resolved_at_construction():
+    """log_stream_name embeds the instance id so each worker logs to its own stream."""
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    assert worker._log_stream_name == f"scietex:svc:{worker.instance_id}:log"
 
 
 def test_worker_config_heartbeat_key_default_is_templated():

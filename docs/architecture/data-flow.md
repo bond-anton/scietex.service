@@ -172,8 +172,10 @@ heartbeat never surfaces.
   `worker.py:272`) — owns its own `GlideClient`, built from a `valkey_config=`
   dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
   longer shares the worker's client; formats records to a dict and `xadd`s to
-  the log stream `scietex:{service}:log` (default; `{service}` substituted at
-  construction).
+  the log stream `scietex:{service}:{instance_id}:log` (default; both
+  placeholders substituted at construction, so each worker logs to its own
+  stream). The write carries an approximate `MAXLEN ~ log_stream_maxlen` trim
+  (default 10000; `None` leaves the stream unbounded).
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by

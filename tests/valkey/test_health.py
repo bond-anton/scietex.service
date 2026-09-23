@@ -104,3 +104,15 @@ async def test_unregister_instance_failure_reports_into_health():
     assert worker.transport_health.degraded is True
     assert worker.transport_health.last_error == "set failed"
     assert worker.transport_health.failure_count == 1
+
+
+def test_logging_handler_receives_stream_maxlen(monkeypatch):
+    """_ensure_logging_handler forwards log_stream_maxlen to the handler."""
+    monkeypatch.setattr(mod, "AsyncValkeyHandler", FakeHandler)
+    worker = ValkeyWorker(ValkeyWorkerConfig(valkey_config=ValkeyConfig(), log_stream_maxlen=250))
+
+    handler = worker._ensure_logging_handler()
+
+    assert handler is not None
+    assert handler.stream_maxlen == 250
+    assert handler.stream_name == worker._log_stream_name

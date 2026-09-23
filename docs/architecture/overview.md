@@ -25,7 +25,7 @@ is a library whose entry point is the consumer's own `main()`.
 | Heartbeat (core) | `src/scietex/service/heartbeat.py` | `Heartbeat` — the single msgpack liveness struct shared by `ValkeyWorker` and `MqttWorker`; Valkey stores it at `scietex:{service}:{instance_id}:status` (2 × `heartbeat_interval` TTL), MQTT publishes it retained to `scietex/{service}/workers/{instance_id}` |
 | Remote configuration (core) | `src/scietex/service/config_reload.py` | `ConfigReloader` + the `ConfigSource` Protocol + the `ConfigEnvelope`/`ConfigSections`/`ReloadableSettings` structs: a transport-delivered reloadable-behaviour envelope (a durable Valkey key or an MQTT retained topic) applied at startup and via the `config:apply`/`config:store`/`config:show` commands; `TaskProcessor` composes a `ConfigManager` (`config_manager.py`) that builds the reloader and registers the three `config:*` handlers when remote config is enabled, and each transport supplies its `ConfigSource` (`ValkeyConfigSource` / `MqttConfigSource`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional imports of Valkey and MQTT exports (`VALKEY_AVAILABLE`/`MQTT_AVAILABLE`) |
-| Async logging backend (external) | `scietex.logging` package (>=2.1.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
+| Async logging backend (external) | `scietex.logging` package (>=2.2.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
 
 ## How subsystems interact
 

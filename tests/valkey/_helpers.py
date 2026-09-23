@@ -268,11 +268,12 @@ class FakeHandler(logging.Handler):
     start/stop calls without opening a connection, so tests stay deterministic.
     """
 
-    def __init__(self, stream_name, *, valkey_config=None, client=None, **kwargs):
+    def __init__(self, stream_name, *, valkey_config=None, client=None, stream_maxlen=None, **kwargs):
         super().__init__()
         self.stream_name = stream_name
         self.valkey_config = valkey_config
         self.client = client
+        self.stream_maxlen = stream_maxlen
         self._owns_client = client is None
         self.logging_running_event = asyncio.Event()
         self.start_calls = 0

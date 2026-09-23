@@ -209,7 +209,7 @@ class MqttWorker(TransportWorker):
         self._client_factory: ClientFactory = factory
 
         self._task_topic = cfg.task_topic.format(service=self.service_name)
-        self._log_topic = cfg.log_topic.format(service=self.service_name)
+        self._log_topic = cfg.log_topic.format(service=self.service_name, instance_id=self.instance_id)
         self._registry_topic = f"scietex/{self.service_name}/workers/{self.instance_id}"
         # Status/progress topic prefix (design §13.2), resolved once here exactly
         # as task_topic is, so the transport receives the substituted form rather
@@ -417,6 +417,7 @@ class MqttWorker(TransportWorker):
             mqtt_config=logging_handler_config(config),
             qos=cfg.log_qos,
             retain=cfg.log_retain,
+            message_expiry=cfg.log_message_expiry,
         )
         self._logging_lifecycle.register_logger_handler(self._mqtt_logger_handler)
         return self._mqtt_logger_handler

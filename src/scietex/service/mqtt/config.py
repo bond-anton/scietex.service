@@ -43,6 +43,12 @@ MAX_STATUS_QOS: int = 2
 MIN_STATUS_TTL: int = 1
 #: Upper bound (s) for ``status_ttl`` (30 days).
 MAX_STATUS_TTL: int = 30 * 24 * 3600
+#: Lower bound (s) for ``log_message_expiry``.
+MIN_LOG_MESSAGE_EXPIRY: int = 1
+#: Upper bound (s) for ``log_message_expiry`` (30 days).
+MAX_LOG_MESSAGE_EXPIRY: int = 30 * 24 * 3600
+#: Default MQTT 5 message-expiry interval (s) for log publishes (24 hours).
+DEFAULT_LOG_MESSAGE_EXPIRY: int = 24 * 3600
 #: Lower bound for ``progress_qos``.
 MIN_PROGRESS_QOS: int = 0
 #: Upper bound for ``progress_qos``.
@@ -138,11 +144,14 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         inbox_ttl: TTL in seconds for inbox entries and tombstones
             (``[1, 2592000]``), defaulting to one day. ``None`` disables expiry
             (an explicit unbounded-growth opt-out).
-        log_topic: MQTT topic worker logs are published to. ``{service}`` is
-            replaced with the service name.
+        log_topic: MQTT topic worker logs are published to. Both ``{service}``
+            and ``{instance_id}`` are replaced, so each worker logs to its own
+            topic by default.
         log_qos: QoS level for log messages (``[0, 2]``).
         log_retain: If ``True``, log messages are published with the retained
             flag.
+        log_message_expiry: MQTT 5 message-expiry interval in seconds applied to
+            every log publish (``[1, 2592000]``). ``None`` disables expiry.
         status_publish_enabled: Master switch for all status/progress
             publishing. ``False`` restores the pre-addendum no-op behavior.
         status_topic_prefix: Prefix for the per-task status/progress topics.
@@ -179,9 +188,10 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     inbox_backend: Literal["file", "memory", "none"] = "file"
     inbox_path: str | None = None
     inbox_ttl: int | None = DEFAULT_INBOX_TTL
-    log_topic: str = "scietex/{service}/log"
+    log_topic: str = "scietex/{service}/{instance_id}/log"
     log_qos: int = 0
     log_retain: bool = False
+    log_message_expiry: int | None = DEFAULT_LOG_MESSAGE_EXPIRY
     status_publish_enabled: bool = True
     status_topic_prefix: str = "scietex/{service}/tasks"
     status_qos: int = 1
@@ -201,6 +211,12 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         super().__post_init__()
         validate_range(self.task_qos, "task_qos", minimum=MIN_TASK_QOS, maximum=MAX_TASK_QOS)
         validate_range(self.log_qos, "log_qos", minimum=MIN_LOG_QOS, maximum=MAX_LOG_QOS)
+        validate_range(
+            self.log_message_expiry,
+            "log_message_expiry",
+            minimum=MIN_LOG_MESSAGE_EXPIRY,
+            maximum=MAX_LOG_MESSAGE_EXPIRY,
+        )
         validate_range(self.inbox_ttl, "inbox_ttl", minimum=MIN_INBOX_TTL, maximum=MAX_INBOX_TTL)
         validate_range(self.status_qos, "status_qos", minimum=MIN_STATUS_QOS, maximum=MAX_STATUS_QOS)
         validate_range(self.status_ttl, "status_ttl", minimum=MIN_STATUS_TTL, maximum=MAX_STATUS_TTL)

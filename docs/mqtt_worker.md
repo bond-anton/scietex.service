@@ -215,9 +215,10 @@ worker = MqttWorker(
         inbox_backend="file",
         inbox_path=None,
         inbox_ttl=86400,
-        log_topic="scietex/{service}/log",
+        log_topic="scietex/{service}/{instance_id}/log",
         log_qos=0,
         log_retain=False,
+        log_message_expiry=86400,
         status_publish_enabled=True,
         status_topic_prefix="scietex/{service}/tasks",
         status_qos=1,
@@ -259,9 +260,10 @@ preserved.
 | `inbox_backend` | `"file"` | Durable inbox backend (`"file"`, `"memory"`, or `"none"`); `"memory"`/`"none"` is the explicit at-most-once opt-out |
 | `inbox_path` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
 | `inbox_ttl` | `86400` | TTL in seconds for inbox entries and tombstones (one day); valid range `[1, 2592000]`; `None` disables expiry (the explicit unbounded-growth opt-out) |
-| `log_topic` | `"scietex/{service}/log"` | Topic worker logs are published to; `{service}` is replaced with the service name |
+| `log_topic` | `"scietex/{service}/{instance_id}/log"` | Topic worker logs are published to; both `{service}` and `{instance_id}` are replaced, so each worker logs to its own topic |
 | `log_qos` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `False` | If `True`, log messages are published with the retained flag |
+| `log_message_expiry` | `86400` | MQTT 5 message-expiry interval in seconds applied to every log publish; valid range `[1, 2592000]`; `None` disables expiry |
 | `status_publish_enabled` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
 | `status_topic_prefix` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
 | `status_qos` | `1` | QoS for `TaskStatus` publishes; valid range `[0, 2]` |
@@ -892,9 +894,10 @@ fields).
 | `inbox_backend` | `Literal["file", "memory", "none"]` | `"file"` | Durable inbox backend; `"memory"`/`"none"` is the explicit at-most-once opt-out |
 | `inbox_path` | `str \| None` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
 | `inbox_ttl` | `int \| None` | `86400` | TTL in seconds for inbox entries and tombstones (one day); valid range `[1, 2592000]`; `None` disables expiry |
-| `log_topic` | `str` | `"scietex/{service}/log"` | Topic worker logs are published to |
+| `log_topic` | `str` | `"scietex/{service}/{instance_id}/log"` | Topic worker logs are published to |
 | `log_qos` | `int` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `bool` | `False` | Publish log messages with the retained flag |
+| `log_message_expiry` | `int \| None` | `86400` | MQTT 5 message-expiry interval in seconds for log publishes; valid range `[1, 2592000]`; `None` disables expiry |
 | `status_publish_enabled` | `bool` | `True` | Master switch for all status/progress publishing; `False` restores the no-op behavior |
 | `status_topic_prefix` | `str` | `"scietex/{service}/tasks"` | Prefix for the per-task status/progress topics; `{service}` is substituted at construction |
 | `status_qos` | `int` | `1` | QoS for `TaskStatus` publishes; valid range `[0, 2]` |

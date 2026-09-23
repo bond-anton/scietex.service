@@ -249,6 +249,12 @@ MIN_CONTROL_STREAM_MAXLEN: int = 1
 MAX_CONTROL_STREAM_MAXLEN: int = 100_000
 #: Default approximate max length per control stream (``MAXLEN ~``).
 DEFAULT_CONTROL_STREAM_MAXLEN: int = 1000
+#: Lower bound for ``log_stream_maxlen``.
+MIN_LOG_STREAM_MAXLEN: int = 1
+#: Upper bound for ``log_stream_maxlen``.
+MAX_LOG_STREAM_MAXLEN: int = 100_000
+#: Default approximate max length per log stream (``MAXLEN ~``).
+DEFAULT_LOG_STREAM_MAXLEN: int = 10_000
 
 
 class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
@@ -263,7 +269,11 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
         valkey_config: A :class:`ValkeyConfig` schema. ``None`` means the
             worker reads ``valkey.yml`` from its config directory.
         log_stream_name: Name of the Valkey stream used for log entries.
-            ``{service}`` is replaced with the service name.
+            Both ``{service}`` and ``{instance_id}`` are replaced, so each
+            worker logs to its own stream by default.
+        log_stream_maxlen: Approximate maximum number of entries retained per
+            log stream via ``XADD ... MAXLEN ~ N`` (``[1, 100000]``). ``None``
+            leaves the stream unbounded.
         config_key: Name of the durable Valkey key holding the desired-state
             remote config. ``{service}`` is replaced with the service name.
         task_fetch_batch_size: Maximum number of stream entries read per
@@ -296,7 +306,8 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
     """
 
     valkey_config: "ValkeyConfig | None" = None
-    log_stream_name: str = "scietex:{service}:log"
+    log_stream_name: str = "scietex:{service}:{instance_id}:log"
+    log_stream_maxlen: int | None = DEFAULT_LOG_STREAM_MAXLEN
     config_key: str = "scietex:{service}:config"
     task_fetch_batch_size: int = 10
     claim_min_idle_ms: int | None = None
@@ -336,6 +347,12 @@ class ValkeyWorkerConfig(TaskProcessorConfig, frozen=True):
             "control_stream_maxlen",
             minimum=MIN_CONTROL_STREAM_MAXLEN,
             maximum=MAX_CONTROL_STREAM_MAXLEN,
+        )
+        validate_range(
+            self.log_stream_maxlen,
+            "log_stream_maxlen",
+            minimum=MIN_LOG_STREAM_MAXLEN,
+            maximum=MAX_LOG_STREAM_MAXLEN,
         )
 
 

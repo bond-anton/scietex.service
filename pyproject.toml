@@ -21,7 +21,7 @@ dependencies = [
   # required runtime dependency for read_valkey_config even though no src/
   # module imports yaml directly.
   "pyyaml>=6.0",
-  "scietex.logging>=2.1.0",
+  "scietex.logging>=2.2.0",
 ]
 
 [project.urls]
@@ -37,8 +37,8 @@ docs = [
 ]
 lint = ["ruff", "ty"]
 test = ["pytest", "pytest-asyncio"]
-valkey = ["scietex.logging[valkey]>=2.1.0", "valkey-glide~=2.5.0"]
-mqtt = ["scietex.logging[mqtt]>=2.1.0", "aiomqtt~=2.5.0"]
+valkey = ["scietex.logging[valkey]>=2.2.0", "valkey-glide~=2.5.0"]
+mqtt = ["scietex.logging[mqtt]>=2.2.0", "aiomqtt~=2.5.0"]
 textual = ["textual~=8.2"]
 
 [tool.setuptools.dynamic]

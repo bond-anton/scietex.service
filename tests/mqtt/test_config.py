@@ -36,6 +36,22 @@ def test_worker_config_control_defaults():
     assert cfg.control_inbox_path is None
 
 
+def test_worker_config_log_defaults():
+    """Log fields default to a per-worker topic with a one-day message expiry."""
+    cfg = MqttWorkerConfig()
+    assert cfg.log_topic == "scietex/{service}/{instance_id}/log"
+    assert cfg.log_qos == 0
+    assert cfg.log_retain is False
+    assert cfg.log_message_expiry == 86400
+
+
+@pytest.mark.parametrize("log_message_expiry", [None, 1, 2592000])
+def test_worker_config_log_message_expiry_bounds_accept(log_message_expiry):
+    """log_message_expiry=None and the [1, 2592000] bounds construct successfully."""
+    cfg = MqttWorkerConfig(log_message_expiry=log_message_expiry)
+    assert cfg.log_message_expiry == log_message_expiry
+
+
 @pytest.mark.parametrize("status_ttl", [None, 1, 2592000])
 def test_worker_config_status_ttl_bounds_accept(status_ttl):
     """status_ttl=None and the [1, 2592000] bounds construct successfully."""
@@ -61,6 +77,8 @@ def test_worker_config_inbox_ttl_bounds_accept(inbox_ttl):
         ("inbox_ttl", 2592001),
         ("control_qos", 3),
         ("control_qos", -1),
+        ("log_message_expiry", 0),
+        ("log_message_expiry", 2592001),
     ],
 )
 def test_worker_config_status_fields_out_of_range_raises(field_name, value):

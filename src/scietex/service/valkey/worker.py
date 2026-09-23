@@ -154,9 +154,10 @@ class ValkeyWorker(TransportWorker):
         # reads below.
         cfg = cast(ValkeyWorkerConfig, self._config)
 
-        # {service} is resolved here exactly as MQTT resolves log_topic; a name
-        # without the placeholder passes through unchanged.
-        self._log_stream_name = cfg.log_stream_name.format(service=self.service_name)
+        # {service} and {instance_id} are resolved here exactly as the control
+        # stream resolves them; a name without the placeholders passes through
+        # unchanged.
+        self._log_stream_name = cfg.log_stream_name.format(service=self.service_name, instance_id=self.instance_id)
         # The durable key is the source of truth for remote config (design §2);
         # it is resolved here like log_stream_name.
         self._config_key = cfg.config_key.format(service=self.service_name)
@@ -312,9 +313,11 @@ class ValkeyWorker(TransportWorker):
         config = self._valkey_config
         if config is None:
             return None
+        cfg = cast(ValkeyWorkerConfig, self._config)
         self._valkey_logger_handler = AsyncValkeyHandler(
             stream_name=self._log_stream_name,
             valkey_config=logging_handler_config(config),
+            stream_maxlen=cfg.log_stream_maxlen,
         )
         self._logging_lifecycle.register_logger_handler(self._valkey_logger_handler)
         return self._valkey_logger_handler

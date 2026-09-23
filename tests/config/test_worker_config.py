@@ -276,7 +276,7 @@ def test_valkey_worker_config_task_fetch_batch_size_raises_below_one():
 def test_valkey_worker_config_defaults():
     cfg = ValkeyWorkerConfig()
     assert cfg.valkey_config is None
-    assert cfg.log_stream_name == "scietex:{service}:log"
+    assert cfg.log_stream_name == "scietex:{service}:{instance_id}:log"
     assert cfg.task_fetch_batch_size == 10
     assert cfg.claim_min_idle_ms is None
     assert cfg.task_lease_ttl is None

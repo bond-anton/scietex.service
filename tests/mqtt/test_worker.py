@@ -102,13 +102,24 @@ class _FakeHandler(logging.Handler):
     without opening a connection, so tests stay deterministic.
     """
 
-    def __init__(self, topic, *, mqtt_config=None, qos=0, retain=False, client=None, **kwargs):
+    def __init__(
+        self,
+        topic,
+        *,
+        mqtt_config=None,
+        qos=0,
+        retain=False,
+        client=None,
+        message_expiry=None,
+        **kwargs,
+    ):
         super().__init__()
         self.topic = topic
         self.mqtt_config = mqtt_config
         self.qos = qos
         self.retain = retain
         self.client = client
+        self.message_expiry = message_expiry
         self.logging_running_event = asyncio.Event()
         self.start_calls = 0
         self.stop_calls = 0
@@ -201,6 +212,25 @@ def test_control_topics_resolve_placeholders(tmp_path):
 
     assert worker._control_topic == f"scietex/svc/control/{worker.instance_id}"
     assert worker._control_broadcast_topic == "scietex/svc/control"
+
+
+def test_log_topic_resolves_instance_placeholder(tmp_path):
+    """The log topic embeds the instance id so each worker logs to its own topic."""
+    worker = _make_worker(tmp_path)
+
+    assert worker._log_topic == f"scietex/svc/{worker.instance_id}/log"
+
+
+def test_logging_handler_receives_message_expiry(tmp_path, monkeypatch):
+    """_ensure_logging_handler forwards log_message_expiry to the handler."""
+    _patch_handler(monkeypatch)
+    worker = _make_worker(tmp_path, log_message_expiry=120)
+
+    handler = worker._ensure_logging_handler()
+
+    assert handler is not None
+    assert handler.message_expiry == 120
+    assert handler.topic == worker._log_topic
 
 
 @pytest.mark.asyncio

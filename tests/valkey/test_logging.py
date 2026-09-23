@@ -95,10 +95,10 @@ def test_logging_handler_config_translates_typed_config():
 
 
 def test_log_stream_name_resolved_at_construction():
-    """The default templated log stream name is resolved to the service name
-    at construction, mirroring the MQTT worker's log_topic resolution."""
+    """The default templated log stream name is resolved to the service name and
+    instance id at construction, mirroring the MQTT worker's log_topic resolution."""
     worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc"))
-    assert worker._log_stream_name == "scietex:svc:log"
+    assert worker._log_stream_name == f"scietex:svc:{worker.instance_id}:log"
 
 
 def test_log_stream_name_without_placeholder_passes_through():
@@ -125,4 +125,4 @@ async def test_logging_handler_receives_resolved_stream_name(monkeypatch):
     assert ok is True
     handler = worker._valkey_logger_handler
     assert isinstance(handler, FakeHandler)
-    assert handler.stream_name == "scietex:svc:log"
+    assert handler.stream_name == f"scietex:svc:{worker.instance_id}:log"
