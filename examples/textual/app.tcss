@@ -2,23 +2,72 @@
 #pane {
     height: 1fr;
 }
-#producers-heading {
+/* Collapsible section wrapper. The section label lives on the Collapsible
+   title, so the wrapper only carries spacing and resets the widget's default
+   chrome (surface background, top border, indent) to keep the grids flush with
+   the pane as they were under the old heading widgets. The symmetric vertical
+   margin gives every section a one-row gap above and below; Textual collapses
+   adjacent vertical sibling margins to their max, so neighbours never double
+   up. PRODUCERS and BROKERS stay content-sized; WORKERS grows to fill the
+   remaining space (see below). */
+.section {
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+    margin: 1 0;
+}
+/* The symmetric margin above is wanted only between sections. The first
+   section would otherwise push a blank row down from the top of the pane,
+   since nothing above it collapses against its top margin. */
+#pane > .section:first-child {
+    margin-top: 0;
+}
+/* The WORKERS section is the flexible one: it absorbs the remaining vertical
+   space so its card grid keeps its fixed content height while the log below
+   the grid takes what is left (down to RichLog's min-height). min-height pins
+   the section to its natural content floor (title 1 + 2x2 grid 24 + log min 5)
+   so a short terminal cannot compress it below the cards and overlap BROKERS. */
+#workers-section {
+    height: 1fr;
+    min-height: 30;
+}
+/* Collapse to the title row so the fixed-height BROKERS section below moves up.
+   A bare ``height: auto`` would leave the ``1fr`` body resolving against an
+   unresolved height and fold the grid, so the size stays pinned while expanded
+   and relaxes only under the class Textual toggles on collapse. */
+#workers-section.-collapsed {
+    height: auto;
+    min-height: 0;
+}
+#workers-section > Contents {
+    height: 1fr;
+}
+.section CollapsibleTitle {
     text-style: bold;
     color: $accent;
-    margin-bottom: 1;
+    padding: 0;
+}
+/* The body indents by default (padding 1 0 0 3); drop it so the cards start at
+   the pane's left edge and the grid regains the full pane width. */
+.section > Contents {
+    padding: 0;
 }
 /* Two equal producer columns, matching the worker grid's rhythm. */
 #producer-grid {
     layout: horizontal;
     height: auto;
-    margin-bottom: 1;
 }
-/* Pin to the natural content height (title + switch row + input row + rate row
-   + sparkline + status + button row, plus 2 border) so the pane costs a fixed
-   slice of the viewport and the log absorbs the remainder. */
+/* Pin to the natural content height so the pane costs a fixed slice of the
+   viewport and the log absorbs the remainder. The content is 13 rows: title
+   (1) + margin (1) + switch row (1) + margin (1) + input row (1) + margin (1)
+   + rate row (1) + sparkline (1) + status (1) + margin (1) + button row (3,
+   the Button's 1-row label plus its tall top/bottom border). Plus 2 border
+   rows = 15. The switch row is one row tall because the switches are stripped
+   of their default tall border and padding below. */
 ProducerCard {
     width: 1fr;
-    height: 13;
+    height: 15;
     border: round $panel-lighten-1;
     padding: 0 1;
 }
@@ -27,27 +76,38 @@ ProducerCard .producer-title {
     text-align: center;
     text-style: bold;
     color: $accent;
+    margin-bottom: 1;
 }
 ProducerCard .switch-row {
     layout: horizontal;
-    height: auto;
+    height: 1;
+    margin-bottom: 1;
 }
 ProducerCard .switch-label {
     width: auto;
+    height: 1;
     padding: 0 1 0 0;
     text-style: dim;
     color: $text-muted;
 }
+/* The default Switch is a 3-row block (tall border + 2-column padding) that
+   dwarfs its label. Strip the border and padding and pin it to its 4x1 content
+   so it reads as a compact control on the label's baseline. */
 ProducerCard .broker-switch {
-    width: auto;
+    width: 4;
+    height: 1;
+    border: none;
+    padding: 0;
     margin: 0 2 0 0;
 }
 ProducerCard .input-row {
     layout: horizontal;
-    height: auto;
+    height: 1;
+    margin-bottom: 1;
 }
 ProducerCard .input-label {
     width: auto;
+    height: 1;
     padding: 0 1 0 0;
     text-style: dim;
     color: $text-muted;
@@ -61,24 +121,33 @@ ProducerCard .producer-input {
 }
 ProducerCard .input-unit {
     width: auto;
+    height: 1;
     padding: 0 1 0 1;
     text-style: dim;
     color: $text-muted;
 }
+/* The rate row reuses the worker card's shared .metric-row/.metric-label/
+   .metric-value rules; only the gauge needs a producer-specific track. */
+ProducerCard .rate-bar {
+    margin: 0 1;
+}
+/* The Bar's default background is $surface, which is invisible against the
+   card, so an idle gauge reads as a bare line. A panel-tinted track gives the
+   empty bar visible weight at 0/s. */
+ProducerCard .rate-bar Bar > .bar--bar {
+    background: $panel-lighten-1;
+}
 ProducerCard .producer-status {
     width: 100%;
+    height: 1;
     text-align: center;
     text-style: dim;
     color: $text-muted;
+    margin-top: 1;
 }
 ProducerCard .producer-status.error {
     color: $error;
     text-style: bold;
-}
-#workers-heading {
-    text-style: bold;
-    color: $accent;
-    margin-bottom: 1;
 }
 #card-grid {
     layout: grid;
@@ -202,6 +271,7 @@ WorkerCard.selected {
 .create-buttons Button {
     width: 1fr;
 }
+/* The log switch fills the space left under the card grid inside WORKERS. */
 #logs {
     height: 1fr;
 }
@@ -259,12 +329,6 @@ ShutdownScreen {
     width: 100%;
     text-align: center;
     padding-top: 1;
-}
-#brokers-heading {
-    text-style: bold;
-    color: $accent;
-    margin-top: 1;
-    margin-bottom: 1;
 }
 /* Two equal columns, one-column gutter, matching the worker grid's rhythm. */
 #broker-grid {

@@ -12,6 +12,7 @@ hint. Textual owns the terminal, so the child removes the worker's default
 console handler and the log colors follow the active Textual theme.
 """
 
+import logging
 import time
 
 from rich.text import Text
@@ -28,7 +29,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.events import Resize
 from textual.timer import Timer
-from textual.widgets import ContentSwitcher, Footer, RichLog, Static
+from textual.widgets import Collapsible, ContentSwitcher, Footer, RichLog
 
 from .broker_card import BrokerCard, MqttBrokerCard, ValkeyBrokerCard
 from .broker_snapshot import BrokerMonitor
@@ -87,8 +88,11 @@ class TextualWorkerApp(App):
     #: stays in lockstep with the UI.
     SCIETEX_THEMES = (SCIETEX_DARK, SCIETEX_LIGHT, MONOCHROME)
 
-    def __init__(self) -> None:
+    def __init__(self, *, log_level: int = logging.INFO) -> None:
         super().__init__()
+        # Level handed to every worker child process's logger; the TUI renders
+        # those records. INFO by default; ``--debug`` raises the volume.
+        self._log_level = log_level
         self.slots = [Slot(index=i) for i in range(WORKER_COUNT)]
         self._selected_index = 0
         self._shutting_down = False
@@ -105,34 +109,34 @@ class TextualWorkerApp(App):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="pane"):
-            yield Static("PRODUCERS", id="producers-heading")
-            with Horizontal(id="producer-grid"):
-                for key, _task_name, label in PRODUCERS:
-                    card = ProducerCard(key, label)
-                    self._producer_cards[key] = card
-                    yield card
-            yield Static("WORKERS", id="workers-heading")
-            with Grid(id="card-grid"):
-                for slot in self.slots:
-                    slot.card = WorkerCard(slot.index)
-                    yield slot.card
-            with ContentSwitcher(initial=f"log-{slot_key(0)}", id="logs"):
-                for slot in self.slots:
-                    slot.log = RichLog(
-                        highlight=False,
-                        markup=False,
-                        wrap=True,
-                        max_lines=2000,
-                        id=f"log-{slot_key(slot.index)}",
-                    )
-                    # Keep arrow keys reserved for card navigation; a focusable
-                    # RichLog would otherwise consume them for scrolling.
-                    slot.log.can_focus = False
-                    yield slot.log
-            yield Static("BROKERS", id="brokers-heading")
-            with Horizontal(id="broker-grid"):
-                yield ValkeyBrokerCard(id="broker-valkey")
-                yield MqttBrokerCard(id="broker-mqtt")
+            with Collapsible(title="PRODUCERS", collapsed=False, classes="section"):
+                with Horizontal(id="producer-grid"):
+                    for key, _task_name, label in PRODUCERS:
+                        card = ProducerCard(key, label)
+                        self._producer_cards[key] = card
+                        yield card
+            with Collapsible(title="WORKERS", collapsed=False, classes="section", id="workers-section"):
+                with Grid(id="card-grid"):
+                    for slot in self.slots:
+                        slot.card = WorkerCard(slot.index)
+                        yield slot.card
+                with ContentSwitcher(initial=f"log-{slot_key(0)}", id="logs"):
+                    for slot in self.slots:
+                        slot.log = RichLog(
+                            highlight=False,
+                            markup=False,
+                            wrap=True,
+                            max_lines=2000,
+                            id=f"log-{slot_key(slot.index)}",
+                        )
+                        # Keep arrow keys reserved for card navigation; a focusable
+                        # RichLog would otherwise consume them for scrolling.
+                        slot.log.can_focus = False
+                        yield slot.log
+            with Collapsible(title="BROKERS", collapsed=False, classes="section"):
+                with Horizontal(id="broker-grid"):
+                    yield ValkeyBrokerCard(id="broker-valkey")
+                    yield MqttBrokerCard(id="broker-mqtt")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -413,7 +417,7 @@ class TextualWorkerApp(App):
 
     def _make_worker_process(self, kind: str) -> WorkerProcess:
         """Build a worker handle for the requested kind (test seam)."""
-        process = WorkerProcess(kind)
+        process = WorkerProcess(kind, log_level=self._log_level)
         process.start_process()
         return process
 

@@ -198,6 +198,7 @@ class _ProcessLogHandler(logging.Handler):
 
 def _child_main(
     kind: str,
+    log_level: int,
     commands: "Queue[WorkerCommand]",
     snapshots: "Queue[WorkerSnapshot]",
     logs: "Queue[LogRecordData]",
@@ -207,11 +208,12 @@ def _child_main(
     Runs its own event loop, so the worker's task processing is scheduled
     independently of the parent's loop.
     """
-    asyncio.run(_child_loop(kind, commands, snapshots, logs))
+    asyncio.run(_child_loop(kind, log_level, commands, snapshots, logs))
 
 
 async def _child_loop(
     kind: str,
+    log_level: int,
     commands: "Queue[WorkerCommand]",
     snapshots: "Queue[WorkerSnapshot]",
     logs: "Queue[LogRecordData]",
@@ -229,8 +231,9 @@ async def _child_loop(
     # The worker defaults to DEBUG, which logs each task's full TaskData struct
     # twice. At the demo's task rates that is thousands of records per second,
     # and the parent renders every one on its event loop, so the UI stalls. INFO
-    # keeps the per-task summary and drops the struct dumps.
-    worker.logger.setLevel(logging.INFO)
+    # keeps the per-task summary and drops the struct dumps; ``--debug`` opts
+    # back into the full DEBUG volume.
+    worker.logger.setLevel(log_level)
     worker.logger.addHandler(_ProcessLogHandler(logs))
     snapshots.put(_snapshot(worker))
     last_push = time.monotonic()
@@ -297,8 +300,9 @@ class WorkerProcess:
     snapshot.
     """
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, *, log_level: int = logging.INFO) -> None:
         self._kind = kind
+        self._log_level = log_level
         self._ctx = mp.get_context("spawn")
         self._commands: Queue[WorkerCommand] = self._ctx.Queue()
         self._snapshots: Queue[WorkerSnapshot] = self._ctx.Queue()
@@ -378,7 +382,7 @@ class WorkerProcess:
             return
         self._process = self._ctx.Process(
             target=_child_main,
-            args=(self._kind, self._commands, self._snapshots, self._logs),
+            args=(self._kind, self._log_level, self._commands, self._snapshots, self._logs),
             daemon=True,
         )
         self._process.start()

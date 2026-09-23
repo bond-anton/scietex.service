@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("textual")
 
-from textual.widgets import Static  # noqa: E402
+from textual.widgets import Collapsible, Static  # noqa: E402
 
 from examples.textual.broker_card import (  # noqa: E402
     STALE_AFTER_SECONDS,
@@ -89,9 +89,13 @@ async def test_panel_renders_below_the_log():
         app._poll()
         await pilot.pause()
 
+        # The log now lives inside the WORKERS section, so the BROKERS panel is
+        # the section that follows it rather than a sibling below the log.
+        workers = next(collapsible for collapsible in app.query(Collapsible) if str(collapsible.title) == "WORKERS")
         log = app.query_one("#logs")
         grid = app.query_one("#broker-grid")
-        assert grid.region.y > log.region.y
+        assert workers in log.ancestors
+        assert grid.region.y > workers.region.y
 
 
 @pytest.mark.asyncio

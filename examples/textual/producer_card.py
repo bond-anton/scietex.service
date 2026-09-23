@@ -124,6 +124,7 @@ class ProducerCard(Static):
                     id=f"batch-{self._producer}",
                     classes="producer-input",
                 )
+                yield Static("x", classes="input-unit")
             with Horizontal(classes="metric-row"):
                 yield Static("rate", classes="metric-label rate-label")
                 yield ProgressBar(total=SPARK_SCALE_MAX, show_percentage=False, show_eta=False, classes="rate-bar")

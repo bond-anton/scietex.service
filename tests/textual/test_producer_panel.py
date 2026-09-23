@@ -89,8 +89,8 @@ async def test_pane_renders_above_workers():
     async with app.run_test(size=(120, 60)) as pilot:
         await pilot.pause()
         producer_grid = app.query_one("#producer-grid")
-        workers_heading = app.query_one("#workers-heading")
-        assert producer_grid.region.y < workers_heading.region.y
+        workers_grid = app.query_one("#card-grid")
+        assert producer_grid.region.y < workers_grid.region.y
 
 
 @pytest.mark.asyncio
