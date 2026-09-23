@@ -560,6 +560,7 @@ class MqttWorker(TransportWorker):
             # TransportHealth, which drives the reconnect (AR-083).
             client = self.client
             start_time = self.start_time
+            metrics = self.task_metrics()
             payload = msgspec.msgpack.encode(
                 Heartbeat(
                     service=self.service_name,
@@ -568,6 +569,9 @@ class MqttWorker(TransportWorker):
                     heartbeat_interval=self.heartbeat_interval,
                     start_time=start_time,
                     ttl=self.active_ttl,
+                    queue_depth=metrics.queue_depth,
+                    running_tasks=metrics.running,
+                    tasks_per_second=metrics.rate,
                 )
             )
             properties = Properties(PacketTypes.PUBLISH)
@@ -599,6 +603,7 @@ class MqttWorker(TransportWorker):
         Will, so a brief blip does not flap the registry. The Will payload
         carries ``inactive_ttl`` as its own expiry, matching the shutdown path.
         """
+        metrics = self.task_metrics()
         payload = msgspec.msgpack.encode(
             Heartbeat(
                 service=self.service_name,
@@ -607,6 +612,9 @@ class MqttWorker(TransportWorker):
                 heartbeat_interval=self.heartbeat_interval,
                 start_time=self.start_time or datetime.now(timezone.utc),
                 ttl=self.inactive_ttl,
+                queue_depth=metrics.queue_depth,
+                running_tasks=metrics.running,
+                tasks_per_second=metrics.rate,
             )
         )
         properties = Properties(PacketTypes.WILLMESSAGE)
@@ -829,6 +837,7 @@ class MqttWorker(TransportWorker):
         client = self.client
         if client is None:
             return
+        metrics = self.task_metrics()
         payload = msgspec.msgpack.encode(
             Heartbeat(
                 service=self.service_name,
@@ -837,6 +846,9 @@ class MqttWorker(TransportWorker):
                 heartbeat_interval=self.heartbeat_interval,
                 start_time=self.start_time or datetime.now(timezone.utc),
                 ttl=ttl,
+                queue_depth=metrics.queue_depth,
+                running_tasks=metrics.running,
+                tasks_per_second=metrics.rate,
             )
         )
         properties = Properties(PacketTypes.PUBLISH)

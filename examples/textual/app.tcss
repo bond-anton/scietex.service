@@ -1,0 +1,309 @@
+/* Stylesheet for the four-slot Textual dashboard. */
+#pane {
+    height: 1fr;
+}
+#producers-heading {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+/* Two equal producer columns, matching the worker grid's rhythm. */
+#producer-grid {
+    layout: horizontal;
+    height: auto;
+    margin-bottom: 1;
+}
+/* Pin to the natural content height (title + switch row + input row + rate row
+   + sparkline + status + button row, plus 2 border) so the pane costs a fixed
+   slice of the viewport and the log absorbs the remainder. */
+ProducerCard {
+    width: 1fr;
+    height: 13;
+    border: round $panel-lighten-1;
+    padding: 0 1;
+}
+ProducerCard .producer-title {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    color: $accent;
+}
+ProducerCard .switch-row {
+    layout: horizontal;
+    height: auto;
+}
+ProducerCard .switch-label {
+    width: auto;
+    padding: 0 1 0 0;
+    text-style: dim;
+    color: $text-muted;
+}
+ProducerCard .broker-switch {
+    width: auto;
+    margin: 0 2 0 0;
+}
+ProducerCard .input-row {
+    layout: horizontal;
+    height: auto;
+}
+ProducerCard .input-label {
+    width: auto;
+    padding: 0 1 0 0;
+    text-style: dim;
+    color: $text-muted;
+}
+ProducerCard .producer-input {
+    width: 8;
+    height: 1;
+    border: none;
+    padding: 0;
+    background: $surface;
+}
+ProducerCard .input-unit {
+    width: auto;
+    padding: 0 1 0 1;
+    text-style: dim;
+    color: $text-muted;
+}
+ProducerCard .producer-status {
+    width: 100%;
+    text-align: center;
+    text-style: dim;
+    color: $text-muted;
+}
+ProducerCard .producer-status.error {
+    color: $error;
+    text-style: bold;
+}
+#workers-heading {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+#card-grid {
+    layout: grid;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-gutter: 0 1;
+    height: auto;
+}
+/* Pin the card to the occupied state's natural height (12 rows: 10 content +
+   2 border) so the empty and occupied states cannot reflow the grid when a
+   worker is created or exited. The occupied content is exactly 10 rows
+   (header + id + 3 metric rows + sparkline + status line + 3-row button row). */
+WorkerCard {
+    height: 12;
+    border: round $panel-lighten-1;
+    padding: 0 1;
+}
+WorkerCard.selected {
+    border: round $accent;
+}
+.slot-header {
+    layout: horizontal;
+    height: auto;
+}
+.slot-number {
+    width: 1fr;
+    text-align: left;
+    text-style: bold;
+}
+.worker-kind {
+    width: 1fr;
+    text-align: right;
+    text-style: bold;
+    color: $accent;
+}
+.instance-id {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+}
+.metric-row {
+    layout: horizontal;
+    height: auto;
+}
+.metric-label {
+    width: 6;
+    text-align: left;
+    text-style: dim;
+    color: $text-muted;
+}
+/* Sizes to the value text so the gauge keeps the remaining width; the alert
+   suffix only steals room while a manager is actually failed. */
+.metric-value {
+    width: auto;
+    height: 1;
+    text-align: right;
+    text-style: dim;
+    color: $text-muted;
+}
+/* Fill the card so the gauge spans the whole width; the value sits right after
+   the track. */
+.jobs-bar,
+.queue-bar,
+.rate-bar {
+    width: 1fr;
+    height: 1;
+}
+/* The inner Bar renderable hardcodes ``width: 32`` in its own DEFAULT_CSS, so
+   the track caps at 32 columns and leaves the rest of the card empty. Stretch
+   it to its ProgressBar parent so the gauge tracks the card width. */
+.jobs-bar Bar,
+.queue-bar Bar,
+.rate-bar Bar {
+    width: 100%;
+}
+/* Span the full card width so the sparkline reads as the same scale as the
+   bars rather than a fixed sliver. */
+.rate-spark {
+    width: 100%;
+    height: 1;
+}
+/* One-row status line: a dim label and count around a dot whose color encodes
+   transport health. The dot's side margins stand in for the surrounding spaces
+   so the color applies to the glyph alone. */
+.status-line {
+    layout: horizontal;
+    height: 1;
+}
+.link-label,
+.link-total {
+    width: auto;
+    height: 1;
+    text-style: dim;
+    color: $text-muted;
+}
+.link-dot {
+    width: auto;
+    height: 1;
+    margin: 0 1;
+}
+.link-dot.healthy {
+    color: $success;
+}
+.link-dot.unhealthy {
+    color: $error;
+}
+.link-dot.no-transport {
+    /* Dimmed error reads as "not applicable" for workers with no transport. */
+    color: $error 50%;
+}
+/* Two equal columns with a one-column gutter: the button rows must sit
+   apart, and a horizontal container offers no child-spacing property. */
+.controls,
+.create-buttons {
+    layout: grid;
+    grid-size: 2 1;
+    grid-gutter: 0 1;
+    height: auto;
+}
+.controls Button,
+.create-buttons Button {
+    width: 1fr;
+}
+#logs {
+    height: 1fr;
+}
+RichLog {
+    border: round $panel-lighten-1;
+    padding: 0 1;
+    height: 1fr;
+    min-height: 5;
+}
+/* Keep the states content-sized: a fraction/percentage height here feeds back
+   into the grid's auto-row sizing and collapses the whole card. The card's
+   fixed height still holds, so each state just fills its natural content rows. */
+WorkerCard > .empty-state,
+WorkerCard > .occupied-state {
+    height: auto;
+}
+/* The six rows the empty state leaves after the slot number and the 3-row
+   button row, so its content matches the occupied state's 10 rows;
+   ``content-align`` centers the label vertically in that space. */
+.empty-label {
+    height: 6;
+    width: 100%;
+    text-align: center;
+    content-align: center middle;
+    text-style: bold;
+    color: $text-muted;
+}
+WorkerCard.empty .occupied-state {
+    display: none;
+}
+WorkerCard.occupied .empty-state {
+    display: none;
+}
+ShutdownScreen {
+    align: center middle;
+    background: $background 60%;
+}
+#shutdown-box {
+    /* Fixed width: the spinner and label are percentage-width, so an
+       auto-width box would collapse them to zero columns. */
+    width: 40;
+    height: auto;
+    border: round $accent;
+    padding: 1 2;
+    background: $surface;
+}
+/* The built-in DEFAULT_CSS gives the spinner ``height: 100%``, which fills the
+   box's content area and clips the label below it. Pin the spinner to one row
+   so the label gets its own. */
+#shutdown-box LoadingIndicator {
+    height: 1;
+}
+#shutdown-label {
+    height: auto;
+    width: 100%;
+    text-align: center;
+    padding-top: 1;
+}
+#brokers-heading {
+    text-style: bold;
+    color: $accent;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+/* Two equal columns, one-column gutter, matching the worker grid's rhythm. */
+#broker-grid {
+    layout: horizontal;
+    height: auto;
+}
+/* Pin to the natural content height (7 rows: title + 5 metric rows + status,
+   plus 2 border) so the panel costs a fixed slice of the viewport and the log
+   absorbs the remainder. Kept shorter than WorkerCard so a 24-row terminal
+   still leaves the log usable. */
+BrokerCard {
+    width: 1fr;
+    height: 9;
+    border: round $panel-lighten-1;
+    padding: 0 1;
+}
+BrokerCard .broker-title {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    color: $accent;
+}
+/* Wider than the worker card's 6 so "retained" and "streams" fit. */
+BrokerCard .metric-label {
+    width: 9;
+}
+/* Fresh values read bright; stale and disconnected values dim so the panel
+   never presents an aged reading as current. */
+BrokerCard .metric-value {
+    color: $text;
+}
+BrokerCard.stale .metric-value,
+BrokerCard.disconnected .metric-value {
+    color: $text-muted 50%;
+    text-style: dim;
+}
+BrokerCard .broker-status {
+    width: auto;
+    height: 1;
+    text-style: dim;
+    color: $text-muted;
+}

@@ -1,12 +1,14 @@
 """TaskProcessor task-manager fetch timeout and queue-manager backoff tests."""
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
 import scietex.service.task_executor as executor_mod
 import scietex.service.task_processor as mod
 from scietex.service.config import TaskProcessorConfig
+from scietex.service.task_handler.schemas import TaskData
 
 from ._helpers import DemoProcessor, ReportingProcessor
 
@@ -101,3 +103,18 @@ async def test_task_queue_manager_sleeps_after_empty_fetch():
         monkeypatch.undo()
 
     assert backoff_delays, "an empty fetch must trigger the idle backoff sleep"
+
+
+@pytest.mark.asyncio
+async def test_task_queue_depth_reports_pending_tasks():
+    """task_queue_depth reports the number of tasks waiting in the data queue:
+    zero on a fresh processor, incremented after enqueue, drained by dequeue."""
+    proc = DemoProcessor()
+
+    assert proc.task_queue_depth() == 0
+
+    proc.enqueue_task(TaskData(task_id=str(uuid4()), task="dummy", payload=b"{}"))
+    assert proc.task_queue_depth() == 1
+
+    assert proc.dequeue_task() is not None
+    assert proc.task_queue_depth() == 0

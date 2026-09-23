@@ -9,23 +9,18 @@ whole UI and stay in lockstep with the log formatter.
 Adapted from ``scietex.logging``'s ``examples/textual_log_viewer.py``.
 """
 
-import asyncio
 import logging
 
 from scietex.logging import (
     SCIETEX_DARK,
     SCIETEX_LIGHT,
-    AsyncLoggingHandler,
     LoggingTheme,
     ScietexFormatter,
 )
-from scietex.logging.async_logging_handler import BackendDrainResult, DrainStatus
 
 from textual.app import App
 from textual.message import Message
 from textual.theme import Theme
-
-_QUEUE_TEXTUAL = "_textual"
 
 
 def to_textual_theme(theme: LoggingTheme) -> Theme:
@@ -67,65 +62,47 @@ def to_textual_theme(theme: LoggingTheme) -> Theme:
 class LogLine(Message):
     """A formatted log line, safe to post from any thread."""
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, source: str, text: str) -> None:
+        self.source = source
         self.text = text
         super().__init__()
 
 
-class TextualLogHandler(AsyncLoggingHandler):
-    """Async logging handler whose sink is a Textual app.
+class TextualLogHandler(logging.Handler):
+    """Logging handler whose sink is a Textual app.
 
-    Registers a single backend through the public ``register_backend`` API: a
-    queue, a worker coroutine that formats each record and posts it to the app,
-    and a drain hook that flushes the queue at shutdown.
+    The parent owns this handler: the child ships picklable records across the
+    process boundary, and the parent formats each one and posts it to the app as
+    a thread-safe message.
     """
 
-    # Always non-None: __init__ installs a ScietexFormatter, so the worker can
-    # format records without a None guard.
+    # Always non-None: __init__ installs a ScietexFormatter.
     formatter: logging.Formatter
 
-    def __init__(self, app: App, *, theme: LoggingTheme = SCIETEX_DARK, **kwargs) -> None:
+    def __init__(self, app: App, *, source: str, theme: LoggingTheme = SCIETEX_DARK, **kwargs) -> None:
         super().__init__(**kwargs)
         self._app = app
+        self._source = source
         self.formatter = ScietexFormatter(theme=theme)
-        self._queue: asyncio.Queue[logging.LogRecord] = asyncio.Queue(maxsize=self.config.queue_maxsize)
-        self.register_backend(_QUEUE_TEXTUAL, self._queue, self._worker, self._drain)
 
-    async def _worker(self) -> None:
-        """Drain the queue, posting each formatted record to the app.
+    def emit(self, record: logging.LogRecord) -> None:
+        """Format the record and post it to the app.
 
-        Formatting happens on the event-loop thread, so the shared record is
-        never mutated off-loop. ``post_message`` is thread-safe, so the app
-        receives the line regardless of which thread emitted the record.
+        ``post_message`` is thread-safe, so the app receives the line regardless
+        of which thread emitted the record.
         """
-        while self.logging_running_event.is_set() or not self._queue.empty():
-            try:
-                record = await asyncio.wait_for(self._queue.get(), 1)
-            except asyncio.TimeoutError:
-                continue
-            try:
-                self._app.post_message(LogLine(self.formatter.format(record)))
-            except Exception as exc:
-                # A buggy formatter must not kill the worker; report and keep draining.
-                self._report_error(record, exc)
-            finally:
-                self._queue.task_done()
-
-    async def _drain(self, timeout: float) -> BackendDrainResult:
-        """Wait for the queue to empty, reporting how the drain concluded."""
         try:
-            await asyncio.wait_for(self._queue.join(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return BackendDrainResult(_QUEUE_TEXTUAL, DrainStatus.TIMEOUT)
-        except Exception as exc:
-            return BackendDrainResult(_QUEUE_TEXTUAL, DrainStatus.ERROR, exc)
-        return BackendDrainResult(_QUEUE_TEXTUAL, DrainStatus.COMPLETED)
+            text = self.formatter.format(record)
+            self._app.post_message(LogLine(self._source, text))
+        except Exception:
+            # A buggy formatter must not kill the emitting thread; the standard
+            # handler error path reports it instead.
+            self.handleError(record)
 
     def set_theme(self, theme: LoggingTheme) -> None:
         """Swap the formatter's theme.
 
-        The worker reads ``self.formatter`` at work time, so replacing it takes
-        effect on the next record without restarting the worker. ``color`` is
-        left to the theme, so a monochrome theme emits no ANSI.
+        Replacing it takes effect on the next record. ``color`` is left to the
+        theme, so a monochrome theme emits no ANSI.
         """
         self.formatter = ScietexFormatter(theme=theme)

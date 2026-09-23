@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from scietex.service.task_handler.schemas import TASK_CANCEL_TASK_NAME, TaskData
+from scietex.service.task_handler.schemas import TASK_CANCEL_TASK_NAME, TaskData, TaskResult, task_data_id
 from scietex.service.task_lifecycle import TaskLifecycle
 
 from ._helpers import Recording, build_executor, make_settings, register_finished, register_running
@@ -141,3 +141,107 @@ async def test_control_concurrency_ceiling():
 
     running_tracker.worker_task.cancel()
     await asyncio.gather(running_tracker.worker_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_run_once_refills_all_free_slots():
+    """One iteration dispatches up to the free-slot count, not just one task."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    settings = make_settings(max_concurrent_tasks=3)
+    executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
+
+    ids = [uuid4() for _ in range(3)]
+    for task_id in ids:
+        await queue.put(TaskData(task_id=str(task_id), task="dummy"))
+
+    await executor.run_once()
+
+    # The old single-dispatch loop registered exactly one tracker here.
+    assert set(lifecycle.trackers()) == set(ids)
+    for tracker in list(lifecycle.trackers().values()):
+        await tracker.worker_task
+
+
+@pytest.mark.asyncio
+async def test_run_once_batch_stops_at_the_free_slot_count():
+    """A batch never exceeds the free-slot budget, leaving the surplus queued."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    settings = make_settings(max_concurrent_tasks=2)
+    executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
+
+    ids = [uuid4() for _ in range(5)]
+    for task_id in ids:
+        await queue.put(TaskData(task_id=str(task_id), task="dummy"))
+
+    await executor.run_once()
+
+    assert len(lifecycle.trackers()) == 2
+    assert queue.qsize() == 3
+    for tracker in list(lifecycle.trackers().values()):
+        await tracker.worker_task
+
+
+@pytest.mark.asyncio
+async def test_full_gate_wakes_on_settle_instead_of_sleeping():
+    """A parked iteration wakes when a slot frees, without waiting the sleep timeout."""
+    gate = asyncio.Event()
+
+    class GatedRecording(Recording):
+        async def process_task(self, task_data, *, control=False):
+            self.processed.append((task_data_id(task_data), task_data))
+            await gate.wait()
+            return TaskResult(status="success")
+
+    recording = GatedRecording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    # A 30s sleep timeout makes a regression fail loudly rather than pass slowly.
+    settings = make_settings(max_concurrent_tasks=1, task_manager_sleep_time=30.0, task_queue_fetch_timeout=5.0)
+    executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
+
+    first_id = uuid4()
+    await queue.put(TaskData(task_id=str(first_id), task="gated"))
+    await executor.run_once()
+    assert first_id in lifecycle.trackers()
+
+    second_id = uuid4()
+    await queue.put(TaskData(task_id=str(second_id), task="gated"))
+    parked = asyncio.create_task(executor.run_once())
+    await asyncio.sleep(0)
+    assert not parked.done()
+
+    gate.set()
+    await asyncio.wait_for(parked, timeout=1.0)
+    assert second_id not in lifecycle.trackers()
+
+    await executor.run_once()
+    assert second_id in lifecycle.trackers()
+    for tracker in list(lifecycle.trackers().values()):
+        await tracker.worker_task
+
+
+@pytest.mark.asyncio
+async def test_control_admitted_before_data_batch():
+    """Control wins the iteration even when data slots are free and data is queued."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    control_queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    executor = build_executor(recording, queue=queue, control_queue=control_queue, lifecycle=lifecycle)
+
+    control_id = uuid4()
+    await control_queue.put(TaskData(task_id=str(control_id), task=TASK_CANCEL_TASK_NAME))
+    data_id = uuid4()
+    await queue.put(TaskData(task_id=str(data_id), task="dummy"))
+
+    await executor.run_once()
+
+    assert control_id in lifecycle.trackers()
+    assert data_id not in lifecycle.trackers()
+    assert not queue.empty()
+
+    await lifecycle.trackers()[control_id].worker_task

@@ -79,28 +79,70 @@ class TaskExecutor:
         self._control_queue = control_queue
         self._control_concurrency = control_concurrency
         self._control_running: set[UUID] = set()
+        # Set by every site that drops a tracker, so a run_once parked on a full
+        # data plane wakes the moment a slot frees instead of polling. A spurious
+        # set is harmless; a missed one stalls dispatch until the
+        # task_manager_sleep_time safety timeout.
+        self._data_slot_freed: asyncio.Event = asyncio.Event()
         # Timeout-requeue budget, distinct from the error-path retry budget:
         # a timeout cancel has no TaskResult, so the two cannot share a key.
         self._timeout_requeues: dict[UUID, int] = {}
 
+    def _wake_data_plane(self) -> None:
+        """Signal that a data-plane slot may have freed.
+
+        Called from every site that removes a tracker (``_settle`` and
+        ``watchdog``); missing a site risks a dispatch stall until the safety
+        timeout.
+        """
+        self._data_slot_freed.set()
+
     async def run_once(self) -> None:
-        """Run one task-manager iteration: dequeue, dispatch, and track a task.
+        """Run one task-manager iteration: admit control, then refill data slots.
 
         Control-plane work (AR-108) is admitted first on its own priority lane
         with its own concurrency ceiling, so a saturated data plane cannot starve
-        a ``task:cancel``, ``worker:*``, or ``config:*`` command. Data-plane work then uses the
-        remaining budget.
+        a ``task:cancel``, ``worker:*``, or ``config:*`` command. Data-plane work
+        then refills every free slot in one iteration, bounded by
+        ``max_concurrent_tasks - _data_running()``. When the data plane is full,
+        the iteration parks on ``_data_slot_freed`` rather than polling, bounded
+        by ``task_manager_sleep_time`` as a missed-wakeup safety net.
         """
         if self._admit_control():
             return
-        if self._data_running() < self._settings().max_concurrent_tasks:
+        free = self._settings().max_concurrent_tasks - self._data_running()
+        if free <= 0:
+            # Clear immediately before awaiting with no intervening await, so a
+            # signal cannot slip between the gate check and the clear: run_once
+            # is not preempted without an await, and no settle can run in that
+            # window. Any set() after this point wakes us below.
+            self._data_slot_freed.clear()
             try:
-                task_data = await asyncio.wait_for(self._queue.get(), timeout=self._settings().task_queue_fetch_timeout)
-                self._dispatch(task_data, control=False)
+                await asyncio.wait_for(
+                    self._data_slot_freed.wait(),
+                    timeout=self._settings().task_manager_sleep_time,
+                )
             except asyncio.TimeoutError:
+                # Safety net only: a missed wakeup degrades to the old poll
+                # cadence, never to a stall.
                 pass
-        else:
-            await asyncio.sleep(self._settings().task_manager_sleep_time)
+            return
+
+        # Dispatch branch: block for the first task (preserves "idle waits for
+        # work"), then drain the remaining free slots without blocking. Bounding
+        # by ``free`` keeps the data plane at or below max_concurrent_tasks.
+        for index in range(free):
+            try:
+                if index == 0:
+                    task_data = await asyncio.wait_for(
+                        self._queue.get(),
+                        timeout=self._settings().task_queue_fetch_timeout,
+                    )
+                else:
+                    task_data = self._queue.get_nowait()
+            except (asyncio.TimeoutError, asyncio.QueueEmpty):
+                return
+            self._dispatch(task_data, control=False)
 
     def _admit_control(self) -> bool:
         """Dequeue and dispatch one control command when the lane has capacity."""
@@ -172,6 +214,7 @@ class TaskExecutor:
         """Drop the tracker, balance the queue, apply retry policy, then ack."""
         task_id = task_data_id(task_data)
         tracker = self._lifecycle.remove_tracker(task_id)
+        self._wake_data_plane()
         # The lane is read from the tracker captured at dispatch, not from
         # ``_control_running``: shutdown clears that set, and a handler that
         # outlives the cancellation timeout settles after the clear, which would
@@ -434,6 +477,7 @@ class TaskExecutor:
                 # the tracker is dropped here (remove_tracker leaves the reason
                 # in place for the ack to consume).
                 self._lifecycle.remove_tracker(task_id)
+                self._wake_data_plane()
 
     async def shutdown(self) -> None:
         """Drain the queue, cancel/requeue running tasks, and clear the retry budget."""

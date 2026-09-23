@@ -41,6 +41,10 @@ class Heartbeat(msgspec.Struct, frozen=True):
             its configured TTL (or the ``2 ×``/``10 ×`` interval multipliers).
             Readers evict the entry once ``ttl`` has elapsed since
             ``timestamp``; the broker enforces the same bound independently.
+        queue_depth: Tasks waiting in the producer's data-plane queue.
+        running_tasks: Tasks the producer is currently processing.
+        tasks_per_second: Sliding-window completion rate (completions in the
+            last ``window`` seconds divided by ``window``).
         timestamp: UTC timestamp of this heartbeat entry (defaults to
             ``datetime.now(timezone.utc)`` at construction time).
     """
@@ -55,4 +59,11 @@ class Heartbeat(msgspec.Struct, frozen=True):
     # Must stay above ``timestamp`` — a required field cannot follow the
     # ``default_factory`` field.
     ttl: float
+    # Required for the same reason as ``ttl``: a producer that omits a metrics
+    # field must be rejected rather than silently reporting zeros, so a
+    # pre-metrics heartbeat cannot drift into the registry unnoticed. They sit
+    # above ``timestamp`` for the same default_factory ordering constraint.
+    queue_depth: int
+    running_tasks: int
+    tasks_per_second: float
     timestamp: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))

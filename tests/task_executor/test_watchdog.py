@@ -33,6 +33,24 @@ async def test_watchdog_requeues_timed_out_task():
 
 
 @pytest.mark.asyncio
+async def test_watchdog_signals_the_data_plane():
+    """The watchdog frees a slot without _settle, so it must wake the dispatcher itself."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    settings = make_settings(task_cancellation_timeout=0.1)
+    executor = build_executor(recording, queue=queue, lifecycle=lifecycle, settings=settings)
+    task_id = uuid4()
+    task_data = TaskData(task_id=str(task_id), task="slow", timeout=TaskTimeout(timeout=0.1, timeout_action="requeue"))
+    register_running(lifecycle, task_id, task_data, started=-100.0)
+    executor._data_slot_freed.clear()
+
+    await executor.watchdog()
+
+    assert executor._data_slot_freed.is_set()
+
+
+@pytest.mark.asyncio
 async def test_watchdog_discards_timed_out_task():
     """A timed-out task with timeout_action="discard" is not requeued."""
     recording = Recording()

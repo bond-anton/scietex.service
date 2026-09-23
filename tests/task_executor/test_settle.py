@@ -31,6 +31,24 @@ async def test_settle_removes_tracker_and_acks_result():
 
 
 @pytest.mark.asyncio
+async def test_settle_signals_the_data_plane():
+    """_settle wakes a dispatcher parked on a full data plane."""
+    recording = Recording()
+    queue = asyncio.Queue()
+    lifecycle = TaskLifecycle()
+    executor = build_executor(recording, queue=queue, lifecycle=lifecycle)
+    task_id = uuid4()
+    task_data = TaskData(task_id=str(task_id), task="dummy")
+    queue.put_nowait(task_data)
+    await register_finished(lifecycle, task_id, task_data)
+    executor._data_slot_freed.clear()
+
+    await executor._settle(task_data, TaskResult(status="success"))
+
+    assert executor._data_slot_freed.is_set()
+
+
+@pytest.mark.asyncio
 async def test_settle_consumes_cancel_reason():
     """_settle pops and forwards the recorded cancel reason to the ack hook."""
     recording = Recording()

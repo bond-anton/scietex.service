@@ -401,6 +401,7 @@ class ValkeyWorker(TransportWorker):
             # it mid-await, but glide errors are swallowed and reported to
             # TransportHealth, which drives the reconnect (AR-083).
             client = self.client
+            metrics = self.task_metrics()
             heartbeat_data = Heartbeat(
                 service=self.service_name,
                 instance_id=self.instance_id,
@@ -408,6 +409,9 @@ class ValkeyWorker(TransportWorker):
                 heartbeat_interval=self.heartbeat_interval,
                 start_time=self.start_time,
                 ttl=self.active_ttl,
+                queue_depth=metrics.queue_depth,
+                running_tasks=metrics.running,
+                tasks_per_second=metrics.rate,
                 timestamp=datetime.now(timezone.utc),
             )
             self.logger.log(logging.DEBUG, "Sending heartbeat to Valkey: %s", heartbeat_data)
@@ -568,6 +572,7 @@ class ValkeyWorker(TransportWorker):
         client = self.client
         if client is None:
             return
+        metrics = self.task_metrics()
         heartbeat_data = Heartbeat(
             service=self.service_name,
             instance_id=self.instance_id,
@@ -575,6 +580,9 @@ class ValkeyWorker(TransportWorker):
             heartbeat_interval=self.heartbeat_interval,
             start_time=self.start_time or datetime.now(timezone.utc),
             ttl=ttl,
+            queue_depth=metrics.queue_depth,
+            running_tasks=metrics.running,
+            tasks_per_second=metrics.rate,
             timestamp=datetime.now(timezone.utc),
         )
         try:

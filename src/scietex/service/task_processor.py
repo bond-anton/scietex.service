@@ -40,6 +40,7 @@ from .task_handler import (
 )
 from .task_handler.schemas import task_data_id
 from .task_lifecycle import TaskLifecycle
+from .task_metrics import TaskMetrics, TaskMetricsSnapshot
 from .theme import Theme
 from .transport import InMemoryTransport, TaskTransport
 
@@ -107,6 +108,8 @@ class TaskProcessor(BasicWorker):
         """
         super().__init__(config, theme=theme)
         self._task_lifecycle = TaskLifecycle()
+        # Completion throughput metrics (sliding-window rate + cumulative count).
+        self._metrics = TaskMetrics()
         # Error-path retry budget per task id (AR-022 v4: exactly one retry).
         # Keyed by the stable task id so it survives the requeue -> dequeue ->
         # re-handle cycle, unlike a per-attempt tracker.
@@ -432,6 +435,24 @@ class TaskProcessor(BasicWorker):
     def task_queue_full(self) -> bool:
         """Whether the internal task queue has reached its maximum size."""
         return self.__task_queue.full()
+
+    def task_queue_depth(self) -> int:
+        """Number of tasks currently waiting in the internal queue."""
+        return self.__task_queue.qsize()
+
+    def task_metrics(self) -> TaskMetricsSnapshot:
+        """Snapshot of queue depth, running count, and completion rate.
+
+        Read on the heartbeat tick so a worker can publish its processing
+        metrics alongside liveness. The rate is the sliding-window completion
+        rate owned by :class:`~scietex.service.task_metrics.TaskMetrics`.
+        """
+        return TaskMetricsSnapshot(
+            queue_depth=self.task_queue_depth(),
+            running=len(self.running_tasks),
+            rate=self._metrics.rate(),
+            total=self._metrics.total(),
+        )
 
     def control_queue_empty(self) -> bool:
         """Whether the control-plane lane has no pending commands."""
@@ -801,6 +822,9 @@ class TaskProcessor(BasicWorker):
                 ``task:cancel`` request; ``"timeout"``/``"shutdown"`` mark
                 framework-driven cancellation.
         """
+        # Single funnel for every terminal task (success, error, cancellation):
+        # the increment point for the completion rate, before the transport ack.
+        self._metrics.record_completion()
         await self._transport.ack(task_data, task_result, cancel_reason=cancel_reason)
 
     async def on_task_started(self, task_data: TaskData) -> None:

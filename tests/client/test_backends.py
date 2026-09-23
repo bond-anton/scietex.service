@@ -18,6 +18,9 @@ def make_heartbeat(instance_id: str = "a") -> Heartbeat:
         heartbeat_interval=10.0,
         start_time=datetime.now(timezone.utc),
         ttl=100.0,
+        queue_depth=0,
+        running_tasks=0,
+        tasks_per_second=0.0,
         timestamp=datetime.now(timezone.utc),
     )
 

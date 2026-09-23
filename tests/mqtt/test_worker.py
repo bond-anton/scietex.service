@@ -639,6 +639,7 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
     assert isinstance(decoded.timestamp, datetime)
     # Byte-identity parity: the MQTT payload is the exact msgpack encoding of
     # the shared Heartbeat struct, matching what Valkey publishes field-for-field.
+    metrics = worker.task_metrics()
     reference = Heartbeat(
         service="svc",
         instance_id=worker.instance_id,
@@ -646,6 +647,9 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
         heartbeat_interval=worker.heartbeat_interval,
         start_time=start,
         ttl=worker.active_ttl,
+        queue_depth=metrics.queue_depth,
+        running_tasks=metrics.running,
+        tasks_per_second=metrics.rate,
         timestamp=decoded.timestamp,
     )
     assert msgspec.msgpack.encode(reference) == payload
