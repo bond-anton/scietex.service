@@ -116,12 +116,13 @@ is subject to the task queue's timeout. Accepted for v1.
 ```python
 CONFIG_ENVELOPE_VERSION: int = 1
 
+
 class ConfigEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     version: int = CONFIG_ENVELOPE_VERSION
-    revision: int = 0            # monotonic; replay protection
-    hash: str = ""               # sha256(settings).hexdigest(); integrity only
-    signature: str = ""          # hex HMAC-SHA256; empty unless signing enabled
-    settings: bytes = b""        # msgpack(ReloadableSettings)
+    revision: int = 0  # monotonic; replay protection
+    hash: str = ""  # sha256(settings).hexdigest(); integrity only
+    signature: str = ""  # hex HMAC-SHA256; empty unless signing enabled
+    settings: bytes = b""  # msgpack(ReloadableSettings)
     created_at: datetime | None = None
 ```
 
@@ -165,19 +166,23 @@ reloadable fields once into a single snapshot.
 | `valkey_config` / `mqtt_config` | transport | no | connection config, secrets |
 
 ```python
-RELOADABLE_FIELDS: frozenset[str] = frozenset({
-    "max_concurrent_tasks",
-    "task_manager_sleep_time",
-    "task_queue_manager_sleep_time",
-    "task_handler_start_timeout",
-    "task_handler_stop_timeout",
-    "task_timeout",
-    "task_queue_fetch_timeout",
-    "task_cancellation_timeout",
-})
+RELOADABLE_FIELDS: frozenset[str] = frozenset(
+    {
+        "max_concurrent_tasks",
+        "task_manager_sleep_time",
+        "task_queue_manager_sleep_time",
+        "task_handler_start_timeout",
+        "task_handler_stop_timeout",
+        "task_timeout",
+        "task_queue_fetch_timeout",
+        "task_cancellation_timeout",
+    }
+)
+
 
 class ReloadableSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Complete snapshot of the hot-reloadable core fields (all required)."""
+
     max_concurrent_tasks: int
     task_manager_sleep_time: float
     task_queue_manager_sleep_time: float
@@ -205,10 +210,11 @@ class MyServiceSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     batch_size: int = 100
     upstream_url: str = ""
 
+
 worker.register_config_settings(
-    "my_service",                       # section name in the envelope
+    "my_service",  # section name in the envelope
     MyServiceSettings,
-    apply=self._apply_my_service_settings,   # Callable[[MyServiceSettings], None]
+    apply=self._apply_my_service_settings,  # Callable[[MyServiceSettings], None]
 )
 ```
 
@@ -267,8 +273,9 @@ Dispatch is opaque string matching (`_find_task_handler` at
 
 ```python
 class ConfigApplyRequest(msgspec.Struct, frozen=True):
-    payload: bytes | None = None   # inline envelope; None => re-read source of truth
-    persist: bool = False          # also write config.yml after a successful apply
+    payload: bytes | None = None  # inline envelope; None => re-read source of truth
+    persist: bool = False  # also write config.yml after a successful apply
+
 
 class ConfigApplyResponse(msgspec.Struct, frozen=True):
     applied: bool
@@ -278,8 +285,10 @@ class ConfigApplyResponse(msgspec.Struct, frozen=True):
     restart_required: list[str] = msgspec.field(default_factory=list)
     error: str = ""
 
+
 class ConfigStoreRequest(msgspec.Struct, frozen=True):
     target: Literal["disk", "remote", "both"] = "disk"
+
 
 class ConfigStoreResponse(msgspec.Struct, frozen=True):
     stored: bool
@@ -289,11 +298,13 @@ class ConfigStoreResponse(msgspec.Struct, frozen=True):
     hash: str = ""
     error: str = ""
 
+
 class ConfigShowRequest(msgspec.Struct, frozen=True):
     include_restart_required: bool = True
 
+
 class ConfigShowResponse(msgspec.Struct, frozen=True):
-    settings: bytes = b""                    # msgpack(ConfigSections), never secrets
+    settings: bytes = b""  # msgpack(ConfigSections), never secrets
     revision: int = 0
     hash: str = ""
     source: Literal["default", "file", "remote", "inline"] = "default"

@@ -163,9 +163,7 @@ from scietex.service.task_handler import CancelTaskRequest, TaskData
 task_data = TaskData(
     task_id="<uuid>",
     task="task:cancel",
-    payload=msgspec.msgpack.encode(
-        CancelTaskRequest(target_task_id="<uuid>", reason="operator request")
-    ),
+    payload=msgspec.msgpack.encode(CancelTaskRequest(target_task_id="<uuid>", reason="operator request")),
 )
 ```
 

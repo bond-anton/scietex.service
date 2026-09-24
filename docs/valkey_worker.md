@@ -212,6 +212,7 @@ embedders and tests inject a client without monkeypatching `GlideClient`:
 async def my_factory(client_config):
     return await GlideClient.create(client_config)
 
+
 worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc"), client_factory=my_factory)
 ```
 

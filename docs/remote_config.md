@@ -37,9 +37,7 @@ Set `remote_config_enabled=True` on the config struct (it is a
 ```python
 from scietex.service import TaskProcessor, TaskProcessorConfig
 
-processor = TaskProcessor(
-    TaskProcessorConfig(service_name="svc", remote_config_enabled=True)
-)
+processor = TaskProcessor(TaskProcessorConfig(service_name="svc", remote_config_enabled=True))
 ```
 
 When the switch is off (the default), the three `config:*` handlers are not
@@ -182,6 +180,7 @@ class DeclarativeSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     task_timeout: float | None
     task_queue_fetch_timeout: float | None
     task_cancellation_timeout: float | None
+
 
 class DeclarativeSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     core: DeclarativeSettings
@@ -415,9 +414,9 @@ class MyWorker(MqttWorker):
         super().__init__(config, client_factory=client_factory)
         self._my_settings = None
         self.register_config_settings(
-            "my_service",                      # section name in the envelope
+            "my_service",  # section name in the envelope
             MyServiceSettings,
-            apply=self._apply_my_settings,     # Callable[[MyServiceSettings], None]
+            apply=self._apply_my_settings,  # Callable[[MyServiceSettings], None]
         )
 
     def _apply_my_settings(self, settings: MyServiceSettings) -> None:
