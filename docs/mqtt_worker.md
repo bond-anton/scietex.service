@@ -97,16 +97,23 @@ worker-scoped topics embed the auto-generated `instance_id`:
 |---|---|---|
 | Task topic | `scietex/{service_name}/tasks` | service-scoped |
 | Registry / heartbeat | `scietex/{service_name}/workers/{instance_id}` | worker-scoped |
-| Log topic | `scietex/{service_name}/log` | service-scoped |
+| Log topic | `scietex/{service_name}/{instance_id}/log` | worker-scoped |
 | Task status | `scietex/{service_name}/tasks/{task_id}/status` | per-task, retained |
 | Task progress | `scietex/{service_name}/tasks/{task_id}/progress` | per-task, not retained |
 
-`{service}` in `task_topic` and `log_topic` is replaced with the service name
-at construction. The registry topic is always built as
-`scietex/{service_name}/workers/{instance_id}`. The status and progress topics
-are derived from `status_topic_prefix` (default `scietex/{service}/tasks`) with
-the same `{service}` substitution; see
+`{service}` and `{instance_id}` in `task_topic` and `log_topic` are replaced at
+construction, so each worker logs to its own topic. The registry topic is always
+built as `scietex/{service_name}/workers/{instance_id}`. The status and progress
+topics are derived from `status_topic_prefix` (default `scietex/{service}/tasks`)
+with the same `{service}` substitution; see
 [Task Status and Progress Publishing](#task-status-and-progress-publishing).
+
+The per-instance log topic is reclaimed on two paths. On a graceful shutdown
+`cleanup()` publishes an empty retained payload to clear the retained log
+message when `log_retain` is enabled (a no-op otherwise, since nothing is
+retained). On a crash the `log_message_expiry` interval bounds a retained log
+message's life, so it disappears without client-side cleanup. The registry topic
+is never cleared — it is expiry-based (AR-123).
 
 ## Constants
 

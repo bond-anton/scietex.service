@@ -89,7 +89,8 @@ shared across all replicas of a service; worker-scoped keys are unique per
 | Task tracking key | `scietex:{service_name}:task:{task_id}` | per task |
 | Task lease key | `scietex:{service_name}:lease:{task_id}` | per task |
 | Heartbeat key | `scietex:{service_name}:{instance_id}:status` (configurable via `heartbeat_key`) | worker-scoped |
-| Log stream | `scietex:{service_name}:log` (configurable via `log_stream_name`) | service-scoped |
+| Log stream | `scietex:{service_name}:{instance_id}:log` (configurable via `log_stream_name`) | worker-scoped |
+| Directed control stream | `scietex:{service_name}:control:{instance_id}` (configurable via `control_stream_name`) | worker-scoped |
 
 The heartbeat key is the worker's liveness record and carries its own expiry
 (`active_ttl` while running, `inactive_ttl` after a graceful shutdown). There is
@@ -98,6 +99,15 @@ no separate registry Set: a client enumerates the fleet by `SCAN`-ing
 SCAN pattern is not configurable, a custom `heartbeat_key` must keep the
 `:status` suffix and the `scietex:{service}:` prefix, or the worker becomes
 invisible to watchers.
+
+The worker-scoped streams are reclaimed on two paths. On a graceful shutdown
+`cleanup()` deletes the log stream and the directed control stream, so a clean
+exit leaves nothing behind. On a crash the heartbeat tick's `EXPIRE` is the
+safety net: the same beat that refreshes the status key also refreshes the
+directed control stream and the log stream under `active_ttl`, so a departed
+worker's streams expire on their own. The heartbeat key itself is never deleted
+— it is left to expire under `inactive_ttl` so a monitor can observe the death
+(AR-123).
 
 ## Constants
 

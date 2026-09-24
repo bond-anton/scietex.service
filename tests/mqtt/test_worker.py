@@ -898,6 +898,32 @@ async def test_cleanup_stops_loop_handler_and_disconnects(monkeypatch):
     assert worker._message_task is None
 
 
+@pytest.mark.asyncio
+async def test_cleanup_clears_retained_log_topic_when_retain_enabled(tmp_path):
+    """cleanup() publishes an empty retained payload to the per-instance log
+    topic when log_retain=True, clearing the retained log message on exit."""
+    fake = FakeClient()
+    worker = _make_worker(tmp_path, log_retain=True)
+    worker._client = fake
+
+    await worker.cleanup()
+
+    assert fake.published == [(worker._log_topic, b"", worker._config.log_qos, True, None)]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_clear_log_topic_when_retain_disabled(tmp_path):
+    """cleanup() publishes nothing to the log topic when log_retain=False: there
+    is nothing retained to clear (the default)."""
+    fake = FakeClient()
+    worker = _make_worker(tmp_path, log_retain=False)
+    worker._client = fake
+
+    await worker.cleanup()
+
+    assert fake.published == []
+
+
 def test_status_topic_prefix_resolved_at_construction(tmp_path):
     """The transport receives the ``{service}``-substituted status_topic_prefix,
     resolved once at construction exactly as task_topic is (design §13.2)."""

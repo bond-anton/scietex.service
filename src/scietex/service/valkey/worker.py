@@ -388,10 +388,11 @@ class ValkeyWorker(TransportWorker):
 
         Encodes a ``Heartbeat`` struct with service metadata and writes it
         to ``self._heartbeat_key`` with a TTL of ``self.active_ttl``. On the
-        same tick it refreshes the TTL of the directed control stream
-        (``self._control_stream_name``), so a live worker keeps its directed
-        stream alive while a departed worker's expires on its own (AR-123
-        §4.3). Logs the duration at DEBUG and any failure at WARNING.
+        same tick it refreshes the TTLs of the directed control stream
+        (``self._control_stream_name``) and the per-instance log stream
+        (``self._log_stream_name``), so a live worker keeps its streams alive
+        while a departed worker's expire on their own (AR-123 §4.3). Logs the
+        duration at DEBUG and any failure at WARNING.
 
         The write is guarded by ``self.client and self.start_time``. The start
         time is set in ``_startup`` before the managers start, so the first
@@ -433,6 +434,14 @@ class ValkeyWorker(TransportWorker):
                 # §4.3). The broadcast stream is service-scoped and has no owner
                 # to refresh it, so it has no TTL.
                 await client.expire(self._control_stream_name, int(self.active_ttl))
+                # The per-instance log stream is the crash safety net, same
+                # model as the status key and directed control stream: a live
+                # worker refreshes its TTL on the same tick, so a crashed
+                # worker's log stream expires on its own under active_ttl.
+                # EXPIRE is a no-op until the stream exists — the logging
+                # handler creates it on first write — so it self-heals on the
+                # next tick.
+                await client.expire(self._log_stream_name, int(self.active_ttl))
             except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
                 duration = (time.monotonic() - start_time) * 1000
                 self.logger.log(
@@ -518,8 +527,8 @@ class ValkeyWorker(TransportWorker):
         Drains the internal task queue and cancels running tasks via the
         parent ``TaskProcessor.cleanup()``, then clears the pending
         ``_task_entry_ids`` tracking, stops the Valkey logging handler so its
-        worker drains remaining records, and finally closes the Valkey
-        connection through :meth:`disconnect`.
+        worker drains remaining records, deletes the per-instance streams, and
+        finally closes the Valkey connection through :meth:`disconnect`.
         """
         await super().cleanup()
         # Tasks whose handlers ignored cancellation are no longer tracked by the
@@ -532,6 +541,22 @@ class ValkeyWorker(TransportWorker):
         # owns its own client and stop_logging() closes it independently.
         if self._valkey_logger_handler is not None:
             await self._valkey_logger_handler.stop_logging()
+        # Delete the per-instance streams on graceful exit so a clean shutdown
+        # removes them immediately; a crash leaves them to expire under
+        # active_ttl (refreshed on the heartbeat tick). The heartbeat key is
+        # deliberately NOT deleted — it is left to expire under inactive_ttl so
+        # a monitor can observe the death (AR-123); the consumer name is not a
+        # key. Best-effort: a failed delete must never fail shutdown.
+        client = self.client
+        if client is not None:
+            try:
+                await client.delete([self._log_stream_name, self._control_stream_name])
+            except (GlideConnectionError, RequestError, GlideTimeoutError) as exc:
+                self.logger.log(
+                    logging.WARNING,
+                    "Failed to delete per-instance Valkey streams on shutdown: %s",
+                    exc,
+                )
         await self.disconnect()
 
     async def _register_instance(self) -> None:

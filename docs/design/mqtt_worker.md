@@ -16,6 +16,14 @@ transport-agnostic wire format, and the `TransportHealth` supervisor.
 > envelope first (an undecodable envelope — including a pre-v5 payload without
 > a `task_id` — is skipped). This supersedes §6 and §10 #2 below;
 > `docs/mqtt_worker.md` documents the current behaviour.
+>
+> **Post-implementation note (v5.0.0, log scoping).** The log destination was
+> made per-instance after this design shipped: `log_topic` now defaults to
+> `scietex/{service}/{instance_id}/log` (was `scietex/{service}/log`), and a new
+> `log_message_expiry` field bounds a retained log message's life. On a graceful
+> shutdown `cleanup()` clears the retained log topic when `log_retain` is
+> enabled. This supersedes the `log_topic` default shown in §2.4 and §5.2;
+> `docs/mqtt_worker.md` documents the current behaviour.
 
 ---
 

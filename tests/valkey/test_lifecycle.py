@@ -1,6 +1,7 @@
 """ValkeyWorker construction, configuration, lifecycle, and cleanup tests."""
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 from uuid import UUID
@@ -219,9 +220,10 @@ async def test_first_heartbeat_writes_status_key_promptly():
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_refreshes_directed_control_stream_ttl():
-    """heartbeat() refreshes the directed control stream TTL on the same tick
-    as the status key, so a live worker keeps its stream alive (AR-123 §4.3)."""
+async def test_heartbeat_refreshes_directed_control_and_log_stream_ttls():
+    """heartbeat() refreshes the directed control stream and per-instance log
+    stream TTLs on the same tick as the status key, so a live worker keeps its
+    streams alive while a crashed worker's expire on their own (AR-123 §4.3)."""
     client = DummyClient()
     worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
     worker._client = client
@@ -229,7 +231,10 @@ async def test_heartbeat_refreshes_directed_control_stream_ttl():
 
     await worker.heartbeat()
 
-    assert client.expired == [(worker._control_stream_name, int(worker.active_ttl))]
+    assert client.expired == [
+        (worker._control_stream_name, int(worker.active_ttl)),
+        (worker._log_stream_name, int(worker.active_ttl)),
+    ]
 
 
 @pytest.mark.asyncio
@@ -274,7 +279,42 @@ async def test_shutdown_drain_deletes_queued_lease():
 
     await worker.cleanup()
 
-    assert client.deleted_keys == [[worker._task_lease.key(t_id)]]
+    assert client.deleted_keys == [
+        [worker._task_lease.key(t_id)],
+        [worker._log_stream_name, worker._control_stream_name],
+    ]
     assert client.acked == []
     assert client.deleted == []
     assert worker._task_entry_ids == {}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deletes_per_instance_streams():
+    """cleanup() deletes the per-instance log and control streams on graceful
+    exit, so a clean shutdown removes them immediately (a crash leaves them to
+    expire under active_ttl)."""
+    client = DummyClient()
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker._client = client
+
+    await worker.cleanup()
+
+    assert client.deleted_keys == [[worker._log_stream_name, worker._control_stream_name]]
+    assert client.closed is True
+    assert worker.client is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_delete_failure_is_swallowed(caplog):
+    """A glide error deleting the per-instance streams is swallowed with a
+    WARNING log so it never fails shutdown."""
+    client = DummyClient(delete_error=mod.RequestError("delete failed"))
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker._client = client
+
+    with caplog.at_level(logging.WARNING):
+        await worker.cleanup()
+
+    assert client.closed is True
+    assert worker.client is None
+    assert any("Failed to delete per-instance Valkey streams" in r.getMessage() for r in caplog.records)

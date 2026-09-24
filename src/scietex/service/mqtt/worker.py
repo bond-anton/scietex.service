@@ -714,10 +714,11 @@ class MqttWorker(TransportWorker):
 
         Drains the internal task queue and cancels running tasks via the parent
         ``TaskProcessor.cleanup()``, then stops the message loop, stops the MQTT
-        logging handler so its worker drains remaining records, and finally
-        closes the MQTT connection through :meth:`disconnect`. The sqlite data
-        inbox owns a database connection, so it is closed here; the in-memory
-        control lane holds no resources to close.
+        logging handler so its worker drains remaining records, clears the
+        retained log topic, and finally closes the MQTT connection through
+        :meth:`disconnect`. The sqlite data inbox owns a database connection, so
+        it is closed here; the in-memory control lane holds no resources to
+        close.
         """
         await super().cleanup()
         # Stop the message loop before disconnect() so the loop cannot observe
@@ -726,6 +727,22 @@ class MqttWorker(TransportWorker):
         await self._stop_message_loop()
         if self._mqtt_logger_handler is not None:
             await self._mqtt_logger_handler.stop_logging()
+        # Clear the retained log message on graceful exit so the per-instance
+        # log topic does not linger after the worker stops; a retained empty
+        # payload removes the retained message. Only when log_retain is enabled
+        # is there anything retained to clear (the default is off, a no-op). The
+        # registry topic is deliberately NOT cleared — it is expiry-based
+        # (AR-123). Best-effort: a failed clear must never fail shutdown.
+        cfg = cast(MqttWorkerConfig, self._config)
+        if cfg.log_retain and self.client is not None:
+            try:
+                await self._publish(self._log_topic, b"", qos=cfg.log_qos, retain=True)
+            except MqttError as exc:
+                self.logger.log(
+                    logging.WARNING,
+                    "Failed to clear the retained MQTT log topic on shutdown: %s",
+                    exc,
+                )
         if self._inbox is not None:
             await self._inbox.close()
         await self.disconnect()
