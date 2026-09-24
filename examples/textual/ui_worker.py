@@ -10,6 +10,8 @@ Each concrete class is defined conditionally on its availability flag
 extra is absent; the fallback classes raise a clear error only if constructed.
 """
 
+from scietex.logging import AsyncLoggingHandler
+
 from scietex.service import MQTT_AVAILABLE, VALKEY_AVAILABLE, BasicWorker
 
 from .task_handlers import FastTaskHandler, SlowTaskHandler
@@ -23,7 +25,10 @@ class UiWorkerMixin:
     ``super().__init__`` forwards to the concrete transport worker.
     """
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
+    def __init__(self, *args: object, broker_logging: bool = False, **kwargs: object) -> None:
+        # ``broker_logging`` is a mixin concern, not a worker kwarg, so it is
+        # captured here and never forwarded to the concrete worker via super.
+        self._broker_logging = broker_logging
         super().__init__(*args, **kwargs)
         self.add_task_handler(FastTaskHandler)
         self.add_task_handler(SlowTaskHandler)
@@ -36,19 +41,25 @@ class UiWorkerMixin:
         """No-op, mirroring the disabled setup."""
         return None
 
-    def _ensure_logging_handler(self) -> None:
-        """Disable the transport logging handler.
+    def _ensure_logging_handler(self) -> AsyncLoggingHandler | None:
+        """Attach or disable the transport logging handler.
 
-        The TUI renders the worker's logs in the parent through
-        ``_ProcessLogHandler``, so shipping them to the Valkey/MQTT log stream
-        as well is redundant. It is also harmful: the transport handler consumes
-        one broker round-trip per record, so at DEBUG volume its bounded backend
-        queue overflows and every dropped record writes a full traceback to
-        stderr synchronously on the event loop, stalling the worker. Returning
-        ``None`` makes both transports' ``_connect_locked`` guards skip
-        registration and start, and leaves their ``cleanup`` guards a no-op.
+        By default the handler is disabled (``None``): the TUI renders the
+        worker's logs in the parent through ``_ProcessLogHandler``, so shipping
+        them to the Valkey/MQTT log stream as well is redundant. It is also
+        harmful: the transport handler consumes one broker round-trip per
+        record, so at DEBUG volume its bounded backend queue overflows and every
+        dropped record writes a full traceback to stderr synchronously on the
+        event loop, stalling the worker. Returning ``None`` makes both
+        transports' ``_connect_locked`` guards skip registration and start, and
+        leaves their ``cleanup`` guards a no-op.
+
+        ``--logging`` (``broker_logging=True``) opts back in, delegating to the
+        concrete worker so the broker log stream fills alongside the TUI.
         """
-        return None
+        if not self._broker_logging:
+            return None
+        return super()._ensure_logging_handler()
 
 
 if VALKEY_AVAILABLE:
@@ -97,18 +108,24 @@ _WORKER_CLASSES: dict[str, type] = {
 _VALID_KINDS = ", ".join(sorted(_WORKER_CLASSES))
 
 
-def build_ui_worker(kind: str, *, theme: object, memory: bool = False) -> BasicWorker:
+def build_ui_worker(kind: str, *, theme: object, memory: bool = False, broker_logging: bool = False) -> BasicWorker:
     """Construct the UI worker for ``kind`` with ``theme``.
 
     ``memory`` selects the MQTT worker's in-memory inbox (at-most-once) instead
     of the default shared SQLite inbox; it is ignored by the Valkey worker.
+    ``broker_logging`` opts into attaching the transport log handler (see
+    :meth:`UiWorkerMixin._ensure_logging_handler`).
     """
     worker_class = _WORKER_CLASSES.get(kind)
     if worker_class is None:
         raise ValueError(f"Unknown worker kind {kind!r}; expected one of: {_VALID_KINDS}.")
     if memory and kind == "mqtt":
-        return worker_class(theme=theme, config=MqttWorkerConfig(inbox_backend="memory"))
-    return worker_class(theme=theme)
+        return worker_class(
+            theme=theme,
+            config=MqttWorkerConfig(inbox_backend="memory"),
+            broker_logging=broker_logging,
+        )
+    return worker_class(theme=theme, broker_logging=broker_logging)
 
 
 def worker_unavailable(kind: str) -> bool:

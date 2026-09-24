@@ -205,3 +205,25 @@ def test_memory_flag_is_stored_and_forwarded(monkeypatch):
 
 def test_memory_flag_defaults_to_false():
     assert WorkerProcess("valkey")._memory is False
+
+
+def test_broker_logging_flag_is_stored_and_forwarded(monkeypatch):
+    process = WorkerProcess("mqtt", broker_logging=True)
+    assert process._broker_logging is True
+    captured: list[tuple] = []
+
+    def _fake_process(*, target, args, daemon):
+        captured.append(args)
+        return _FakeSpawnedProcess()
+
+    # Intercept the spawn so the args tuple is inspected before a real child
+    # launches; a spawned ``SpawnProcess`` drops ``_args`` once it starts, so it
+    # cannot be read after ``start_process`` returns.
+    monkeypatch.setattr(process._ctx, "Process", _fake_process)
+    process.start_process()
+    # ``broker_logging`` rides right after ``memory`` in the child's positional args.
+    assert captured[0][3] is True
+
+
+def test_broker_logging_flag_defaults_to_false():
+    assert WorkerProcess("valkey")._broker_logging is False

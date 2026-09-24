@@ -79,7 +79,7 @@ class TextualWorkerApp(LogRouter, App):
         ("down", "select_down", "Down"),
     ]
 
-    def __init__(self, *, log_level: int = logging.INFO, memory: bool = False) -> None:
+    def __init__(self, *, log_level: int = logging.INFO, memory: bool = False, broker_logging: bool = False) -> None:
         super().__init__()
         # Level handed to every worker child process's logger; the TUI renders
         # those records. INFO by default; ``--debug`` raises the volume.
@@ -87,6 +87,9 @@ class TextualWorkerApp(LogRouter, App):
         # Selects the MQTT worker's in-memory inbox (at-most-once) instead of
         # the durable SQLite inbox; the Valkey worker ignores it.
         self._memory = memory
+        # Whether each worker child attaches its transport (Valkey/MQTT) log
+        # handler so the broker log stream fills; disabled by default.
+        self._broker_logging = broker_logging
         self.slots = [Slot(index=i) for i in range(WORKER_COUNT)]
         self._selected_index = 0
         self._shutting_down = False
@@ -401,7 +404,9 @@ class TextualWorkerApp(LogRouter, App):
 
     def _make_worker_process(self, kind: str) -> WorkerProcess:
         """Build a worker handle for the requested kind (test seam)."""
-        process = WorkerProcess(kind, log_level=self._log_level, memory=self._memory)
+        process = WorkerProcess(
+            kind, log_level=self._log_level, memory=self._memory, broker_logging=self._broker_logging
+        )
         process.start_process()
         return process
 

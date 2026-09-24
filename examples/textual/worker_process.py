@@ -200,6 +200,7 @@ def _child_main(
     kind: str,
     log_level: int,
     memory: bool,
+    broker_logging: bool,
     commands: "Queue[WorkerCommand]",
     snapshots: "Queue[WorkerSnapshot]",
     logs: "Queue[LogRecordData]",
@@ -209,19 +210,22 @@ def _child_main(
     Runs its own event loop, so the worker's task processing is scheduled
     independently of the parent's loop.
     """
-    asyncio.run(_child_loop(kind, log_level, memory, commands, snapshots, logs))
+    asyncio.run(_child_loop(kind, log_level, memory, broker_logging, commands, snapshots, logs))
 
 
 async def _child_loop(
     kind: str,
     log_level: int,
     memory: bool,
+    broker_logging: bool,
     commands: "Queue[WorkerCommand]",
     snapshots: "Queue[WorkerSnapshot]",
     logs: "Queue[LogRecordData]",
 ) -> None:
     try:
-        worker = build_ui_worker(kind, theme=ScietexDark(show_banner=False), memory=memory)
+        worker = build_ui_worker(
+            kind, theme=ScietexDark(show_banner=False), memory=memory, broker_logging=broker_logging
+        )
     except Exception as exc:
         # A worker that cannot be built (e.g. its extra is absent) is reported
         # once and the child exits; the parent's startup_error surfaces it.
@@ -302,10 +306,13 @@ class WorkerProcess:
     snapshot.
     """
 
-    def __init__(self, kind: str, *, log_level: int = logging.INFO, memory: bool = False) -> None:
+    def __init__(
+        self, kind: str, *, log_level: int = logging.INFO, memory: bool = False, broker_logging: bool = False
+    ) -> None:
         self._kind = kind
         self._log_level = log_level
         self._memory = memory
+        self._broker_logging = broker_logging
         self._ctx = mp.get_context("spawn")
         self._commands: Queue[WorkerCommand] = self._ctx.Queue()
         self._snapshots: Queue[WorkerSnapshot] = self._ctx.Queue()
@@ -385,7 +392,15 @@ class WorkerProcess:
             return
         self._process = self._ctx.Process(
             target=_child_main,
-            args=(self._kind, self._log_level, self._memory, self._commands, self._snapshots, self._logs),
+            args=(
+                self._kind,
+                self._log_level,
+                self._memory,
+                self._broker_logging,
+                self._commands,
+                self._snapshots,
+                self._logs,
+            ),
             daemon=True,
         )
         self._process.start()

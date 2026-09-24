@@ -21,3 +21,15 @@ def test_short_memory_flag_is_set():
 
 def test_long_memory_flag_is_set():
     assert parse_args(["--memory"]).memory is True
+
+
+def test_logging_flag_defaults_to_false():
+    assert parse_args([]).logging is False
+
+
+def test_short_logging_flag_is_set():
+    assert parse_args(["-l"]).logging is True
+
+
+def test_long_logging_flag_is_set():
+    assert parse_args(["--logging"]).logging is True

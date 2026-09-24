@@ -55,9 +55,11 @@ class FakeWorkerProcess:
         transport_health: FakeWorkerHealth | None = None,
         logs: list | None = None,
         memory: bool = False,
+        broker_logging: bool = False,
     ) -> None:
         self.kind = kind
         self.memory = memory
+        self.broker_logging = broker_logging
         self.instance_id = "deadbeefcafebabe"
         self.identity = WorkerIdentity(self.kind_label, self.instance_id)
         self.state = ServiceStatus.STOPPED
@@ -104,7 +106,7 @@ class FakeApp(TextualWorkerApp):
     _BASE_PATH = str(_APP_PATH)
 
     def _make_worker_process(self, kind: str):
-        return FakeWorkerProcess(kind, memory=self._memory)
+        return FakeWorkerProcess(kind, memory=self._memory, broker_logging=self._broker_logging)
 
     def _make_broker_monitors(self):
         """No broker monitors: these tests exercise the worker slots, not the panel."""
@@ -205,6 +207,14 @@ async def test_memory_flag_is_forwarded_to_worker_process():
     async with app.run_test(size=(80, 44)) as pilot:
         await _click_card(pilot, app, 0, ".kind-valkey")
         assert app.slots[0].worker.memory is True
+
+
+@pytest.mark.asyncio
+async def test_broker_logging_flag_is_forwarded_to_worker_process():
+    app = FakeApp(broker_logging=True)
+    async with app.run_test(size=(80, 44)) as pilot:
+        await _click_card(pilot, app, 0, ".kind-valkey")
+        assert app.slots[0].worker.broker_logging is True
 
 
 @pytest.mark.asyncio
