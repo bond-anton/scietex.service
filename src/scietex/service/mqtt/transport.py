@@ -10,7 +10,7 @@ Beyond delivery, the transport publishes each task's lifecycle — retained
 topics — as fire-and-forget observability (design §13). It also publishes a
 retained per-task owner marker (design §10.1) so a submitter can resolve which
 worker owns a task via
-:class:`~scietex.service.mqtt.control.MqttControlPublisher.resolve_owner`. A
+:meth:`~scietex.service.mqtt.control.MqttControlPublisher.resolve_owner`. A
 publish failure is logged and reported to the connection-health supervisor,
 never raised into the task path.
 

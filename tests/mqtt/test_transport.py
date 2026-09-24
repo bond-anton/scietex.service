@@ -626,7 +626,7 @@ async def test_recover_pending_tasks_reports_incomplete_on_queue_full():
 @pytest.mark.asyncio
 async def test_refresh_leases_delegates_to_inbox():
     """refresh_leases delegates to the inbox's refresh over the enqueued set
-    (a no-op for the file/memory backends, a lease renewal for sqlite)."""
+    (a no-op for the memory/none backends, a lease renewal for sqlite)."""
     inbox = FakeInbox()
     transport, _, _ = _transport(inbox)
 

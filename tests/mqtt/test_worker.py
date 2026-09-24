@@ -429,8 +429,8 @@ async def test_initialize_defers_recovery_to_first_fetch(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_message_persists_without_enqueueing(tmp_path):
-    """A message carrying the task-id user property is persisted to the inbox
-    but NOT enqueued directly; the transport's fetch() drains it (design §3.2)."""
+    """A task message is persisted to the inbox but NOT enqueued directly;
+    the transport's fetch() drains it (design §3.2)."""
     worker = _make_worker(tmp_path)
     task_id = uuid4()
     task_data = TaskData(task_id=str(task_id), task="send_email", payload=b'{"to":"a@b.c"}')

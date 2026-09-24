@@ -54,8 +54,8 @@ async def _create_client(config: MqttConfig, will: Will | None = None) -> Client
     The default :data:`ClientFactory`. Maps the scalar ``MqttConfig`` fields to
     aiomqtt v2.5.1 ``Client`` kwargs, then enters the client's async context so
     the returned client is already connected (the analogue of Valkey's
-    ``GlideClient.create``). MQTT 5 is the only protocol (design §10 #1), so the
-    user properties that carry the task id are available. ``session_expiry_interval``
+    ``GlideClient.create``). MQTT 5 is the only protocol (design §10 #1); the task
+    id rides inside the encoded ``TaskData``, not a user property. ``session_expiry_interval``
     has no scalar ``Client`` kwarg in aiomqtt v2.5.1 (it would require paho
     CONNECT properties), so it is deliberately omitted, matching the log handler
     translation in :mod:`scietex.service.mqtt.logging`.
@@ -329,7 +329,7 @@ class MqttWorker(TransportWorker):
 
         Pruning is throttled to the ``inbox_prune_interval`` config field: the
         watchdog fires every ``watchdog_interval`` (default 1s), but the
-        tombstone scan is O(files), so one maintenance pass runs per interval.
+        tombstone scan is an indexed DELETE, so one maintenance pass runs per interval.
         The schedule is jittered (``inbox_prune_jitter``) so multiple workers
         sharing one store do not prune on the same tick; every worker prunes
         independently, and the DELETE is idempotent so the redundant maintenance

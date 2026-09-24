@@ -7,8 +7,8 @@ Persisting every received message to the inbox *before* handing it to the
 processor restores at-least-once delivery: on startup, every non-terminal
 entry is replayed, and a tombstone dedupes tasks that already completed.
 
-A worker runs two independent inbox instances (design §5.1): a data inbox and
-a control inbox at distinct paths, so a saturated data lane cannot delay
+A worker runs two independent inbox instances (design §5.1): a durable data
+inbox and an in-memory control inbox, so a saturated data lane cannot delay
 control delivery. Both implement the same :class:`MqttInbox` contract.
 
 The inbox is transitional. aiomqtt v3 exposes manual acknowledgement, which
@@ -75,7 +75,7 @@ class MemoryInbox:
     Buffers entries in a dict so the transport's single-intake-path invariant
     holds without touching disk: the message loop still calls :meth:`put`, and
     :meth:`pending` hands the buffered entries to the next
-    :meth:`~MqttTransport.fetch` drain. Nothing survives a restart --
+    :meth:`~scietex.service.mqtt.transport.MqttTransport.fetch` drain. Nothing survives a restart --
     :meth:`recover` returns an empty list, which is exactly the at-most-once
     contract. There is no tombstone, so a re-delivered duplicate of an
     already-terminal task is buffered and processed again; use
