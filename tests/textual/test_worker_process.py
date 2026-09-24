@@ -176,3 +176,32 @@ async def test_log_records_cross_the_boundary():
             assert isinstance(record.message, str)
     finally:
         await process.exit()
+
+
+class _FakeSpawnedProcess:
+    """Stand-in for a spawned child: ``start`` is a no-op, so nothing runs."""
+
+    def start(self) -> None:
+        return None
+
+
+def test_memory_flag_is_stored_and_forwarded(monkeypatch):
+    process = WorkerProcess("mqtt", memory=True)
+    assert process._memory is True
+    captured: list[tuple] = []
+
+    def _fake_process(*, target, args, daemon):
+        captured.append(args)
+        return _FakeSpawnedProcess()
+
+    # Intercept the spawn so the args tuple is inspected before a real child
+    # launches; a spawned ``SpawnProcess`` drops ``_args`` once it starts, so it
+    # cannot be read after ``start_process`` returns.
+    monkeypatch.setattr(process._ctx, "Process", _fake_process)
+    process.start_process()
+    # ``memory`` rides right after ``log_level`` in the child's positional args.
+    assert captured[0][2] is True
+
+
+def test_memory_flag_defaults_to_false():
+    assert WorkerProcess("valkey")._memory is False

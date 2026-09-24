@@ -16,6 +16,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable debug-level logging (default: info)",
     )
+    parser.add_argument(
+        "-m",
+        "--memory",
+        action="store_true",
+        help="Use the in-memory MQTT inbox (at-most-once) instead of the durable SQLite inbox",
+    )
     return parser.parse_args(argv)
 
 
@@ -28,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     # fds_to_keep". Starting the tracker here, while stderr is still a real
     # descriptor, sidesteps the failure for every later spawn.
     multiprocessing.resource_tracker.ensure_running()
-    TextualWorkerApp(log_level=logging.DEBUG if args.debug else logging.INFO).run()
+    TextualWorkerApp(log_level=logging.DEBUG if args.debug else logging.INFO, memory=args.memory).run()
 
 
 if __name__ == "__main__":

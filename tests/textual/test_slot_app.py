@@ -54,8 +54,10 @@ class FakeWorkerProcess:
         total: int = 0,
         transport_health: FakeWorkerHealth | None = None,
         logs: list | None = None,
+        memory: bool = False,
     ) -> None:
         self.kind = kind
+        self.memory = memory
         self.instance_id = "deadbeefcafebabe"
         self.identity = WorkerIdentity(self.kind_label, self.instance_id)
         self.state = ServiceStatus.STOPPED
@@ -102,7 +104,7 @@ class FakeApp(TextualWorkerApp):
     _BASE_PATH = str(_APP_PATH)
 
     def _make_worker_process(self, kind: str):
-        return FakeWorkerProcess(kind)
+        return FakeWorkerProcess(kind, memory=self._memory)
 
     def _make_broker_monitors(self):
         """No broker monitors: these tests exercise the worker slots, not the panel."""
@@ -133,6 +135,7 @@ class TransportFakeApp(FakeApp):
             kind,
             total=self._fake_total,
             transport_health=FakeWorkerHealth(self._fake_connected, self._fake_degraded),
+            memory=self._memory,
         )
 
 
@@ -194,6 +197,14 @@ async def test_create_mqtt_occupies_slot():
         assert slot.worker is not None
         assert slot.card.has_class("occupied")
         assert slot.card.query_one(".worker-kind", Static).content == "MQTT"
+
+
+@pytest.mark.asyncio
+async def test_memory_flag_is_forwarded_to_worker_process():
+    app = FakeApp(memory=True)
+    async with app.run_test(size=(80, 44)) as pilot:
+        await _click_card(pilot, app, 0, ".kind-valkey")
+        assert app.slots[0].worker.memory is True
 
 
 @pytest.mark.asyncio

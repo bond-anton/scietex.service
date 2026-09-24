@@ -57,6 +57,13 @@ DEFAULT_INTERVAL_MS = 1000
 DEFAULT_TIMEOUT_MS = 1000
 DEFAULT_BATCH_SIZE = 1
 
+#: aiomqtt warns once the count of in-flight MQTT operations exceeds its
+#: ``pending_calls_threshold`` (default 10). A producer driving high load
+#: deliberately outruns the broker's acknowledgement rate, so the default
+#: threshold turns normal backpressure into log noise. Raise it well above the
+#: expected in-flight window; the warning still fires if the client truly stalls.
+PENDING_CALLS_THRESHOLD = 100
+
 ValkeyClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]
 MqttClientFactory = Callable[[MqttConfig], Awaitable[aiomqtt.Client]]
 
@@ -224,6 +231,7 @@ class TaskProducer:
             client = await self._mqtt_client_factory(config)
         else:
             client = await _create_client(config)
+        client.pending_calls_threshold = PENDING_CALLS_THRESHOLD
         self._mqtt_client = client
         return client
 

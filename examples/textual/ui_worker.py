@@ -70,7 +70,7 @@ else:
 
 
 if MQTT_AVAILABLE:
-    from scietex.service import MqttWorker
+    from scietex.service import MqttWorker, MqttWorkerConfig
 
     class UiMqttWorker(UiWorkerMixin, MqttWorker):
         """An :class:`~scietex.service.MqttWorker` safe to run on a shared loop."""
@@ -97,11 +97,17 @@ _WORKER_CLASSES: dict[str, type] = {
 _VALID_KINDS = ", ".join(sorted(_WORKER_CLASSES))
 
 
-def build_ui_worker(kind: str, *, theme: object) -> BasicWorker:
-    """Construct the UI worker for ``kind`` with ``theme``."""
+def build_ui_worker(kind: str, *, theme: object, memory: bool = False) -> BasicWorker:
+    """Construct the UI worker for ``kind`` with ``theme``.
+
+    ``memory`` selects the MQTT worker's in-memory inbox (at-most-once) instead
+    of the default shared SQLite inbox; it is ignored by the Valkey worker.
+    """
     worker_class = _WORKER_CLASSES.get(kind)
     if worker_class is None:
         raise ValueError(f"Unknown worker kind {kind!r}; expected one of: {_VALID_KINDS}.")
+    if memory and kind == "mqtt":
+        return worker_class(theme=theme, config=MqttWorkerConfig(inbox_backend="memory"))
     return worker_class(theme=theme)
 
 

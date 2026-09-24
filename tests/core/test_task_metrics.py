@@ -17,6 +17,15 @@ class FakeClock:
         return self.now
 
 
+def test_default_window_is_two_seconds():
+    """The default window is 2s, so one completion reports 1/2."""
+    metrics = TaskMetrics(clock=FakeClock())
+
+    metrics.record_completion()
+
+    assert metrics.rate() == 0.5
+
+
 def test_rate_is_zero_when_empty():
     metrics = TaskMetrics(window=10.0, clock=FakeClock())
 

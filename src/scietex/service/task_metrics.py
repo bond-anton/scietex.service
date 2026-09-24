@@ -19,7 +19,7 @@ class TaskMetrics:
     completion count since construction and is never evicted.
     """
 
-    def __init__(self, window: float = 10.0, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, window: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         self._window = window
         self._clock = clock
         self._completions: deque[float] = deque()
