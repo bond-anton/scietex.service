@@ -8,6 +8,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 import msgspec
 
@@ -30,6 +31,10 @@ INFO_SECTIONS = [
 
 VALKEY_POLL_INTERVAL = 2.0
 VALKEY_STOP_TIMEOUT = 5.0
+
+#: SCAN page size hint. The server may return more or fewer; this only bounds
+#: how much work one round trip does.
+_SCAN_COUNT: int = 100
 
 ClientFactory = Callable[[GlideClientConfiguration], Awaitable[GlideClient]]
 
@@ -151,9 +156,33 @@ class ValkeyBrokerMonitor:
             connected=True,
             received_at=time.monotonic(),
             task_stream_len=await client.xlen(f"{prefix}:tasks"),
-            log_stream_len=await client.xlen(f"{prefix}:log"),
+            log_stream_len=await self._log_stream_len(client),
             control_stream_len=await client.xlen(f"{prefix}:control"),
         )
+
+    async def _log_stream_len(self, client: GlideClient) -> int:
+        """Sum the ``XLEN`` of every per-instance log stream.
+
+        The log stream is per-instance since ``d8558af``, so there is no single
+        shared stream to read; aggregate every ``scietex:{service}:*:log`` key.
+        """
+        pattern = f"scietex:{self._service_name}:*:log"
+        keys: list[bytes] = []
+        cursor: bytes = b"0"
+        while True:
+            # glide types scan's result as a flat union list, but the wire shape
+            # is ``[cursor, keys]``; unpack positionally and narrow each part.
+            result = await client.scan(cursor, match=pattern, count=_SCAN_COUNT)
+            next_cursor = cast(bytes, result[0])
+            page = cast(list[bytes], result[1])
+            keys.extend(page)
+            if next_cursor == b"0":
+                break
+            cursor = next_cursor
+        total = 0
+        for key in keys:
+            total += await client.xlen(key)
+        return total
 
     async def _drop_client(self) -> None:
         client, self._client = self._client, None

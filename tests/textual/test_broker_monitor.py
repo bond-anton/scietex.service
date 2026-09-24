@@ -1,6 +1,7 @@
 """Tests for the broker monitors, driven by fake clients (no real brokers)."""
 
 import asyncio
+import fnmatch
 import time
 
 import pytest
@@ -40,7 +41,15 @@ class FakeValkeyClient:
     async def info(self, sections: object) -> bytes:
         return self._payload
 
-    async def xlen(self, key: str) -> int:
+    async def scan(self, cursor, match=None, count=None):
+        keys = (
+            list(self._lengths) if match is None else [key for key in self._lengths if fnmatch.fnmatchcase(key, match)]
+        )
+        return [b"0", [key.encode() for key in keys]]
+
+    async def xlen(self, key: str | bytes) -> int:
+        if isinstance(key, bytes):
+            key = key.decode()
         return self._lengths.get(key, 0)
 
     async def close(self) -> None:
@@ -113,7 +122,13 @@ def test_map_info_reports_missing_keyspace_as_none():
 
 @pytest.mark.asyncio
 async def test_valkey_refresh_maps_info_and_stream_lengths():
-    client = FakeValkeyClient(lengths={"scietex:service:tasks": 7, "scietex:service:log": 3})
+    client = FakeValkeyClient(
+        lengths={
+            "scietex:service:tasks": 7,
+            "scietex:service:abc123:log": 2,
+            "scietex:service:def456:log": 1,
+        }
+    )
     monitor = ValkeyBrokerMonitor(client_factory=lambda config: _return(client))
 
     await monitor.refresh()
@@ -126,6 +141,26 @@ async def test_valkey_refresh_maps_info_and_stream_lengths():
     assert snapshot.task_stream_len == 7
     assert snapshot.log_stream_len == 3
     assert snapshot.control_stream_len == 0
+
+
+@pytest.mark.asyncio
+async def test_valkey_log_stream_len_is_zero_without_per_instance_logs():
+    client = FakeValkeyClient(lengths={"scietex:service:tasks": 7})
+    monitor = ValkeyBrokerMonitor(client_factory=lambda config: _return(client))
+
+    await monitor.refresh()
+
+    assert monitor.snapshot().log_stream_len == 0
+
+
+@pytest.mark.asyncio
+async def test_valkey_log_stream_len_sums_a_single_per_instance_log():
+    client = FakeValkeyClient(lengths={"scietex:service:tasks": 7, "scietex:service:abc123:log": 5})
+    monitor = ValkeyBrokerMonitor(client_factory=lambda config: _return(client))
+
+    await monitor.refresh()
+
+    assert monitor.snapshot().log_stream_len == 5
 
 
 @pytest.mark.asyncio
