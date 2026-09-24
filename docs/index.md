@@ -19,6 +19,13 @@ task_handler
 
 ```{toctree}
 :maxdepth: 2
+:caption: Deployment
+
+deployment
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Architecture
 
 architecture/overview
