@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sqlite3
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -14,10 +15,11 @@ from scietex.service.health import TransportHealth
 from scietex.service.heartbeat import Heartbeat
 from scietex.service.mqtt._aiomqtt import MqttError, PacketTypes, Properties
 from scietex.service.mqtt.config import MqttConfig, MqttWorkerConfig
-from scietex.service.mqtt.inbox import FileMqttInbox, MemoryInbox
+from scietex.service.mqtt.inbox import MemoryInbox
+from scietex.service.mqtt.inbox_sqlite import SqliteMqttInbox
 from scietex.service.mqtt.transport import MqttTransport
 from scietex.service.mqtt.worker import MqttWorker
-from scietex.service.task_handler.schemas import TaskData, TaskEnvelope, TaskResult
+from scietex.service.task_handler.schemas import TaskData, TaskEnvelope, TaskResult, task_data_id
 from scietex.service.task_handler.wire import encode_task_envelope
 
 _LOGGER = "test_worker"
@@ -145,14 +147,12 @@ def _patch_handler(monkeypatch):
     return mod
 
 
-def _make_worker(tmp_path, *, inbox_backend="file", **config_kwargs):
+def _make_worker(tmp_path, *, inbox_backend="sqlite", **config_kwargs):
     """Build a worker with an explicit MQTT config and a tmp_path-backed inbox.
 
-    The control inbox defaults to a sibling under ``tmp_path`` so the two
-    stores are isolated per test; an explicit ``control_inbox_path`` in
-    ``config_kwargs`` overrides it.
+    The data inbox is a sqlite file under ``tmp_path``; the control lane is
+    always in-memory (per-process), so no control path is configured.
     """
-    config_kwargs.setdefault("control_inbox_path", str(tmp_path / "control-inbox"))
     return MqttWorker(
         MqttWorkerConfig(
             service_name="svc",
@@ -244,7 +244,7 @@ async def test_control_topic_message_lands_in_control_inbox(tmp_path):
 
     await worker._handle_message(message)
 
-    assert await worker._control_inbox.pending() == [task_data]
+    assert await worker._control_intake_inbox.pending() == [task_data]
     assert await worker._inbox.pending() == []
 
 
@@ -258,7 +258,7 @@ async def test_control_broadcast_topic_message_lands_in_control_inbox(tmp_path):
 
     await worker._handle_message(message)
 
-    assert await worker._control_inbox.pending() == [task_data]
+    assert await worker._control_intake_inbox.pending() == [task_data]
     assert await worker._inbox.pending() == []
 
 
@@ -274,65 +274,89 @@ async def test_data_topic_message_still_lands_in_data_inbox(tmp_path):
     await worker._handle_message(message)
 
     assert await worker._inbox.pending() == [task_data]
-    assert await worker._control_inbox.pending() == []
+    assert await worker._control_intake_inbox.pending() == []
 
 
 @pytest.mark.asyncio
-async def test_control_inbox_path_is_honored(tmp_path):
-    """An explicit ``control_inbox_path`` scopes the control inbox, distinct from
-    the data inbox path, and receives persisted control entries."""
-    control_path = tmp_path / "control-inbox-explicit"
-    worker = _make_worker(tmp_path, control_inbox_path=str(control_path))
+async def test_sqlite_backend_builds_sqlite_data_inbox(tmp_path):
+    """inbox_backend="sqlite" builds a SqliteMqttInbox for the data lane; the
+    control lane is always in-memory (per-process, event-only)."""
+    worker = _make_worker(tmp_path, inbox_backend="sqlite")
 
-    assert worker._control_inbox is not None
+    assert isinstance(worker._inbox, SqliteMqttInbox)
+    assert worker._control_inbox is None
+    assert isinstance(worker._control_intake_inbox, MemoryInbox)
+    # _make_worker passes explicit inbox_path, used as the database file.
+    assert (tmp_path / "inbox").is_file()
 
+
+@pytest.mark.asyncio
+async def test_sqlite_backend_message_lands_in_data_inbox(tmp_path):
+    """A data-topic message persists through the sqlite inbox and drains once."""
+    worker = _make_worker(tmp_path, inbox_backend="sqlite")
     task_id = uuid4()
-    task_data = TaskData(task_id=str(task_id), task="task:cancel")
-    message = _FakeMessage(encode_task_envelope(task_data), topic=worker._control_topic)
+    task_data = TaskData(task_id=str(task_id), task="send_email", payload=b"x")
+    message = _FakeMessage(encode_task_envelope(task_data), topic=worker._task_topic)
+
     await worker._handle_message(message)
 
-    # The entry lands under the explicit control path, not the data inbox path.
-    assert any(control_path.glob("*.json"))
-    assert not any((tmp_path / "inbox").glob("*.json"))
+    assert worker._inbox is not None
+    assert [task_data_id(td) for td in await worker._inbox.pending()] == [task_id]
 
 
 @pytest.mark.asyncio
-async def test_initialize_refuses_when_file_inbox_unbuildable(tmp_path):
-    """inbox_backend="file" with an unbuildable path (an existing file) must
-    refuse to start rather than silently drop at-least-once (design §10 #3)."""
+async def test_initialize_refuses_when_sqlite_inbox_unbuildable(tmp_path, monkeypatch):
+    """inbox_backend="sqlite" with a failing build must refuse to start rather
+    than silently drop at-least-once (design §10 #3)."""
+
+    def _boom(*args, **kwargs):
+        raise sqlite3.OperationalError("boom")
+
+    monkeypatch.setattr(mod, "SqliteMqttInbox", _boom)
+    worker = MqttWorker(
+        MqttWorkerConfig(
+            service_name="svc",
+            mqtt_config=MqttConfig(),
+            inbox_backend="sqlite",
+            inbox_path=str(tmp_path / "inbox.sqlite3"),
+        )
+    )
+
+    assert worker._inbox is None
+    assert await worker.initialize() is False
+    assert worker.client is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_closes_sqlite_data_inbox(tmp_path):
+    """cleanup() closes the sqlite data inbox connection."""
+    worker = _make_worker(tmp_path, inbox_backend="sqlite")
+    inbox = worker._inbox
+    assert isinstance(inbox, SqliteMqttInbox)
+
+    await worker.cleanup()
+
+    # A closed connection degrades a read to empty rather than raising.
+    assert await inbox.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_initialize_refuses_when_sqlite_inbox_path_unbuildable(tmp_path):
+    """inbox_backend="sqlite" with an unbuildable path (an existing file where
+    the database's parent directory should be) must refuse to start rather than
+    silently drop at-least-once (design §10 #3)."""
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory")
     worker = MqttWorker(
         MqttWorkerConfig(
             service_name="svc",
             mqtt_config=MqttConfig(),
-            inbox_backend="file",
-            inbox_path=str(blocker),
+            inbox_backend="sqlite",
+            inbox_path=str(blocker / "inbox.sqlite3"),
         )
     )
 
-    assert await worker.initialize() is False
-    assert worker.client is None
-
-
-@pytest.mark.asyncio
-async def test_initialize_refuses_when_control_inbox_unbuildable(tmp_path):
-    """inbox_backend="file" with an unbuildable *control* inbox path must also
-    refuse to start: the at-least-once guard covers both inboxes (design §5.1)."""
-    blocker = tmp_path / "control-blocker"
-    blocker.write_text("not a directory")
-    worker = MqttWorker(
-        MqttWorkerConfig(
-            service_name="svc",
-            mqtt_config=MqttConfig(),
-            inbox_backend="file",
-            inbox_path=str(tmp_path / "inbox"),
-            control_inbox_path=str(blocker),
-        )
-    )
-
-    assert worker._inbox is not None  # the data inbox built fine
-    assert worker._control_inbox is None  # the control inbox did not
+    assert worker._inbox is None
     assert await worker.initialize() is False
     assert worker.client is None
 
@@ -340,7 +364,8 @@ async def test_initialize_refuses_when_control_inbox_unbuildable(tmp_path):
 @pytest.mark.asyncio
 async def test_initialize_none_backend_proceeds(monkeypatch):
     """inbox_backend="none" is the explicit at-most-once opt-out; startup
-    connects, subscribes, and builds no inbox."""
+    connects, subscribes, and builds no durable data inbox. The control lane is
+    always in-memory regardless of the backend."""
     _patch_handler(monkeypatch)
     fake = FakeClient()
 
@@ -361,7 +386,8 @@ async def test_initialize_none_backend_proceeds(monkeypatch):
         ("scietex/svc/control", 1),
     ]
     assert worker._inbox is None
-    assert worker._control_inbox is None
+    assert worker._control_inbox is None  # the control lane is never durable
+    assert isinstance(worker._control_intake_inbox, MemoryInbox)
 
     await worker._stop_message_loop()
     await worker.disconnect()
@@ -382,8 +408,8 @@ async def test_initialize_defers_recovery_to_first_fetch(monkeypatch, tmp_path):
         MqttWorkerConfig(
             service_name="svc",
             mqtt_config=MqttConfig(),
-            inbox_backend="file",
-            inbox_path=str(tmp_path / "inbox"),
+            inbox_backend="sqlite",
+            inbox_path=str(tmp_path / "inbox.sqlite3"),
             config_startup_timeout=0.0,
         ),
         client_factory=factory,
@@ -613,7 +639,7 @@ async def test_retryable_error_does_not_tombstone(tmp_path):
     """A retryable error leaves the inbox entry non-terminal so the re-published
     retry copy (same task id) is accepted, not suppressed by a tombstone
     (AR-077b mirror)."""
-    inbox = FileMqttInbox(tmp_path / "inbox", logger=logging.getLogger(_LOGGER))
+    inbox = SqliteMqttInbox(tmp_path / "inbox.sqlite3", worker_id="w1", logger=logging.getLogger(_LOGGER))
     transport = _transport(inbox)
     task_id = uuid4()
     task_data = TaskData(task_id=str(task_id), task="send_email")
@@ -630,7 +656,7 @@ async def test_retryable_error_does_not_tombstone(tmp_path):
 @pytest.mark.asyncio
 async def test_terminal_error_still_tombstones(tmp_path):
     """A non-retryable error still tombstones the entry (the guard is narrow)."""
-    inbox = FileMqttInbox(tmp_path / "inbox", logger=logging.getLogger(_LOGGER))
+    inbox = SqliteMqttInbox(tmp_path / "inbox.sqlite3", worker_id="w1", logger=logging.getLogger(_LOGGER))
     transport = _transport(inbox)
     task_id = uuid4()
     task_data = TaskData(task_id=str(task_id), task="send_email")
@@ -785,7 +811,7 @@ async def test_watchdog_logs_critical_report(caplog):
 @pytest.mark.asyncio
 async def test_watchdog_prunes_inbox_once_per_interval(tmp_path, monkeypatch):
     """watchdog calls inbox.prune_expired() on its first tick, throttled to one
-    call per INBOX_PRUNE_INTERVAL so the tombstone scan does not run every
+    call per inbox_prune_interval so the tombstone scan does not run every
     1s watchdog tick (AR-115)."""
     worker = _make_worker(tmp_path)
     calls = []
@@ -813,6 +839,36 @@ async def test_watchdog_prunes_not_without_durable_inbox(tmp_path):
 
     assert worker._inbox is None
     assert worker._next_inbox_prune == 0.0
+
+
+@pytest.mark.asyncio
+async def test_maybe_prune_inbox_schedules_within_jittered_window(tmp_path, monkeypatch):
+    """_maybe_prune_inbox advances the deadline to now + interval scaled by ±jitter,
+    so workers sharing one store do not all prune on the same tick (AR-115)."""
+    interval = 60.0
+    jitter = 0.25
+    worker = _make_worker(tmp_path, inbox_prune_interval=interval, inbox_prune_jitter=jitter)
+    now = 1000.0
+    monkeypatch.setattr(mod.time, "monotonic", lambda: now)
+    # Pin the jitter draw to the +jitter end so the schedule is deterministic.
+    monkeypatch.setattr(mod.random, "uniform", lambda low, high: high)
+
+    await worker._maybe_prune_inbox()
+
+    assert now + interval * (1.0 - jitter) <= worker._next_inbox_prune <= now + interval * (1.0 + jitter)
+
+
+@pytest.mark.asyncio
+async def test_maybe_prune_inbox_no_jitter_exact_interval(tmp_path, monkeypatch):
+    """With inbox_prune_jitter=0.0 the next deadline is exactly now + interval."""
+    interval = 60.0
+    worker = _make_worker(tmp_path, inbox_prune_interval=interval, inbox_prune_jitter=0.0)
+    now = 1000.0
+    monkeypatch.setattr(mod.time, "monotonic", lambda: now)
+
+    await worker._maybe_prune_inbox()
+
+    assert worker._next_inbox_prune == now + interval
 
 
 @pytest.mark.asyncio

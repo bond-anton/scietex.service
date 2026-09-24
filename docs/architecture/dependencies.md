@@ -90,7 +90,7 @@ config surface to it.
 | `scietex.service/__init__` | `mqtt` | import | inside `try/except ImportError` — optional feature |
 | `mqtt.worker` | `task_processor` | inheritance | `MqttWorker(TaskProcessor)` |
 | `mqtt.worker` | `..task_handler`, `..task_handler.wire` | import | `TaskData`, `encode_task_envelope`/`decode_task_envelope` |
-| `mqtt.worker` | `.config`, `.inbox`, `.transport`, `.logging`, `.config_source`, `._aiomqtt` | import | composes `MqttWorkerConfig`, `FileMqttInbox`, `MqttTransport`, `MqttConfigSource`; logging translator; guarded aiomqtt names |
+| `mqtt.worker` | `.config`, `.inbox`, `.inbox_sqlite`, `.transport`, `.logging`, `.config_source`, `._aiomqtt` | import | composes `MqttWorkerConfig`, `SqliteMqttInbox`/`MemoryInbox`, `MqttTransport`, `MqttConfigSource`; logging translator; guarded aiomqtt names |
 | `mqtt.worker` | `..config_reload` | import | `encode_config_envelope`, `read_local_config`, `CONFIG_SOURCE_UNAVAILABLE`, `STALE_CONFIG`, `ConfigApplyOutcome` — startup local/remote apply |
 | `mqtt.config_source` | `._aiomqtt`, `.transport` | import | `PacketTypes`/`Properties` (message-expiry) and the `MqttPublish` seam; implements the core `ConfigSource` Protocol structurally — no `config_reload` import |
 | `mqtt.worker` | `..health` | import | core `TransportHealth` (AR-089) |

@@ -48,9 +48,9 @@ def _owner_topic(task_id: UUID) -> str:
 class FakeInbox:
     """In-memory ``MqttInbox`` for transport tests.
 
-    Mirrors ``FileMqttInbox`` semantics (``put`` persists a pending entry,
-    ``mark_terminal`` tombstones it) while recording every call so tests can
-    assert on the transport's interaction without touching the filesystem.
+    Mirrors the ``MqttInbox`` Protocol semantics (``put`` persists a pending
+    entry, ``mark_terminal`` tombstones it) while recording every call so tests
+    can assert on the transport's interaction without touching the filesystem.
     """
 
     def __init__(self) -> None:
@@ -61,6 +61,13 @@ class FakeInbox:
         self.mark_terminal_calls: list[UUID] = []
         self.pending_calls = 0
         self.recover_calls = 0
+        self.claim_calls: list[UUID] = []
+        self.release_calls: list[UUID] = []
+        self.refresh_calls: list[list[UUID]] = []
+        #: Ids a peer already owns; ``claim`` returns False for these.
+        self.peer_claimed: set[UUID] = set()
+        #: Ids this fake currently holds a claim on.
+        self.claimed: set[UUID] = set()
 
     def seed(self, *entries: tuple[UUID, TaskData]) -> None:
         """Pre-populate non-terminal entries, oldest first (insertion order)."""
@@ -80,6 +87,7 @@ class FakeInbox:
         self.mark_terminal_calls.append(task_id)
         self._terminal.add(task_id)
         self._entries.pop(task_id, None)
+        self.claimed.discard(task_id)
 
     async def pending(self) -> list[TaskData]:
         self.pending_calls += 1
@@ -88,6 +96,26 @@ class FakeInbox:
     async def recover(self) -> list[TaskData]:
         self.recover_calls += 1
         return self._non_terminal()
+
+    async def claim(self, task_id: UUID) -> bool:
+        self.claim_calls.append(task_id)
+        if task_id in self.peer_claimed:
+            return False
+        self.claimed.add(task_id)
+        return True
+
+    async def release(self, task_id: UUID) -> None:
+        self.release_calls.append(task_id)
+        self.claimed.discard(task_id)
+
+    async def refresh(self, task_ids) -> None:
+        self.refresh_calls.append(list(task_ids))
+
+    async def prune_expired(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
 
     def _non_terminal(self) -> list[TaskData]:
         return [data for task_id, data in self._entries.items() if task_id not in self._terminal]
@@ -231,6 +259,113 @@ async def test_fetch_respects_backpressure_and_does_not_lose_rejected_task():
     reject_sink.reject.clear()
     assert await transport.fetch(reject_sink) is True
     assert reject_sink.items == [(t1, d1), (t2, d2)]
+
+
+@pytest.mark.asyncio
+async def test_fetch_skips_peer_claimed_entry_and_enqueues_next():
+    """A data entry a peer already owns (claim returns False) is skipped without
+    setting backpressure; the next claimable entry is still enqueued."""
+    t1, t2 = uuid4(), uuid4()
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
+    inbox = FakeInbox()
+    inbox.seed((t1, d1), (t2, d2))
+    inbox.peer_claimed.add(t1)
+    transport, _, _ = _transport(inbox)
+    transport.recovered = True
+
+    sink = FakeSink()
+    assert await transport.fetch(sink) is True
+    assert sink.items == [(t2, d2)]
+    assert t1 in inbox.claim_calls
+    assert t1 not in inbox.claimed
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_claim_when_sink_rejects():
+    """A claim taken before a rejected enqueue is released, so the entry is not
+    stranded under a claim the worker never handed over."""
+    t1 = uuid4()
+    d1 = TaskData(task_id=str(t1), task="a")
+    inbox = FakeInbox()
+    inbox.seed((t1, d1))
+    transport, _, _ = _transport(inbox)
+    transport.recovered = True
+
+    sink = FakeSink(reject={t1})
+    assert await transport.fetch(sink) is False
+    assert t1 in inbox.claim_calls
+    assert t1 in inbox.release_calls
+    assert t1 not in inbox.claimed
+
+
+@pytest.mark.asyncio
+async def test_recover_skips_peer_claimed_entry():
+    """Recovery applies the same claim gate: a peer-owned entry is skipped."""
+    t1, t2 = uuid4(), uuid4()
+    d1, d2 = TaskData(task_id=str(t1), task="a"), TaskData(task_id=str(t2), task="b")
+    inbox = FakeInbox()
+    inbox.seed((t1, d1), (t2, d2))
+    inbox.peer_claimed.add(t1)
+    transport, _, _ = _transport(inbox)
+
+    sink = FakeSink()
+    complete, enqueued = await transport.recover_pending_tasks(sink)
+    assert complete is True
+    assert enqueued is True
+    assert sink.items == [(t2, d2)]
+
+
+@pytest.mark.asyncio
+async def test_requeue_releases_claim():
+    """requeue releases the cross-process claim so the re-published copy is
+    immediately claimable."""
+    t1 = uuid4()
+    d1 = TaskData(task_id=str(t1), task="a")
+    inbox = FakeInbox()
+    inbox.seed((t1, d1))
+    transport, _, _ = _transport(inbox)
+    transport.recovered = True
+    await transport.fetch(FakeSink())
+    assert t1 in inbox.claimed
+
+    await transport.requeue(d1)
+
+    assert t1 in inbox.release_calls
+    assert t1 not in inbox.claimed
+
+
+@pytest.mark.asyncio
+async def test_on_drain_releases_claim():
+    """on_drain releases the cross-process claim for a data task."""
+    t1 = uuid4()
+    d1 = TaskData(task_id=str(t1), task="a")
+    inbox = FakeInbox()
+    inbox.seed((t1, d1))
+    transport, _, _ = _transport(inbox)
+    transport.recovered = True
+    await transport.fetch(FakeSink())
+    assert t1 in inbox.claimed
+
+    await transport.on_drain(d1)
+
+    assert t1 in inbox.release_calls
+    assert t1 not in inbox.claimed
+
+
+@pytest.mark.asyncio
+async def test_refresh_leases_refreshes_enqueued_data_ids():
+    """refresh_leases renews the claims on this worker's enqueued data tasks."""
+    t1 = uuid4()
+    d1 = TaskData(task_id=str(t1), task="a")
+    inbox = FakeInbox()
+    inbox.seed((t1, d1))
+    transport, _, _ = _transport(inbox)
+    transport.recovered = True
+    await transport.fetch(FakeSink())
+
+    await transport.refresh_leases()
+
+    assert inbox.refresh_calls == [[t1]]
 
 
 @pytest.mark.asyncio
@@ -489,11 +624,15 @@ async def test_recover_pending_tasks_reports_incomplete_on_queue_full():
 
 
 @pytest.mark.asyncio
-async def test_refresh_leases_is_noop():
-    """refresh_leases is a documented no-op (the file inbox has no leases)."""
-    transport, _, _ = _transport()
+async def test_refresh_leases_delegates_to_inbox():
+    """refresh_leases delegates to the inbox's refresh over the enqueued set
+    (a no-op for the file/memory backends, a lease renewal for sqlite)."""
+    inbox = FakeInbox()
+    transport, _, _ = _transport(inbox)
 
     await transport.refresh_leases()
+
+    assert inbox.refresh_calls == [[]]
 
 
 @pytest.mark.asyncio

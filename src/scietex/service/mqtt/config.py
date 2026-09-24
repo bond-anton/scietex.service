@@ -35,6 +35,22 @@ MIN_INBOX_TTL: int = 1
 MAX_INBOX_TTL: int = 30 * 24 * 3600
 #: Default inbox-entry TTL in seconds (24 hours).
 DEFAULT_INBOX_TTL: int = 24 * 3600
+#: Lower bound (s) for ``inbox_lease_ttl``.
+MIN_INBOX_LEASE_TTL: int = 1
+#: Upper bound (s) for ``inbox_lease_ttl`` (24 hours).
+MAX_INBOX_LEASE_TTL: int = 24 * 3600
+#: Lower bound (s) for ``inbox_prune_interval``.
+MIN_INBOX_PRUNE_INTERVAL: float = 1.0
+#: Upper bound (s) for ``inbox_prune_interval``.
+MAX_INBOX_PRUNE_INTERVAL: float = 3600.0
+#: Default base seconds between inbox maintenance passes.
+DEFAULT_INBOX_PRUNE_INTERVAL: float = 60.0
+#: Lower bound for the fractional ``inbox_prune_jitter``.
+MIN_INBOX_PRUNE_JITTER: float = 0.0
+#: Upper bound for the fractional ``inbox_prune_jitter``.
+MAX_INBOX_PRUNE_JITTER: float = 1.0
+#: Default fractional ``inbox_prune_jitter`` (±25%).
+DEFAULT_INBOX_PRUNE_JITTER: float = 0.25
 #: Lower bound for ``status_qos``.
 MIN_STATUS_QOS: int = 0
 #: Upper bound for ``status_qos``.
@@ -135,15 +151,30 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
         task_topic: MQTT topic tasks are consumed from. ``{service}`` is
             replaced with the service name.
         task_qos: QoS level for task messages (``[0, 2]``).
-        inbox_backend: Durable inbox backend. ``"file"`` persists entries to
-            disk (at-least-once); ``"memory"`` and its alias ``"none"`` buffer
-            entries in process only (at-most-once).
-            ``"none"`` is the explicit at-most-once opt-out.
+        inbox_backend: Durable inbox backend. ``"sqlite"`` (the default)
+            persists entries to a shared WAL-mode SQLite database safe for
+            multiple processes, with a cross-process claim/lease so two workers
+            never process one task id; ``"memory"`` and its alias ``"none"``
+            buffer entries in process only (at-most-once). ``"none"`` is the
+            explicit at-most-once opt-out.
         inbox_path: Optional path to the inbox store. ``None`` derives it from
-            the config directory.
+            the config directory (``<conf_dir>/inbox.sqlite3``, the SQLite
+            database file).
         inbox_ttl: TTL in seconds for inbox entries and tombstones
             (``[1, 2592000]``), defaulting to one day. ``None`` disables expiry
             (an explicit unbounded-growth opt-out).
+        inbox_lease_ttl: Claim lifetime in seconds for the ``"sqlite"`` backend
+            (``[1, 86400]``). ``None`` derives it from the heartbeat and watchdog
+            intervals. Ignored by the ``"memory"``/``"none"`` backends.
+        inbox_prune_interval: Base seconds between inbox maintenance passes
+            (``[1.0, 3600.0]``). The prune scans the tombstone set, so it runs
+            well below the watchdog tick and only needs to keep tombstone growth
+            bounded.
+        inbox_prune_jitter: Fractional jitter applied to ``inbox_prune_interval``
+            (``[0.0, 1.0]``). ``0.0`` disables jitter; ``0.25`` spreads the next
+            pass to ±25% of the base interval so multiple workers sharing one
+            store do not all prune on the same tick (thundering herd / lock
+            contention).
         log_topic: MQTT topic worker logs are published to. Both ``{service}``
             and ``{instance_id}`` are replaced, so each worker logs to its own
             topic by default.
@@ -178,16 +209,17 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
             ``{service}`` is replaced.
         control_qos: QoS level for control-topic publishes and subscriptions
             (``[0, 2]``).
-        control_inbox_path: Optional path to the control inbox store. ``None``
-            derives it from the config directory (a sibling of the data inbox).
     """
 
     mqtt_config: "MqttConfig | None" = None
     task_topic: str = "scietex/{service}/tasks"
     task_qos: int = 2
-    inbox_backend: Literal["file", "memory", "none"] = "file"
+    inbox_backend: Literal["memory", "none", "sqlite"] = "sqlite"
     inbox_path: str | None = None
     inbox_ttl: int | None = DEFAULT_INBOX_TTL
+    inbox_lease_ttl: int | None = None
+    inbox_prune_interval: float = DEFAULT_INBOX_PRUNE_INTERVAL
+    inbox_prune_jitter: float = DEFAULT_INBOX_PRUNE_JITTER
     log_topic: str = "scietex/{service}/{instance_id}/log"
     log_qos: int = 0
     log_retain: bool = False
@@ -205,7 +237,6 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     control_topic: str = "scietex/{service}/control/{instance_id}"
     control_broadcast_topic: str = "scietex/{service}/control"
     control_qos: int = 1
-    control_inbox_path: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -218,6 +249,24 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
             maximum=MAX_LOG_MESSAGE_EXPIRY,
         )
         validate_range(self.inbox_ttl, "inbox_ttl", minimum=MIN_INBOX_TTL, maximum=MAX_INBOX_TTL)
+        validate_range(
+            self.inbox_lease_ttl,
+            "inbox_lease_ttl",
+            minimum=MIN_INBOX_LEASE_TTL,
+            maximum=MAX_INBOX_LEASE_TTL,
+        )
+        validate_range(
+            self.inbox_prune_interval,
+            "inbox_prune_interval",
+            minimum=MIN_INBOX_PRUNE_INTERVAL,
+            maximum=MAX_INBOX_PRUNE_INTERVAL,
+        )
+        validate_range(
+            self.inbox_prune_jitter,
+            "inbox_prune_jitter",
+            minimum=MIN_INBOX_PRUNE_JITTER,
+            maximum=MAX_INBOX_PRUNE_JITTER,
+        )
         validate_range(self.status_qos, "status_qos", minimum=MIN_STATUS_QOS, maximum=MAX_STATUS_QOS)
         validate_range(self.status_ttl, "status_ttl", minimum=MIN_STATUS_TTL, maximum=MAX_STATUS_TTL)
         validate_range(self.progress_qos, "progress_qos", minimum=MIN_PROGRESS_QOS, maximum=MAX_PROGRESS_QOS)

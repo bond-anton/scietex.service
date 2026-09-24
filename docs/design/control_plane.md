@@ -109,11 +109,11 @@ Rationale:
   command is an event, not a desired-state snapshot. A command published while a
   worker is offline is **not** replayed — the worker subscribes at startup and
   only sees messages published after SUBACK.
-- QoS 1 (at-least-once at the wire) is sufficient for the live path; the durable
-  inbox (§5) provides at-least-once **within a session** (a message received but
-  not yet processed survives a crash). It does **not** replay commands missed
-  while the worker was down — that is intentional, matching the Valkey tail-seek
-  (§4.2).
+- QoS 1 (at-least-once at the wire) is sufficient for the live path; the control
+  inbox is in-memory and per-process (§5.1), so it holds a command only until
+  the drain picks it up and does not survive a crash. Control is event-only: a
+  command missed while the worker was down is **not** replayed — that is
+  intentional, matching the Valkey tail-seek (§4.2).
 
 ---
 
@@ -341,33 +341,39 @@ in-process (§6), which is deliberate.
 
 ## 5. MQTT design
 
-### 5.1 Partitioned durable inbox
+### 5.1 Partitioned inbox
 
 MQTT has one intake inbox (`MqttInbox`, `mqtt/inbox.py:39-60`) that the message
 loop fills and the transport drains. The split mirrors the streams: **two inbox
-instances**, one for data and one for control, both file-backed by default.
+instances**, one for data and one for control. The **data** inbox is the durable
+store selected by `inbox_backend` (SQLite by default, shared with cross-process
+claim/lease). The **control** inbox is always in-memory and per-process,
+independent of `inbox_backend`: control is event-only and never replayed across
+a restart, so a durable control store would only accumulate entries no restarted
+worker could read (a restart yields a fresh `instance_id`).
 
 - `MqttTransport.__init__` (`mqtt/transport.py:99-141`) gains a keyword-only
   `control_inbox: MqttInbox`.
-- The `MqttInbox` Protocol is **unchanged** — only more instances of it.
+- The `MqttInbox` Protocol is **unchanged** — the control lane reuses
+  `MemoryInbox`.
 - `fetch` (`mqtt/transport.py:202-243`) drains the data inbox with existing data
   backpressure, then drains the control inbox independently (no backpressure; a
   rejected control entry stays pending for the next poll).
 - `recover_pending_tasks` (`mqtt/transport.py:245-288`) recovers both inboxes;
-  only a data backpressure stop marks recovery incomplete. Recovery replays
-  entries **received but not yet processed** (a crash mid-session); it does not
-  resurrect commands missed while the worker was offline, because those were
-  never received and never entered the inbox.
+  the in-memory control lane starts empty in every process, so only the data
+  inbox can yield entries. Recovery replays entries **received but not yet
+  processed** (a crash mid-session); it does not resurrect commands missed while
+  the worker was offline, because those were never received and never entered
+  the inbox. Only a data backpressure stop marks recovery incomplete.
 - `on_started` / `ack` / `on_drain` route to the inbox that owns the task id by
   `_control_enqueued` membership (not by task type, so a control task published
   to the legacy data topic acks in the data inbox) — `mqtt/transport.py:421,475,526`.
   This introduces no new state beyond what already exists
   (`_control_enqueued`, `mqtt/transport.py:161`).
 
-Default paths: data inbox at the existing `inbox_path`, control inbox at a
-sibling directory (e.g. `{inbox_path}/control`), so the two TTL-pruned stores
-cannot collide. `inbox_backend="memory"`/`"none"` produces two `MemoryInbox`
-instances, preserving the at-most-once opt-out.
+Only the data inbox has an on-disk artifact, at the existing `inbox_path`;
+`inbox_backend="memory"`/`"none"` makes it a `MemoryInbox` too, preserving the
+at-most-once opt-out.
 
 ### 5.2 Message routing
 
@@ -442,8 +448,9 @@ it calls rather than by inspecting the task type.
 
 - `fetch` owns the channel split internally; its `bool` return keeps its
   meaning ("something was enqueued").
-- `recover_pending_tasks` owns control recovery internally; its
-  `(recovery_complete, enqueued)` contract is unchanged.
+- `recover_pending_tasks` owns the channel split internally; its
+  `(recovery_complete, enqueued)` contract is unchanged. The in-memory control
+  lane holds nothing across a restart, so only the data inbox can replay.
 - `ack` / `on_started` / `on_drain` / `requeue` / `refresh_leases` branch on
   control ownership internally.
 
@@ -504,10 +511,10 @@ control uses no consumer groups.
 | `control_topic` | `scietex/{service}/control/{instance_id}` | — |
 | `control_broadcast_topic` | `scietex/{service}/control` | — |
 | `control_qos` | `1` | `[0, 2]` |
-| `control_inbox_path` | `None` (derive from `inbox_path`) | — |
 
 `control_qos` is validated with `validate_range` like the other QoS fields
-(`mqtt/config.py:159-177`).
+(`mqtt/config.py:159-177`). There is no control-inbox path field: the control
+lane is always in-memory and per-process (§5.1).
 
 ### 8.3 Resolution helper
 
@@ -542,14 +549,16 @@ shims.
 - **Control never retried.** Any operator relying on a retryable control handler
   result is out of contract; no built-in handler produces one.
 - **MQTT control is event-only.** Not retained, so it is not replayed from the
-  broker to a reconnect; the inbox provides at-least-once only for messages
-  already received (crash mid-session), not for commands missed while offline.
+  broker to a reconnect; the control inbox is in-memory and per-process, so a
+  command already received is held only until the drain picks it up and is not
+  recovered after a crash, and commands missed while offline are never replayed.
 - **Cleanup:** no new keys accumulate. Control entries are bounded by
   `MAXLEN ~ control_stream_maxlen` on every `XADD`; the directed stream carries a
   TTL (`active_ttl`) refreshed on the heartbeat tick, so a departed worker's
   directed stream expires on its own, exactly like its heartbeat key. The
   broadcast stream is service-scoped and bounded by `MAXLEN`. There are no
-  consumer groups, so there is no group residue to reconcile.
+  consumer groups, so there is no group residue to reconcile. The control inbox
+  is in-memory, so no control database file accumulates either.
 - **Removed transport code:** the type-based scan-past-backpressure branches in
   `ValkeyTransport.fetch`/`recover_pending_tasks` and
   `MqttTransport.fetch`/`recover_pending_tasks`, and the now-dead control-type
@@ -610,9 +619,8 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
    substitution and defaults.
 3. **MQTT config fields.** `W:` `mqtt/config.py:137-178`,
    `mqtt/worker.py:193-203`. `Y:` addressable control topics. `H:` add
-   `control_topic` / `control_broadcast_topic` / `control_qos` /
-   `control_inbox_path`; validate `control_qos`. `V:` config unit tests,
-   `ruff`/`ty`.
+   `control_topic` / `control_broadcast_topic` / `control_qos`; validate
+   `control_qos`. `V:` config unit tests, `ruff`/`ty`.
 4. **Valkey directed control intake.** `W:` `valkey/worker.py:203-225`,
    `valkey/transport.py`. `Y:` deliver directed control off the data path.
    `H:` add `_control_entry_ids` and an in-memory directed cursor seeded to `$`
@@ -635,18 +643,19 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
    result is settled terminal, not re-published.
 7. **MQTT partitioned inbox.** `W:` `mqtt/worker.py:217-239, 444-456, 695-725`,
    `mqtt/transport.py:99-141`. `Y:` isolate control from data backpressure.
-   `H:` build `_control_inbox`; route control topics in `_handle_message`;
-   subscribe the two control topics; pass `control_inbox` to `MqttTransport`.
-   `V:` worker test asserts a directed/broadcast message lands in the control
-   inbox and is enqueued by the control drain even with the data lane full.
+    `H:` build an in-memory `_control_inbox`; route control topics in
+    `_handle_message`; subscribe the two control topics; pass `control_inbox`
+    to `MqttTransport`.
+    `V:` worker test asserts a directed/broadcast message lands in the control
+    inbox and is enqueued by the control drain even with the data lane full.
 8. **MQTT transport drain/ack routing.** `W:` `mqtt/transport.py:202-411`.
-   `Y:` correct inbox ownership and at-least-once within a session. `H:`
-   drain/recover the control inbox; route `on_started`/`ack`/`on_drain` by
+   `Y:` correct inbox ownership and data at-least-once within a session. `H:`
+   drain the control inbox; route `on_started`/`ack`/`on_drain` by
    **inbox ownership** (`_control_enqueued` membership), not by
    task type — a control task published to the legacy data topic lands
    in the data inbox and must ack there, so ownership is the correct key.
-   `V:` control inbox test: persist → fetch → ack writes the control tombstone;
-   recovery replays a non-terminal control entry.
+   `V:` control inbox test: put → fetch → ack drains the in-memory control
+   lane; the lane starts empty after a restart (no recovery).
    *Delivered with step 7* — the partitioned inbox made the ownership routing
    necessary, so the two steps merged into one commit.
 9. **Remove transport-level control special-casing.** `W:`
@@ -689,18 +698,19 @@ Ordered so each step is independently verifiable. `W` = WHERE, `Y` = WHY,
    `control_stream_maxlen`; resolve with `{service}`/`{instance_id}` in
    `valkey/worker.py:141-146`.
 3. **MQTT config** — `mqtt/config.py:137-155`: add `control_topic`,
-   `control_broadcast_topic`, `control_qos`, `control_inbox_path`; validate
-   `control_qos`; resolve in `mqtt/worker.py:193-203`.
+   `control_broadcast_topic`, `control_qos`; validate `control_qos`; resolve in
+   `mqtt/worker.py:193-203`.
 4. **Valkey transport** — `valkey/transport.py`: add `_control_entry_ids` +
    bounded `_control_deferred` + `$`-seeded in-memory cursors; read directed and
    broadcast streams with `XREAD` in `fetch`; `XADD ... MAXLEN ~ N` on publish;
    refresh the directed TTL in `heartbeat()`; branch `ack`/`on_started`/
    `on_drain`/`requeue` on control ownership; no lease for control; remove the
    type-based scan-past-backpressure branches.
-5. **MQTT worker/transport** — `mqtt/worker.py`: build `_control_inbox`, route
-   control topics in `_handle_message:695`, subscribe `_control_topic` /
+5. **MQTT worker/transport** — `mqtt/worker.py`: build the in-memory
+   `_control_inbox`, route control topics in `_handle_message:695`,
+   subscribe `_control_topic` /
    `_control_broadcast_topic` in `_subscribe:448`. `mqtt/transport.py:99`: accept
-   `control_inbox`; drain/recover it; route ack hooks by control-inbox
+   `control_inbox`; drain it; route ack hooks by control-inbox
    ownership (`_control_enqueued`);
    remove the type-based scan branches
    (`fetch:202`, `recover_pending_tasks:245`) .

@@ -79,7 +79,8 @@ src/scietex/service/mqtt/
     config.py        # MqttConfig, MqttWorkerConfig, loader, converter
     transport.py     # MqttTransport — the TaskTransport implementation
     worker.py        # MqttWorker — composition + lifecycle overrides
-    inbox.py         # MqttInbox — durable inbox for at-least-once
+    inbox.py         # MqttInbox Protocol + MemoryInbox (at-most-once opt-out)
+    inbox_sqlite.py  # SqliteMqttInbox — shared WAL store with cross-process claim/lease
     logging.py       # logging_handler_config — MqttConfig → AsyncMqttHandler kwargs
 ```
 
@@ -99,7 +100,7 @@ Implements the eight `TaskTransport` methods. Mapping from MQTT semantics:
 | `ack(task_data, task_result, *, cancel_reason=None)` | Mark the inbox entry terminal and remove it (or tombstone it for dedupe). |
 | `on_progress(task_id, value)` | Publish a throttled `TaskProgress` message to the per-task progress topic (addendum §13); a no-op when status publishing is disabled. Progress also stays in-process via `TaskCapabilities`. |
 | `on_drain(task_data)` | On shutdown, leave the inbox entry pending so it is redelivered on restart (durable) — the MQTT analogue of `ValkeyTransport.on_drain`. No status is published. |
-| `refresh_leases()` | No-op: the file-backed inbox holds no per-entry lease to renew (kept for parity with `ValkeyTransport`). |
+| `refresh_leases()` | Renew the cross-process claims on this worker's enqueued data tasks (a no-op for the memory backend; kept for parity with `ValkeyTransport`). |
 | `recover_pending_tasks(sink)` | Replay non-terminal inbox entries on the first `fetch` (shared `RecoverableTransport` guard), returning `(recovery_complete, enqueued)`. |
 
 Every lifecycle hook additionally publishes a status message when status
@@ -108,8 +109,9 @@ addendum §13 for the publishing contract.
 
 `recover_pending_tasks` and `refresh_leases` are now Protocol members
 (AR-113), not MQTT-specific extras: `recover_pending_tasks(sink)` replays
-non-terminal inbox entries on the first `fetch`, and `refresh_leases()` is a
-no-op for the file-backed inbox (kept for parity with `ValkeyTransport`).
+non-terminal inbox entries on the first `fetch`, and `refresh_leases()` renews
+the cross-process claims on the enqueued data tasks (a no-op for the
+memory backend; kept for parity with `ValkeyTransport`).
 
 ### 2.3 `MqttWorker`
 
@@ -239,22 +241,60 @@ replay. The inbox is the source of truth for "has this task been processed".
 
 ### 3.3 Inbox backend
 
-**Decision (§10 #3): a file-backed inbox, behind the `MqttInbox` Protocol.**
+**Decision (§10 #3): a durable inbox behind the `MqttInbox` Protocol, backed by
+a shared SQLite store (multi-process), with an in-process memory backend as the
+explicit at-most-once opt-out.**
 
 The inbox exists only to compensate for aiomqtt v2.5.1's premature broker ack.
 aiomqtt v3's manual ack removes that need, so the durable backend is
-transitional — a file-backed store is the smallest throwaway surface. The
-`MqttInbox` Protocol (`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`)
-keeps the v3 migration to an implementation swap.
+transitional. The `MqttInbox` Protocol
+(`put`/`mark_in_flight`/`mark_terminal`/`pending`/`recover`/`prune_expired`/
+`claim`/`release`/`refresh`/`close`) keeps the v3 migration to an implementation
+swap.
 
-The file-backed implementation stores entries under the config directory (an
-append-only log or a small JSON store), with the same `pending`/`in-flight`/
-`terminal` lifecycle as §3.2. It is **single-process**: it does not coordinate
-across replicas. Multi-replica deployments would need a shared backend, which
-the Protocol preserves as a future option.
+Two backends are selectable via `inbox_backend`:
 
-The worker must refuse to start with at-least-once semantics if no inbox
-backend is configured — fail loud, not silent.
+| Backend | Store | Delivery | Multi-process |
+|---|---|---|---|
+| `"sqlite"` (default) | a WAL-mode SQLite database at `<conf_dir>/inbox.sqlite3` | at-least-once | **yes** — cross-process claim/lease |
+| `"memory"` / `"none"` | in-process dict | at-most-once | n/a (explicit opt-out) |
+
+The SQLite backend opens one WAL-mode database with
+`check_same_thread=False` and `isolation_level=None`, serializes every access
+behind an `asyncio.Lock` + `asyncio.to_thread`, and issues explicit
+`BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`. A cross-process **claim/lease** (modeled
+on the Valkey `TaskLeaseManager`, AR-060) makes the drain safe for multiple
+workers: `claim` wins only when the row is unclaimed or its lease has expired,
+so two workers draining one store never process the same task id. A crashed
+peer's entry is reclaimed once its lease lapses; `refresh` renews a live claim
+over the watchdog tick, and `release` returns a rejected/requeued entry to the
+pool. The lease TTL defaults to `max(1, int(max(2*heartbeat, 3*watchdog)))`
+(`inbox_lease_ttl` overrides it).
+
+Pruning is a watchdog maintenance pass, not a side effect of load:
+`prune_expired()` removes tombstones older than `inbox_ttl` and, only when
+`inbox_ttl` is set, entries older than `inbox_ttl`. Every worker prunes
+independently on its own watchdog tick — there is no leader election, because
+the prune DELETE is idempotent and indexed, so redundant maintenance across
+workers sharing one store is safe and self-healing (if one worker is down, the
+others still prune). The schedule is **jittered** so N workers sharing one
+`inbox.sqlite3` do not all fire the same DELETE on the same tick (thundering
+herd / `BEGIN IMMEDIATE` lock contention): `inbox_prune_interval` (base
+seconds, default `60.0`, range `[1.0, 3600.0]`) and `inbox_prune_jitter`
+(fractional, default `0.25`, range `[0.0, 1.0]`; `0.0` disables jitter) set the
+next deadline to `now + interval * (1 + uniform(-jitter, +jitter))`. The first
+pass is not jittered (it runs on the first watchdog tick).
+
+The **control inbox is always in-memory and per-process** (a `MemoryInbox`),
+independent of `inbox_backend`: it is never durable and never shared, because a
+broadcast control command must fan out to every worker and control is event-only
+— never replayed across a restart. A durable control store would only accumulate
+orphaned entries no restarted worker could read, since a restart yields a fresh
+`instance_id`.
+
+The worker must refuse to start with at-least-once semantics when
+`inbox_backend == "sqlite"` but no **data** inbox could be built — fail loud,
+not silent.
 
 ---
 
@@ -330,9 +370,12 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
     mqtt_config: MqttConfig | None = None
     task_topic: str = "scietex/{service}/tasks"
     task_qos: int = 2
-    inbox_backend: Literal["file", "memory", "none"] = "file"
+    inbox_backend: Literal["memory", "none", "sqlite"] = "sqlite"
     inbox_path: str | None = None
     inbox_ttl: int | None = 86400
+    inbox_lease_ttl: int | None = None
+    inbox_prune_interval: float = 60.0
+    inbox_prune_jitter: float = 0.25
     log_topic: str = "scietex/{service}/log"
     log_qos: int = 0
     log_retain: bool = False
@@ -351,7 +394,11 @@ class MqttWorkerConfig(TaskProcessorConfig, frozen=True):
 `__post_init__` calls `super().__post_init__()` then `validate_range` on the
 numeric fields, matching `ValkeyWorkerConfig`. `inbox_backend="memory"` (or its
 alias `"none"`) is the explicit at-most-once opt-out (§10 #3); the default is
-the file-backed inbox. The seven status/progress fields
+the shared SQLite store. `inbox_lease_ttl` (`[1, 86400]`, `None` derives it)
+governs the SQLite claim lease. `inbox_prune_interval` (`[1.0, 3600.0]`,
+default `60.0`) and `inbox_prune_jitter` (`[0.0, 1.0]`, default `0.25`) set
+the jittered cadence of the all-worker inbox prune (§3.3). The seven
+status/progress fields
 (`status_publish_enabled`, `status_topic_prefix`, `status_qos`, `status_ttl`,
 `progress_qos`, `progress_min_interval`, `progress_min_delta`) are specified in
 §13.6; the three remote-config fields (`config_topic`, `config_qos`,
@@ -410,6 +457,9 @@ Mirror the Valkey test layout under `tests/mqtt/`:
   so no broker is required for unit tests.
 - `tests/mqtt/test_transport.py` — the eight Protocol methods against the fake.
 - `tests/mqtt/test_inbox.py` — put/recover/dedupe/terminal semantics.
+- `tests/mqtt/test_inbox_sqlite.py` — SQLite store: roundtrip, TTL/prune,
+  conservative error handling, cross-instance claim exclusivity, stale-lease
+  reclaim, refresh, concurrent writers.
 - `tests/mqtt/test_worker.py` — composition, lifecycle overrides, heartbeat,
   registry.
 - `tests/mqtt/test_logging.py` — `_ensure_logging_handler` builds and registers
@@ -448,7 +498,7 @@ implementation.
 |---|---|---|
 | 1 | Protocol version | **MQTT 5 only.** Single code path; user properties available. |
 | 2 | Task-id carrier | **MQTT 5 user property** (`scietex-task-id`). The envelope stays untouched. *(Superseded v5.0.0 — the id now travels inside `TaskData.task_id`; see note above.)* |
-| 3 | Inbox backend | **File-backed, behind the `MqttInbox` Protocol.** No new dependency; single-process; retired when aiomqtt v3 lands. |
+| 3 | Inbox backend | **Durable inbox behind the `MqttInbox` Protocol: SQLite (shared, cross-process claim/lease) or memory/none (at-most-once opt-out).** No new dependency (`sqlite3` is stdlib); retired when aiomqtt v3 lands. |
 | 4 | `TransportHealth` hoist | **Hoist to core now** (`src/scietex/service/health.py`), re-export from `scietex.service.valkey.health` for back-compat. |
 | 5 | Status/progress persistence | **No status store; status publisher instead** (amended, addendum §13). `MqttTransport` publishes retained `TaskStatus` messages and throttled `TaskProgress` messages to per-task topics. There is no read-back API, so this is not a store and does not reverse the original decision. |
 | 6 | Registry/heartbeat | **Retained-message topics** (`scietex/{service}/workers/{instance_id}`). |
@@ -456,13 +506,13 @@ implementation.
 
 ### Rationale notes
 
-- **#3 (file inbox):** the durable inbox exists only to compensate for aiomqtt
-  v2.5.1's premature broker ack. aiomqtt v3's manual ack removes that need, so
-  the durable backend is transitional. A file-backed inbox is the smallest
-  throwaway surface; the `MqttInbox` Protocol keeps the v3 migration to an
-  implementation swap. Caveat: file-backed is single-process — multi-replica
-  deployments would need a shared backend, which the Protocol preserves as an
-  option.
+- **#3 (durable inbox):** the durable inbox exists only to compensate for
+  aiomqtt v2.5.1's premature broker ack. aiomqtt v3's manual ack removes that
+  need, so the durable backend is transitional. The `MqttInbox` Protocol keeps
+  the v3 migration to an implementation swap. The SQLite backend is a shared,
+  WAL-mode store with a cross-process claim/lease so multi-replica deployments
+  can share one inbox without corruption or double-processing; `sqlite3` is
+  stdlib, so it adds no dependency.
 - **#5 (no status store; status publisher instead):** MQTT has no server-side
   key space to write status records into (unlike Valkey's
   `scietex:{service}:task:{id}` keys), so no store is introduced. What the
@@ -478,9 +528,9 @@ implementation.
 
 **Medium–Large (several days).** The transport itself is mechanical (mirroring
 `ValkeyTransport`), and the logging wiring (§2.4) is a small addition that
-reuses the existing `AsyncMqttHandler`. The file-backed inbox is new state with
-its own correctness argument, and the `TransportHealth` hoist touches existing
-code and tests. With the decisions above locked, implementation can proceed.
+reuses the existing `AsyncMqttHandler`. The durable SQLite inbox is new state
+with its own correctness argument, and the `TransportHealth` hoist touches
+existing code and tests. With the decisions above locked, implementation can proceed.
 
 ---
 

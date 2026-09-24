@@ -7,13 +7,12 @@ client, processes it, and publishes retained per-task status. They are gated by
 
 The mocked unit tests in ``tests/mqtt/`` assert the exact wire calls the code
 makes; this tier proves the complementary half — that those calls work against
-a real broker, and that the file-backed inbox survives a worker restart, which
-a fake structurally cannot.
+a real broker, and that the sqlite inbox survives a worker restart, which a
+fake structurally cannot.
 """
 
 import asyncio
 import time
-from pathlib import Path
 from uuid import uuid4
 
 import aiomqtt
@@ -35,6 +34,21 @@ async def _wait_until(predicate, *, timeout: float = 10.0) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError("condition not met within timeout")
+
+
+async def _wait_until_async(predicate, *, timeout: float = 10.0) -> None:
+    """Poll async ``predicate`` until it is true, or fail after ``timeout`` seconds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if await predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met within timeout")
+
+
+async def _pending_task_ids(inbox) -> set[str]:
+    """The task ids still non-terminal in ``inbox``."""
+    return {entry.task_id for entry in await inbox.pending()}
 
 
 class _RecordingHandler(TaskHandler):
@@ -63,12 +77,6 @@ def _task_data(task: str = "echo", payload: bytes = b"{}") -> TaskData:
 def _task_topic(config: MqttWorkerConfig) -> str:
     """The task topic the worker subscribes to, with ``{service}`` resolved."""
     return config.task_topic.format(service=config.service_name)
-
-
-def _inbox_dir(config: MqttWorkerConfig) -> Path:
-    """The resolved inbox directory (the fixture always sets ``inbox_path``)."""
-    assert config.inbox_path is not None
-    return Path(config.inbox_path)
 
 
 @pytest.mark.asyncio
@@ -120,10 +128,16 @@ async def test_worker_publishes_retained_status_for_processed_task(
 
         await asyncio.wait_for(done.wait(), timeout=10.0)
         # The terminal status is published (retained) immediately before the
-        # inbox entry is tombstoned, so the tombstone is the deterministic
-        # signal that the ``completed`` status is already on the broker.
-        tombstone = _inbox_dir(worker_config) / f"{task_data.task_id}.done"
-        await _wait_until(lambda: tombstone.exists())
+        # inbox entry is marked terminal, so the entry leaving ``pending`` is
+        # the deterministic signal that the ``completed`` status is already on
+        # the broker.
+        inbox = worker._inbox
+        assert inbox is not None
+
+        async def task_terminal() -> bool:
+            return task_data.task_id not in await _pending_task_ids(inbox)
+
+        await _wait_until_async(task_terminal)
 
         status_topic = (
             f"{worker_config.status_topic_prefix.format(service=worker_config.service_name)}/{task_data.task_id}/status"
@@ -144,7 +158,7 @@ async def test_worker_publishes_retained_status_for_processed_task(
 
 @pytest.mark.asyncio
 async def test_inbox_survives_reconnect(worker_config: MqttWorkerConfig, mqtt_config: MqttConfig):
-    """A task persisted to the file inbox by a stopped worker is recovered and processed on restart."""
+    """A task persisted to the sqlite inbox by a stopped worker is recovered and processed on restart."""
 
     done = asyncio.Event()
     worker = MqttWorker(worker_config)
@@ -164,10 +178,16 @@ async def test_inbox_survives_reconnect(worker_config: MqttWorkerConfig, mqtt_co
                 _task_topic(worker_config), encode_task_envelope(task_data), qos=worker_config.task_qos
             )
 
-        # The entry file is the durable proof the message reached disk before the
-        # worker went away; it stays pending because nothing drained it.
-        entry = _inbox_dir(worker_config) / f"{task_data.task_id}.json"
-        await _wait_until(lambda: entry.exists())
+        # The inbox entry is the durable proof the message reached storage
+        # before the worker went away; it stays pending because nothing drained
+        # it.
+        inbox = worker._inbox
+        assert inbox is not None
+
+        async def task_pending() -> bool:
+            return task_data.task_id in await _pending_task_ids(inbox)
+
+        await _wait_until_async(task_pending)
     finally:
         await worker.exit()
         await asyncio.wait_for(worker.events["exit"].wait(), timeout=10.0)

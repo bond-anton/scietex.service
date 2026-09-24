@@ -136,9 +136,8 @@ class MqttTransport(RecoverableTransport):
         # address is explicit in ``_publish_owner`` rather than implicit.
         self._owner_topic_prefix = self._status_topic_prefix
         self._inbox = inbox
-        # Control inbox (design §5.1): a second durable store, drained
-        # independently of the data inbox so control delivery never consults
-        # data backpressure.
+        # Control lane (design §5.1): an in-memory store, drained independently
+        # of the data inbox so control delivery never consults data backpressure.
         self._control_inbox = control_inbox
         # Connection-health supervisor (design §13.7): the status/progress
         # publish helpers report failures here, so the dependency is
@@ -298,8 +297,10 @@ class MqttTransport(RecoverableTransport):
         independently of data backpressure, then the data inbox is drained with
         existing data backpressure. Data tasks stop at backpressure: a rejected
         data task is left pending in the inbox (not recorded as enqueued), so it
-        is redelivered, never lost. Each accepted task is advertised as
-        ``queued`` (design §13.4).
+        is redelivered, never lost. Each data entry is claimed before enqueue
+        (cross-process mutual exclusion on a shared store); a lost claim is
+        skipped without setting backpressure. Each accepted task is advertised
+        as ``queued`` (design §13.4).
 
         Returns:
             ``True`` if at least one task was enqueued (from recovery or either
@@ -323,7 +324,13 @@ class MqttTransport(RecoverableTransport):
             if data_blocked or sink.task_queue_full():
                 data_blocked = True
                 continue
+            # Cross-process claim: a peer draining the same shared store may own
+            # this entry. A lost claim is not local backpressure, so it must not
+            # set data_blocked -- leave the entry for the next poll.
+            if not await self._inbox.claim(task_id):
+                continue
             if not sink.enqueue_task(task_data):
+                await self._inbox.release(task_id)  # a full queue leaves no claim
                 data_blocked = True
                 continue
             self._enqueued.add(task_id)
@@ -373,7 +380,12 @@ class MqttTransport(RecoverableTransport):
             if data_blocked or sink.task_queue_full():
                 data_blocked = True
                 continue
+            # Cross-process claim: a peer may already own this recovered entry.
+            # A lost claim is not local backpressure (see ``fetch``).
+            if not await self._inbox.claim(task_id):
+                continue
             if not sink.enqueue_task(task_data):
+                await self._inbox.release(task_id)
                 data_blocked = True
                 continue
             self._enqueued.add(task_id)
@@ -396,7 +408,9 @@ class MqttTransport(RecoverableTransport):
 
         The task is then re-advertised as ``queued`` (design §13.4), and its
         progress throttle is dropped without flushing: the fresh run that
-        starts on redelivery should not inherit a stale progress value.
+        starts on redelivery should not inherit a stale progress value. The
+        cross-process claim is released so the re-published copy is immediately
+        claimable (mirrors Valkey's lease delete on requeue).
         """
         task_id = task_data_id(task_data)
         await self._publish(
@@ -404,6 +418,8 @@ class MqttTransport(RecoverableTransport):
             encode_task_envelope(task_data),
             self._config.task_qos,
         )
+        if task_id not in self._control_enqueued:
+            await self._inbox.release(task_id)
         self._progress.pop(task_id, None)
         await self._publish_status(
             build_running_status(task_id, self._service_name, task_data, status="queued", instance_id=self._instance_id)
@@ -518,21 +534,26 @@ class MqttTransport(RecoverableTransport):
         The owning inbox entry is left non-terminal (the broker still holds the
         message), so a restart redelivers it via recovery; re-publishing here
         would duplicate it (the MQTT analogue of AR-041). The in-process claim
-        is released from the owning enqueued set (design §5.1). No status is
-        published and the throttle state is dropped: the task is neither
-        terminal nor restarted (design §13.4).
+        is released from the owning enqueued set (design §5.1), and the
+        cross-process claim is released so a peer can pick the entry up. No
+        status is published and the throttle state is dropped: the task is
+        neither terminal nor restarted (design §13.4).
         """
         task_id = task_data_id(task_data)
         if task_id in self._control_enqueued:
             self._control_enqueued.discard(task_id)
         else:
             self._enqueued.discard(task_id)
+            await self._inbox.release(task_id)
         self._progress.pop(task_id, None)
 
     async def refresh_leases(self) -> None:
-        """No-op: the file-backed inbox has no per-entry leases to renew.
+        """Renew the cross-process claims on this worker's enqueued data tasks.
 
         Exists for parity with ``ValkeyTransport.refresh_leases``, which the
-        worker's watchdog calls unconditionally. MQTT entries are protected by
-        the durable inbox (persist-before-enqueue), not by expiring leases.
+        worker's watchdog calls unconditionally. For the ``"sqlite"`` backend
+        this extends each live claim's lease so a slow-but-alive worker keeps
+        its entries; for ``"memory"``/``"none"`` it is a no-op. Control ids are
+        not refreshed: the control inbox is per-instance and unclaimed.
         """
+        await self._inbox.refresh(self._enqueued)

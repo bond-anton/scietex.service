@@ -825,7 +825,7 @@ v5.0.0), so `MqttTransport.requeue` re-publishes the envelope with the same
 encoded payload, and a retried copy is indistinguishable from the original on
 the wire.
 
-**Composition:** `MqttWorker` builds `FileMqttInbox` → `MqttTransport`
+**Composition:** `MqttWorker` builds `SqliteMqttInbox` → `MqttTransport`
 (the `TransportHealth` is inherited from `TransportWorker`), then assigns the
 transport to `TaskProcessor._transport`.
 `MqttWorkerConfig` (in `mqtt/config.py`) extends `TaskProcessorConfig` with
@@ -840,7 +840,8 @@ transport to `TaskProcessor._transport`.
 
 ## 22. MQTT durable inbox — `mqtt/inbox.py`
 
-**File:** `src/scietex/service/mqtt/inbox.py`
+**Files:** `src/scietex/service/mqtt/inbox.py` (Protocol + memory backend) and
+`src/scietex/service/mqtt/inbox_sqlite.py` (shared SQLite backend).
 
 **Purpose:** At-least-once delivery for MQTT. aiomqtt v2.5.1 auto-acks at the
 broker before the handler runs, so wire QoS cannot provide at-least-once.
@@ -850,14 +851,18 @@ manual ack removes the need — so the `MqttInbox` Protocol keeps that migration
 to an implementation swap.
 
 **Main symbols:** `MqttInbox` (Protocol: `put`/`mark_in_flight`/
-`mark_terminal`/`pending`/`recover`), `FileMqttInbox(path, *, logger,
-ttl=None)`, and `MemoryInbox()`. `FileMqttInbox` stores one JSON entry per task
-(`{task_id}.json`, carrying task id, lifecycle state, creation epoch, and
-base64 envelope) and a `{task_id}.done` tombstone on terminal completion;
-tombstones and expired entries are pruned on load. All file I/O runs via
-`asyncio.to_thread` under an `asyncio.Lock`. `MemoryInbox` buffers entries in a
-dict for the at-most-once opt-out: `recover` returns `[]` (nothing survives a
-restart) and there is no tombstone.
+`mark_terminal`/`pending`/`recover`/`prune_expired`/`claim`/`release`/`refresh`/
+`close`), `SqliteMqttInbox(path, *, worker_id, logger, ttl=None, lease_ttl=1,
+busy_timeout_ms=...)`, and `MemoryInbox()`. `SqliteMqttInbox` opens one WAL-mode
+database (`<conf_dir>/inbox.sqlite3`, `check_same_thread=False`,
+`isolation_level=None`), runs every statement via `asyncio.to_thread` under an
+`asyncio.Lock`, and issues explicit `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`. Its
+`entries` table holds non-terminal tasks and its `tombstones` table holds
+completed task ids for dedupe; `mark_terminal` inserts the tombstone and deletes
+the entry in one transaction. A cross-process **claim/lease** (a row is won only
+when unclaimed or its lease has expired) makes a shared store safe for multiple
+workers. `MemoryInbox` buffers entries in a dict for the at-most-once opt-out:
+`recover` returns `[]` (nothing survives a restart) and there is no tombstone.
 
 **Dependencies:** `..task_handler.schemas`, `..task_handler.wire`; stdlib.
 **Depended on by:** `MqttWorker` (builds it), `MqttTransport` (drains it).

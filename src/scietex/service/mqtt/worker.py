@@ -9,6 +9,8 @@ Requires the optional ``aiomqtt`` dependency.
 
 import asyncio
 import logging
+import random
+import sqlite3
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -18,7 +20,7 @@ from typing import ClassVar, Literal, cast
 import msgspec
 from scietex.logging import AsyncMqttHandler
 
-from ..config import DEFAULT_CONFIG_STARTUP_TIMEOUT
+from ..config import DEFAULT_CONFIG_STARTUP_TIMEOUT, DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_WATCHDOG_INTERVAL
 from ..config_reload import CONFIG_SOURCE_UNAVAILABLE, ConfigApplyOutcome
 from ..heartbeat import Heartbeat
 from ..task_handler.schemas import task_data_id
@@ -28,18 +30,14 @@ from ..transport_worker import TransportWorker
 from ._aiomqtt import Client, Message, MqttError, PacketTypes, Properties, ProtocolVersion, Will
 from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
 from .config_source import MqttConfigSource
-from .inbox import FileMqttInbox, MemoryInbox, MqttInbox
+from .inbox import MemoryInbox, MqttInbox
+from .inbox_sqlite import SqliteMqttInbox, derive_inbox_lease_ttl
 from .logging import logging_handler_config
 from .transport import MqttTransport
 
 #: QoS for the retained heartbeat/registry messages. Retained liveness should
 #: be at-least-once so the marker is reliably set; each beat refreshes it.
 _REGISTRY_QOS: int = 1
-
-#: Minimum seconds between inbox maintenance passes (AR-115). Pruning scans the
-#: tombstone set, so it is throttled well below the watchdog's default 1s tick;
-#: it only needs to keep tombstone growth bounded, not react instantly.
-INBOX_PRUNE_INTERVAL: float = 60.0
 
 #: Client-construction injection seam (AR-074): connect() builds its client by
 #: awaiting this callable with the resolved MqttConfig, so tests and embedders
@@ -117,10 +115,10 @@ class MqttWorker(TransportWorker):
     Attributes:
         client (Client | None): aiomqtt client instance, initialized
             during ``initialize()``.
-        _control_inbox (MqttInbox | None): durable control inbox, or ``None``
-            for the ``inbox_backend="memory"``/``"none"`` at-most-once opt-out.
-        _control_intake_inbox (MqttInbox): effective control intake target (the
-            durable control inbox, or an in-memory fallback for the opt-out).
+        _control_inbox (MqttInbox | None): always ``None``: the control lane is
+            in-memory only (event-only, never replayed across a restart).
+        _control_intake_inbox (MqttInbox): the in-memory control intake target
+            (a :class:`MemoryInbox`, one per process so broadcast still fans out).
     """
 
     # Concrete config struct for this worker. The base stores it into
@@ -185,10 +183,10 @@ class MqttWorker(TransportWorker):
                 control topic.
             _inbox (MqttInbox | None): Durable data inbox, or ``None`` for the
                 ``inbox_backend="memory"``/``"none"`` at-most-once opt-out.
-            _control_inbox (MqttInbox | None): Durable control inbox, or
-                ``None`` for the same at-most-once opt-out.
-            _control_intake_inbox (MqttInbox): Effective control intake target
-                (the durable control inbox or an in-memory fallback).
+            _control_inbox (MqttInbox | None): Always ``None``: the control lane
+                is in-memory only (event-only, never replayed across a restart).
+            _control_intake_inbox (MqttInbox): The in-memory control intake
+                target (a :class:`MemoryInbox`, one per process).
         """
         factory = client_factory if client_factory is not None else _create_client
         super().__init__(config, client_factory=factory, theme=theme)
@@ -237,16 +235,16 @@ class MqttWorker(TransportWorker):
         self._config_manager.attach_source(self._mqtt_config_source)
 
         # Durable inbox (design §10 #3). ``None`` for the "none" opt-out or a
-        # failed file-inbox build; the transport receives a non-None inbox via
+        # failed inbox build; the transport receives a non-None inbox via
         # the null adapter below, while initialize()'s at-least-once guard
         # refuses to start when a real inbox was expected but could not be built.
         self._inbox: MqttInbox | None = self._build_inbox(cfg)
-        # Control inbox (design §5.1): a second durable store, isolated from the
-        # data inbox so a saturated data lane cannot delay a control command.
-        # Built with the same backend semantics; ``None`` is the at-most-once
-        # opt-out or a failed file build, guarded by initialize() exactly as the
-        # data inbox is.
-        self._control_inbox: MqttInbox | None = self._build_control_inbox(cfg)
+        # Control lane (design §5.1): always in-memory, per process. Control
+        # commands are event-only and never replayed across a restart (design
+        # §2.2/§4.7: "control commands are never retried"), so a durable control
+        # store buys nothing the contract wants; keeping it per-process also
+        # guarantees a broadcast command still fans out to every worker.
+        self._control_inbox: MqttInbox | None = None
 
         # Next monotonic timestamp at which the watchdog may prune the inbox
         # (AR-115). Zero so the first watchdog tick reclaims tombstones left by
@@ -258,9 +256,7 @@ class MqttWorker(TransportWorker):
         # that effective target, so the message loop persists through the same
         # path in both modes and ``fetch`` stays the single enqueue point.
         self._intake_inbox: MqttInbox = self._inbox if self._inbox is not None else MemoryInbox()
-        self._control_intake_inbox: MqttInbox = (
-            self._control_inbox if self._control_inbox is not None else MemoryInbox()
-        )
+        self._control_intake_inbox: MqttInbox = MemoryInbox()
 
         # Transport extension seam (AR-072): the delivery/ack/drain hooks the
         # processor calls now live on MqttTransport, which receives the health
@@ -288,77 +284,84 @@ class MqttWorker(TransportWorker):
     def _build_inbox(self, cfg: MqttWorkerConfig) -> MqttInbox | None:
         """Build the durable data inbox for the configured backend.
 
-        ``inbox_backend="file"`` builds a :class:`FileMqttInbox` under the
-        resolved ``inbox_path`` (defaulting to ``<conf_dir>/inbox``). A build
-        failure (e.g. the path is an existing file) returns ``None`` so
-        :meth:`initialize`'s at-least-once guard can refuse to start loudly
-        rather than silently dropping the durability guarantee (design §3.3).
-        ``inbox_backend="memory"`` (or its alias ``"none"``) returns ``None``
-        as the explicit at-most-once opt-out; the transport then receives a
-        :class:`MemoryInbox`.
+        ``inbox_backend="sqlite"`` builds a shared :class:`SqliteMqttInbox` at
+        ``<conf_dir>/inbox.sqlite3`` (or ``inbox_path`` as the database file),
+        safe for multiple processes. A build failure (e.g. the path is an
+        existing file) returns ``None`` so :meth:`initialize`'s at-least-once
+        guard can refuse to start loudly rather than silently dropping the
+        durability guarantee (design §3.3). ``inbox_backend="memory"`` (or its
+        alias ``"none"``) returns ``None`` as the explicit at-most-once opt-out;
+        the transport then receives a :class:`MemoryInbox`.
         """
         if cfg.inbox_backend in ("memory", "none"):
             return None
-        path = Path(cfg.inbox_path) if cfg.inbox_path is not None else self.conf_dir / "inbox"
-        return self._build_file_inbox(path, cfg)
+        path = Path(cfg.inbox_path) if cfg.inbox_path is not None else self.conf_dir / "inbox.sqlite3"
+        return self._build_sqlite_inbox(path, cfg)
 
-    def _build_control_inbox(self, cfg: MqttWorkerConfig) -> MqttInbox | None:
-        """Build the durable control inbox for the configured backend.
+    def _build_sqlite_inbox(self, path: Path, cfg: MqttWorkerConfig) -> MqttInbox | None:
+        """Build a :class:`SqliteMqttInbox` at ``path``, returning ``None`` on failure.
 
-        Mirrors :meth:`_build_inbox` with a distinct path so the two stores
-        cannot collide: ``control_inbox_path`` when set, otherwise a
-        ``control-inbox`` sibling of the data inbox under ``conf_dir``. The
-        backend semantics are identical — ``"memory"``/``"none"`` opt out to
-        ``None``, ``"file"`` builds a :class:`FileMqttInbox`, and a build
-        failure returns ``None`` for :meth:`initialize`'s at-least-once guard.
-        """
-        if cfg.inbox_backend in ("memory", "none"):
-            return None
-        path = Path(cfg.control_inbox_path) if cfg.control_inbox_path is not None else self.conf_dir / "control-inbox"
-        return self._build_file_inbox(path, cfg)
-
-    def _build_file_inbox(self, path: Path, cfg: MqttWorkerConfig) -> MqttInbox | None:
-        """Build a :class:`FileMqttInbox` at ``path``, returning ``None`` on failure.
-
-        Shared by the data and control inbox builders so the ``OSError`` handling
-        (and its log message) is defined once. A failure returns ``None`` rather
-        than raising, so the caller's at-least-once guard can refuse to start.
+        Builds the durable data inbox. The lease TTL defaults to
+        :func:`derive_inbox_lease_ttl` over the heartbeat/watchdog intervals when
+        ``inbox_lease_ttl`` is unset. A failure returns ``None`` rather than
+        raising, so the caller's at-least-once guard can refuse to start.
         """
         try:
-            return FileMqttInbox(path, logger=self.logger, ttl=cfg.inbox_ttl)
-        except OSError as exc:
-            self.logger.error("Failed to build the MQTT inbox at %s: %s", path, exc)
+            lease_ttl = cfg.inbox_lease_ttl
+            if lease_ttl is None:
+                lease_ttl = derive_inbox_lease_ttl(
+                    cfg.heartbeat_interval or DEFAULT_HEARTBEAT_INTERVAL,
+                    cfg.watchdog_interval or DEFAULT_WATCHDOG_INTERVAL,
+                )
+            return SqliteMqttInbox(
+                path,
+                worker_id=self.instance_id,
+                logger=self.logger,
+                ttl=cfg.inbox_ttl,
+                lease_ttl=lease_ttl,
+            )
+        except (OSError, sqlite3.Error) as exc:
+            self.logger.error("Failed to build the MQTT sqlite inbox at %s: %s", path, exc)
             return None
 
     async def watchdog(self) -> None:
         """Run the shared watchdog, then maintain the durable inbox (AR-115).
 
-        Pruning is throttled to :data:`INBOX_PRUNE_INTERVAL`: the watchdog fires
-        every ``watchdog_interval`` (default 1s), but the tombstone scan is
-        O(files), so one maintenance pass runs per interval. This decouples
-        tombstone/entry expiry from the fetch poll, so the inbox self-bounds
-        even when no task arrives.
+        Pruning is throttled to the ``inbox_prune_interval`` config field: the
+        watchdog fires every ``watchdog_interval`` (default 1s), but the
+        tombstone scan is O(files), so one maintenance pass runs per interval.
+        The schedule is jittered (``inbox_prune_jitter``) so multiple workers
+        sharing one store do not prune on the same tick; every worker prunes
+        independently, and the DELETE is idempotent so the redundant maintenance
+        is safe and self-healing. This decouples tombstone/entry expiry from the
+        fetch poll, so the inbox self-bounds even when no task arrives.
         """
         await super().watchdog()
         await self._maybe_prune_inbox()
 
     async def _maybe_prune_inbox(self) -> None:
-        """Prune both file inboxes at most once per :data:`INBOX_PRUNE_INTERVAL`.
+        """Prune the durable data inbox at most once per ``inbox_prune_interval``.
 
-        The throttle is shared: the data and control stores each get one
-        maintenance pass per interval, so the tombstone scan cost stays O(files)
-        regardless of the inbox split.
+        The schedule is jittered (``inbox_prune_jitter``) so multiple workers
+        sharing one store do not prune on the same tick; every worker prunes
+        independently, and the DELETE is idempotent so the redundant maintenance
+        is safe and self-healing. The first pass is not jittered (it reclaims
+        tombstones left by a previous run immediately). The control lane is
+        in-memory and holds no tombstones, so only the data inbox needs a
+        maintenance pass.
         """
-        if self._inbox is None and self._control_inbox is None:
+        if self._inbox is None:
             return  # at-most-once opt-out: no durable files to prune
         now = time.monotonic()
         if now < self._next_inbox_prune:
             return
-        self._next_inbox_prune = now + INBOX_PRUNE_INTERVAL
-        if self._inbox is not None:
-            await self._inbox.prune_expired()
-        if self._control_inbox is not None:
-            await self._control_inbox.prune_expired()
+        cfg = cast(MqttWorkerConfig, self._config)
+        interval = cfg.inbox_prune_interval
+        jitter = cfg.inbox_prune_jitter
+        if jitter:
+            interval *= 1.0 + random.uniform(-jitter, jitter)
+        self._next_inbox_prune = now + interval
+        await self._inbox.prune_expired()
 
     @property
     def mqtt_config(self) -> MqttConfig | None:
@@ -639,9 +642,9 @@ class MqttWorker(TransportWorker):
         previous run is not performed here: it is owned by the shared
         :class:`~scietex.service.transport.RecoverableTransport` guard and runs
         on the first :meth:`fetch`. The at-least-once guard runs first: when a
-        durable inbox was expected (``inbox_backend == "file"``) but none could
-        be built, the worker refuses to start rather than silently degrading to
-        at-most-once (design §3.3).
+        durable inbox was expected (``inbox_backend`` is ``"sqlite"``) but none
+        could be built, the worker refuses to start rather than silently
+        degrading to at-most-once (design §3.3).
 
         After a successful connect (and subscription) the local ``config.yml``
         snapshot is applied, then the retained remote snapshot is awaited for a
@@ -657,9 +660,10 @@ class MqttWorker(TransportWorker):
         """
         cfg = cast(MqttWorkerConfig, self._config)
         # At-least-once guard (design §10 #3): refuse before starting handlers
-        # or connecting when a durable inbox (data or control) was expected but
-        # could not be built, so the durability guarantee is never silently lost.
-        if cfg.inbox_backend == "file" and (self._inbox is None or self._control_inbox is None):
+        # or connecting when the durable data inbox was expected but could not
+        # be built, so the durability guarantee is never silently lost. The
+        # control lane is in-memory and needs no such guard.
+        if cfg.inbox_backend == "sqlite" and self._inbox is None:
             self.logger.error(
                 "MQTT worker configured with inbox_backend=%r but no inbox could be built; "
                 "refusing to start rather than silently losing at-least-once delivery",
@@ -711,9 +715,9 @@ class MqttWorker(TransportWorker):
         Drains the internal task queue and cancels running tasks via the parent
         ``TaskProcessor.cleanup()``, then stops the message loop, stops the MQTT
         logging handler so its worker drains remaining records, and finally
-        closes the MQTT connection through :meth:`disconnect`. The file inbox
-        has no close/flush: every write (``put``/``mark_terminal``) is awaited
-        synchronously via ``to_thread``, so no buffered state remains.
+        closes the MQTT connection through :meth:`disconnect`. The sqlite data
+        inbox owns a database connection, so it is closed here; the in-memory
+        control lane holds no resources to close.
         """
         await super().cleanup()
         # Stop the message loop before disconnect() so the loop cannot observe
@@ -722,6 +726,8 @@ class MqttWorker(TransportWorker):
         await self._stop_message_loop()
         if self._mqtt_logger_handler is not None:
             await self._mqtt_logger_handler.stop_logging()
+        if self._inbox is not None:
+            await self._inbox.close()
         await self.disconnect()
 
     async def _stop_message_loop(self) -> None:

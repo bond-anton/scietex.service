@@ -53,7 +53,6 @@ def worker_config(service_name: str, mqtt_config: MqttConfig, tmp_path) -> MqttW
     return MqttWorkerConfig(
         service_name=service_name,
         mqtt_config=mqtt_config,
-        inbox_backend="file",
-        inbox_path=str(tmp_path / "inbox"),
-        control_inbox_path=str(tmp_path / "control-inbox"),
+        inbox_backend="sqlite",
+        inbox_path=str(tmp_path / "inbox.sqlite3"),
     )

@@ -89,13 +89,13 @@ def _make_worker(tmp_path, fake, **config_kwargs) -> MqttWorker:
 
 
 def _plain_worker(tmp_path) -> MqttWorker:
-    """Build a worker with a file inbox for direct ``_handle_message`` tests."""
+    """Build a worker with a sqlite inbox for direct ``_handle_message`` tests."""
     return MqttWorker(
         MqttWorkerConfig(
             service_name="svc",
             mqtt_config=MqttConfig(),
-            inbox_backend="file",
-            inbox_path=str(tmp_path / "inbox"),
+            inbox_backend="sqlite",
+            inbox_path=str(tmp_path / "inbox.sqlite3"),
         )
     )
 

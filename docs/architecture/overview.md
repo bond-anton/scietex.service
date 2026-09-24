@@ -20,7 +20,7 @@ is a library whose entry point is the consumer's own `main()`.
 | Transport seam | `src/scietex/service/transport.py` | `TaskSink` / `TaskTransport` Protocols (the delivery contract) + `InMemoryTransport` (deque-backed default; feed with `submit(task_data)`). Imports only `task_handler.schemas` — no glide |
 | Task handler contract | `src/scietex/service/task_handler/` | `TaskHandler` ABC + `TaskHandlerContext` + the per-call `TaskCapabilities` object (`capabilities.py`) + typed wire schemas `TaskData`, `TaskResult`, `TaskTimeout`, `TaskStatus` (`schemas.py`) + the built-in `CancelTaskHandler` for `task:cancel` (`cancel.py`) + the built-in `WorkerControlHandler` for `worker:*` (`worker.py`) + the `TaskTracker` in-memory runtime handle (`runtime.py`) |
 | Valkey integration | `src/scietex/service/valkey/` | `ValkeyWorker` (composes `ValkeyTransport` + `TransportHealth`/`TaskLeaseManager`/`TaskStatusStore`), typed Valkey config schema + YAML loader + schema→glide converter (`config.py`, incl. `ValkeyWorkerConfig`/`ValkeyPubSubConfig`) |
-| MQTT integration | `src/scietex/service/mqtt/` | `MqttWorker` (composes `MqttTransport` + `TransportHealth` + `FileMqttInbox`), typed MQTT config schema + YAML loader (`config.py`, incl. `MqttConfig`/`MqttWorkerConfig`), guarded `_aiomqtt.py` import, logging-handler translator (`logging.py`). MQTT 5 only; a durable inbox restores at-least-once delivery that aiomqtt v2.5.1's premature broker ack would otherwise lose |
+| MQTT integration | `src/scietex/service/mqtt/` | `MqttWorker` (composes `MqttTransport` + `TransportHealth` + `SqliteMqttInbox`), typed MQTT config schema + YAML loader (`config.py`, incl. `MqttConfig`/`MqttWorkerConfig`), guarded `_aiomqtt.py` import, logging-handler translator (`logging.py`). MQTT 5 only; a durable inbox restores at-least-once delivery that aiomqtt v2.5.1's premature broker ack would otherwise lose |
 | Transport health (core) | `src/scietex/service/health.py` | `TransportHealth` (AR-075) — transport-agnostic connection-health supervisor; hoisted to core (AR-089) so Valkey and MQTT share it; re-exported from `valkey/health.py` for back-compat |
 | Heartbeat (core) | `src/scietex/service/heartbeat.py` | `Heartbeat` — the single msgpack liveness struct shared by `ValkeyWorker` and `MqttWorker`; Valkey stores it at `scietex:{service}:{instance_id}:status` (2 × `heartbeat_interval` TTL), MQTT publishes it retained to `scietex/{service}/workers/{instance_id}` |
 | Remote configuration (core) | `src/scietex/service/config_reload.py` | `ConfigReloader` + the `ConfigSource` Protocol + the `ConfigEnvelope`/`ConfigSections`/`ReloadableSettings` structs: a transport-delivered reloadable-behaviour envelope (a durable Valkey key or an MQTT retained topic) applied at startup and via the `config:apply`/`config:store`/`config:show` commands; `TaskProcessor` composes a `ConfigManager` (`config_manager.py`) that builds the reloader and registers the three `config:*` handlers when remote config is enabled, and each transport supplies its `ConfigSource` (`ValkeyConfigSource` / `MqttConfigSource`) |
@@ -56,7 +56,7 @@ is a library whose entry point is the consumer's own `main()`.
                │   └── AsyncValkeyHandler (scietex.logging) — log stream
                │
         MqttWorker — aiomqtt.Client — MQTT 5 topics
-               │   ├── FileMqttInbox — durable at-least-once store
+               │   ├── SqliteMqttInbox — durable at-least-once store
                │   └── AsyncMqttHandler (scietex.logging) — log topic
 ```
 
@@ -79,10 +79,10 @@ Interaction notes:
 - **MQTT transport is isolated** in the `mqtt` subpackage; `MqttWorker`
   composes an `MqttTransport` and assigns it to `TaskProcessor._transport`.
   Because aiomqtt v2.5.1 acks at the broker before the handler runs, delivery
-  is at-least-once only through the `FileMqttInbox` (persist-before-enqueue +
-  tombstone dedupe); `inbox_backend="memory"` (or its alias `"none"`) is the
-  explicit at-most-once opt-out, and the worker refuses to start with
-  at-least-once semantics when no inbox could be built.
+  is at-least-once only through the `SqliteMqttInbox` (persist-before-enqueue +
+  tombstone dedupe, cross-process claim/lease); `inbox_backend="memory"` (or its
+  alias `"none"`) is the explicit at-most-once opt-out, and the worker refuses
+  to start with at-least-once semantics when no inbox could be built.
 - **Async logging crosses the package boundary**: the worker attaches handlers
   from the external `scietex.logging` package and drives their
   `start_logging()`/`stop_logging()` lifecycle via `LoggingLifecycle`.

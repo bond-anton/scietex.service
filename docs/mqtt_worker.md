@@ -64,8 +64,8 @@ The extra pins `aiomqtt~=2.5.0` and `scietex.logging[mqtt]`.
   │  └─────────────────────┘    └────────────────────────────┘     │
   │                                                                 │
   │  ┌─────────────────────┐    ┌────────────────────────────┐     │
-  │  │   MqttTransport      │───►│  FileMqttInbox             │     │
-  │  │  (fetch/ack/drain)   │    │  <conf_dir>/inbox/*.json   │     │
+  │  │   MqttTransport      │───►│  MqttInbox                 │     │
+  │  │  (fetch/ack/drain)   │    │  sqlite: inbox.sqlite3     │     │
   │  └─────────────────────┘    └────────────────────────────┘     │
   └─────────────────────────────────────────────────────────────────┘
                            │
@@ -81,9 +81,11 @@ The extra pins `aiomqtt~=2.5.0` and `scietex.logging[mqtt]`.
 ```
 
 Unlike the Valkey stream, an MQTT topic is a broadcast channel: every worker
-subscribed to `scietex/{service}/tasks` receives every task. The durable
-inbox is per-instance, so at-least-once delivery is a property of each
-worker's own persisted state, not of a shared consumer group.
+subscribed to `scietex/{service}/tasks` receives every task. The durable inbox
+is the shared SQLite store: multiple workers open one database and a
+cross-process claim/lease ensures each task id is processed once, so
+at-least-once delivery is a property of the shared persisted state, not of a
+consumer group.
 
 ## Topic Names
 
@@ -118,6 +120,11 @@ the same `{service}` substitution; see
 | `MIN_SESSION_EXPIRY_INTERVAL` / `MAX_SESSION_EXPIRY_INTERVAL` | `0` / `4294967295` | Bounds of `MqttConfig.session_expiry_interval` |
 | `MIN_INBOX_TTL` / `MAX_INBOX_TTL` | `1` / `2592000` | Bounds of `MqttWorkerConfig.inbox_ttl` (30 days) |
 | `DEFAULT_INBOX_TTL` | `86400` | Default `MqttWorkerConfig.inbox_ttl` (one day) |
+| `MIN_INBOX_LEASE_TTL` / `MAX_INBOX_LEASE_TTL` | `1` / `86400` | Bounds of `MqttWorkerConfig.inbox_lease_ttl` (24 hours) |
+| `MIN_INBOX_PRUNE_INTERVAL` / `MAX_INBOX_PRUNE_INTERVAL` | `1.0` / `3600.0` | Bounds of `MqttWorkerConfig.inbox_prune_interval` |
+| `DEFAULT_INBOX_PRUNE_INTERVAL` | `60.0` | Default `MqttWorkerConfig.inbox_prune_interval` (one minute) |
+| `MIN_INBOX_PRUNE_JITTER` / `MAX_INBOX_PRUNE_JITTER` | `0.0` / `1.0` | Bounds of `MqttWorkerConfig.inbox_prune_jitter` |
+| `DEFAULT_INBOX_PRUNE_JITTER` | `0.25` | Default `MqttWorkerConfig.inbox_prune_jitter` (plus or minus 25 percent) |
 | `MIN_STATUS_QOS` / `MAX_STATUS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.status_qos` |
 | `MIN_STATUS_TTL` / `MAX_STATUS_TTL` | `1` / `2592000` | Bounds of `MqttWorkerConfig.status_ttl` (30 days) |
 | `MIN_PROGRESS_QOS` / `MAX_PROGRESS_QOS` | `0` / `2` | Bounds of `MqttWorkerConfig.progress_qos` |
@@ -159,13 +166,14 @@ needs no out-of-band id channel because the id is part of the encoded payload.
 ```
 
 `initialize()` runs the at-least-once guard **first** — it refuses to start
-rather than silently lose durability when a file inbox was expected but could
-not be built (see [Inbox Backend](#inbox-backend)). It then starts all
-registered task handlers (`super().initialize()`), connects to the broker
-(subscribing to the task topic and starting the background message loop),
+rather than silently lose durability when the durable **data** inbox was
+expected but could not be built (see [Inbox Backend](#inbox-backend)). It then
+starts all registered task handlers (`super().initialize()`), connects to the
+broker (subscribing to the task topic and starting the background message loop),
 applies the local `config.yml` snapshot followed by the retained remote
-snapshot, and finally replays any non-terminal inbox entries left by a
-previous run.
+snapshot, and finally replays any non-terminal data inbox entries left by a
+previous run. The in-memory control lane holds nothing across a restart, so it
+has nothing to replay.
 
 ## Properties
 
@@ -212,9 +220,12 @@ worker = MqttWorker(
         mqtt_config=None,
         task_topic="scietex/{service}/tasks",
         task_qos=2,
-        inbox_backend="file",
+        inbox_backend="sqlite",
         inbox_path=None,
         inbox_ttl=86400,
+        inbox_lease_ttl=None,
+        inbox_prune_interval=60.0,
+        inbox_prune_jitter=0.25,
         log_topic="scietex/{service}/{instance_id}/log",
         log_qos=0,
         log_retain=False,
@@ -257,9 +268,12 @@ preserved.
 | `mqtt_config` | `None` | A `MqttConfig` schema. If `None`, `mqtt.yml` is read lazily from the config directory at first connect (not at construction) |
 | `task_topic` | `"scietex/{service}/tasks"` | Topic tasks are consumed from; `{service}` is replaced with the service name |
 | `task_qos` | `2` | QoS for task messages; valid range `[0, 2]` |
-| `inbox_backend` | `"file"` | Durable inbox backend (`"file"`, `"memory"`, or `"none"`); `"memory"`/`"none"` is the explicit at-most-once opt-out |
-| `inbox_path` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
+| `inbox_backend` | `"sqlite"` | Durable inbox backend (`"sqlite"`, `"memory"`, or `"none"`); `"sqlite"` is the shared multi-process store, `"memory"`/`"none"` the explicit at-most-once opt-out |
+| `inbox_path` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox.sqlite3` |
 | `inbox_ttl` | `86400` | TTL in seconds for inbox entries and tombstones (one day); valid range `[1, 2592000]`; `None` disables expiry (the explicit unbounded-growth opt-out) |
+| `inbox_lease_ttl` | `None` | Claim-lease lifetime in seconds for the SQLite backend; valid range `[1, 86400]`; `None` derives `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))` |
+| `inbox_prune_interval` | `60.0` | Base seconds between inbox maintenance passes; valid range `[1.0, 3600.0]` |
+| `inbox_prune_jitter` | `0.25` | Fractional jitter applied to `inbox_prune_interval` (plus or minus this fraction); valid range `[0.0, 1.0]`; `0.0` disables jitter |
 | `log_topic` | `"scietex/{service}/{instance_id}/log"` | Topic worker logs are published to; both `{service}` and `{instance_id}` are replaced, so each worker logs to its own topic |
 | `log_qos` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `False` | If `True`, log messages are published with the retained flag |
@@ -353,8 +367,8 @@ async def cleanup(self):
 Drains the internal task queue and cancels running tasks via the parent
 `TaskProcessor.cleanup()`, then stops the background message loop, stops the
 MQTT logging handler so its worker drains remaining records, and closes the
-MQTT connection. The file inbox has no close/flush: every write is awaited
-synchronously via `asyncio.to_thread`, so no buffered state remains.
+MQTT connection. The data inbox is then closed: the SQLite inbox closes its
+database connection. The in-memory control lane holds no resources to release.
 
 ### fetch_tasks() / fetch()
 
@@ -371,8 +385,10 @@ entry is replayed (`recover_pending_tasks`) before draining, so tasks
 persisted by a previous run are redelivered exactly once. The drain walks the
 inbox's non-terminal snapshot, skipping task ids already handed over this run
 and stopping on backpressure: a rejected task is left pending in the inbox,
-so it is redelivered, never lost. Returns `True` if at least one task was
-enqueued, `False` otherwise.
+so it is redelivered, never lost. For the SQLite backend, each entry is
+**claimed** before it is enqueued; a lost claim (another worker won it) is
+skipped without blocking the drain, and a rejected entry is released back to
+the pool. Returns `True` if at least one task was enqueued, `False` otherwise.
 
 Prefer `MqttTransport`; these hooks are back-compat shims.
 
@@ -433,11 +449,19 @@ async def watchdog(self) -> None:
     """Refresh leases, health.recover(), super().watchdog(), critical_report()."""
 ```
 
-`refresh_leases()` is a no-op for the file-backed inbox (kept for parity with
-`ValkeyWorker`). `health.recover()` is the single reconnect owner for every
-failure reported by the message loop, heartbeat, and publish sites. After the
-base watchdog runs, a degraded connection past its down threshold surfaces
-one CRITICAL message per down episode; when healthy it emits nothing.
+`refresh_leases()` renews the cross-process claims on this worker's enqueued
+data tasks for the SQLite backend; it is a no-op for the memory backend
+(kept for parity with `ValkeyWorker`). When the SQLite backend is in use the
+watchdog also drives the inbox prune: every worker runs
+`prune_expired()` independently on its own jittered schedule, so redundant
+maintenance across workers sharing one store is safe and self-healing (see
+[Inbox Backend](#inbox-backend)). `inbox_prune_interval` (default `60.0`) is
+the base seconds between passes and `inbox_prune_jitter` (default `0.25`)
+spreads workers apart. `health.recover()` is the single
+reconnect owner for every failure reported by the message loop, heartbeat, and
+publish sites. After the base watchdog runs, a degraded connection past its
+down threshold surfaces one CRITICAL message per down episode; when healthy it
+emits nothing.
 
 ### Task cancellation and external requeue
 
@@ -544,31 +568,52 @@ for "has this task been processed".
 
 ### Inbox Backend
 
-The file-backed inbox is the default (`inbox_backend="file"`). It stores one
-JSON file per entry under `<conf_dir>/inbox` (overridable with
-`inbox_path`):
+Two backends are selectable via `inbox_backend`:
 
-- `{task_id}.json` — the entry, carrying the task id, lifecycle state
-  (`pending`/`in-flight`), a creation epoch, and the base64-encoded envelope.
-- `{task_id}.done` — a tombstone written by `mark_terminal` so a
-  re-delivered duplicate of an already-terminal task is skipped.
+| Backend | Store | Delivery | Multi-process |
+|---|---|---|---|
+| `"sqlite"` (default) | a WAL-mode SQLite database at `<conf_dir>/inbox.sqlite3` | at-least-once | yes — cross-process claim/lease |
+| `"memory"` / `"none"` | in-process dict | at-most-once | n/a (explicit opt-out) |
+
+**SQLite backend.** The shared durable store (`inbox_backend="sqlite"`). It
+opens one WAL-mode database at `<conf_dir>/inbox.sqlite3` (overridable with
+`inbox_path`) with `check_same_thread=False` and `isolation_level=None`,
+serializes every access behind an `asyncio.Lock` + `asyncio.to_thread`, and
+issues explicit `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`. A cross-process
+**claim/lease** makes the drain safe for multiple workers: `claim` wins only
+when the row is unclaimed or its lease has expired, so two workers draining one
+store never process the same task id. A crashed peer's entry is reclaimed once
+its lease lapses; `refresh` renews a live claim over the watchdog tick, and
+`release` returns a rejected/requeued entry to the pool. `inbox_lease_ttl`
+(seconds, `[1, 86400]`, `None` derives it) governs the lease lifetime. Only the
+data lane uses this backend: the **control inbox is always in-memory and
+per-process**, independent of `inbox_backend`. It is never durable and never
+shared, because a broadcast control command must fan out to every worker and
+control is event-only — it is not replayed across a restart.
 
 `inbox_ttl` (seconds, default one day) governs tombstone dedupe and entry
-expiry; `None` disables expiry (the explicit unbounded-growth opt-out).
-Pruning is a periodic watchdog maintenance pass, throttled to 60 s, not a
-side effect of load: expired tombstones and entries are removed by
-`MqttInbox.prune_expired()`, which the worker's watchdog invokes at most once
-per `INBOX_PRUNE_INTERVAL`. The bounded horizon caps dedup memory to one day
-by default. The store is **single-process**: it does not coordinate across
-replicas. Multi-replica deployments need a shared backend, which the
-`MqttInbox` Protocol preserves as a future option.
+expiry; `None` disables expiry (the explicit unbounded-growth opt-out). Pruning
+is a periodic watchdog maintenance pass, not a side effect of load: expired
+tombstones (and, only when `inbox_ttl` is set, expired entries) are removed by
+`MqttInbox.prune_expired()`, which the worker's watchdog invokes on its own
+schedule. Every worker prunes independently — there is no leader election,
+because the prune DELETE is idempotent and indexed, so redundant maintenance
+across workers sharing one store is safe and self-healing (if one worker is
+down, the others still prune). The schedule is **jittered** so N workers
+sharing one `inbox.sqlite3` do not fire the same DELETE on the same tick
+(thundering herd / `BEGIN IMMEDIATE` lock contention): `inbox_prune_interval`
+(base seconds, default `60.0`, range `[1.0, 3600.0]`) and `inbox_prune_jitter`
+(fractional, default `0.25`, range `[0.0, 1.0]`; `0.0` disables jitter) set the
+next deadline to `now + interval * (1 + uniform(-jitter, +jitter))`. The first
+pass is not jittered (it runs on the first watchdog tick). The bounded horizon
+caps dedup memory to one day by default.
 
 `inbox_backend="memory"` (or its alias `"none"`) is the explicit at-most-once
 opt-out: the worker uses a `MemoryInbox` that buffers entries in process only,
 persists nothing to disk, and does not replay on startup. The worker
-**refuses to start** with at-least-once semantics if `inbox_backend == "file"`
-but no inbox could be built (for example, `inbox_path` points at an existing
-file). Fail loud, not silent.
+**refuses to start** with at-least-once semantics if `inbox_backend` is
+`"sqlite"` but no inbox could be built (for example, `inbox_path` points at an
+existing file). Fail loud, not silent.
 
 ### Retry Semantics
 
@@ -891,9 +936,12 @@ fields).
 | `mqtt_config` | `MqttConfig \| None` | `None` | Optional connection config; `None` reads `mqtt.yml` lazily at first connect |
 | `task_topic` | `str` | `"scietex/{service}/tasks"` | Topic tasks are consumed from |
 | `task_qos` | `int` | `2` | QoS for task messages; valid range `[0, 2]` |
-| `inbox_backend` | `Literal["file", "memory", "none"]` | `"file"` | Durable inbox backend; `"memory"`/`"none"` is the explicit at-most-once opt-out |
-| `inbox_path` | `str \| None` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox` |
+| `inbox_backend` | `Literal["memory", "none", "sqlite"]` | `"sqlite"` | Durable inbox backend; `"sqlite"` is the shared multi-process store, `"memory"`/`"none"` the explicit at-most-once opt-out |
+| `inbox_path` | `str \| None` | `None` | Path to the inbox store; `None` derives `<conf_dir>/inbox.sqlite3` |
 | `inbox_ttl` | `int \| None` | `86400` | TTL in seconds for inbox entries and tombstones (one day); valid range `[1, 2592000]`; `None` disables expiry |
+| `inbox_lease_ttl` | `int \| None` | `None` | Claim-lease lifetime in seconds for the SQLite backend; valid range `[1, 86400]`; `None` derives `max(1, int(max(2*heartbeat_interval, 3*watchdog_interval)))` |
+| `inbox_prune_interval` | `float` | `60.0` | Base seconds between inbox maintenance passes; valid range `[1.0, 3600.0]` |
+| `inbox_prune_jitter` | `float` | `0.25` | Fractional jitter applied to `inbox_prune_interval` (plus or minus this fraction); valid range `[0.0, 1.0]`; `0.0` disables jitter |
 | `log_topic` | `str` | `"scietex/{service}/{instance_id}/log"` | Topic worker logs are published to |
 | `log_qos` | `int` | `0` | QoS for log messages; valid range `[0, 2]` |
 | `log_retain` | `bool` | `False` | Publish log messages with the retained flag |

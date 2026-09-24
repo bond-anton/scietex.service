@@ -66,8 +66,9 @@ the `ControlPublisher` protocol (`direct`/`broadcast`/`resolve_owner`),
 implemented as `ValkeyControlPublisher`/`MqttControlPublisher`; `resolve_owner`
 reads the Valkey tracking record's `TaskStatus.instance_id` or the MQTT retained
 owner marker `scietex/{service}/tasks/{task_id}/owner`. The MQTT inbox is
-partitioned into data and control stores so a saturated data lane cannot delay a
-control command. The single-worker scope boundary (D0) is lifted.
+partitioned into data and control lanes so a saturated data lane cannot delay a
+control command; the data lane is the durable store, while the control lane is
+in-memory and per-process. The single-worker scope boundary (D0) is lifted.
 
 **Status: implemented** (v5.0.0). Reference: AR-123.
 
@@ -338,10 +339,11 @@ and the core `TransportHealth` supervisor (hoisted from `valkey/health.py` to
 `src/scietex/service/health.py` and re-exported for back-compat). MQTT 5 only;
 the task id travels as the `scietex-task-id` user property. Because aiomqtt
 v2.5.1 auto-acks at the broker when `on_message` returns, wire QoS 2 is
-at-most-once at the application layer; a durable file-backed inbox
-(`FileMqttInbox`, behind the `MqttInbox` Protocol) restores at-least-once by
+at-most-once at the application layer; a durable SQLite inbox
+(`SqliteMqttInbox`, behind the `MqttInbox` Protocol) restores at-least-once by
 persisting every received message before handing it to the processor and
-deduping on replay via tombstones. `inbox_backend="memory"` (or its alias
+deduping on replay via tombstones, with a cross-process claim/lease so a shared
+store is safe across replicas. `inbox_backend="memory"` (or its alias
 `"none"`) is the explicit at-most-once opt-out, backed by `MemoryInbox`. There
 is no status store: `MqttTransport` publishes retained `TaskStatus` messages and
 throttled `TaskProgress` messages to per-task topics (a publisher, not a store —

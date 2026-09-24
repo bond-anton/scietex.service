@@ -28,12 +28,11 @@ def test_worker_config_inbox_ttl_default():
 
 
 def test_worker_config_control_defaults():
-    """The four control-plane fields default to their documented values."""
+    """The three control-plane fields default to their documented values."""
     cfg = MqttWorkerConfig()
     assert cfg.control_topic == "scietex/{service}/control/{instance_id}"
     assert cfg.control_broadcast_topic == "scietex/{service}/control"
     assert cfg.control_qos == 1
-    assert cfg.control_inbox_path is None
 
 
 def test_worker_config_log_defaults():
@@ -64,6 +63,42 @@ def test_worker_config_inbox_ttl_bounds_accept(inbox_ttl):
     assert MqttWorkerConfig(inbox_ttl=inbox_ttl).inbox_ttl == inbox_ttl
 
 
+def test_worker_config_inbox_lease_ttl_default():
+    """inbox_lease_ttl defaults to None (derived from heartbeat/watchdog)."""
+    assert MqttWorkerConfig().inbox_lease_ttl is None
+
+
+@pytest.mark.parametrize("inbox_lease_ttl", [None, 1, 86400])
+def test_worker_config_inbox_lease_ttl_bounds_accept(inbox_lease_ttl):
+    """inbox_lease_ttl=None and the [1, 86400] bounds construct successfully."""
+    assert MqttWorkerConfig(inbox_lease_ttl=inbox_lease_ttl).inbox_lease_ttl == inbox_lease_ttl
+
+
+def test_worker_config_inbox_prune_defaults():
+    """inbox_prune_interval defaults to 60.0s; inbox_prune_jitter to 0.25 (±25%)."""
+    cfg = MqttWorkerConfig()
+    assert cfg.inbox_prune_interval == 60.0
+    assert cfg.inbox_prune_jitter == 0.25
+
+
+@pytest.mark.parametrize("inbox_prune_interval", [1.0, 3600.0])
+def test_worker_config_inbox_prune_interval_bounds_accept(inbox_prune_interval):
+    """inbox_prune_interval accepts the [1.0, 3600.0] bounds."""
+    assert MqttWorkerConfig(inbox_prune_interval=inbox_prune_interval).inbox_prune_interval == inbox_prune_interval
+
+
+@pytest.mark.parametrize("inbox_prune_jitter", [0.0, 1.0])
+def test_worker_config_inbox_prune_jitter_bounds_accept(inbox_prune_jitter):
+    """inbox_prune_jitter accepts the [0.0, 1.0] bounds."""
+    assert MqttWorkerConfig(inbox_prune_jitter=inbox_prune_jitter).inbox_prune_jitter == inbox_prune_jitter
+
+
+@pytest.mark.parametrize("inbox_backend", ["memory", "none", "sqlite"])
+def test_worker_config_inbox_backend_accepts_known_values(inbox_backend):
+    """Every documented inbox backend value constructs successfully."""
+    assert MqttWorkerConfig(inbox_backend=inbox_backend).inbox_backend == inbox_backend
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -75,6 +110,12 @@ def test_worker_config_inbox_ttl_bounds_accept(inbox_ttl):
         ("status_ttl", 2592001),
         ("inbox_ttl", 0),
         ("inbox_ttl", 2592001),
+        ("inbox_lease_ttl", 0),
+        ("inbox_lease_ttl", 86401),
+        ("inbox_prune_interval", 0.5),
+        ("inbox_prune_interval", 3600.1),
+        ("inbox_prune_jitter", -0.1),
+        ("inbox_prune_jitter", 1.1),
         ("control_qos", 3),
         ("control_qos", -1),
         ("log_message_expiry", 0),

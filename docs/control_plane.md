@@ -104,10 +104,12 @@ Retention mirrors the heartbeat model:
 ## MQTT inbox partitioning
 
 `MqttTransport` drains two `MqttInbox` instances: a data inbox and a control
-inbox. Control entries bypass data-lane backpressure, so a full data queue never
-blocks a control command. Routing on `on_started`/`ack`/`on_drain` is by **inbox
-ownership**, not by task type: a control task that arrives on the legacy data
-topic lands in the data inbox and is acked there.
+inbox. The data inbox is the durable store selected by `inbox_backend`; the
+control inbox is always in-memory and per-process. Control entries bypass
+data-lane backpressure, so a full data queue never blocks a control command.
+Routing on `on_started`/`ack`/`on_drain` is by **inbox ownership**, not by task
+type: a control task that arrives on the legacy data topic lands in the data
+inbox and is acked there.
 
 ## In-process lane
 
@@ -135,7 +137,6 @@ registry.
 | MQTT | `control_topic` | `scietex/{service}/control/{instance_id}` |
 | MQTT | `control_broadcast_topic` | `scietex/{service}/control` |
 | MQTT | `control_qos` | `1` |
-| MQTT | `control_inbox_path` | `<conf_dir>/control-inbox` |
 
 ## API
 
