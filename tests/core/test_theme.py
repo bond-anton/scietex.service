@@ -152,7 +152,7 @@ def test_derived_worker_forwards_theme() -> None:
 def test_light_palette_brand_colors() -> None:
     palette = ScietexLight().palette
     assert isinstance(palette, Palette)
-    assert palette.logger_name == "#31313B"
+    assert palette.logger_name == "#FFDB1C"
     assert palette.foreground == "#1F202A"
 
 
@@ -160,7 +160,7 @@ def test_dark_palette_brand_colors() -> None:
     palette = ScietexDark().palette
     assert isinstance(palette, Palette)
     assert palette.logger_name == "#FFDB1C"
-    assert palette.warning == "#FFDB1C"
+    assert palette.warning == "#E8A317"
     assert palette.background == "#1F202A"
 
 

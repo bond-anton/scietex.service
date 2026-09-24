@@ -13,11 +13,11 @@ import pytest
 
 pytest.importorskip("textual")
 
+from scietex.textual import LogLine
 from textual.containers import Grid
 from textual.widgets import Button, ContentSwitcher, ProgressBar, Sparkline, Static
 
 from examples.textual.app import MAX_LOG_LINES_PER_TICK, TextualWorkerApp
-from examples.textual.scietex_bridge import LogLine
 from examples.textual.slot import slot_key
 from examples.textual.worker_process import LogRecordData, WorkerIdentity
 from scietex.service.basic_worker import ServiceStatus
@@ -140,7 +140,7 @@ class TransportFakeApp(FakeApp):
 
 
 def _log_text(log) -> str:
-    """Concatenate the rendered text of every line in a ``RichLog``."""
+    """Concatenate the rendered text of every line in a ``LogView``."""
     return "".join(strip.text for strip in log.lines)
 
 
@@ -365,7 +365,7 @@ async def test_exit_clears_log_and_restores_placeholder():
     app = FakeApp()
     async with app.run_test(size=(80, 44)) as pilot:
         await _click_card(pilot, app, 0, ".kind-valkey")
-        app.handle_log_line(LogLine(slot_key(0), "marker"))
+        app.on_log_line(LogLine(slot_key(0), "marker"))
         await pilot.pause()
         assert "marker" in _log_text(app.slots[0].log)
 
@@ -381,7 +381,7 @@ async def test_recreate_clears_log_again():
     app = FakeApp()
     async with app.run_test(size=(80, 44)) as pilot:
         await _click_card(pilot, app, 0, ".kind-valkey")
-        app.handle_log_line(LogLine(slot_key(0), "marker"))
+        app.on_log_line(LogLine(slot_key(0), "marker"))
         await pilot.pause()
 
         await _click_card(pilot, app, 0, ".exit")

@@ -25,7 +25,7 @@
 }
 /* The WORKERS section is the flexible one: it absorbs the remaining vertical
    space so its card grid keeps its fixed content height while the log below
-   the grid takes what is left (down to RichLog's min-height). min-height pins
+   the grid takes what is left (down to LogView's min-height). min-height pins
    the section to its natural content floor (title 1 + 2x2 grid 24 + log min 5)
    so a short terminal cannot compress it below the cards and overlap BROKERS. */
 #workers-section {
@@ -275,7 +275,7 @@ WorkerCard.selected {
 #logs {
     height: 1fr;
 }
-RichLog {
+LogView {
     border: round $panel-lighten-1;
     padding: 0 1;
     height: 1fr;

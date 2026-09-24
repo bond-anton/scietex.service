@@ -3,8 +3,8 @@
 Each slot is one fixed grid position that is either empty or holds a single
 worker of one kind (``"valkey"`` or ``"mqtt"``). A worker is created on demand
 by clicking its card's create button and runs in its own child process; the
-parent drains the child's log records into the slot's own ``RichLog`` through
-the ``scietex_bridge`` handler, which posts each formatted record as a Textual
+parent drains the child's log records into the slot's own ``LogView`` through
+the ``scietex.textual`` handler, which posts each formatted record as a Textual
 message tagged with the slot key. Selecting a card swaps the log panel to that
 slot's stream; each stream keeps its history while hidden, while creating a
 worker starts it clean and Exiting it clears the stream back to the empty-slot
@@ -16,12 +16,8 @@ import logging
 import time
 
 from rich.text import Text
-from scietex.logging import (
-    MONOCHROME,
-    SCIETEX_DARK,
-    SCIETEX_LIGHT,
-    from_textual_theme,
-)
+from scietex.logging import SCIETEX_DARK, from_textual_theme
+from scietex.textual import LogLine, LogRouter, LogView, ScietexDark, TextualLogHandler
 
 from scietex.service.basic_worker import ServiceStatus
 from textual import on
@@ -29,14 +25,13 @@ from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.events import Resize
 from textual.timer import Timer
-from textual.widgets import Collapsible, ContentSwitcher, Footer, RichLog
+from textual.widgets import Collapsible, ContentSwitcher, Footer
 
 from .broker_card import BrokerCard, MqttBrokerCard, ValkeyBrokerCard
 from .broker_snapshot import BrokerMonitor
 from .mqtt_monitor import MqttBrokerMonitor
 from .producer_card import ProducerCard
 from .producer_process import ProducerProcess
-from .scietex_bridge import LogLine, TextualLogHandler, to_textual_theme
 from .shutdown_screen import ShutdownScreen
 from .slot import Slot, slot_key
 from .ui_worker import worker_unavailable
@@ -68,7 +63,7 @@ GRID_WIDE_BREAKPOINT = 160
 MAX_LOG_LINES_PER_TICK = 200
 
 
-class TextualWorkerApp(App):
+class TextualWorkerApp(LogRouter, App):
     """Textual app driving a 2x2 grid of on-demand worker slots."""
 
     TITLE = "scietex.service"
@@ -83,10 +78,6 @@ class TextualWorkerApp(App):
         ("up", "select_up", "Up"),
         ("down", "select_down", "Down"),
     ]
-
-    #: The Scietex themes, registered as Textual themes so the log formatter
-    #: stays in lockstep with the UI.
-    SCIETEX_THEMES = (SCIETEX_DARK, SCIETEX_LIGHT, MONOCHROME)
 
     def __init__(self, *, log_level: int = logging.INFO, memory: bool = False) -> None:
         super().__init__()
@@ -107,8 +98,7 @@ class TextualWorkerApp(App):
         self._producer_cards: dict[str, ProducerCard] = {}
         self._producer_rates: dict[str, tuple[int, float]] = {}
         self._producers_stopped = False
-        for theme in self.SCIETEX_THEMES:
-            self.register_theme(to_textual_theme(theme))
+        self.register_theme(ScietexDark)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="pane"):
@@ -125,16 +115,7 @@ class TextualWorkerApp(App):
                         yield slot.card
                 with ContentSwitcher(initial=f"log-{slot_key(0)}", id="logs"):
                     for slot in self.slots:
-                        slot.log = RichLog(
-                            highlight=False,
-                            markup=False,
-                            wrap=True,
-                            max_lines=2000,
-                            id=f"log-{slot_key(slot.index)}",
-                        )
-                        # Keep arrow keys reserved for card navigation; a focusable
-                        # RichLog would otherwise consume them for scrolling.
-                        slot.log.can_focus = False
+                        slot.log = LogView(source=slot_key(slot.index), id=f"log-{slot_key(slot.index)}")
                         yield slot.log
             with Collapsible(title="BROKERS", collapsed=False, classes="section"):
                 with Horizontal(id="broker-grid"):
@@ -143,7 +124,7 @@ class TextualWorkerApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.theme = SCIETEX_DARK.name
+        self.theme = ScietexDark.name
         self._select(0)
         self._poll_timer = self.set_interval(STATE_POLL_INTERVAL, self._poll)
         # The first Resize can arrive before the grid is queryable, so apply the
@@ -184,7 +165,7 @@ class TextualWorkerApp(App):
     def _drain_worker_logs(self) -> None:
         """Forward each slot's child log records into its log stream.
 
-        Records are batched into one ``RichLog.write`` per slot per tick: a
+        Records are batched into one ``LogView.write`` per slot per tick: a
         per-line write re-renders and re-scrolls the widget, so thousands of
         writes block the event loop for seconds. The newest
         ``MAX_LOG_LINES_PER_TICK`` lines are kept and the rest dropped with a
@@ -203,7 +184,7 @@ class TextualWorkerApp(App):
             lines = [self._format_record(slot, record) for record in records]
             if dropped > 0:
                 lines.append(f"… {dropped} log lines dropped (UI backlog)")
-            self.handle_log_line(LogLine(slot_key(slot.index), "\n".join(lines)))
+            self.on_log_line(LogLine(slot_key(slot.index), "\n".join(lines)))
 
     def _format_record(self, slot: Slot, record: LogRecordData) -> str:
         """Format a child log record with the slot handler's formatter."""
@@ -580,39 +561,15 @@ class TextualWorkerApp(App):
     def watch_theme(self, theme_name: str) -> None:
         """Keep the log formatters in lockstep with the active Textual theme.
 
-        Fires for any theme change, so the log colors always match the UI. A
-        registered Scietex theme is used directly, which preserves its ``color``
-        policy (monochrome emits no ANSI at all); any other Textual theme is
-        converted on the fly.
+        The app registers only ``ScietexDark``; when it is active the formatter
+        uses ``scietex.logging.SCIETEX_DARK`` directly (exact brand colors),
+        otherwise the live Textual theme is converted with ``from_textual_theme``
+        so built-in themes still drive the log colors.
         """
-        for theme in self.SCIETEX_THEMES:
-            if theme.name == theme_name:
-                for slot in self.slots:
-                    if slot.handler is not None:
-                        slot.handler.set_theme(theme)
-                break
-        else:
-            textual_theme = self.get_theme(theme_name)
-            if textual_theme is None:
-                return
-            for slot in self.slots:
-                if slot.handler is not None:
-                    slot.handler.set_theme(from_textual_theme(textual_theme))
-
-    def _log_for(self, source: str) -> RichLog | None:
-        """Map a slot key back to its ``RichLog`` widget."""
+        theme = self.get_theme(theme_name)
+        if theme is None:
+            return
+        logging_theme = SCIETEX_DARK if theme_name == ScietexDark.name else from_textual_theme(theme)
         for slot in self.slots:
-            if slot_key(slot.index) == source:
-                return slot.log
-        return None
-
-    @on(LogLine)
-    def handle_log_line(self, message: LogLine) -> None:
-        """Render a posted log line into its slot's stream.
-
-        ``text`` may hold several newline-joined lines from one drain batch;
-        ``Text.from_ansi`` renders them as separate lines in a single write.
-        """
-        log = self._log_for(message.source)
-        if log is not None:
-            log.write(Text.from_ansi(message.text))
+            if slot.handler is not None:
+                slot.handler.set_theme(logging_theme)

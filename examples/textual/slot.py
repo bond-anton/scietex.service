@@ -3,7 +3,7 @@
 A slot is one fixed grid position that is either empty or holds a single
 worker of one kind (``"valkey"`` or ``"mqtt"``). The slot's identity is stable
 across worker lifecycle transitions: the same :func:`slot_key` names both the
-slot's ``RichLog`` widget id and its ``TextualLogHandler`` source, so a slot's
+slot's ``LogView`` widget id and its ``TextualLogHandler`` source, so a slot's
 log history survives a worker Exit followed by a re-create.
 """
 
@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from textual.widgets import RichLog
+from scietex.textual import LogView, TextualLogHandler
 
-from .scietex_bridge import TextualLogHandler
 from .worker_card import WorkerCard
 from .worker_process import WorkerIdentity, WorkerProcess
 
@@ -27,7 +26,7 @@ class Slot:
     identity: WorkerIdentity | None = None
     handler: TextualLogHandler | None = None
     kind: str | None = None
-    log: RichLog | None = None
+    log: LogView | None = None
     card: WorkerCard | None = None
     running: bool = False
 

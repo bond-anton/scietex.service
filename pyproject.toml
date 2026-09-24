@@ -1,32 +1,28 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "scietex.service"
-dynamic = ["version"]
 description = "Scietex service daemon implementation"
-authors = [{ name = "Anton Bondarenko", email = "bond.anton@gmail.com" }]
-license-files = ["LICENSE"]
 readme = "README.md"
+requires-python = ">=3.10"
+license-files = ["LICENSE"]
+authors = [{ name = "Anton Bondarenko", email = "bond.anton@gmail.com" }]
 classifiers = [
-  "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
 ]
-requires-python = ">=3.10"
 dependencies = [
   "msgspec>=0.20.0",
   # msgspec.yaml.encode/decode import PyYAML lazily at call time, so it is a
   # required runtime dependency for read_valkey_config even though no src/
   # module imports yaml directly.
   "pyyaml>=6.0",
-  "scietex.logging>=2.2.0",
+  "scietex.logging>=2.2.1",
 ]
+dynamic = ["version"]
 
 [project.urls]
-"Homepage" = "https://github.com/bond-anton/scietex.service"
 "Bug Tracker" = "https://github.com/bond-anton/scietex.service/issues"
+"Homepage" = "https://github.com/bond-anton/scietex.service"
 
 [project.optional-dependencies]
 dev = ["tox>=4.45.0", "valkey-glide~=2.5.0", "aiomqtt~=2.5.0"]
@@ -36,10 +32,18 @@ docs = [
   "sphinx-rtd-theme>=2,<4",
 ]
 lint = ["ruff", "ty"]
+mqtt = ["scietex.logging[mqtt]>=2.2.1", "aiomqtt~=2.5.0"]
 test = ["pytest", "pytest-asyncio"]
-valkey = ["scietex.logging[valkey]>=2.2.0", "valkey-glide~=2.5.0"]
-mqtt = ["scietex.logging[mqtt]>=2.2.0", "aiomqtt~=2.5.0"]
-textual = ["textual~=8.2"]
+textual = ["textual~=8.2", "scietex.textual>=0.1.0"]
+valkey = ["scietex.logging[valkey]>=2.2.1", "valkey-glide~=2.5.0"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = "--capture=no"
+pythonpath = ["src"]
 
 [tool.setuptools.dynamic]
 version = { attr = "scietex.service.version.__version__" }
@@ -49,7 +53,3 @@ version = { attr = "scietex.service.version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-addopts = "--capture=no"
