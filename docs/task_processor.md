@@ -204,6 +204,11 @@ Fields added by `TaskProcessorConfig` (in addition to `WorkerConfig`):
 | `task_timeout` | `None` (default `3`) | Global per-task timeout used when a task's `TaskTimeout.timeout` is `None`; `<= 0` means no timeout (unbounded) |
 | `task_queue_fetch_timeout` | `None` (default `1`) | Timeout waiting to dequeue the next task |
 | `task_cancellation_timeout` | `None` (default `5`) | Timeout waiting for a cancelled task to actually stop |
+| `max_timeout_requeues` | `None` (uses `DEFAULT_MAX_TIMEOUT_REQUEUES`, `1`) | Ceiling on timeout-driven requeues per task id; `0` disables timeout requeue |
+| `remote_config_enabled` | `False` | Opt-in master switch for the remote configuration channel |
+| `config_file` | `"config.yml"` | Filename of the local reloadable-snapshot file, resolved under `conf_dir` |
+| `config_signing_key` | `None` | Optional HMAC key for envelope authenticity; `None` disables signature enforcement |
+| `config_startup_timeout` | `None` (uses `DEFAULT_CONFIG_STARTUP_TIMEOUT`, `2.0`) | Bounded wait in seconds for the MQTT retained snapshot at startup (ignored by Valkey) |
 
 All `WorkerConfig` fields (`logger_handler_timeout`,
 `manager_shutdown_timeout`, `manager_max_retries`,

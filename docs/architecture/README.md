@@ -1,6 +1,6 @@
 # scietex.service — Architecture Map
 
-Structural documentation for the `scietex.service` package (v4.5.0). This map
+Structural documentation for the `scietex.service` package (v5.0.0). This map
 describes the system **as it currently exists**. It is a factual baseline for
 a later architectural review; it deliberately does not propose changes.
 

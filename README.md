@@ -29,7 +29,7 @@ pip install "scietex.service[valkey]"
 pip install "scietex.service[mqtt]"
 ```
 
-**Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=2.2.0`
+**Dependencies:** `msgspec>=0.20.0`, `pyyaml>=6.0`, `scietex.logging>=2.2.1`
 
 ## Quick Start
 
@@ -183,7 +183,7 @@ if __name__ == "__main__":
 Tasks are stored in a Valkey stream named
 `scietex:{service_name}:tasks` and consumed via a consumer
 group `scietex:{service_name}:task_group`. Log entries are written to a
-per-service stream `scietex:{service}:log` (override with the
+per-instance stream `scietex:{service}:{instance_id}:log` (override with the
 `log_stream_name` config field).
 
 `ValkeyWorker` also exposes:
@@ -231,7 +231,7 @@ Tasks are published to the topic `scietex/{service_name}/tasks`; the task id
 travels inside the encoded `TaskData` (its required `task_id` field), not as a
 separate user property. Because aiomqtt v2.5.1
 auto-acks at the broker when a message is received, the worker persists every
-message to a durable file-backed inbox before processing it, restoring
+message to a durable sqlite-backed inbox before processing it, restoring
 at-least-once delivery. Set `inbox_backend="memory"` (or its alias `"none"`)
 to opt into at-most-once.
 
@@ -270,7 +270,7 @@ BasicWorker          — Signal handling, async logging, heartbeat &
                             dispatch, timeout watchdog
         ├── ValkeyWorker  — Valkey stream integration, connection
         │                    management, stream-based task fetching
-        └── MqttWorker    — MQTT 5 topic integration, durable file
+        └── MqttWorker    — MQTT 5 topic integration, durable sqlite
                              inbox, retained registry/heartbeat
 ```
 
@@ -287,7 +287,7 @@ Task delivery is abstracted behind the `TaskTransport` protocol
 - **`ValkeyTransport`** (in `scietex.service.valkey`) implements the same
   protocol over a Valkey stream; `ValkeyWorker` injects it automatically.
 - **`MqttTransport`** (in `scietex.service.mqtt`) implements the same protocol
-  over MQTT 5 topics, draining a durable file-backed inbox; `MqttWorker`
+  over MQTT 5 topics, draining a durable sqlite-backed inbox; `MqttWorker`
   injects it automatically.
 
 Pass a custom transport with the keyword-only `transport=` argument:
@@ -371,7 +371,7 @@ All schemas are frozen `msgspec.Struct` instances (immutable).
 | `TaskData` | Immutable task payload: `task` (type string), `payload` (bytes), `timeout` (`TaskTimeout`), `canceled_action` ("requeue"/"discard") |
 | `TaskResult` | Handler result: `status` ("success"/"error"), `error` (message), `processed_at` (UTC datetime), `payload` (bytes), plus error-taxonomy fields `error_code`, `retryable`, `partial` |
 | `TaskTimeout` | Timeout config: `timeout` (seconds, `None` for default 3s), `timeout_action` ("requeue"/"discard") |
-| `TaskStatus` | Per-task tracking record: `task_id`, `service`, `task`, `status` ("queued"/"running"/"completed"/"failed"/"cancelled"), `progress`, `result`, `data` (original `TaskData` embedded on a deliberate cancel), `error`, `error_code`, timestamps |
+| `TaskStatus` | Per-task tracking record: `task_id`, `service`, `task`, `status` ("queued"/"running"/"completed"/"failed"/"cancelled"), `progress`, `result`, `data` (original `TaskData` embedded on a deliberate cancel), `error`, `error_code`, timestamps, `instance_id` |
 | `TaskTracker` | Internal runtime handle (in `task_handler/runtime.py`): tracks running `asyncio.Task`, associated `TaskData`, and monotonic start time |
 | `TaskEnvelope` | Versioned transport envelope: `version` (int, `1`) wrapping `data` (serialized `TaskData` bytes) — the durable on-the-wire format |
 
@@ -511,7 +511,7 @@ guide](docs/remote_config.md) and `examples/remote_config.py`.
 | `InMemoryTransport` | Default in-process transport (deque-backed; `submit()` feeds it) |
 | `ValkeyWorker` | Valkey-backed distributed worker |
 | `MqttWorker` | MQTT 5-backed distributed worker |
-| `MqttTransport` | MQTT 5 transport (drains a durable file-backed inbox) |
+| `MqttTransport` | MQTT 5 transport (drains a durable sqlite-backed inbox) |
 | `WorkerConfig` | Immutable `msgspec.Struct` configuration for `BasicWorker` |
 | `TaskProcessorConfig` | Immutable configuration for `TaskProcessor` (extends `WorkerConfig`) |
 | `ValkeyWorkerConfig` | Immutable configuration for `ValkeyWorker` (extends `TaskProcessorConfig`) |

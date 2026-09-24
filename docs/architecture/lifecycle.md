@@ -32,10 +32,10 @@ entry with no explicit cleanup.
 
 ### Startup
 
-Public: `worker.start()` (465). It:
+Public: `worker.start()`. It:
 1. Guards: if RUNNING or STARTING → warn and return.
-2. If STOPPING/STOPPED → registers signal handlers (`_setup_signal_handlers`,
-   359) and spawns task `"Start"` running `_startup()` (399).
+2. If STOPPING/STOPPED → registers signal handlers (`_setup_signal_handlers`)
+   and spawns task `"Start"` running `_startup()`.
 
 `_startup()`:
 1. If not STOPPED, `_wait_until_stopped()` awaits the `_stopped` event for a
@@ -43,18 +43,18 @@ Public: `worker.start()` (465). It:
 2. Sets STARTING; prints logo.
 3. `LoggingLifecycle.start_handlers()` — starts each async handler not yet
    running, with `logger_handler_timeout`.
-4. `initialize()` (389) — subclass hook; must return truthy.
-   - `TaskProcessor.initialize` (703) resets the run-scoped remote-config
+4. `initialize()` — subclass hook; must return truthy.
+   - `TaskProcessor.initialize` resets the run-scoped remote-config
      replay/apply bookkeeping (`_config_manager.reset()` →
      `ConfigReloader.reset()`) before starting any handler, so each run begins
      from the constructor/default baseline (`config_revision == 0`,
      `config_source == "default"`) rather than replaying the previous run's
      state; it then starts every registered task handler
      (`_start_task_handler`, awaited per handler).
-   - `ValkeyWorker.initialize` (403) calls super then `connect()` and creates
+   - `ValkeyWorker.initialize` calls super then `connect()` and creates
      the consumer group (`xgroup_create`, `make_stream=True`; swallows
      "already exists" errors).
-5. `_register_instance()` (682) — subclass hook, runs only after
+5. `_register_instance()` — subclass hook, runs only after
    `initialize()` succeeded (transport/client exists) and before managers
    start. Base is a no-op; `ValkeyWorker` overrides it to `SADD` its
    `instance_id` into the worker registry set (best-effort: a failure logs a
@@ -64,7 +64,7 @@ Public: `worker.start()` (465). It:
    (AR-049).
 7. `ManagerRuntime.start_managers()` — discover `@Manager`s by walking the
    class MRO and reading each class's own `__manager_registry__` via
-   `ManagerRuntime.iter_manager_definitions()` (manager/runtime.py:49), start
+   `ManagerRuntime.iter_manager_definitions()`, start
    each as a named task, then set state = RUNNING.
 
 Failure: if `initialize()` returns `False` → `RuntimeError("Initialization
@@ -84,7 +84,7 @@ STARTING state or orphaned managers (AR-017).
 ### Normal operation
 
 - Manager tasks run their decorated method in `while True`
-  (`ManagerRuntime.run_manager`, manager/runtime.py:138). Each iteration is the
+  (`ManagerRuntime.run_manager`). Each iteration is the
   method body; built-ins sleep then act:
   - Heartbeat → `heartbeat()` every `heartbeat_interval`.
   - Watchdog → `watchdog()` every `watchdog_interval`.
@@ -95,36 +95,36 @@ STARTING state or orphaned managers (AR-017).
 ### Shutdown
 
 Signal (`SIGINT`/`SIGTERM`) → `SignalHandler`, which invokes the worker's
-`_request_exit` (371) delegator → `WorkerLifecycle.request_exit()`, which
-spawns a single `"StopTask"` running `exit()` (611); `exit()` sets
+`_request_exit` delegator → `WorkerLifecycle.request_exit()`, which
+spawns a single `"StopTask"` running `exit()`; `exit()` sets
 `exit_requested` and calls `stop()`. Repeat signals are deduplicated: a pending
 stop task or an already-set `exit_requested` short-circuits so only one
 shutdown runs (AR-033). The dedup guard lives in
 `WorkerLifecycle.request_exit()`.
 
-`stop()` (567):
+`stop()`:
 - STOPPED → clear/set exit events, remove signal handlers
-  (`_remove_signal_handlers`, 380 → `SignalHandler.remove()`), return.
+  (`_remove_signal_handlers` → `SignalHandler.remove()`), return.
 - STOPPING → set exit event if `exit_requested`, return.
-- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()` (519).
+- RUNNING/STARTING → spawn task `"Stop"` running `_shutdown()`.
 
 `_shutdown()`:
 1. State = STOPPING.
 2. `ManagerRuntime.stop_managers()` — cancel each
    manager task; wait per-manager up to `manager_shutdown_timeout` (default 2 s).
-3. `_unregister_instance()` (692) — subclass hook, runs after managers stop
+3. `_unregister_instance()` — subclass hook, runs after managers stop
    and before `cleanup()` teardown, deliberately while the transport is still
    open (`cleanup()` may disconnect it). Base is a no-op; `ValkeyWorker`
    overrides it to `SREM` its `instance_id` from the worker registry set
    (best-effort: a failure logs a WARNING and does not fail shutdown).
 4. `cleanup()` — subclass hook. Chain:
-   - `TaskProcessor.cleanup` (747): drain `task_queue` (items fetched from
+   - `TaskProcessor.cleanup`: drain `task_queue` (items fetched from
      a durable transport stay pending there and are redelivered on restart);
      cancel running per-task workers (wait up to the configured
      `task_cancellation_timeout`, default 5 s); requeue only if the handler
      actually stopped and `canceled_action=="requeue"`; stop all task handlers
      (`_stop_task_handler`, per-handler 5 s timeout).
-   - `ValkeyWorker.cleanup` (472): super then `disconnect()` (close glide
+   - `ValkeyWorker.cleanup`: super then `disconnect()` (close glide
      client).
 5. `LoggingLifecycle.shut_down_handlers()` — stop each async logging handler
    with per-handler timeout; overall `loggers_timeout =
@@ -151,26 +151,26 @@ States: `ManagerStatus` STARTING → RUNNING → STOPPING → STOPPED (terminal)
 with a give-up path to terminal FAILED (AR-063) when the retry budget is
 exhausted, tracked by `ManagerRuntime` (manager/runtime.py).
 
-1. `ManagerRuntime.start_manager` (220): if task exists → debug-return; set
+1. `ManagerRuntime.start_manager`: if task exists → debug-return; set
    STARTING, clear error, `create_task(run_manager(name, manager))`.
-2. `ManagerRuntime.run_manager` (138): logs start; `while True: await
+2. `ManagerRuntime.run_manager`: logs start; `while True: await
    manager.method(self.worker)`.
-3. On method exception (non-`CancelledError`): record error (177), increment
-   `consecutive_failures`, and retry after `manager_restart_backoff` (196) —
+3. On method exception (non-`CancelledError`): record error, increment
+   `consecutive_failures`, and retry after `manager_restart_backoff` —
    the manager gives up when `consecutive_failures > manager_max_retries`
-   (default 5), i.e. on the (max_retries+1)-th consecutive failure (178–186).
-   A successful iteration resets `consecutive_failures` to 0 (198–199), so the
+   (default 5), i.e. on the (max_retries+1)-th consecutive failure.
+   A successful iteration resets `consecutive_failures` to 0, so the
    retry budget counts **consecutive** failures only. The retry runs **inside
    the same task**; the manager never cancels itself.
-4. `CancelledError` → clean stop. `finally` (202–218): set STOPPING, run
+4. `CancelledError` → clean stop. `finally`: set STOPPING, run
    optional `manager.cleanup(self.worker)`, set STOPPED (or FAILED, AR-063, if
    the manager gave up in step 3), remove the task from tracking.
 
 ## Task handler lifecycle
 
-`TaskHandler` (`task_handler/basic.py`): `start()` (95) → `initialize()` →
+`TaskHandler` (`task_handler/basic.py`): `start()` → `initialize()` →
 `_is_initialized` set from its return; `is_ready` True only if initialize
-returned True. `stop()` (109) → `cleanup()` → `_is_initialized=False`.
+returned True. `stop()` → `cleanup()` → `_is_initialized=False`.
 Processor starts handlers in `initialize` (before RUNNING and before managers
 start) and stops them in `cleanup` (during shutdown). Handlers may also be
 added/removed at runtime via `add_task_handler` (spawns async start when

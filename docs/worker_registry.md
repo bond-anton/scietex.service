@@ -40,6 +40,9 @@ transports publish:
 | `heartbeat_interval` | `float` | Seconds between heartbeats |
 | `start_time` | `datetime` | Worker start time |
 | `ttl` | `float` | Lifetime the consumer should apply to this record |
+| `queue_depth` | `int` | Tasks waiting in the producer's data-plane queue |
+| `running_tasks` | `int` | Tasks the producer is currently processing |
+| `tasks_per_second` | `float` | Sliding-window completion rate |
 | `timestamp` | `datetime` | Time this heartbeat was produced |
 
 `ttl` is **required** (v5.0.0). A pre-v5 heartbeat without it is rejected by the

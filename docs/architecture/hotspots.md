@@ -26,12 +26,15 @@ are flagged. Entries resolved by the AR-003..AR-040 refactors are marked
 | H14 | Resolved | AR-013 — `pyaml` dropped; dead constant removed |
 | H15 | Resolved | AR-012 — per-instance `msgspec` timestamps |
 | H16 | Resolved | AR-022 — structured error taxonomy fields on `TaskResult` |
-| H17 | Resolved | AR-033 — single-exit-task guard (`_request_exit`, basic_worker.py:371) |
+| H17 | Resolved | AR-033 — single-exit-task guard (`BasicWorker._request_exit`) |
 | H18 | Resolved | AR-070 — removed unused `name` param from `LoggingLifecycle.register_logger_handler` |
+| H19 | Open | Control plane is at-most-once (skip, not replay) |
+| H20 | Open | Worker-watcher discovery is a fixed SCAN/topic contract |
+| H21 | Open | Durable MQTT inbox is a transitional cross-process store |
 
 ## H1. `BasicWorker` is a large, multi-responsibility class
 
-- **Location:** `src/scietex/service/basic_worker.py:55`.
+- **Location:** `src/scietex/service/basic_worker.py` (`BasicWorker`).
 - **What:** a single class owned: identity/configuration, the lifecycle state
   machine, signal registration, async-logging handler lifecycle, the manager
   discovery + task runtime, startup and shutdown orchestration, and the default
@@ -48,7 +51,7 @@ extracted components directly.
 ## H2. Manager error-handling relies on private per-worker bookkeeping
 
 - **Location:** was `basic_worker.py` (`_run_manager`/`_restart_manager`);
-  now `manager/runtime.py:138-218`.
+  now `manager/runtime.py` (`ManagerRuntime.run_manager`).
 - **What:** managers were restarted "automatically on error" with unbounded
   restart and no backoff.
 - **Why significant:** a persistently failing manager yielded an unbounded
@@ -62,20 +65,19 @@ delay (default 1 s) between attempts; the error record lives in
 ## H3. Manager "restart" path appears to cancel the running task itself
 
 - **Location:** was `_restart_manager`; now inlined in
-  `manager/runtime.py:138-218`.
+  `manager/runtime.py` (`ManagerRuntime.run_manager`).
 - **What:** the old restart path cancelled and awaited the **same
   currently-executing task**.
 - **Why significant:** a raising manager ended as `CancelledError` rather than
   restarting.
 
-**Resolved (AR-003):** `run_manager` retries inside its own `while True` loop
-(168–199) — the manager task never cancels itself; `CancelledError` stops it
-cleanly and the `finally` block (202–218) runs cleanup and removes the task from
+**Resolved (AR-003):** `run_manager` retries inside its own `while True` loop — the manager task never cancels itself; `CancelledError` stops it
+cleanly and the `finally` block runs cleanup and removes the task from
 tracking.
 
 ## H4. Worker logging lifecycle is not resumable after shutdown
 
-- **Location:** `log_handlers/lifecycle.py:93-122` (`shut_down_handlers`), plus
+- **Location:** `log_handlers/lifecycle.py` (`LoggingLifecycle.shut_down_handlers`), plus
   external `scietex.logging` (`stop_logging()` calls `self.close()`).
 - **What:** after shutdown, each `AsyncLoggingHandler` was closed yet recorded as
   RUNNING, so a later start skipped it.
@@ -109,17 +111,17 @@ restarts the same handler instances. See
   and could not construct workers outside a running loop.
 
 **Resolved (AR-015 + AR-008):** signal handlers are registered in `start()`
-(`_setup_signal_handlers`, basic_worker.py:359, Windows-safe no-op) and
-removed in `stop()` (`_remove_signal_handlers`, 380); `__init__` no longer
+(`_setup_signal_handlers`, Windows-safe no-op) and
+removed in `stop()` (`_remove_signal_handlers`); `__init__` no longer
 touches the loop, so workers may be constructed outside a running loop.
-`events` (basic_worker.py:160) and `task_handlers`
-(task_processor.py:191) now return read-only `MappingProxyType` views;
-`running_tasks` (205) instead returns a snapshot delegated to `TaskLifecycle`
+`events` (a `BasicWorker` property) and `task_handlers`
+(a `TaskProcessor` property) now return read-only `MappingProxyType` views;
+`running_tasks` instead returns a snapshot delegated to `TaskLifecycle`
 (AR-088), so callers may iterate it while tasks are added or removed.
 
 ## H7. Shutdown can stall or be skipped on cancellation
 
-- **Location:** `basic_worker.py:492-537` (`_shutdown`).
+- **Location:** `basic_worker.py` (`BasicWorker._shutdown`).
 - **What:** `_shutdown` has no rollback if it is cancelled mid-way (e.g. during
   `ManagerRuntime.stop_managers()`); its `except asyncio.CancelledError` swallows the
   cancellation without re-raising or forcing STOPPED/`exit`.
@@ -129,7 +131,7 @@ touches the loop, so workers may be constructed outside a running loop.
   timeout-guarded, but an unexpected cancellation path is not.
 
 **Resolved (AR-017):** `_shutdown` (and `_startup`) now catch `CancelledError`,
-call `_force_stopped()` (basic_worker.py:482) — which sets
+call `_force_stopped()` — which sets
 `state = STOPPED`, clears `start_time`, and sets the `exit` event if
 `exit_requested` — then re-raise, so a cancelled startup/shutdown always lands
 in a terminal state and the worker can be restarted.
@@ -166,7 +168,7 @@ non-blocking (`enqueue_task`); a full queue defers the entry to the next poll
 **Resolved (AR-018, superseded by AR-059/061):** `ValkeyWorker` originally ran
 a single `GlideClient` shared with the logging handler. AR-059/061 re-split the
 two domains with proper ownership: the worker's operational client (heartbeat,
-registry, intake, task completion) is serialized behind `_client_lock` (175)
+registry, intake, task completion) is serialized behind `_client_lock`
 with a glide-error-only reconnect, and the logging `AsyncValkeyHandler` owns its
 own independent connection via `valkey_config=` (a scalar dict from
 `logging_handler_config`), so the worker no longer injects or re-points
@@ -174,8 +176,7 @@ own independent connection via `valkey_config=` (a scalar dict from
 
 ## H10. Connection handling treats ping-failure and exception asymmetrically
 
-- **Location:** `worker.py:325` (`connect`), 461
-  (`initialize`).
+- **Location:** `valkey/worker.py` (`ValkeyWorker.connect` / `ValkeyWorker.initialize`).
 - **What:** on `GlideClient.create` exception, `connect` returned False and left
   `_client=None`; on a **failed PING**, it previously left `_client` set, so
   `initialize()` (which only checks `client is not None`) proceeded as if
@@ -183,13 +184,13 @@ own independent connection via `valkey_config=` (a scalar dict from
 - **Why significant:** connectivity success was not consistently propagated.
 
 **Resolved (AR-006 + AR-010):** `connect()` assigns `_client` only after PING
-succeeds (369) and closes a client that failed its ping (380-383), so
+succeeds and closes a client that failed its ping, so
 `self.client` truthiness is a reliable connectivity signal and a half-connected
 worker is never observable.
 
 ## H11. Task stream and group are namespaced per `worker_id`
 
-- **Location:** `worker.py` key construction (now 188-192).
+- **Location:** `worker.py` key construction.
 - **What:** in v3, stream, group, and consumer names embed `service_name` **and**
   `worker_id`. Two `ValkeyWorker`s with different `worker_id`s read **different
   streams**; horizontal scale-out required replicas that share the same
@@ -241,11 +242,11 @@ configurable" claims were removed.
 - **Why significant:** divergent import paths between test and package.
 
 **Resolved (AR-013):** `pytest.ini` was deleted; pytest configuration lives only
-in `pyproject.toml` (`[tool.pytest.ini_options]`, line 52).
+in `pyproject.toml` (`[tool.pytest.ini_options]`).
 
 ## H14. `pyaml` dependency is unused; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE` is dead
 
-- **Location:** was `pyproject.toml:18` (`pyaml>=26.2.1`) and `manager/__init__.py:12`.
+- **Location:** was `pyproject.toml` (`pyaml>=26.2.1`) and `manager/__init__.py` (`DEFAULT_MAX_OUTPUT_QUEUE_SIZE`).
 - **What:** no import of `pyaml` existed anywhere; `DEFAULT_MAX_OUTPUT_QUEUE_SIZE`
   was never referenced.
 - **Why significant:** legacy cruft in the declared dependency surface.
@@ -265,13 +266,12 @@ in `pyproject.toml` (`[tool.pytest.ini_options]`, line 52).
 
 **Resolved (AR-012):** both fields now use
 `msgspec.field(default_factory=lambda: datetime.now(timezone.utc))`
-(`task_handler/schemas.py:109`, `heartbeat.py:41`), producing a per-instance
+(`TaskResult.processed_at` and `Heartbeat.timestamp`), producing a per-instance
 value.
 
 ## H16. Task processing result/error policy is centralized but coarse
 
-- **Location:** `task_processor.py:764-798` (`process_task`), 463-598
-  (handler registry).
+- **Location:** `task_processor.py` (`TaskProcessor.process_task`) and the handler-registry methods (`TaskProcessor.add_task_handler`).
 - **What:** one `process_task` maps any handler failure to a single `TaskResult
   (status="error")` string; no structured error taxonomy, no retry count, no
   per-task backoff; dispatch is first-match over active handlers by
@@ -283,7 +283,7 @@ value.
   is delegated to `return_task_to_queue` at the processor level.
 
 **Resolved (AR-022, v4):** `TaskResult` carries the error-taxonomy fields
-`error_code`, `retryable`, `partial` (task_handler/schemas.py:101-103) — all
+`error_code`, `retryable`, `partial` (`TaskResult` fields in `task_handler/schemas.py`) — all
 defaulting to "no extra information" so existing handlers keep working; the
 redundant `retry_count`/`requeue` fields are dropped. `process_task` treats a
 handler that *raises* as permanent (`retryable=False`) and passes a
@@ -304,3 +304,47 @@ lifecycle key (single instance per resolved key, a duplicate resolved name
 raises). The optional `name` lets the same class be registered under several
 distinct keys, e.g. to split one class's task types across instances via
 name-derived `supported_tasks`.
+
+## H19. Control plane is at-most-once (skip, not replay)
+
+- **Location:** the `TaskProcessor` control lane (`__control_queue` /
+  `enqueue_control_task`); `ValkeyTransport` control reading (`XREAD` +
+  `$`-seeded in-memory cursor, no consumer group); the `ControlPublisher`
+  raise-on-failure surface.
+- **What:** control commands (`task:cancel`, `worker:*`, `config:*`) travel on a
+  dedicated lane separate from the data plane. Valkey reads its control stream
+  with plain `XREAD` from a `$`-seeded cursor, so a command published while a
+  worker is down is skipped, not replayed; a publish failure is raised, never
+  retried.
+- **Why significant:** control has no delivery guarantee — a command directed at
+  a down or not-yet-listening worker is silently lost, and the submitter must
+  treat `direct`/`broadcast` as fire-and-forget, resolving a task's current
+  owner via `resolve_owner` before addressing a `task:cancel`.
+
+## H20. Worker-watcher discovery is a fixed SCAN/topic contract
+
+- **Location:** `valkey/watch.py` `PollingBackend` (SCAN
+  `scietex:{service}:*:status`); `mqtt/watch.py` `SubscribeBackend`
+  (`scietex/{service}/workers/+`); `client/registry.py` TTL eviction.
+- **What:** the watcher enumerates live workers through a fixed pattern/topic,
+  not a negotiated contract. A worker whose `heartbeat_key` template drops the
+  `:status` suffix or the `scietex:{service}:` prefix becomes invisible to the
+  `PollingBackend`. Records evict locally once their payload `ttl` elapses.
+- **Why significant:** discovery correctness depends on the producer's key/topic
+  template conforming to an unwritten convention, and the `SubscribeBackend`
+  stops buffering when the broker drops — so a client that cannot see heartbeats
+  converges on "every worker expired" rather than retaining stale state.
+
+## H21. Durable MQTT inbox is a transitional cross-process store
+
+- **Location:** `mqtt/inbox_sqlite.py` `SqliteMqttInbox` (WAL + `BEGIN
+  IMMEDIATE`, cross-process claim/lease, tombstone dedupe).
+- **What:** at-least-once delivery is restored by persisting every received
+  message in a WAL-mode SQLite database with a cross-process claim/lease and
+  tombstone dedupe, because aiomqtt v2.5.1 auto-acks at the broker before the
+  handler runs.
+- **Why significant:** the inbox is a shared, cross-process store whose
+  correctness depends on the claim/lease and `BEGIN IMMEDIATE` discipline. It is
+  explicitly transitional (aiomqtt v3's manual ack would remove the need), so
+  the migration boundary — and the shared-store discipline until then — is
+  load-bearing.

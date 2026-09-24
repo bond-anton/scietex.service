@@ -51,7 +51,7 @@ config surface to it.
 
 | From | To | Kind | Notes |
 |---|---|---|---|
-| `scietex.service/__init__` | `task_processor`, `basic_worker`, `config`, `manager`, `transport`, `version` | import | unconditional |
+| `scietex.service/__init__` | `task_processor`, `transport_worker`, `basic_worker`, `config`, `manager`, `transport`, `theme`, `control`, `client`, `version` | import | unconditional |
 | `scietex.service/__init__` | `valkey` | import | inside `try/except ImportError` — optional feature |
 | `basic_worker` | `.config` | import | `WorkerConfig`, `DEFAULT_*` constants, `prepare_conf_dir` |
 | `basic_worker` | `.manager` | import | `Manager` |
@@ -106,6 +106,15 @@ config surface to it.
 | `valkey.config` | `..config`, `.._validation` | import | `TaskProcessorConfig`; `validate_range` (AR-079) |
 | `valkey.purge` | `glide` (type-only) | import (type) | `TYPE_CHECKING` only; imports `GlideClient` from `._glide` (no runtime import — caller supplies an open client) |
 | `task_handler.schemas` | `msgspec` | import | struct + serialization |
+| `control` (core) | `..task_handler.schemas` | import | `TaskData` — the `ControlPublisher` Protocol (`direct`/`broadcast`/`resolve_owner`); transport-agnostic, imports no transport package |
+| `client` (core) | `..heartbeat`, `msgspec` | import | `WorkerRecord`/`WorkerRegistry`/`WorkerWatcher`/`WorkerEvent`/`WorkerEventKind`/`WatchBackend`/`decode_heartbeat` — the dependency-free client view over heartbeats |
+| `valkey.control` | `..task_handler`, `..task_handler.wire`, `._glide`, `.transport` | import | `ValkeyControlPublisher` — encodes the envelope and `XADD`s to the directed/broadcast control streams; reads `TaskStatus` for `resolve_owner` |
+| `mqtt.control` | `..task_handler`, `..task_handler.wire`, `._aiomqtt` | import | `MqttControlPublisher` — publishes the envelope to the directed/broadcast control topics; reads the retained owner marker for `resolve_owner` |
+| `valkey.watch` | `..client.backends`, `..client.watcher`, `..heartbeat`, `._glide` | import | `PollingBackend` — SCANs `scietex:{service}:*:status` (requires `valkey-glide`) |
+| `mqtt.watch` | `..client.backends`, `..client.watcher`, `..heartbeat`, `._aiomqtt` | import | `SubscribeBackend` — subscribes `scietex/{service}/workers/+` (requires `aiomqtt`) |
+| `task_processor` | `.task_metrics` | import | `TaskMetrics` + `TaskMetricsSnapshot` — the throughput numbers the heartbeat carries |
+| `valkey.tracking` | `..task_status` | import | `build_running_status`/`build_terminal_status` — the shared `TaskStatus` field-population matrix |
+| `mqtt.transport` | `..task_status` | import | `build_running_status`/`build_terminal_status` — the shared `TaskStatus` field-population matrix |
 
 ## Dependency direction analysis
 
@@ -132,7 +141,7 @@ config surface to it.
   worker's operational client (AR-059/061).
 - **Public API re-export guard**: the only place core code tolerates a missing
   optional extra is `__init__.py`. A missing `valkey`/`glide` import raises
-  `ImportError`, which is caught (`__init__.py:75`) and reported via a warning
+  `ImportError`, which is caught (`__init__.py`) and reported via a warning
   plus the `VALKEY_AVAILABLE` flag; any other exception propagates so real
   Valkey bugs surface at import (AR-019).
 
@@ -150,12 +159,12 @@ config surface to it.
 | Package | Declared in | Used for | Structurally significant? |
 |---|---|---|---|
 | `msgspec>=0.20.0` | core deps | Struct schemas, msgpack (tasks/heartbeat), YAML (valkey config) | Yes — schemas and wire format |
-| `scietex.logging>=2.2.0` | core deps | async console/Valkey log handlers; palette/theme/color infrastructure the service theme composes | Yes — cross-package logging + theming boundary |
-| `pyyaml>=6.0` | core deps (`pyproject.toml:23`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
+| `scietex.logging>=2.2.1` | core deps | async console/Valkey log handlers; palette/theme/color infrastructure the service theme composes | Yes — cross-package logging + theming boundary |
+| `pyyaml>=6.0` | core deps (`pyproject.toml`) | no direct import in `src/` (required lazily by `msgspec.yaml`) | No — indirect, lazy |
 | `valkey-glide~=2.5.0` | `[valkey]` and `[dev]` extras | Valkey client | Yes (optional) |
-| `scietex.logging[valkey]>=2.2.0` | `[valkey]` extra (`pyproject.toml:40`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
+| `scietex.logging[valkey]>=2.2.1` | `[valkey]` extra (`pyproject.toml`) | Valkey log-handler (`AsyncValkeyHandler`) dependencies | Yes (optional) |
 | `aiomqtt~=2.5.0` | `[mqtt]` and `[dev]` extras | MQTT 5 client (`MqttWorker`/`MqttTransport`) | Yes (optional) |
-| `scietex.logging[mqtt]>=2.2.0` | `[mqtt]` extra (`pyproject.toml:41`) | MQTT log-handler (`AsyncMqttHandler`) dependencies | Yes (optional) |
+| `scietex.logging[mqtt]>=2.2.1` | `[mqtt]` extra (`pyproject.toml`) | MQTT log-handler (`AsyncMqttHandler`) dependencies | Yes (optional) |
 
 ## Important dependency chains
 

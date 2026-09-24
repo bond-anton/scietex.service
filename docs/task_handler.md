@@ -388,6 +388,7 @@ class TaskStatus(msgspec.Struct, frozen=True):
 | `error_code` | `str` | `""` | Structured error code |
 | `created_at` | `datetime` | current UTC | When the record was created |
 | `updated_at` | `datetime` | current UTC | When the record was last updated |
+| `instance_id` | `str` | `""` | Owning worker's instance id; empty when unknown |
 
 > **Split ownership of `"queued"`.** Under the Valkey transport, `"queued"` is a
 > submitter-side write that the library does not perform. Under the MQTT
@@ -440,6 +441,7 @@ class TaskTracker:
     worker_task: asyncio.Task
     data: TaskData
     started: int | float  # Monotonic timestamp
+    control: bool = False
 ```
 
 | Field | Type | Description |
@@ -447,6 +449,7 @@ class TaskTracker:
 | `worker_task` | `asyncio.Task` | The async task executing this work |
 | `data` | `TaskData` | Associated task data |
 | `started` | `int` or `float` | Monotonic timestamp when created |
+| `control` | `bool` | Whether the task was admitted on the control lane |
 
 ### TaskEnvelope
 

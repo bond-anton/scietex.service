@@ -23,9 +23,12 @@ is a library whose entry point is the consumer's own `main()`.
 | MQTT integration | `src/scietex/service/mqtt/` | `MqttWorker` (composes `MqttTransport` + `TransportHealth` + `SqliteMqttInbox`), typed MQTT config schema + YAML loader (`config.py`, incl. `MqttConfig`/`MqttWorkerConfig`), guarded `_aiomqtt.py` import, logging-handler translator (`logging.py`). MQTT 5 only; a durable inbox restores at-least-once delivery that aiomqtt v2.5.1's premature broker ack would otherwise lose |
 | Transport health (core) | `src/scietex/service/health.py` | `TransportHealth` (AR-075) — transport-agnostic connection-health supervisor; hoisted to core (AR-089) so Valkey and MQTT share it; re-exported from `valkey/health.py` for back-compat |
 | Heartbeat (core) | `src/scietex/service/heartbeat.py` | `Heartbeat` — the single msgpack liveness struct shared by `ValkeyWorker` and `MqttWorker`; Valkey stores it at `scietex:{service}:{instance_id}:status` (2 × `heartbeat_interval` TTL), MQTT publishes it retained to `scietex/{service}/workers/{instance_id}` |
+| Control plane (core) | `src/scietex/service/control.py` | `ControlPublisher` Protocol — transport-agnostic producer surface for control commands (`direct`/`broadcast`/`resolve_owner`); concrete `ValkeyControlPublisher` (`valkey/control.py`) and `MqttControlPublisher` (`mqtt/control.py`) address each transport's directed/broadcast control channels |
+| Client / watch (core) | `src/scietex/service/client/` | `WorkerWatcher` + `WorkerRegistry`/`WorkerRecord`/`WorkerEvent`/`WorkerEventKind`/`WatchBackend` — a read-only client view over worker heartbeats (snapshot + async change stream); concrete `PollingBackend` (`valkey/watch.py`) and `SubscribeBackend` (`mqtt/watch.py`) |
+| Task metrics / status (core) | `src/scietex/service/task_metrics.py`, `src/scietex/service/task_status.py` | `TaskMetrics` (sliding-window completion rate) + `TaskMetricsSnapshot`; pure `build_running_status`/`build_terminal_status` builders shared by the Valkey tracking store and the MQTT status publisher |
 | Remote configuration (core) | `src/scietex/service/config_reload.py` | `ConfigReloader` + the `ConfigSource` Protocol + the `ConfigEnvelope`/`ConfigSections`/`ReloadableSettings` structs: a transport-delivered reloadable-behaviour envelope (a durable Valkey key or an MQTT retained topic) applied at startup and via the `config:apply`/`config:store`/`config:show` commands; `TaskProcessor` composes a `ConfigManager` (`config_manager.py`) that builds the reloader and registers the three `config:*` handlers when remote config is enabled, and each transport supplies its `ConfigSource` (`ValkeyConfigSource` / `MqttConfigSource`) |
 | Public surface | `src/scietex/service/__init__.py` | Re-exports core symbols; guarded optional imports of Valkey and MQTT exports (`VALKEY_AVAILABLE`/`MQTT_AVAILABLE`) |
-| Async logging backend (external) | `scietex.logging` package (>=2.2.0) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
+| Async logging backend (external) | `scietex.logging` package (>=2.2.1) | `ConsoleHandler` (console), `AsyncValkeyHandler` (Valkey stream logs), `AsyncMqttHandler` (MQTT topic logs), `AsyncBrokerHandler`, `AsyncLoggingHandler`, `ScietexFormatter` |
 
 ## How subsystems interact
 
@@ -66,7 +69,7 @@ Interaction notes:
   asyncio tasks are created for periodic/background behavior (manager tasks,
   logger tasks inside handlers). Manager and logging bookkeeping are delegated
   to `ManagerRuntime` and `LoggingLifecycle`, which the worker constructs in
-  `__init__` (basic_worker.py:137-140).
+  `__init__` (`BasicWorker.__init__`).
 - **Handlers are invoked by the processor, not by the worker.** Dispatch is
   type-based: first active handler whose `supports(task_type)` returns `True`
   wins.
@@ -129,14 +132,14 @@ asyncio.run(main())  # SIGINT/SIGTERM → exit() → STOPPED
 ```
 
 Two constraints now derive from signal handling in `BasicWorker.start` /
-`stop` (basic_worker.py:454, 539):
+`stop`:
 
 1. A worker can be constructed **anywhere** — `__init__` no longer calls
    `asyncio.get_running_loop()`; the running loop is only touched in `start()`
    and `stop()`.
 2. Signal handlers (SIGINT/SIGTERM) are registered per instance in `start()`
-   (`_setup_signal_handlers`, 359) and removed in `stop()`
-   (`_remove_signal_handlers`, 380). Registration is a Windows-safe no-op when
+   (`_setup_signal_handlers`) and removed in `stop()`
+   (`_remove_signal_handlers`). Registration is a Windows-safe no-op when
    `loop.add_signal_handler` is unavailable. Because registration happens on
    `start()` rather than construction, the **last started worker in a process**
    owns the signals.
@@ -150,7 +153,7 @@ process/loop:
 |---|---|---|
 | `Start` task → `_startup()` | `BasicWorker.start()` | state → `RUNNING` (or init failure → `stop()`) |
 | `Stop` task → `_shutdown()` | `BasicWorker.stop()` / signal | state → `STOPPED`, `exit` event set |
-| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (basic_worker.py:371, AR-033) | one shutdown; repeat signals short-circuit |
+| `StopTask` → `exit()` (single, guarded) | `_request_exit()` on signal (`BasicWorker._request_exit`, AR-033) | one shutdown; repeat signals short-circuit |
 | Manager task `Heartbeat` → `_heartbeat_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `Watchdog` → `_watchdog_manager` | `ManagerRuntime.start_managers()` | cancelled on shutdown |
 | Manager task `TaskManager` → `task_manager` (processor only) | `ManagerRuntime.start_managers()` | cancelled on shutdown |

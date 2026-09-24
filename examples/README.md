@@ -201,7 +201,7 @@ python -m examples.mqtt_worker --host 127.0.0.1
 
 An `MqttWorker` consuming tasks from a local MQTT 5 broker. The worker
 subscribes to `scietex/{service}/tasks` (QoS 2), persists each received message
-to its durable file inbox, and drains it into the processor queue. A producer
+to its durable sqlite inbox, and drains it into the processor queue. A producer
 client publishes a `TaskEnvelope` carrying the task id inside the encoded
 `TaskData`, then subscribes to the per-task status topic
 (`scietex/{service}/tasks/{task_id}/status`) and prints the lifecycle:
@@ -261,11 +261,11 @@ publish rate.
 `--producer-mode inline` runs the producer in the same process (the historical
 behavior). `--task-qos` controls the publish QoS (default 2).
 
-The durable inbox dominates the cost. On a local broker the file-backed inbox
+The durable inbox dominates the cost. On a local broker the sqlite-backed inbox
 sustains roughly 120-160 tasks/sec, while the default in-memory backend
 (at-most-once, no disk) reaches roughly 4800-5000 tasks/sec -- a ~35x
 difference. The benchmark defaults to the in-memory backend so it measures the
-transport and handler pipeline in isolation; pass `--inbox-backend file` to
+transport and handler pipeline in isolation; pass `--inbox-backend sqlite` to
 measure the durability cost. `--task-queue-manager-sleep-time` tunes the poll
 interval (default 0.01s).
 

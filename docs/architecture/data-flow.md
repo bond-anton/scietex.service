@@ -10,26 +10,24 @@ transformations, and any async boundaries (queues/events/tasks).
 `enqueue_task()` directly.
 
 **Processing chain:**
-1. `TaskProcessor.task_queue_manager` (`task_processor.py:850`,
-   `@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
+1. `TaskProcessor.task_queue_manager` (`@Manager("TaskQueueManager")`) — while the queue is not full, invokes the
    subclass/`ValkeyWorker` `fetch_tasks()`; then sleeps
    `task_queue_manager_sleep_time` (default 0.01 s).
-2. `TaskProcessor.task_manager` (`task_processor.py:818`,
-   `@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
+2. `TaskProcessor.task_manager` (`@Manager("TaskManager")`) — if `len(running_tasks) < max_concurrent_tasks`,
    pops `task_data` off `task_queue` with a fetch timeout of
    `task_queue_fetch_timeout` (default 1 s),
    wraps `handle_task` in an `asyncio.Task`, and records the tracker via
    `TaskLifecycle.register(task_data_id(task_data), TaskTracker(...))` (the
    composed lifecycle state, AR-088) — the id is derived from
    `TaskData.task_id`.
-3. `TaskExecutor._handle_task` (`task_executor.py:128`) calls
+3. `TaskExecutor._handle_task` calls
    `process_task(task_data)`.
-4. `process_task` (764): guards the empty-`task` case first — an empty
+4. `process_task`: guards the empty-`task` case first — an empty
    `task_data.task` returns `TaskResult(status="error", error="Task data must
-   contain 'task' field")` (790–798) — then selects a handler with
+   contain 'task' field")` — then selects a handler with
    `_find_task_handler` (`handler.supports(task_type)`, first match among
    **active/started** handlers).
-5. Dispatch is gated by `handler.is_ready` (801): only a found **and
+5. Dispatch is gated by `handler.is_ready`: only a found **and
    initialized** handler runs `await handler.handle(task_data, capabilities=...)`.
    A `handle()`
    exception is converted into `TaskResult(status="error", error=str(e))` with
@@ -40,13 +38,13 @@ transformations, and any async boundaries (queues/events/tasks).
    ("No handler found for task type ...").
 
 **Destination:** the `TaskResult` is returned to `TaskExecutor._handle_task`,
-whose `finally` runs `TaskExecutor._settle` (`task_executor.py:168`), which
+whose `finally` runs `TaskExecutor._settle`, which
 removes the tracker (`TaskLifecycle.remove_tracker`), calls
 `task_queue.task_done()`, and passes the consumed cancel reason
 (`TaskLifecycle.take_cancel_reason`) to the ack. Then: a
 `retryable=True` error result is requeued via
 `return_task_to_queue(task_data)` **before** acking
-(`TaskExecutor._apply_retry_policy`, `task_executor.py:202-263`) — the
+(`TaskExecutor._apply_retry_policy`) — the
 retry copy is made durable (XADD) before the original is dropped (XACK) — and
 then `on_task_completed(task_data, task_result)` is invoked — the
 transport-agnostic ack/result-sink seam. The base delegates to `transport.ack`;
@@ -101,8 +99,8 @@ cancellation during cleanup, (d) capped error-path retry via
 consecutive retryable failure is acked terminal with `retryable=False` — see
 F1).
 
-**Path:** `TaskProcessor.watchdog` (869) delegates to `TaskExecutor.watchdog`
-(`task_executor.py:351`), which cancels `worker_task` when
+**Path:** `TaskProcessor.watchdog` delegates to `TaskExecutor.watchdog`,
+which cancels `worker_task` when
 `elapsed > task_data.timeout.timeout` (or the configured `task_timeout`, default
 3), waits up to the configured `task_cancellation_timeout` (default 5), and only
 if the handler actually
@@ -132,8 +130,7 @@ not gated by this budget.
 
 ## F4. Handler dispatch (selection)
 
-**Source:** `TaskData.task` string. **Processing:** `_find_task_handler`
-(599) iterates `task_handlers` dict (active instances) and returns the first
+**Source:** `TaskData.task` string. **Processing:** `_find_task_handler` iterates `task_handlers` dict (active instances) and returns the first
 `handler.supports(task_type)`. **Destination:**
 `handler.handle(task_data, capabilities=...)`.
 Selection is by `supported_tasks` membership, **not** by a registration key
@@ -144,10 +141,10 @@ a class's per-instance task sets must not overlap.
 
 ## F5. Heartbeat flow
 
-**Source:** `_heartbeat_manager` (`basic_worker.py:654`, a
+**Source:** `_heartbeat_manager` (a
 `@Manager(name="Heartbeat")`-decorated method) — sleeps
 `heartbeat_interval`, calls `self.heartbeat()`, repeats.
-`ValkeyWorker.heartbeat` (357) is the only concrete override.
+`ValkeyWorker.heartbeat` is the only concrete override.
 
 **Processing/destination:** encodes `Heartbeat` struct (msgpack) and writes it
 to key `scietex:{service}:{instance_id}:status` with TTL = 2 ×
@@ -161,15 +158,13 @@ heartbeat never surfaces.
 
 **Processing:** standard `logging` → attached handlers:
 - `ConsoleHandler` (console; registered in `BasicWorker.__init__`
-  via `LoggingLifecycle.register_logger_handler`
-  (`log_handlers/lifecycle.py:37`), constructed with
+  via `LoggingLifecycle.register_logger_handler`, constructed with
   `formatter=theme.console_formatter()`) — `emit()` puts each record into an
   internal `asyncio.Queue` per backend; the worker task formats with the
   `ScietexFormatter` instance the theme supplied and writes to stdout. Identity
   comes from the stdlib logger name it is registered on.
 - `AsyncValkeyHandler` (constructed lazily on the first successful
-  `connect()` via `_ensure_logging_handler`,
-  `worker.py:272`) — owns its own `GlideClient`, built from a `valkey_config=`
+  `connect()` via `_ensure_logging_handler`) — owns its own `GlideClient`, built from a `valkey_config=`
   dict translated from the typed `ValkeyConfig` (AR-059/061), so logging no
   longer shares the worker's client; formats records to a dict and `xadd`s to
   the log stream `scietex:{service}:{instance_id}:log` (default; both
@@ -179,14 +174,13 @@ heartbeat never surfaces.
 
 **Destination:** stdout / Valkey log stream. **Async boundary:** per-handler
 asyncio queues + worker tasks; lifecycle driven by
-`LoggingLifecycle.start_handlers` (`log_handlers/lifecycle.py:51`) /
-`shut_down_handlers` (`log_handlers/lifecycle.py:93`), with a per-handler
+`LoggingLifecycle.start_handlers` /
+`shut_down_handlers`, with a per-handler
 timeout (`logger_handler_timeout`, default 2 s).
 
 ## F7. Configuration flow
 
-**Source:** config dir (resolved by `prepare_conf_dir`,
-`config.py:46`), i.e. `valkey.yml` in the chosen dir, or programmatic
+**Source:** config dir (resolved by `prepare_conf_dir`), i.e. `valkey.yml` in the chosen dir, or programmatic
 `ValkeyConfig`.
 
 **Path:** when `config.valkey_config` is provided, `ValkeyWorker.__init__`
@@ -209,3 +203,57 @@ client to channels `scietex:{service}` and `scietex:broadcast`
 cannot be expressed in `valkey.yml`), so a YAML `listening: true` subscribes
 with no callback and drops messages. `examples/valkey_pubsub_worker.py` is the
 reference consumer.
+
+## F9. Control plane (command lane)
+
+**Source:** a submitter addresses a control command (`task:cancel`, `worker:*`,
+`config:*`) through the `ControlPublisher` Protocol — `direct(instance_id, ...)`
+targets one worker, `broadcast(...)` targets every worker, and
+`resolve_owner(task_id)` maps a task to its owning worker's `instance_id`.
+
+**Channel layout (per transport):** a *directed* channel per worker and a
+*broadcast* channel per service, separate from the data plane.
+`ValkeyControlPublisher` `XADD`s the versioned envelope to
+`scietex:{service}:control:{instance_id}` (directed) or
+`scietex:{service}:control` (broadcast), trimming each with
+`MAXLEN ~ control_stream_maxlen`; `MqttControlPublisher` publishes the envelope
+to `scietex/{service}/control/{instance_id}` or `scietex/{service}/control`
+(event-only, `retain=False`, at `control_qos`). `resolve_owner` reads the Valkey
+tracking record's `TaskStatus.instance_id` (`scietex:{service}:task:{id}`) or the
+MQTT retained owner marker `scietex/{service}/tasks/{task_id}/owner`.
+
+**Processing:** the worker reads its control channel with plain `XREAD` + a
+`$`-seeded in-memory cursor (Valkey; no consumer group) or a subscription
+(MQTT), and routes the decoded `TaskData` into the dedicated control lane
+(`TaskProcessor.__control_queue`, `enqueue_control_task`), which is not counted
+against `max_concurrent_tasks` — the lane has its own concurrency ceiling
+(`DEFAULT_CONTROL_CONCURRENCY = 4`). Lane routing is channel-driven, not
+type-driven: a handler declares `control: ClassVar[bool]` and is filed in the
+control or data registry accordingly.
+
+**Destination:** the matching control handler runs and returns a `TaskResult`
+whose `payload` is the msgpack-encoded response struct. Control is never
+retried: a publish failure is raised so the submitter learns the command was
+not sent, and a command published while a worker is down is skipped, not
+replayed.
+
+## F10. Worker watcher (client view over heartbeats)
+
+**Source:** the `Heartbeat` structs `ValkeyWorker.heartbeat` (stored at
+`scietex:{service}:{instance_id}:status`) and `MqttWorker.heartbeat` (retained
+on `scietex/{service}/workers/{instance_id}`) publish.
+
+**Processing:** a `WorkerWatcher` owns a `WorkerRegistry` and a swappable
+`WatchBackend`. `PollingBackend` `SCAN`s the status keys
+(`scietex:{service}:*:status`) and reads each; `SubscribeBackend` subscribes to
+the wildcard `scietex/{service}/workers/+` and buffers delivered messages. Both
+decode via the shared `decode_heartbeat` (msgpack → `Heartbeat`, skipping
+undecodable/expired payloads). The registry upserts by `instance_id` (ignoring
+out-of-order older heartbeats) and evicts a record once its payload `ttl` has
+elapsed since the client received it.
+
+**Destination:** `WorkerWatcher.snapshot()` returns the current live workers;
+the async `watch()` iterator reconciles each poll tick and yields a
+`WorkerEvent` per change — `ADDED` (first sighting), `UPDATED` (heartbeat
+changed), or `EXPIRED` (local TTL eviction, carrying the worker's last-known
+record).

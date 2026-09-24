@@ -331,6 +331,8 @@ worker = BasicWorker(
 | `logging_level` | `logging.DEBUG` | Logging level as string or integer |
 | `heartbeat_interval` | `None` (uses `DEFAULT_HEARTBEAT_INTERVAL`) | Heartbeat interval in seconds |
 | `watchdog_interval` | `None` (uses `DEFAULT_WATCHDOG_INTERVAL`) | Watchdog interval in seconds |
+| `active_ttl` | `None` (→ `2 × heartbeat_interval`) | Lifetime of a worker's `active` heartbeat record in seconds |
+| `inactive_ttl` | `None` (→ `10 × heartbeat_interval`) | Lifetime of a worker's `inactive` heartbeat record in seconds |
 | `logger_handler_timeout` | `None` (uses `DEFAULT_LOGGER_HANDLER_TIMEOUT`) | Timeout for logger handler operations |
 | `manager_shutdown_timeout` | `None` (uses `DEFAULT_MANAGER_SHUTDOWN_TIMEOUT`) | Timeout for manager shutdown |
 | `manager_max_retries` | `None` (uses `DEFAULT_MANAGER_MAX_RETRIES`) | Max consecutive failures before a manager gives up |

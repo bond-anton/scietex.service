@@ -18,8 +18,8 @@ latter two extracted in AR-087; `BasicWorker` keeps only identity, config, and
 the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
 
 **Main symbols:**
-- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING) — line 39
-- `class BasicWorker` — line 55
+- `ServiceStatus` (STOPPED/STARTING/RUNNING/STOPPING)
+- `class BasicWorker`
 - Constructor — `__init__(config: WorkerConfig | None = None, *, theme: Theme |
   None = None)`; stores the immutable `WorkerConfig` (from `config.py`),
   resolves identity/conf_dir/logging_level, resolves the theme (default
@@ -31,34 +31,34 @@ the thin `start`/`stop`/`exit`/`_startup`/`_shutdown` orchestrators.
   raises `msgspec.ValidationError`, and `None` resolves to the matching
   `DEFAULT_*` constant in `config.py` at read time (no runtime clamping)
 - Config type mechanism (AR-069): class attribute `_config_type: ClassVar
-  [type[WorkerConfig]]` (83) tells the base which concrete config struct to
+  [type[WorkerConfig]]` tells the base which concrete config struct to
   instantiate when `config=None`. Subclasses override it to their own config
   type (e.g. `TaskProcessor`→`TaskProcessorConfig`, `ValkeyWorker`→
   `ValkeyWorkerConfig`) so the base stores the concrete type and subclass
   constructors no longer re-store / double-instantiate
-- Delegators (thin, to the composed components): `_setup_signal_handlers` 359
-  → `SignalHandler.setup()` (Windows-safe no-op), `_remove_signal_handlers` 380
-  → `SignalHandler.remove()`, `_request_exit` 371 → `WorkerLifecycle.request_exit()`,
-  `_force_stopped` 493 → `WorkerLifecycle.force_stopped()`; properties `state`
+- Delegators (thin, to the composed components): `_setup_signal_handlers`
+  → `SignalHandler.setup()` (Windows-safe no-op), `_remove_signal_handlers`
+  → `SignalHandler.remove()`, `_request_exit` → `WorkerLifecycle.request_exit()`,
+  `_force_stopped` → `WorkerLifecycle.force_stopped()`; properties `state`
   (read-only — transitions go through `WorkerLifecycle.transition()`,
   validated against an allowed-edge table, or the unguarded `force_stopped()`
   terminal escape), `events`, `start_time` read from `WorkerLifecycle`
-- Lifecycle orchestrators: `_startup` 399, `start` 465, `_shutdown` 519,
-  `stop` 567, `exit` 611
-- Cancellation terminal-state helpers: `_force_stopped` 493 (AR-017 — forces
+- Lifecycle orchestrators: `_startup`, `start`, `_shutdown`,
+  `stop`, `exit`
+- Cancellation terminal-state helpers: `_force_stopped` (AR-017 — forces
   STOPPED + `exit` event on startup/shutdown cancellation; delegated to
-  `WorkerLifecycle.force_stopped()`) and `_stop_managers_best_effort` 503
+  `WorkerLifecycle.force_stopped()`) and `_stop_managers_best_effort`
   (stops managers in reverse start order via `stop_managers(reverse=True)`;
   both the `_startup` and `_shutdown` `CancelledError` handlers call it before
   `_force_stopped()`, so a cancelled orchestrator never strands running
   managers under STOPPED)
-- Hooks: `initialize` 389, `heartbeat` 621, `watchdog` 633, `cleanup` 673,
-  `_register_instance` 682, `_unregister_instance` 692
+- Hooks: `initialize`, `heartbeat`, `watchdog`, `cleanup`,
+  `_register_instance`, `_unregister_instance`
 - Built-in managers: `@Manager(name="Heartbeat")`-decorated
-  `_heartbeat_manager` 654 and `@Manager(name="Watchdog")`-decorated
-  `_watchdog_manager` 664 (AR-107)
-- `_setup_signal_handlers` called from `start()` (465), not `__init__`;
-  `_remove_signal_handlers` called from `stop()` (567)
+  `_heartbeat_manager` and `@Manager(name="Watchdog")`-decorated
+  `_watchdog_manager` (AR-107)
+- `_setup_signal_handlers` called from `start()`, not `__init__`;
+  `_remove_signal_handlers` called from `stop()`
 
 **Public interface:** constructor takes a single immutable `WorkerConfig`
 (`config.py`) or `None`, plus a keyword-only `theme=` (the `Theme` for the
@@ -73,11 +73,12 @@ are read-only (no runtime setters):
 `FAILED` manager names, AR-063), `theme` (the resolved `Theme`).
 Extension contract: override
 `initialize/heartbeat/watchdog/cleanup`, add `@Manager` methods. Two newer
-subclass hooks govern registry-set membership: `_register_instance` (682) —
+subclass hooks govern registry-set membership: `_register_instance` —
 called by `_startup()` after `initialize()` succeeds and before managers
-start — and `_unregister_instance` (692) — called by `_shutdown()` after
+start — and `_unregister_instance` — called by `_shutdown()` after
 managers stop and before `cleanup()` teardown. Both are no-ops in the base;
-`ValkeyWorker` overrides them (worker.py:494, 519) to `SADD`/
+`ValkeyWorker` overrides them (`ValkeyWorker._register_instance` /
+`ValkeyWorker._unregister_instance`) to `SADD`/
 `SREM` its `instance_id` into the worker registry set.
 
 **Dependencies:** `.manager.runtime` (`ManagerRuntime`), `.log_handlers.lifecycle`
@@ -99,11 +100,10 @@ the owning worker); `task_handler` (indirectly, via `TaskHandlerContext`).
 discovery, lifecycle bookkeeping, and the restart-on-error loop. Reads config
 off the worker's public properties.
 
-**Main symbols:** `class ManagerRuntime` (18). Constructor (27) takes the
-owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
-(37).
-- `iter_manager_definitions()` (49) — walks `type(self.worker).__mro__`
-  **most-derived-first** (79), reading each class's own
+**Main symbols:** `class ManagerRuntime`. Constructor takes the
+owning worker and owns three dicts: `statuses`, `tasks`, `errors`.
+- `iter_manager_definitions()` — walks `type(self.worker).__mro__`
+  **most-derived-first**, reading each class's own
   `__manager_registry__` list of `ManagerDefinition` values (populated by the
   single `_record_definition` primitive, shared by `Manager.__set_name__` and
   `register_manager`) and yielding `(name, ManagerDefinition)`, de-duplicating
@@ -116,23 +116,22 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
   name without re-decorating it also logs an advisory WARNING (AR-086
   failure mode 2), because the plain attribute produces no registry entry and
   discovery falls through to the base manager.
-- `run_manager(name, manager: ManagerDefinition)` (138) — runs `manager.method(self.worker)` in a
-  `while True` loop (168); on a non-`CancelledError` exception records the error
-  (177) and retries after `manager_restart_backoff` (196), giving up when
+- `run_manager(name, manager: ManagerDefinition)` — runs `manager.method(self.worker)` in a
+  `while True` loop; on a non-`CancelledError` exception records the error
+  and retries after `manager_restart_backoff`, giving up when
   `consecutive_failures > manager_max_retries` — i.e. on the
-  (max_retries+1)-th consecutive failure (179–187). A successful iteration
-  resets the `consecutive_failures` counter to 0 (199), so the budget
-  counts consecutive failures only. `CancelledError` stops cleanly
-  (174–175, 200–201).
+  (max_retries+1)-th consecutive failure. A successful iteration
+  resets the `consecutive_failures` counter to 0, so the budget
+  counts consecutive failures only. `CancelledError` stops cleanly.
   The retry happens **inside the same task** — the manager never cancels
-  itself. `finally` (202–218) runs `manager.cleanup`, marks STOPPED, and
+  itself. `finally` runs `manager.cleanup`, marks STOPPED, and
   removes the task from tracking. A manager that gave up (exhausted the retry
   budget) is instead ended in the terminal `FAILED` state (AR-063) so the
   death is observable rather than silent.
-- `failed_managers` (property, 40) — names whose `statuses[name]` is
+- `failed_managers` (property) — names whose `statuses[name]` is
   `ManagerStatus.FAILED` (the recorded exception for each is in `errors`).
-- `start_manager` (220), `stop_manager` (241), `start_managers` (268),
-  `stop_managers` (278, `*, reverse: bool = False` — reverse start order).
+- `start_manager`, `stop_manager`, `start_managers`,
+  `stop_managers` (`*, reverse: bool = False` — reverse start order).
 
 **Public interface:** methods above; constructor takes `worker`.
 
@@ -146,18 +145,17 @@ owning worker and owns three dicts: `statuses` (35), `tasks` (36), `errors`
 **Purpose:** Extracted from `BasicWorker` (AR-003). Owns async
 logging-handler registration and start/stop with status bookkeeping.
 
-**Main symbols:** `class LoggingLifecycle` (18). Constructor (27) takes the
-owning worker and owns the `statuses` dict (35).
-- `register_logger_handler(handler)` (37) — sets the handler level and
+**Main symbols:** `class LoggingLifecycle`. Constructor takes the
+owning worker and owns the `statuses` dict.
+- `register_logger_handler(handler)` — sets the handler level and
   attaches it to the worker logger; the handler is registered once and reused
   across start/stop cycles. The unused `name` parameter was removed (AR-070);
-  statuses are keyed by handler identity (the handler instance)
-  (lifecycle.py:38).
-- `start_handlers()` (51) — starts each `AsyncLoggingHandler` whose recorded
+  statuses are keyed by handler identity (the handler instance).
+- `start_handlers()` — starts each `AsyncLoggingHandler` whose recorded
   status is not RUNNING, with `logger_handler_timeout`; sets status RUNNING on
   success, FAILED on timeout/exception so it is retried on the next start
   (AR-020).
-- `shut_down_handlers()` (93) — stops each attached async handler (idempotent
+- `shut_down_handlers()` — stops each attached async handler (idempotent
   `stop_logging()`), sets status STOPPED; non-async handlers are not tracked.
 
 **Dependencies:** `.log_handlers` (`LoggerStatus`), external
@@ -176,16 +174,15 @@ definitions recorded in each class's `__manager_registry__` across the MRO,
 runs their `method` in an infinite loop under an `asyncio.Task`, restarts
 on error, and invokes an optional `cleanup` callable on stop.
 
-**Main symbols:** `ManagerStatus` (17), `ManagerDefinition` (27), `Manager`
-(67). `ManagerDefinition` is a plain data holder (`__slots__ = ("name",
+**Main symbols:** `ManagerStatus`, `ManagerDefinition`, `Manager`. `ManagerDefinition` is a plain data holder (`__slots__ = ("name",
 "method", "cleanup", "owner", "attribute_name")`) produced only by the private
-`_record_definition(owner, definition, *, replace)` primitive (175) — the
+`_record_definition(owner, definition, *, replace)` primitive — the
 single mutation point for `MANAGER_REGISTRY_ATTR`, shared by
 `Manager.__set_name__` and `register_manager`. `Manager` attributes: `name`,
-`cleanup`, `method`. `Manager.__call__` (136) returns `self` (decorator
-identity); `Manager.__set_name__` (111) builds a `ManagerDefinition` and
-records it via `_record_definition`; `Manager.__get__` (153) binds the wrapped
-method to the instance (descriptor protocol). `register_manager` (204) is the
+`cleanup`, `method`. `Manager.__call__` returns `self` (decorator
+identity); `Manager.__set_name__` builds a `ManagerDefinition` and
+records it via `_record_definition`; `Manager.__get__` binds the wrapped
+method to the instance (descriptor protocol). `register_manager` is the
 explicit post-creation registration path, now a compatibility shim with no
 in-tree production caller. `ManagerStatus` values: `STARTING`, `RUNNING`,
 `STOPPING`, `STOPPED`, and terminal `FAILED` (AR-063) — set when a manager
@@ -204,8 +201,8 @@ exhausts its retry budget instead of stopping cleanly.
 RUNNING / FAILED) and `parse_logging_level()` (accepts short/long strings or
 ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 
-**Public interface:** `LoggerStatus` (14), `parse_logging_level` (28),
-`DEFAULT_LOGGING_LEVEL` (11). **Dependencies:** stdlib. **Depended on by:**
+**Public interface:** `LoggerStatus`, `parse_logging_level`,
+`DEFAULT_LOGGING_LEVEL`. **Dependencies:** stdlib. **Depended on by:**
 `BasicWorker`, `LoggingLifecycle`.
 
 ## 6. Task schemas
@@ -217,14 +214,14 @@ ints, e.g. `"D"`, `"DBG"`, `"DEBUG"` → `logging.DEBUG`).
 
 | Schema | Fields |
 |---|---|
-| `TaskTimeout` (46) | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
-| `TaskData` (60) | `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
-| `TaskEnvelope` (85) | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
-| `TaskResult` (103) | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
-| `TaskStatus` (146) | `task_id: str`, `service: str`, `task: str`, `status: "queued"\|"running"\|"completed"\|"failed"\|"cancelled"`, `progress: TaskProgress`, `result: bytes\|None`, `data: TaskData\|None`, `error: str`, `error_code: str`, `created_at: datetime`, `updated_at: datetime` |
+| `TaskTimeout` | `timeout: float\|None`, `timeout_action: "requeue"\|"discard"` |
+| `TaskData` | `task_id: str` (required), `task: str`, `timeout: TaskTimeout`, `canceled_action`, `payload: bytes` |
+| `TaskEnvelope` | `version: int`, `data: bytes` — the versioned transport envelope wrapping a serialized `TaskData` (AR-064) |
+| `TaskResult` | `status: "success"\|"error"`, `error: str`, `processed_at: datetime`, `payload: bytes`, `error_code: str`, `retryable: bool`, `partial: bool` |
+| `TaskStatus` | `task_id: str`, `service: str`, `task: str`, `status: "queued"\|"running"\|"completed"\|"failed"\|"cancelled"`, `progress: TaskProgress`, `result: bytes\|None`, `data: TaskData\|None`, `error: str`, `error_code: str`, `created_at: datetime`, `updated_at: datetime`, `instance_id: str` |
 
 `TaskResult.processed_at` uses `msgspec.field(default_factory=lambda:
-datetime.now(timezone.utc))` (128) so each instance gets its own timestamp
+datetime.now(timezone.utc))` so each instance gets its own timestamp
 (AR-012). The error-taxonomy fields (`error_code`/`retryable`/`partial`,
 added AR-022) are optional and default to "no extra information", so
 handlers that only set `status`/`error` keep working unchanged.
@@ -272,19 +269,19 @@ on-the-wire format evolve independently. Encoding/decoding lives in
 contract; a narrow context decouples handlers from the worker.
 
 **Main symbols / interface:**
-- `TaskHandlerContext` (context.py:8) — frozen dataclass with `service_name`,
+- `TaskHandlerContext` — frozen dataclass with `service_name`,
   `instance_id`, `logger`; replaces the full worker reference.
-- `TaskCapabilities` (capabilities.py:9) — frozen dataclass holding the task id
+- `TaskCapabilities` — frozen dataclass holding the task id
   and a progress writer; `report_progress(value)` clamps to `[0.0, 100.0]` and
   forwards to the transport hook. Passed per call to `handle`.
-- `__init__(name, context)` (22) — stores `name`, `context`, `logger =
+- `__init__(name, context)` — stores `name`, `context`, `logger =
   context.logger`, `_is_initialized=False` (no `self.worker`)
-- abstract `supported_tasks -> list[str]` (37), abstract
-  `handle(task_data, *, capabilities) -> TaskResult` (46)
-- `supports(task_type) -> bool` (64) — membership in `supported_tasks`
-- `initialize() -> bool` (76, default True), `cleanup()` (87)
-- `start()` (95) sets `_is_initialized = await initialize()`; `stop()` (109)
-  runs `cleanup()`, resets flag; `is_ready` (120)
+- abstract `supported_tasks -> list[str]`, abstract
+  `handle(task_data, *, capabilities) -> TaskResult`
+- `supports(task_type) -> bool` — membership in `supported_tasks`
+- `initialize() -> bool` (default True), `cleanup()`
+- `start()` sets `_is_initialized = await initialize()`; `stop()`
+  runs `cleanup()`, resets flag; `is_ready`
 
 **Dependencies:** `.context`, `.capabilities`, `.schemas`. **Depended on by:**
 `TaskProcessor` (registry + dispatch), examples, tests.
@@ -299,40 +296,39 @@ and dispatches to handlers, a `Watchdog` cancels timed-out tasks, and shutdown
 drains/cancels in-flight work. Per-task lifecycle state (the running tracker
 and its cancel reason) is owned by a composed `TaskLifecycle` (AR-088).
 
-**Main symbols:** `class TaskProcessor(BasicWorker)` (45).
-Overrides `_config_type` (86) to `TaskProcessorConfig`, so the base
+**Main symbols:** `class TaskProcessor(BasicWorker)`.
+Overrides `_config_type` to `TaskProcessorConfig`, so the base
 instantiates the concrete config when `config=None` and `__init__` reads its
 fields from `self._config` rather than re-storing (AR-069).
-Properties: `task_handlers` 186, `running_tasks` 200 (a snapshot `Mapping`
-delegated to `TaskLifecycle`), `queue_size` 210, `max_concurrent_tasks` 220.
-Registry/dispatch: `add_task_handler` 463 (takes the handler class plus an
+Properties: `task_handlers`, `running_tasks` (a snapshot `Mapping`
+delegated to `TaskLifecycle`), `queue_size`, `max_concurrent_tasks`.
+Registry/dispatch: `add_task_handler` (takes the handler class plus an
 optional keyword-only `name` and arbitrary `**handler_kwargs`; the lifecycle
 key is the resolved name — `name` if given, otherwise `handler_class.__name__`
 — so multiple instances of one class can coexist under distinct keys, a
 duplicate resolved key raises; the map stores a `(class, handler_kwargs)`
 tuple and the kwargs are forwarded to the handler constructor on every
-instantiation), `_start_task_handler` 513
-(unpacks the tuple, builds a `TaskHandlerContext` at 594–598, and calls
-`handler_class(handler_name, context, **handler_kwargs)` at 599),
-`_stop_task_handler` 557, `remove_task_handler` 583, `_find_task_handler` 599,
-`process_task` 764.
-Queue access: `enqueue_task` 370, `dequeue_task` 401, `task_queue_empty` 385,
-`task_queue_full` 389 (the raw `task_queue` attribute is no longer exposed;
+instantiation), `_start_task_handler`
+(unpacks the tuple, builds a `TaskHandlerContext`, and calls
+`handler_class(handler_name, context, **handler_kwargs)`),
+`_stop_task_handler`, `remove_task_handler`, `_find_task_handler`,
+`process_task`.
+Queue access: `enqueue_task`, `dequeue_task`, `task_queue_empty`,
+`task_queue_full` (the raw `task_queue` attribute is no longer exposed;
 non-blocking `put_nowait`/`get_nowait` underneath). State:
-`__task_handlers_map`/`__task_handlers` (130–131; the map holds
-`(class, handler_kwargs)` tuples keyed by resolved name), `_task_lifecycle`
-(116, the composed per-task lifecycle state), `__task_queue` (139, bounded
+`__task_handlers_map`/`__task_handlers` (the map holds
+`(class, handler_kwargs)` tuples keyed by resolved name), `_task_lifecycle` (the composed per-task lifecycle state), `__task_queue` (bounded
 `asyncio.Queue[TaskData]`).
-Managers: `@Manager("TaskManager") task_manager` 818,
-`@Manager("TaskQueueManager") task_queue_manager` 850.
-Hooks: `fetch_tasks` 830, `return_task_to_queue` 618, `on_task_completed` 653
-(transport ack seam), `initialize` 703 (starts handlers), `cleanup` 747
-(drains queue, cancels running tasks, stops handlers), `watchdog` 869.
+Managers: `@Manager("TaskManager") task_manager`,
+`@Manager("TaskQueueManager") task_queue_manager`.
+Hooks: `fetch_tasks`, `return_task_to_queue`, `on_task_completed`
+(transport ack seam), `initialize` (starts handlers), `cleanup`
+(drains queue, cancels running tasks, stops handlers), `watchdog`.
 
-**Retry cap** (v4.4.0): `DEFAULT_MAX_TASK_RETRIES = 1` (module constant,
-`task_executor.py:25`) grants exactly one error-path retry per task id;
-`self._retry_attempts: dict[UUID, int]` (`task_processor.py:110`) tracks the
-attempt budget. `TaskExecutor._apply_retry_policy` (`task_executor.py:202-263`)
+**Retry cap** (v4.4.0): `DEFAULT_MAX_TASK_RETRIES = 1` (a module constant in
+`task_executor.py`) grants exactly one error-path retry per task id;
+`self._retry_attempts: dict[UUID, int]` (a `TaskProcessor` attribute) tracks the
+attempt budget. `TaskExecutor._apply_retry_policy`
 requeues a retryable error only while `attempts < max_retries`; on the second
 consecutive retryable failure it acks the entry terminal with
 `msgspec.structs.replace(result, retryable=False)` — load-bearing because
@@ -361,13 +357,13 @@ services should set `max_concurrent_tasks` explicitly.
 **Remote configuration** (see §24–§27): `__init__` composes a `ConfigManager`
 collaborator (`config_manager.py`, AR-105), which builds the `ConfigReloader`
 and registers the three `config:*` handlers — only when
-`remote_config_enabled=True` (170–183); the source seam is attached by a
+`remote_config_enabled=True`; the source seam is attached by a
 transport subclass (`ValkeyWorker`/`MqttWorker`) through
 `ConfigManager.attach_source`. Extension point `register_config_settings(name,
-struct_type, *, apply)` (244) delegates to `ConfigManager.register_section`; the
-read-only observability properties `config_revision` (230), `config_hash` (235),
-and `config_source` (240) delegate to `ConfigManager`. The private
-apply/validate logic lives in `_apply_reloadable_config` (284) —
+struct_type, *, apply)` delegates to `ConfigManager.register_section`; the
+read-only observability properties `config_revision`, `config_hash`,
+and `config_source` delegate to `ConfigManager`. The private
+apply/validate logic lives in `_apply_reloadable_config` —
 validate-then-swap, overlaying the eight reloadable values onto a shallow copy
 of the current config and re-constructing `type(current)(**merged)` so
 `__post_init__`/`validate_range` reject a bad candidate before any mutation —
@@ -398,17 +394,17 @@ implicit set of ordering-sensitive template-method hooks with two Protocols and
 a working in-process default, so `TaskProcessor` depends on an interface rather
 than on subclass overrides.
 
-**Main symbols:** `TaskSink` Protocol (19) — the enqueue surface a transport
+**Main symbols:** `TaskSink` Protocol — the enqueue surface a transport
 delivers into: `task_queue_full() -> bool` and
 `enqueue_task(task_data) -> bool` (a `TaskProcessor` satisfies it
-structurally, no adapter). `TaskTransport` Protocol (32) — all async:
+structurally, no adapter). `TaskTransport` Protocol — all async:
 `fetch(sink) -> bool`, `requeue(task_data)`,
 `on_started(task_data)`,
 `ack(task_data, task_result, *, cancel_reason=None)`,
 `on_progress(task_id, value)`,
 `refresh_leases()`, `recover_pending_tasks(sink) -> tuple[bool, bool]`,
 `on_drain(task_data)`.
-`InMemoryTransport` (62) — the default, deque-backed implementation; public
+`InMemoryTransport` — the default, deque-backed implementation; public
 `submit(task_data)` feeds it (not part of the Protocol), `fetch` drains
 while the sink is not full, `refresh_leases`/`recover_pending_tasks` are the
 no-op/`(True, False)` defaults, and `on_drain` requeues iff
@@ -434,9 +430,9 @@ duplicate the connection/health/config-reload/watchdog glue. The concrete
 workers keep only broker-specific connect/disconnect/heartbeat/registry/
 cleanup plus the transport itself.
 
-**Main symbols:** `class TransportWorker(TaskProcessor)` (26). Class attribute
+**Main symbols:** `class TransportWorker(TaskProcessor)`. Class attribute
 `_transport_name` — the transport label surfaced in the CRITICAL down message;
-concrete workers override it to `"Valkey"`/`"MQTT"`. Constructor (42) takes the
+concrete workers override it to `"Valkey"`/`"MQTT"`. Constructor takes the
 config plus a keyword-only `client_factory`, stores the client-construction
 seam, builds the `asyncio.Lock` client lock, and constructs the
 `TransportHealth` supervisor (down threshold derived from the heartbeat/watchdog
@@ -471,8 +467,8 @@ outcome codes), `.health` (`TransportHealth`), `.task_processor`
 via the `glide` `GlideClient`; publishes heartbeats; pushes logs to a Valkey
 stream through an `AsyncValkeyHandler`.
 
-**Main symbols:** `class ValkeyWorker(TransportWorker)` (52).
-Overrides `_config_type` (85) to `ValkeyWorkerConfig`, so the base instantiates
+**Main symbols:** `class ValkeyWorker(TransportWorker)`.
+Overrides `_config_type` to `ValkeyWorkerConfig`, so the base instantiates
 the concrete config when `config=None` and `__init__` reads its fields from
 `self._config` rather than re-storing (AR-069).
 Constructor — `__init__(config: ValkeyWorkerConfig | None = None, *,
@@ -520,9 +516,9 @@ removed the raw-`GlideClientConfiguration` fallback).
 `scietex:{service}:task_group`, consumer
 `scietex:{service}:{instance_id}`, registry set
 `scietex:{service}:workers`, and the remote-config key
-`scietex:{service}:config` (`config_key`, defined at `valkey/config.py:293`,
-resolved at `valkey/worker.py:146`; the `ValkeyConfigSource` is attached via
-`ConfigManager.attach_source` in `initialize()` at `valkey/worker.py:434`). The stream and
+`scietex:{service}:config` (`ValkeyWorkerConfig.config_key`, resolved in
+`ValkeyWorker.__init__`; the `ValkeyConfigSource` is attached via
+`ConfigManager.attach_source` in `ValkeyWorker.initialize`). The stream and
 group are service-scoped so replicas share one queue; the consumer/status keys
 are worker-scoped per
 auto-generated `instance_id`. The entry-id map and `recovered` flag now live
@@ -559,15 +555,12 @@ schema→glide translation. Also hosts `ValkeyWorkerConfig` (the worker-level
 config struct) so its optional `glide`-typed field stays out of the
 always-imported core `config.py`.
 
-**Main symbols:** frozen structs `ValkeyNode` (32), `ValkeyUserCredentials`
-(44), `ValkeyBackoffStrategy` (56), `ValkeyTlsAdvancedConfiguration` (87),
-`ValkeyAdvancedConfig` (115), `ValkeyBaseConfig` (163), `ValkeyPubSubConfig`
-(145, `listening` + runtime-only `parse_control_message`), `ValkeyConfig`
-(241, `base_config` + `advanced_config` + `pubsub_config`);
-`ValkeyWorkerConfig` (265, extends `TaskProcessorConfig` with `valkey_config`
+**Main symbols:** frozen structs `ValkeyNode`, `ValkeyUserCredentials`, `ValkeyBackoffStrategy`, `ValkeyTlsAdvancedConfiguration`,
+`ValkeyAdvancedConfig`, `ValkeyBaseConfig`, `ValkeyPubSubConfig` (`listening` + runtime-only `parse_control_message`), `ValkeyConfig` (`base_config` + `advanced_config` + `pubsub_config`);
+`ValkeyWorkerConfig` (extends `TaskProcessorConfig` with `valkey_config`
 (`ValkeyConfig | None`), `log_stream_name`, `task_fetch_batch_size`,
 `claim_min_idle_ms`, `task_tracking_ttl`, `task_lease_ttl`,
-`config_key` (defaults to `scietex:{service}:config`)); `read_valkey_config(conf_dir)`
+`config_key` (defaults to `scietex:{service}:config`), and the control-plane fields `control_stream_name` (default `scietex:{service}:control:{instance_id}`), `control_broadcast_stream_name` (default `scietex:{service}:control`), `control_stream_maxlen` (default 1000)); `read_valkey_config(conf_dir)`
 — creates `valkey.yml` with defaults only if the file is missing; raises
 `RuntimeError` on a present-but-invalid file, never overwriting it;
 `generate_glide_config(valkey_config, service_name)` (converts to
@@ -686,9 +679,12 @@ drops the update when the record is absent (DEBUG log), silent on
 ## 17. Heartbeat schema (core)
 
 **File:** `src/scietex/service/heartbeat.py`
-**Purpose/content:** `Heartbeat` (16) (frozen Struct) with `service`,
-`instance_id`, `status`, `heartbeat_interval`, `start_time`, `timestamp` —
-`timestamp` uses `msgspec.field(default_factory=...)` (38) for a per-instance
+**Purpose/content:** `Heartbeat` (frozen Struct) with `service`,
+`instance_id`, `status` (`"active"`/`"inactive"`), `heartbeat_interval`,
+`start_time`, `ttl`, `queue_depth`, `running_tasks`, `tasks_per_second`, and
+`timestamp`. The `ttl` and metrics fields are required — a pre-v5 heartbeat
+without them fails to decode rather than silently reporting zeros — and
+`timestamp` uses `msgspec.field(default_factory=...)` for a per-instance
 value. msgpack-serialized by `ValkeyWorker.heartbeat` (stored at
 `scietex:{service}:{instance_id}:status` with a `2 × heartbeat_interval` TTL)
 and `MqttWorker.heartbeat` (retained on `scietex/{service}/workers/{instance_id}`).
@@ -704,12 +700,11 @@ reads, acknowledges, and deletes every entry so an operator can clear a stream
 without running a worker. Independent of `ValkeyWorker` (AR-043: moved off the
 worker class, which previously carried it as dead code).
 
-**Main symbols:** `PurgeResult` (24, frozen dataclass: `entries_purged` count and
+**Main symbols:** `PurgeResult` (frozen dataclass: `entries_purged` count and
 `errors` tuple), `purge_task_stream(client, stream_name, group_name,
-consumer_name, logger=None)` (37) — orchestrates the purge and returns a
-`PurgeResult`; private helpers `_purge_group_entries` (80, `XREADGROUP` + `XACK`
-+ `XDEL` loop, returns `int` count), `_purge_stream_entries`
-(107, `XREAD` + `XDEL` loop, returns `int` count), `_stream_entry_ids` (126).
+consumer_name, logger=None)` — orchestrates the purge and returns a
+`PurgeResult`; private helpers `_purge_group_entries` (`XREADGROUP` + `XACK`
++ `XDEL` loop, returns `int` count), `_purge_stream_entries` (`XREAD` + `XDEL` loop, returns `int` count), `_stream_entry_ids`.
 
 **Dependencies:** none at runtime (`GlideClient` imported only under
 `TYPE_CHECKING`); the caller supplies an open client. **Depended on by:**
@@ -717,7 +712,7 @@ consumer_name, logger=None)` (37) — orchestrates the purge and returns a
 
 ## 19. Config-dir resolution
 
-- **`config.py`** — `prepare_conf_dir()` (45): returns first existing dir
+- **`config.py`** — `prepare_conf_dir()`: returns first existing dir
   in order `conf_dir` arg → `SCIETEX_CONFIG_DIR` env → `$XDG_CONFIG_HOME/scietex`
   → `~/.config/scietex` → `/etc/scietex` → `/usr/local/etc/scietex` →
   `./config` (CWD); creates `~/.config/scietex` if none exist. Moved here from
@@ -731,17 +726,19 @@ removed, not aliased). Three concrete variants ship, each wrapping a
 `scietex.logging` theme:
 
 - **`theme/base.py`** — `Theme` Protocol: the extension seam a theme implements
-  (`banner(service_name, version) -> str`, a `palette` property returning the
+  (`banner(service_name, version, *, color=None) -> str`, a `show_banner`
+  property (bool, default True), a `palette` property returning the
   `scietex.logging.Palette`, and `console_formatter() -> logging.Formatter`).
-- **`theme/scietex.py`** — `_BANNER` (the canonical ASCII logo, moved
+- **`theme/scietex.py`** — `_LOGO` (the canonical ASCII art, moved
   verbatim) plus three `_LoggingBackedTheme` subclasses: `ScietexMonochrome`
   (the default; backed by `scietex.logging.MONOCHROME`), `ScietexLight`
   (backed by `SCIETEX_LIGHT`), and `ScietexDark` (backed by `SCIETEX_DARK`).
-  Each `banner()` substitutes the service/version/`__version__`; the `palette`
+  Each `banner(service_name, version, *, color=None)` substitutes the
+  service/version/`__version__`; the `palette`
   property returns the wrapped theme's brand palette (yellow `#FFDB1C`, dark
   gray `#31313B`, black `#1F202A`); and `console_formatter()` returns a fresh
   `ScietexFormatter` configured with the theme's palette and a TTY-auto-detected
-  color. Module-level `print_banner(service_name, version, theme=None)`
+  color. Module-level `print_banner(service_name, version, theme=None, *, color=None)`
   defaults to `ScietexMonochrome()`.
 - **`theme/__init__.py`** — re-exports `Theme`, `ScietexMonochrome`,
   `ScietexLight`, `ScietexDark`, `print_banner`.
@@ -830,9 +827,12 @@ the wire.
 transport to `TaskProcessor._transport`.
 `MqttWorkerConfig` (in `mqtt/config.py`) extends `TaskProcessorConfig` with
 `mqtt_config`, `task_topic`, `task_qos`, `inbox_backend`, `inbox_path`,
-`inbox_ttl`, `log_topic`, `log_qos`, `log_retain`, `status_publish_enabled`,
-`status_topic_prefix`, `status_qos`, `status_ttl`, `progress_qos`,
-`progress_min_interval`, and `progress_min_delta`.
+`inbox_ttl`, `inbox_lease_ttl`, `inbox_prune_interval`, `inbox_prune_jitter`,
+`log_topic`, `log_qos`, `log_retain`, `log_message_expiry`,
+`status_publish_enabled`, `status_topic_prefix`, `status_qos`, `status_ttl`,
+`progress_qos`, `progress_min_interval`, `progress_min_delta`, `config_topic`,
+`config_qos`, `config_ttl`, `control_topic`, `control_broadcast_topic`, and
+`control_qos`.
 
 **Dependencies:** `.config`, `.inbox`, `..health`, `..task_handler.schemas`,
 `..task_handler.wire`, `..transport`. **Depended on by:** `MqttWorker`
@@ -853,7 +853,7 @@ to an implementation swap.
 **Main symbols:** `MqttInbox` (Protocol: `put`/`mark_in_flight`/
 `mark_terminal`/`pending`/`recover`/`prune_expired`/`claim`/`release`/`refresh`/
 `close`), `SqliteMqttInbox(path, *, worker_id, logger, ttl=None, lease_ttl=1,
-busy_timeout_ms=...)`, and `MemoryInbox()`. `SqliteMqttInbox` opens one WAL-mode
+busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)`, and `MemoryInbox()`. `SqliteMqttInbox` opens one WAL-mode
 database (`<conf_dir>/inbox.sqlite3`, `check_same_thread=False`,
 `isolation_level=None`), runs every statement via `asyncio.to_thread` under an
 `asyncio.Lock`, and issues explicit `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`. Its
@@ -898,59 +898,56 @@ into the processor through injected callables, so the effective settings stay
 private to `TaskProcessor`.
 
 **Main symbols:**
-- Constants: `CONFIG_ENVELOPE_VERSION = 1` (46); the outcome taxonomy
+- Constants: `CONFIG_ENVELOPE_VERSION = 1`; the outcome taxonomy
   `INVALID_CONFIG_PAYLOAD`/`INVALID_CONFIG`/`UNKNOWN_CONFIG_SECTION`/
   `HASH_MISMATCH`/`BAD_SIGNATURE`/`STALE_CONFIG`/`CONFIG_SOURCE_NOT_CONFIGURED`/
-  `CONFIG_SOURCE_UNAVAILABLE`/`CONFIG_STORE_FAILED`/`REMOTE_CONFIG_DISABLED`
-  (54–63); `RETRYABLE_ERROR_CODES` (69), the transient-outcome retry set
-  (currently `{CONFIG_SOURCE_UNAVAILABLE}`); `RELOADABLE_FIELDS` (71), the
+  `CONFIG_SOURCE_UNAVAILABLE`/`CONFIG_STORE_FAILED`/`REMOTE_CONFIG_DISABLED`; `RETRYABLE_ERROR_CODES`, the transient-outcome retry set
+  (currently `{CONFIG_SOURCE_UNAVAILABLE}`); `RELOADABLE_FIELDS`, the
   eight-field allowlist.
-- Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings`
-  (87) — the complete snapshot of the eight reloadable core fields, all
-  required; `DeclarativeSettings` (105) — the same eight fields, each optional
+- Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings` — the complete snapshot of the eight reloadable core fields, all
+  required; `DeclarativeSettings` — the same eight fields, each optional
   (`None` = "use the default"/auto-tune), the persistence/inspection view;
-  `ConfigSections` (134) — `core: ReloadableSettings` +
-  `services: dict[str, bytes]`; `DeclarativeSections` (122) — `core:
-  DeclarativeSettings` + `services`; `ConfigEnvelope` (147) — `version`/`revision`/
+  `ConfigSections` — `core: ReloadableSettings` +
+  `services: dict[str, bytes]`; `DeclarativeSections` — `core:
+  DeclarativeSettings` + `services`; `ConfigEnvelope` — `version`/`revision`/
   `hash`/`signature`/`settings`/`created_at`.
 - Wire helpers: `encode_config_envelope(sections, *, revision,
-  signing_key=None, created_at=None)` (169) — msgpack-encodes a hashed,
-  optionally HMAC-signed envelope; `decode_config_envelope(payload)` (205) and
-  `peek_config_envelope_version(payload)` (227) — decode/version-peek, returning
-  `None` on malformed input; `to_declarative(settings)` (129) — view a resolved
+  signing_key=None, created_at=None)` — msgpack-encodes a hashed,
+  optionally HMAC-signed envelope; `decode_config_envelope(payload)` and
+  `peek_config_envelope_version(payload)` — decode/version-peek, returning
+  `None` on malformed input; `to_declarative(settings)` — view a resolved
   snapshot as all-explicit declarative settings.
-- `ConfigSource` Protocol (247) — `load() -> bytes | None` and
+- `ConfigSource` Protocol — `load() -> bytes | None` and
   `store(envelope: bytes) -> None`, the delivery backend seam.
-- Outcome structs: `ConfigApplyOutcome` (274) — `applied`/`revision`/`hash`/
-  `changed`/`restart_required`/`error`/`error_code`; `ConfigStoreOutcome` (298)
+- Outcome structs: `ConfigApplyOutcome` — `applied`/`revision`/`hash`/
+  `changed`/`restart_required`/`error`/`error_code`; `ConfigStoreOutcome`
   — `stored`/`target`/`path`/`revision`/`hash`/`error`/`error_code`.
-- `ConfigReloader` (320) — the validate-before-swap apply pipeline, serialized
+- `ConfigReloader` — the validate-before-swap apply pipeline, serialized
   behind an `asyncio.Lock`. Constructor takes injected `apply` (validate
   + swap the core, returning changed names), `current` (snapshot the effective
   core), `restart_required` (non-reloadable field names), `logger`,
   `signing_key`, `enabled`, and the optional `declarative`/`apply_declarative`
-  callbacks (AR-117). `register_section(name, struct_type, apply)`
-  (384) is the additive/idempotent service-section registry. `reset()` (405)
+  callbacks (AR-117). `register_section(name, struct_type, apply)` is the additive/idempotent service-section registry. `reset()`
   clears the run-scoped apply bookkeeping (`_applied_revision`/`_applied_hash`/
   `_source`/`_section_raw`) while preserving registered sections and injected
   callbacks — the run-boundary contract, called before any startup apply.
-  `apply_envelope(payload, *, source, trusted=False)` (422) runs decode →
+  `apply_envelope(payload, *, source, trusted=False)` runs decode →
   version → hash → optional signature → replay → decode sections → run section
   hooks → swap the core; `trusted=True` skips signature verification for a
   trusted local artifact (the replay guard still applies, and the flag must
   never be set for remote or inline input); a raising hook aborts before any
   state change. `apply_declarative_sections(sections, *, source, trusted=False)`
   applies a `DeclarativeSections` snapshot (the local-file path, AR-117).
-  `reload(source)` (628)
+  `reload(source)`
   loads the desired-state envelope and applies it (a `None` payload or a `load`
   exception maps to `CONFIG_SOURCE_UNAVAILABLE`). `store(source, *,
-  target="remote")` (652) persists the effective config back. `show()` (712)
+  target="remote")` persists the effective config back. `show()`
   returns the effective `ConfigSections`; `show_declarative()` returns the
-  declarative `DeclarativeSections`. Read-only properties `enabled` (731),
-  `revision` (736), `hash` (741), `source` (746).
-- Local-file helpers: `read_local_config(path)` (761) — write-free YAML read of
+  declarative `DeclarativeSections`. Read-only properties `enabled`,
+  `revision`, `hash`, `source`.
+- Local-file helpers: `read_local_config(path)` — write-free YAML read of
   the `config.yml` snapshot as `DeclarativeSections` (`None` on missing/invalid);
-  `write_local_config(path, sections)` (790) — atomic YAML write via `os.replace`
+  `write_local_config(path, sections)` — atomic YAML write via `os.replace`
   (accepts `ConfigSections` or `DeclarativeSections`, normalising to declarative).
 
 **Dependencies:** `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`,
@@ -970,22 +967,20 @@ callback injected by the owning `ConfigManager` (which owns the
 processor internals.
 
 **Main symbols:**
-- `ConfigSourceLabel = Literal["default", "file", "remote", "inline"]` (29).
-- Request/response structs: `ConfigApplyRequest` (32,
-  `payload: bytes | None = None`, `persist: bool = False`),
-  `ConfigApplyResponse` (44, `applied`/`revision`/`hash`/`changed`/
-  `restart_required`/`error`), `ConfigStoreRequest` (65,
-  `target: Literal["disk", "remote", "both"] = "disk"`),
-  `ConfigStoreResponse` (77, `stored`/`target`/`path`/`revision`/`hash`/
-  `error`), `ConfigShowRequest` (97, `include_restart_required: bool = True`),
-  `ConfigShowResponse` (108, `settings`/`declarative_settings`/`revision`/`hash`/
+- `ConfigSourceLabel = Literal["default", "file", "remote", "inline"]`.
+- Request/response structs: `ConfigApplyRequest` (`payload: bytes | None = None`, `persist: bool = False`),
+  `ConfigApplyResponse` (`applied`/`revision`/`hash`/`changed`/
+  `restart_required`/`error`), `ConfigStoreRequest` (`target: Literal["disk", "remote", "both"] = "disk"`),
+  `ConfigStoreResponse` (`stored`/`target`/`path`/`revision`/`hash`/
+  `error`), `ConfigShowRequest` (`include_restart_required: bool = True`),
+  `ConfigShowResponse` (`settings`/`declarative_settings`/`revision`/`hash`/
   `source`/`restart_required_fields`/`error`/`error_code`).
-- Callback types: `ConfigApplyCallback` (137) `(bytes | None, bool) ->
-  Awaitable[ConfigApplyOutcome]`; `ConfigStoreCallback` (140) `(str) ->
-  Awaitable[ConfigStoreOutcome]`; `ConfigShowCallback` (144) `(bool) ->
+- Callback types: `ConfigApplyCallback` `(bytes | None, bool) ->
+  Awaitable[ConfigApplyOutcome]`; `ConfigStoreCallback` `(str) ->
+  Awaitable[ConfigStoreOutcome]`; `ConfigShowCallback` `(bool) ->
   ConfigShowResponse`.
-- Handlers: `ConfigApplyHandler` (147), `ConfigStoreHandler` (235),
-  `ConfigShowHandler` (323). Each decodes its request with
+- Handlers: `ConfigApplyHandler`, `ConfigStoreHandler`,
+  `ConfigShowHandler`. Each decodes its request with
   `msgspec.msgpack.decode(..., type=...)`; a `DecodeError` returns a
   non-retryable `INVALID_CONFIG_PAYLOAD` `TaskResult` rather than raising. An
   outcome whose `error_code` is in `RETRYABLE_ERROR_CODES` (currently only
@@ -1007,13 +1002,13 @@ Protocol. The durable key `scietex:{service}:config` is the source of truth for
 remote config, not PubSub: PubSub is at-most-once and not persisted, so it
 cannot answer "what is the desired state now?" on startup or reconnect.
 
-**Main symbols:** `ValkeyConfigSource` (17), constructed with
+**Main symbols:** `ValkeyConfigSource`, constructed with
 `(*, client_provider, key, logger)` — the client is late-bound through
 `client_provider` so a reconnect that swaps the underlying `GlideClient` is
-picked up on the next call (AR-103). `load()` (32) does a live
+picked up on the next call (AR-103). `load()` does a live
 `await client.get(key)`
 and returns `None` when the key is absent, so the reloader falls back to the
-local/default config. `store(envelope)` (36) writes the envelope back with
+local/default config. `store(envelope)` writes the envelope back with
 `client.set(key, value=envelope)` (used by `config:store` targeting `remote`).
 Connection errors are not swallowed — they propagate to the reloader, which
 maps them to `CONFIG_SOURCE_UNAVAILABLE`.
@@ -1033,15 +1028,14 @@ retained message: retained = state, delivered on SUBACK. Unlike Valkey's
 — so the source records the latest payload received on the topic as an
 in-memory snapshot and exposes a bounded `wait_for_snapshot` for startup.
 
-**Main symbols:** `MqttConfigSource` (26), constructed with `(*, topic, qos,
+**Main symbols:** `MqttConfigSource`, constructed with `(*, topic, qos,
 ttl, publish, logger)` — `publish` is the `MqttPublish` seam injected by the
-worker (which owns the client). `record(payload)` (56) stores the newest
+worker (which owns the client). `record(payload)` stores the newest
 config-topic payload and signals any waiter (the newest wins). 
-`wait_for_snapshot(timeout)` (65) blocks on an `asyncio.Event` for at most
+`wait_for_snapshot(timeout)` blocks on an `asyncio.Event` for at most
 `timeout` seconds and returns the payload or `None` on timeout — it never
-raises, so a broker without a retained config cannot fail startup. `load()`
-(78) returns the recorded snapshot without touching the network. `store
-(envelope)` (82) publishes the effective config back as a retained message
+raises, so a broker without a retained config cannot fail startup. `load()` returns the recorded snapshot without touching the network. `store
+(envelope)` publishes the effective config back as a retained message
 (`retain=True`) at `qos`, carrying an MQTT 5 message-expiry property
 (`MessageExpiryInterval = ttl`) when `ttl` is set, mirroring `status_ttl`.
 
