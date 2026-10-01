@@ -45,7 +45,7 @@ myst_enable_extensions = [
     "deflist",
     "fieldlist",
 ]
-myst_heading_anchors = 2
+myst_heading_anchors = 3
 myst_all_links_external = False
 myst_url_schemes = ("http", "https", "mailto")
 

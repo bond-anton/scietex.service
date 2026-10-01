@@ -39,6 +39,15 @@ architecture/hotspots
 
 ```{toctree}
 :maxdepth: 2
+:caption: Design Notes
+
+design/control_plane
+design/mqtt_worker
+design/remote_config
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: API Reference
 
 api/index
