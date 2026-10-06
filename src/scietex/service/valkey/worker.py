@@ -21,6 +21,7 @@ from ..config_reload import CONFIG_SOURCE_UNAVAILABLE, ConfigApplyOutcome
 from ..heartbeat import Heartbeat
 from ..theme import Theme
 from ..transport_worker import TransportWorker
+from ..version import __version__
 from ._glide import (
     ExpirySet,
     ExpiryType,
@@ -416,6 +417,8 @@ class ValkeyWorker(TransportWorker):
                 queue_depth=metrics.queue_depth,
                 running_tasks=metrics.running,
                 tasks_per_second=metrics.rate,
+                service_version=self.version,
+                framework_version=__version__,
                 timestamp=datetime.now(timezone.utc),
             )
             self.logger.log(logging.DEBUG, "Sending heartbeat to Valkey: %s", heartbeat_data)
@@ -611,6 +614,8 @@ class ValkeyWorker(TransportWorker):
             queue_depth=metrics.queue_depth,
             running_tasks=metrics.running,
             tasks_per_second=metrics.rate,
+            service_version=self.version,
+            framework_version=__version__,
             timestamp=datetime.now(timezone.utc),
         )
         try:

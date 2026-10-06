@@ -5,7 +5,10 @@ worker publishes to signal liveness, so ``ValkeyWorker`` and ``MqttWorker``
 cannot drift on the payload. It is msgpack-encoded as a map, so fields are
 keyed by name: reordering them does not change the wire bytes. Adding a
 required field does — a payload written before that field existed fails to
-decode, which is how the v5 ``ttl`` addition rejects pre-v5 heartbeats.
+decode, which is how the v5 ``ttl`` addition rejects pre-v5 heartbeats. Adding
+an optional field is wire-compatible in both directions: old readers ignore the
+key, and old payloads decode to the field's default. The version fields below
+are optional for exactly that reason.
 
 Serialized as msgpack, the struct is stored per transport as:
 
@@ -45,6 +48,11 @@ class Heartbeat(msgspec.Struct, frozen=True):
         running_tasks: Tasks the producer is currently processing.
         tasks_per_second: Sliding-window completion rate (completions in the
             last ``window`` seconds divided by ``window``).
+        service_version: Version of the publishing service package, or
+            ``None`` for a producer that does not report one.
+        framework_version: Version of the ``scietex.service`` framework the
+            worker runs on, or ``None`` for a producer that does not report
+            one.
         timestamp: UTC timestamp of this heartbeat entry (defaults to
             ``datetime.now(timezone.utc)`` at construction time).
     """
@@ -66,4 +74,10 @@ class Heartbeat(msgspec.Struct, frozen=True):
     queue_depth: int
     running_tasks: int
     tasks_per_second: float
+    # Optional, unlike ttl/metrics: the framework's own client decodes
+    # heartbeats from workers that may predate these fields, so they must not
+    # be required. A producer that omits them reports None rather than a
+    # misleading default.
+    service_version: str | None = None
+    framework_version: str | None = None
     timestamp: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))

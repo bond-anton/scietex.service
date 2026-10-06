@@ -27,6 +27,7 @@ from ..task_handler.schemas import task_data_id
 from ..task_handler.wire import decode_task_envelope
 from ..theme import Theme
 from ..transport_worker import TransportWorker
+from ..version import __version__
 from ._aiomqtt import Client, Message, MqttError, PacketTypes, Properties, ProtocolVersion, Will
 from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
 from .config_source import MqttConfigSource
@@ -576,6 +577,8 @@ class MqttWorker(TransportWorker):
                     queue_depth=metrics.queue_depth,
                     running_tasks=metrics.running,
                     tasks_per_second=metrics.rate,
+                    service_version=self.version,
+                    framework_version=__version__,
                 )
             )
             properties = Properties(PacketTypes.PUBLISH)
@@ -619,6 +622,8 @@ class MqttWorker(TransportWorker):
                 queue_depth=metrics.queue_depth,
                 running_tasks=metrics.running,
                 tasks_per_second=metrics.rate,
+                service_version=self.version,
+                framework_version=__version__,
             )
         )
         properties = Properties(PacketTypes.WILLMESSAGE)
@@ -873,6 +878,8 @@ class MqttWorker(TransportWorker):
                 queue_depth=metrics.queue_depth,
                 running_tasks=metrics.running,
                 tasks_per_second=metrics.rate,
+                service_version=self.version,
+                framework_version=__version__,
             )
         )
         properties = Properties(PacketTypes.PUBLISH)

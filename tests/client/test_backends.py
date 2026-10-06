@@ -21,6 +21,8 @@ def make_heartbeat(instance_id: str = "a") -> Heartbeat:
         queue_depth=0,
         running_tasks=0,
         tasks_per_second=0.0,
+        service_version="1.2.3",
+        framework_version="5.0.1",
         timestamp=datetime.now(timezone.utc),
     )
 
@@ -34,6 +36,35 @@ def test_decode_heartbeat_round_trip():
     assert decoded is not None
     assert decoded.instance_id == "a"
     assert decoded.ttl == 100.0
+    assert decoded.service_version == "1.2.3"
+    assert decoded.framework_version == "5.0.1"
+
+
+def test_decode_heartbeat_without_versions_defaults_to_none():
+    """A heartbeat predating the version fields decodes with both ``None``.
+
+    The version fields are optional precisely so the framework's own client
+    keeps reading heartbeats from workers that do not report them.
+    """
+    legacy = {
+        "service": "svc",
+        "instance_id": "a",
+        "status": "active",
+        "heartbeat_interval": 10.0,
+        "start_time": datetime.now(timezone.utc),
+        "ttl": 100.0,
+        "queue_depth": 0,
+        "running_tasks": 0,
+        "tasks_per_second": 0.0,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    payload = msgspec.msgpack.encode(legacy)
+
+    decoded = decode_heartbeat(payload)
+
+    assert decoded is not None
+    assert decoded.service_version is None
+    assert decoded.framework_version is None
 
 
 def test_decode_heartbeat_skips_empty_payload():

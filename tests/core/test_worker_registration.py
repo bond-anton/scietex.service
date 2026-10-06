@@ -2,6 +2,7 @@
 
 import pytest
 
+import scietex.service
 from scietex.service import BasicWorker
 from scietex.service.config import WorkerConfig
 
@@ -54,7 +55,7 @@ async def test_valkey_register_unregister_publish_status(monkeypatch):
     from scietex.service import ValkeyWorker
     from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
-    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", version="9.9.9", valkey_config=ValkeyConfig()))
     client = DummyClient()
     worker._client = client
 
@@ -62,7 +63,12 @@ async def test_valkey_register_unregister_publish_status(monkeypatch):
     assert len(client.set_calls) == 1
     key, value, _ = client.set_calls[0]
     assert key == f"scietex:svc:{worker.instance_id}:status"
-    assert msgspec.msgpack.decode(value, type=Heartbeat).status == "active"
+    heartbeat = msgspec.msgpack.decode(value, type=Heartbeat)
+    assert heartbeat.status == "active"
+    # The worker reports its own package version and the framework version it
+    # runs on, so the registry can surface both.
+    assert heartbeat.service_version == "9.9.9"
+    assert heartbeat.framework_version == scietex.service.__version__
 
     await worker._unregister_instance()
     assert len(client.set_calls) == 2

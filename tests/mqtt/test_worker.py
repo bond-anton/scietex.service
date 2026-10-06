@@ -10,6 +10,7 @@ from uuid import uuid4
 import msgspec
 import pytest
 
+import scietex.service
 import scietex.service.mqtt.worker as mod
 from scietex.service.health import TransportHealth
 from scietex.service.heartbeat import Heartbeat
@@ -693,6 +694,8 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
     assert decoded.ttl == worker.active_ttl
     assert isinstance(decoded.start_time, datetime)
     assert isinstance(decoded.timestamp, datetime)
+    assert decoded.service_version == worker.version
+    assert decoded.framework_version == scietex.service.__version__
     # Byte-identity parity: the MQTT payload is the exact msgpack encoding of
     # the shared Heartbeat struct, matching what Valkey publishes field-for-field.
     metrics = worker.task_metrics()
@@ -706,6 +709,8 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
         queue_depth=metrics.queue_depth,
         running_tasks=metrics.running,
         tasks_per_second=metrics.rate,
+        service_version=worker.version,
+        framework_version=scietex.service.__version__,
         timestamp=decoded.timestamp,
     )
     assert msgspec.msgpack.encode(reference) == payload
