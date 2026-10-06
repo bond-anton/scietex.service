@@ -93,9 +93,14 @@ class DeclarativeSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 
 
 class DeclarativeSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Local config.yml artifact: declarative core + registered service bytes."""
+    """Local config.yml artifact: declarative core + registered service bytes.
 
-    core: DeclarativeSettings
+    ``core`` is ``None`` when the artifact carries only service sections (the
+    API does not track a worker's core settings); the core is then left
+    untouched on apply and omitted from the persisted file.
+    """
+
+    core: DeclarativeSettings | None = None
     services: dict[str, bytes] = msgspec.field(default_factory=dict)
 
 
@@ -110,10 +115,12 @@ class ConfigSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     ``core`` holds the reloadable core settings; ``services`` maps a
     registered section name to its msgpack-encoded struct bytes so a custom
     service can extend the reloadable surface without the core knowing its
-    fields.
+    fields. ``core`` is ``None`` when a producer delivers only service sections
+    (e.g. the API, which does not track a worker's core settings); the core
+    settings are then left untouched.
     """
 
-    core: ReloadableSettings
+    core: ReloadableSettings | None = None
     services: dict[str, bytes] = msgspec.field(default_factory=dict)
 
 
@@ -460,11 +467,16 @@ class ConfigReloader:
             if section_error is not None:
                 return section_error
 
-            try:
-                changed = self._apply(sections.core)
-            except Exception as exc:
-                self._logger.error("Config apply rejected: core settings invalid: %s", exc)
-                return ConfigApplyOutcome(applied=False, error_code=INVALID_CONFIG, error=str(exc))
+            # A producer may deliver only service sections (core=None); the
+            # worker then keeps its current core settings. The revision/hash
+            # bookkeeping still advances so the envelope is not re-applied.
+            changed: list[str] = []
+            if sections.core is not None:
+                try:
+                    changed = self._apply(sections.core)
+                except Exception as exc:
+                    self._logger.error("Config apply rejected: core settings invalid: %s", exc)
+                    return ConfigApplyOutcome(applied=False, error_code=INVALID_CONFIG, error=str(exc))
 
             self._applied_revision = envelope.revision
             self._applied_hash = envelope.hash
@@ -558,11 +570,14 @@ class ConfigReloader:
             section_error = self._validate_and_run_sections(sections.services)
             if section_error is not None:
                 return section_error
-            try:
-                changed = self._apply_declarative(sections.core)
-            except Exception as exc:
-                self._logger.error("Declarative apply rejected: core settings invalid: %s", exc)
-                return ConfigApplyOutcome(applied=False, error_code=INVALID_CONFIG, error=str(exc))
+            # A service-only artifact (core=None) leaves the core untouched.
+            changed: list[str] = []
+            if sections.core is not None:
+                try:
+                    changed = self._apply_declarative(sections.core)
+                except Exception as exc:
+                    self._logger.error("Declarative apply rejected: core settings invalid: %s", exc)
+                    return ConfigApplyOutcome(applied=False, error_code=INVALID_CONFIG, error=str(exc))
             self._applied_revision = 1
             self._applied_hash = hashlib.sha256(msgspec.msgpack.encode(sections)).hexdigest()
             self._source = source
@@ -749,7 +764,8 @@ def write_local_config(path: Path, sections: ConfigSections | DeclarativeSection
         OSError: If the temporary file cannot be created, written, or moved.
     """
     if isinstance(sections, ConfigSections):
-        sections = DeclarativeSections(core=to_declarative(sections.core), services=sections.services)
+        core = to_declarative(sections.core) if sections.core is not None else None
+        sections = DeclarativeSections(core=core, services=sections.services)
     data = msgspec.yaml.encode(sections)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
