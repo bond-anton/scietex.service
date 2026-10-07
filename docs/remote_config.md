@@ -139,7 +139,7 @@ The on-the-wire unit is a versioned `ConfigEnvelope` (`scietex.service.config_re
 
 | Field | Type | Meaning |
 |---|---|---|
-| `core` | `ReloadableSettings` | The reloadable core snapshot (always present) |
+| `core` | `ReloadableSettings \| None` | The reloadable core snapshot; `None` when the producer delivers only service sections (the core is then left untouched) |
 | `services` | `dict[str, bytes]` | Registered section name → msgpack(registered struct) |
 
 `ReloadableSettings` is the complete snapshot of the hot-reloadable core
@@ -183,9 +183,15 @@ class DeclarativeSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 
 
 class DeclarativeSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    core: DeclarativeSettings
+    core: DeclarativeSettings | None = None
     services: dict[str, bytes] = msgspec.field(default_factory=dict)
 ```
+
+Both `ConfigSections.core` and `DeclarativeSections.core` are optional. A
+producer that does not track a worker's core settings — the API, for example —
+delivers `core=None` and only the service sections; the worker then keeps its
+current core settings while still running the section hooks and advancing the
+revision/hash bookkeeping so the envelope is not re-applied.
 
 The declarative view is what the local `config.yml` stores and what
 `config:show` returns as `declarative_settings`, so a store→restart cycle
@@ -194,11 +200,12 @@ to be resolved at store time.
 
 ### Complete snapshot, not a patch
 
-All fields are required: a partial payload fails loudly instead of silently
-resetting operator-tuned values. Because every struct is declared
-`forbid_unknown_fields=True`, a payload naming `queue_size`, `valkey_config`,
-or any connection parameter is **rejected**, not merely ignored —
-restart-required fields are *unrepresentable*, not dropped.
+When a core snapshot is present, all eight of its fields are required: a partial
+payload fails loudly instead of silently resetting operator-tuned values. (The
+`core` section itself is optional — see above — but a present one is complete.)
+Because every struct is declared `forbid_unknown_fields=True`, a payload naming
+`queue_size`, `valkey_config`, or any connection parameter is **rejected**, not
+merely ignored — restart-required fields are *unrepresentable*, not dropped.
 
 ### Encoding
 
@@ -425,10 +432,11 @@ class MyWorker(MqttWorker):
 ```
 
 The envelope's `settings.services` map then carries
-`{"my_service": msgpack(MyServiceSettings(...))}` alongside `core`. On every
-apply:
+`{"my_service": msgpack(MyServiceSettings(...))}` alongside `core` (or on its
+own, when the producer delivers service sections only). On every apply:
 
-- The core section is validated against `ReloadableSettings`.
+- The core section, when present, is validated against `ReloadableSettings`; a
+  `core=None` envelope leaves the current core settings untouched.
 - Each registered section is decoded against its registered struct
   (`forbid_unknown_fields` rejects a typo in a service field, not silently
   ignoring it).

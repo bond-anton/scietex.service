@@ -907,10 +907,11 @@ private to `TaskProcessor`.
 - Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings` — the complete snapshot of the eight reloadable core fields, all
   required; `DeclarativeSettings` — the same eight fields, each optional
   (`None` = "use the default"/auto-tune), the persistence/inspection view;
-  `ConfigSections` — `core: ReloadableSettings` +
+  `ConfigSections` — `core: ReloadableSettings | None` +
   `services: dict[str, bytes]`; `DeclarativeSections` — `core:
-  DeclarativeSettings` + `services`; `ConfigEnvelope` — `version`/`revision`/
-  `hash`/`signature`/`settings`/`created_at`.
+  DeclarativeSettings | None` + `services`; `ConfigEnvelope` — `version`/`revision`/
+  `hash`/`signature`/`settings`/`created_at`. A `None` core marks a
+  service-only envelope: the core is left untouched on apply.
 - Wire helpers: `encode_config_envelope(sections, *, revision,
   signing_key=None, created_at=None)` — msgpack-encodes a hashed,
   optionally HMAC-signed envelope; `decode_config_envelope(payload)` and

@@ -227,6 +227,14 @@ class ConfigSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     # section name -> msgpack(registered struct)
 ```
 
+> **Post-implementation note (v5.2.0).** `core` is now optional
+> (`ReloadableSettings | None`, default `None`) so a producer that does not
+> track a worker's core settings — the API, for example — can deliver a
+> service-only envelope. A `None` core leaves the current core settings
+> untouched while still running the section hooks and advancing the
+> revision/hash bookkeeping. `docs/remote_config.md` documents the current
+> behaviour.
+
 - The core validates `core` against `ReloadableSettings` and each registered
   section against its registered struct. An unregistered section name is
   rejected (`UNKNOWN_CONFIG_SECTION`).
