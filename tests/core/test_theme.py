@@ -23,7 +23,8 @@ _BANNER_SENTINEL = "STUB_THEME_BANNER"
 
 # The byte-for-byte plain startup banner for the fixed probe values "svc"/"1.2.3".
 # Regenerated whenever the layout changes; guards the colorless render against drift.
-_PLAIN_BANNER = """
+# The scietex version is interpolated so the snapshot tracks the package version.
+_PLAIN_BANNER = f"""
 
           ########+
           #########+
@@ -34,7 +35,7 @@ _PLAIN_BANNER = """
      +#+..        .#####-
    -##########.      .+##-
  -#################+-
- ####################       Powered by scietex.service v5.0.0
+ ####################       Powered by scietex.service v{__version__}
   .############-.    .-##-
     .####+.       .#####-   (c) ООО "Научные технологии и сервис"
                -#######-    https://scietex.ru
