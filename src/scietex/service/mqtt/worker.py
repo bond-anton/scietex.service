@@ -579,6 +579,7 @@ class MqttWorker(TransportWorker):
                     tasks_per_second=metrics.rate,
                     service_version=self.version,
                     framework_version=__version__,
+                    **self._heartbeat_core_fields(),
                 )
             )
             properties = Properties(PacketTypes.PUBLISH)
@@ -624,6 +625,7 @@ class MqttWorker(TransportWorker):
                 tasks_per_second=metrics.rate,
                 service_version=self.version,
                 framework_version=__version__,
+                **self._heartbeat_core_fields(),
             )
         )
         properties = Properties(PacketTypes.WILLMESSAGE)
@@ -880,6 +882,7 @@ class MqttWorker(TransportWorker):
                 tasks_per_second=metrics.rate,
                 service_version=self.version,
                 framework_version=__version__,
+                **self._heartbeat_core_fields(),
             )
         )
         properties = Properties(PacketTypes.PUBLISH)

@@ -696,6 +696,11 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
     assert isinstance(decoded.timestamp, datetime)
     assert decoded.service_version == worker.version
     assert decoded.framework_version == scietex.service.__version__
+    # The effective core settings and restart-required field names are carried
+    # so the API/UI can display them without a config:show round-trip.
+    core_fields = worker._heartbeat_core_fields()
+    assert decoded.core_settings == core_fields["core_settings"]
+    assert decoded.restart_required_fields == core_fields["restart_required_fields"]
     # Byte-identity parity: the MQTT payload is the exact msgpack encoding of
     # the shared Heartbeat struct, matching what Valkey publishes field-for-field.
     metrics = worker.task_metrics()
@@ -711,6 +716,7 @@ async def test_heartbeat_publishes_retained_on_registry_topic():
         tasks_per_second=metrics.rate,
         service_version=worker.version,
         framework_version=scietex.service.__version__,
+        **core_fields,
         timestamp=decoded.timestamp,
     )
     assert msgspec.msgpack.encode(reference) == payload

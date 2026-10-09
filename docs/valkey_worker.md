@@ -940,6 +940,14 @@ heartbeat interval.
 | `status` | `Literal["active", "inactive"]` | *(required)* | Current worker status |
 | `heartbeat_interval` | `float` | *(required)* | Interval in seconds between heartbeats |
 | `start_time` | `datetime` | *(required)* | UTC timestamp when the worker started |
+| `ttl` | `float` | *(required)* | Lifetime in seconds the consumer should apply to this record |
+| `queue_depth` | `int` | *(required)* | Tasks waiting in the producer's data-plane queue |
+| `running_tasks` | `int` | *(required)* | Tasks the producer is currently processing |
+| `tasks_per_second` | `float` | *(required)* | Sliding-window completion rate |
+| `service_version` | `str \| None` | `None` | Version of the publishing service package |
+| `framework_version` | `str \| None` | `None` | Version of the `scietex.service` framework |
+| `core_settings` | `dict[str, int \| float] \| None` | `None` | Effective values of the eight hot-reloadable core fields |
+| `restart_required_fields` | `list[str] \| None` | `None` | Concrete config fields that require a restart to change |
 | `timestamp` | `datetime` | `datetime.now(timezone.utc)` | UTC timestamp of this heartbeat entry |
 
 ### TaskProgress

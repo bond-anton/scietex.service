@@ -419,6 +419,7 @@ class ValkeyWorker(TransportWorker):
                 tasks_per_second=metrics.rate,
                 service_version=self.version,
                 framework_version=__version__,
+                **self._heartbeat_core_fields(),
                 timestamp=datetime.now(timezone.utc),
             )
             self.logger.log(logging.DEBUG, "Sending heartbeat to Valkey: %s", heartbeat_data)
@@ -616,6 +617,7 @@ class ValkeyWorker(TransportWorker):
             tasks_per_second=metrics.rate,
             service_version=self.version,
             framework_version=__version__,
+            **self._heartbeat_core_fields(),
             timestamp=datetime.now(timezone.utc),
         )
         try:

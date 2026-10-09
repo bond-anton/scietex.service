@@ -53,6 +53,12 @@ class Heartbeat(msgspec.Struct, frozen=True):
         framework_version: Version of the ``scietex.service`` framework the
             worker runs on, or ``None`` for a producer that does not report
             one.
+        core_settings: Effective values of the eight hot-reloadable core
+            fields (``msgspec.to_builtins`` of the resolved snapshot), or
+            ``None`` for a producer that does not report them.
+        restart_required_fields: Names of the concrete config fields that are
+            not hot-reloadable (they require a restart to change), or ``None``
+            for a producer that does not report them.
         timestamp: UTC timestamp of this heartbeat entry (defaults to
             ``datetime.now(timezone.utc)`` at construction time).
     """
@@ -80,4 +86,10 @@ class Heartbeat(msgspec.Struct, frozen=True):
     # misleading default.
     service_version: str | None = None
     framework_version: str | None = None
+    # Optional for the same reason as the version fields: the framework's own
+    # client decodes heartbeats from workers that may predate these fields, so
+    # a payload without them reports None rather than failing to decode. They
+    # sit above ``timestamp`` for the same default_factory ordering constraint.
+    core_settings: dict[str, int | float] | None = None
+    restart_required_fields: list[str] | None = None
     timestamp: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))

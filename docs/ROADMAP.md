@@ -4,6 +4,25 @@ Planned work for future major versions. Items here are **not** committed to a
 release date; they are tracked so architectural decisions made in earlier
 versions are not lost. Each entry cites the review finding that motivated it.
 
+## v6.1.0 — Core settings in the heartbeat
+
+**Motivation:** the API and UI need to display a worker's *effective* core
+settings (the eight hot-reloadable fields after the L0–L3 merge) without
+submitting a `config:show` task and polling for its result. The heartbeat is
+already the liveness record every worker publishes and every client decodes, so
+it is the natural carrier.
+
+**Decision (v6.1.0):** `Heartbeat` gains two optional fields —
+`core_settings` (the effective values of the eight hot-reloadable fields,
+`msgspec.to_builtins` of the resolved snapshot) and `restart_required_fields`
+(the concrete config fields that are not hot-reloadable). Both default to
+`None` and are populated at every heartbeat write site via a shared
+`TransportWorker._heartbeat_core_fields()` helper. Optional, like the version
+fields, so the framework's own client keeps decoding heartbeats from workers
+that predate them.
+
+**Status: implemented** (v6.1.0).
+
 ## v6.0.0 — Layered config merge
 
 **Motivation:** the v4.5.0/AR-117 config model had a single effective layer plus

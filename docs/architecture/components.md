@@ -683,11 +683,17 @@ drops the update when the record is absent (DEBUG log), silent on
 **File:** `src/scietex/service/heartbeat.py`
 **Purpose/content:** `Heartbeat` (frozen Struct) with `service`,
 `instance_id`, `status` (`"active"`/`"inactive"`), `heartbeat_interval`,
-`start_time`, `ttl`, `queue_depth`, `running_tasks`, `tasks_per_second`, and
-`timestamp`. The `ttl` and metrics fields are required — a pre-v5 heartbeat
-without them fails to decode rather than silently reporting zeros — and
-`timestamp` uses `msgspec.field(default_factory=...)` for a per-instance
-value. msgpack-serialized by `ValkeyWorker.heartbeat` (stored at
+`start_time`, `ttl`, `queue_depth`, `running_tasks`, `tasks_per_second`,
+`service_version`, `framework_version`, `core_settings`,
+`restart_required_fields`, and `timestamp`. The `ttl` and metrics fields are
+required — a pre-v5 heartbeat without them fails to decode rather than silently
+reporting zeros — and `timestamp` uses `msgspec.field(default_factory=...)` for
+a per-instance value. The version fields (v5.2.0) and the core-settings fields
+(v6.1.0) are optional so the framework's own client can decode heartbeats from
+workers that predate them; a producer that omits them reports `None`.
+`core_settings` carries the effective values of the eight hot-reloadable core
+fields and `restart_required_fields` the concrete config fields that need a
+restart. msgpack-serialized by `ValkeyWorker.heartbeat` (stored at
 `scietex:{service}:{instance_id}:status` with a `2 × heartbeat_interval` TTL)
 and `MqttWorker.heartbeat` (retained on `scietex/{service}/workers/{instance_id}`).
 The struct moved from `valkey/schemas.py` to core in v4.6.0; `valkey/schemas.py`

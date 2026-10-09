@@ -988,6 +988,13 @@ a `MessageExpiryInterval` of `active_ttl`.
 | `heartbeat_interval` | `float` | Seconds between heartbeats |
 | `start_time` | `datetime` | Worker start time (msgpack timestamp) |
 | `ttl` | `float` | Lifetime the consumer should apply to this record |
+| `queue_depth` | `int` | Tasks waiting in the producer's data-plane queue |
+| `running_tasks` | `int` | Tasks the producer is currently processing |
+| `tasks_per_second` | `float` | Sliding-window completion rate |
+| `service_version` | `str \| None` | Version of the publishing service package |
+| `framework_version` | `str \| None` | Version of the `scietex.service` framework |
+| `core_settings` | `dict[str, int \| float] \| None` | Effective values of the eight hot-reloadable core fields |
+| `restart_required_fields` | `list[str] \| None` | Concrete config fields that require a restart to change |
 | `timestamp` | `datetime` | Time this heartbeat was produced (msgpack timestamp) |
 
 The same struct is published by `ValkeyWorker`, so a client decodes one shape

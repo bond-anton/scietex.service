@@ -6,10 +6,12 @@ import os
 from datetime import datetime, timezone
 from uuid import UUID
 
+import msgspec
 import pytest
 
 import scietex.service.valkey.worker as mod
 from scietex.service import ValkeyWorker
+from scietex.service.heartbeat import Heartbeat
 from scietex.service.task_handler.schemas import TaskData
 from scietex.service.valkey.config import ValkeyConfig, ValkeyWorkerConfig
 
@@ -235,6 +237,26 @@ async def test_heartbeat_refreshes_directed_control_and_log_stream_ttls():
         (worker._control_stream_name, int(worker.active_ttl)),
         (worker._log_stream_name, int(worker.active_ttl)),
     ]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_publishes_core_settings():
+    """heartbeat() carries the effective core settings and restart-required
+    field names in the status payload, so the API/UI can display them without
+    a config:show round-trip."""
+    client = DummyClient()
+    worker = ValkeyWorker(ValkeyWorkerConfig(service_name="svc", valkey_config=ValkeyConfig()))
+    worker._client = client
+    worker._lifecycle.start_time = datetime.now(timezone.utc)
+
+    await worker.heartbeat()
+
+    key = worker._heartbeat_key
+    writes = [(k, v) for k, v, _expiry in client.sets if k == key]
+    assert writes, "heartbeat() did not write the status key"
+    decoded = msgspec.msgpack.decode(writes[-1][1], type=Heartbeat)
+    assert decoded.core_settings == msgspec.to_builtins(worker._current_reloadable_settings())
+    assert decoded.restart_required_fields == worker._restart_required_fields()
 
 
 @pytest.mark.asyncio

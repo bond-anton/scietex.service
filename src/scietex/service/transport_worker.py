@@ -8,7 +8,9 @@ the transport itself stay in the concrete worker.
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypedDict
+
+import msgspec
 
 from .config import TaskProcessorConfig
 from .config_reload import (
@@ -20,6 +22,18 @@ from .config_reload import (
 from .health import TransportHealth
 from .task_processor import TaskProcessor
 from .theme import Theme
+
+
+class HeartbeatCoreFields(TypedDict):
+    """Core-settings keyword arguments shared by every heartbeat write site.
+
+    The types mirror the :class:`~scietex.service.heartbeat.Heartbeat` fields
+    they map onto, so a ``**`` spread type-checks field-for-field instead of
+    degrading to an untyped ``dict``.
+    """
+
+    core_settings: dict[str, int | float]
+    restart_required_fields: list[str]
 
 
 class TransportWorker(TaskProcessor):
@@ -134,6 +148,20 @@ class TransportWorker(TaskProcessor):
     async def _read_remote_outcome(self) -> ConfigApplyOutcome:
         """Abstract: read and apply the remote desired-state envelope."""
         raise NotImplementedError
+
+    def _heartbeat_core_fields(self) -> HeartbeatCoreFields:
+        """Build the core-settings fields shared by every heartbeat write site.
+
+        ``core_settings`` is the effective reloadable snapshot as a plain dict
+        (``msgspec.to_builtins``), and ``restart_required_fields`` the concrete
+        config field names that are not reloadable. Returning one dict lets each
+        transport spread the same two keyword arguments without repeating the
+        conversion.
+        """
+        return {
+            "core_settings": msgspec.to_builtins(self._current_reloadable_settings()),
+            "restart_required_fields": self._restart_required_fields(),
+        }
 
     def _log_config_outcome(self, outcome: ConfigApplyOutcome, source: str) -> None:
         if outcome.applied:
