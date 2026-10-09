@@ -29,6 +29,31 @@ worker = MqttWorker(MqttWorkerConfig(service_name="svc", remote_config_enabled=T
 The feature is opt-in and disabled by default. It is pure-Python (stdlib
 `hmac`/`hashlib`/`os` plus the existing `msgspec`); no new dependencies.
 
+## File layout
+
+The framework resolves **one** config directory (`conf_dir`) shared by every
+service it runs. Each worker's snapshot file is the `config_file` field,
+resolved under `conf_dir`; it defaults to `"config.yml"`, so the snapshot is
+`<conf_dir>/config.yml`. A service may namespace its snapshot into a
+subdirectory by setting `config_file` to a relative path — modbus uses
+`"modbus/config.yml"` — so multiple services sharing one `conf_dir` do not
+collide.
+
+The snapshot holds the framework's `core:` settings plus a `services:` map of
+per-service sections:
+
+```
+<conf_dir>/
+├── config.yml              # default snapshot: core: + services: (shared root)
+└── modbus/
+    ├── config.yml          # namespaced snapshot: core: + services.modbus
+    └── modbus.yml          # service-owned bootstrap (flat; framework never writes)
+```
+
+A **service-owned bootstrap** file (e.g. modbus's `modbus.yml`) is distinct from
+this framework snapshot: it uses the service's own flat schema, is written once
+on first run, and is never rewritten by the framework.
+
 ## Enabling
 
 Set `remote_config_enabled=True` on the config struct (it is a
