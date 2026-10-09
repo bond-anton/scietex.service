@@ -804,15 +804,18 @@ class TaskProcessor(BasicWorker):
         """Stop and then start the worker, in the background.
 
         Injected into the built-in ``WorkerControlHandler``. There is no restart
-        primitive: ``start`` waits out an in-flight shutdown, so composing
-        ``stop`` then ``start`` is safe. The sequence runs as one background task
-        so the command is acknowledged before the worker transitions.
+        primitive: ``stop`` only schedules the shutdown, so the sequence must
+        wait for it to reach STOPPED before starting — otherwise ``start`` sees
+        the still-RUNNING state, no-ops, and the worker stays down. The sequence
+        runs as one background task so the command is acknowledged before the
+        worker transitions.
         """
         asyncio.create_task(self._restart_worker_sequence(), name="WorkerRestart")
 
     async def _restart_worker_sequence(self) -> None:
         """Run the stop-then-start restart sequence to completion."""
         await self.stop()
+        await self.wait_until_stopped()
         await self.start()
 
     async def _exit_worker(self) -> None:

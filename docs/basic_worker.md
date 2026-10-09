@@ -99,6 +99,19 @@ method:
 7. Sets the `exit` event **only if** an exit was requested (via `exit()` or a
    signal), clearing `exit_requested` at the same time
 
+`stop()` only schedules the shutdown; it returns before the worker reaches
+`STOPPED`. To act after teardown completes, await `wait_until_stopped()`:
+
+```python
+await worker.stop()
+await worker.wait_until_stopped()  # returns once state is STOPPED
+await worker.start()
+```
+
+This is what `worker:restart` uses: calling `start()` immediately after
+`stop()` would observe the still-`RUNNING` state, no-op, and leave the worker
+down once the scheduled shutdown finished.
+
 ## ServiceStatus
 
 ```python

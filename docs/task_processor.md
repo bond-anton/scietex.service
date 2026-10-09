@@ -359,9 +359,11 @@ self.add_task_handler(
 
 Each callback schedules the transition as a background task and returns
 immediately, so the command is acknowledged before the worker begins shutting
-down. `worker:restart` composes `stop()` then `start()` — there is no restart
-primitive, and `start()` waits out an in-flight shutdown, so the sequence is
-safe. See the [Task Handler docs](task_handler.md#worker-control) for the
+down. `worker:restart` composes `stop()`, `wait_until_stopped()`, then `start()`
+— there is no restart primitive, and `stop()` only schedules the shutdown, so
+the sequence must wait for the worker to reach STOPPED before starting.
+Otherwise `start()` observes the still-RUNNING state, no-ops, and the worker
+stays down. See the [Task Handler docs](task_handler.md#worker-control) for the
 submission format and result contract.
 
 ## Task Processing

@@ -13,6 +13,7 @@ import pytest
 
 from scietex.service.basic_worker import ServiceStatus
 from scietex.service.task_handler.schemas import (
+    WORKER_RESTART_TASK_NAME,
     WORKER_START_TASK_NAME,
     WORKER_STOP_TASK_NAME,
     TaskData,
@@ -106,3 +107,51 @@ async def test_worker_stop_command_acks_before_shutdown():
             break
         await asyncio.sleep(0.01)
     assert proc.state == ServiceStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_worker_restart_command_returns_to_running():
+    """A worker:restart command must stop and then start the worker, ending in
+    RUNNING.
+
+    Regression: the restart sequence called ``stop()`` (which only schedules the
+    shutdown) and then ``start()`` immediately. ``start()`` observed the still
+    RUNNING state, no-op'd, and the worker stayed STOPPED after the scheduled
+    shutdown completed — the process lived on with a dead worker."""
+    proc = CancelRecordingProcessor()
+    await proc.start()
+    for _ in range(200):
+        if proc.state == ServiceStatus.RUNNING:
+            break
+        await asyncio.sleep(0.01)
+    assert proc.state == ServiceStatus.RUNNING
+
+    command_id = uuid4()
+    proc.enqueue_control_task(
+        TaskData(
+            task_id=str(command_id),
+            task=WORKER_RESTART_TASK_NAME,
+            payload=msgspec.msgpack.encode(WorkerControlRequest()),
+        )
+    )
+    try:
+        for _ in range(200):
+            if any(tid == command_id for tid, *_ in proc.completed):
+                break
+            await asyncio.sleep(0.01)
+
+        calls = [c for c in proc.completed if c[0] == command_id]
+        assert len(calls) == 1
+        assert calls[0][2].status == "success"
+        response = msgspec.msgpack.decode(calls[0][2].payload, type=WorkerControlResponse)
+        assert response.action == WORKER_RESTART_TASK_NAME
+
+        # The restart sequence must bring the worker back to RUNNING.
+        for _ in range(500):
+            if proc.state == ServiceStatus.RUNNING:
+                break
+            await asyncio.sleep(0.01)
+        assert proc.state == ServiceStatus.RUNNING
+    finally:
+        await proc.exit()
+        await proc.events["exit"].wait()

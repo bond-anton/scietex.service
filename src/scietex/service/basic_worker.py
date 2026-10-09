@@ -166,6 +166,15 @@ class BasicWorker:
         """
         return self._lifecycle.events
 
+    async def wait_until_stopped(self) -> None:
+        """Block until the worker has fully stopped.
+
+        ``stop()`` only schedules the shutdown, so a caller that must act after
+        teardown completes (e.g. a restart) awaits this instead of racing the
+        lifecycle. Returns immediately when the worker is already STOPPED.
+        """
+        await self._lifecycle._wait_until_stopped()
+
     @property
     def service_name(self) -> str:
         """Name of the service, used for logging and identification (read-only)."""
