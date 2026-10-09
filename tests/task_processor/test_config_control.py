@@ -4,6 +4,7 @@ task types (design `docs/design/remote_config.md` §4, §12)."""
 
 import asyncio
 import logging
+import os
 from typing import Any, cast
 from uuid import uuid4
 
@@ -24,7 +25,6 @@ from scietex.service.config_reload import (
     ConfigSections,
     ConfigStoreOutcome,
     DeclarativeSections,
-    ReloadableSettings,
     encode_config_envelope,
 )
 from scietex.service.task_handler.capabilities import TaskCapabilities
@@ -106,11 +106,11 @@ class FakeConfigSource:
         self.stored.append(envelope)
 
 
-def make_settings(**overrides: object) -> ReloadableSettings:
-    """Build a complete ``ReloadableSettings`` snapshot with overrides."""
+def make_settings(**overrides: object) -> dict[str, object]:
+    """Build a full core patch dict (all eight reloadable fields) with overrides."""
     merged: dict[str, object] = dict(_BASE_SETTINGS)
     merged.update(overrides)
-    return ReloadableSettings(**cast(Any, merged))
+    return merged
 
 
 def make_envelope(sections: ConfigSections | None = None, *, revision: int = 1) -> bytes:
@@ -563,7 +563,7 @@ async def test_apply_unknown_section_rejected(tmp_path):
     """An envelope naming an unregistered service section is rejected with
     UNKNOWN_CONFIG_SECTION."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
-    sections = ConfigSections(core=make_settings(), services={"unknown": msgspec.msgpack.encode({"x": 1})})
+    sections = ConfigSections(core=make_settings(), services={"unknown": {"x": 1}})
 
     outcome = await proc._config_manager.apply_config(make_envelope(sections, revision=1), False)
 
@@ -577,8 +577,9 @@ async def test_apply_unknown_section_rejected(tmp_path):
 
 
 def test_reload_updates_every_read_path_atomically(tmp_path):
-    """A distinct apply updates ``_effective``, the five public properties, and
-    the decoded ``config:show`` core in one shot — every read path agrees."""
+    """A distinct apply updates ``_effective`` and the public properties in one
+    shot — every effective read path agrees, including ``config:show``'s resolved
+    core (v6 §6.3)."""
     proc = make_processor(tmp_path, remote_config_enabled=True)
     distinct = make_settings(
         max_concurrent_tasks=11,
@@ -601,30 +602,34 @@ def test_reload_updates_every_read_path_atomically(tmp_path):
     assert eff.task_handler_start_timeout == proc.task_handler_start_timeout
     assert eff.task_handler_stop_timeout == proc.task_handler_stop_timeout
 
+    # v6: ``config:show`` core is the resolved effective core, which agrees with
+    # the direct terminal-resolver call above (the same ``distinct`` snapshot).
     decoded = msgspec.msgpack.decode(proc._config_manager.show_config(False).settings, type=ConfigSections)
-    assert decoded.core == proc._current_reloadable_settings()
-    assert decoded.core == eff
+    assert decoded.core == distinct
 
 
 def test_auto_tune_effective_matches_show(tmp_path):
-    """auto_tune concurrency agrees across the property, the effective snapshot,
-    and ``config:show`` while ``_config`` keeps its declarative ``None``."""
+    """auto_tune concurrency agrees across the property and the effective
+    snapshot while ``_config`` keeps its declarative ``None``. In v6 the
+    resolved core is only observable through the effective read paths, not
+    ``config:show`` (which now exposes the merged patch, empty here)."""
     proc = make_processor(
         tmp_path,
         remote_config_enabled=True,
         auto_tune=True,
         max_concurrent_tasks=None,
     )
-    decoded = msgspec.msgpack.decode(proc._config_manager.show_config(False).settings, type=ConfigSections)
 
     assert proc.max_concurrent_tasks == proc._current_reloadable_settings().max_concurrent_tasks
-    assert proc._current_reloadable_settings().max_concurrent_tasks == decoded.core.max_concurrent_tasks
+    assert proc.max_concurrent_tasks == max(1, os.cpu_count() or 1)
     assert cast(TaskProcessorConfig, proc._config).max_concurrent_tasks is None
 
 
-def test_show_declarative_settings_preserve_none_and_auto_tune(tmp_path):
-    """``config:show.declarative_settings`` carries the raw declarative values
-    (``None``/auto_tune intent) while ``settings`` stays effective (AR-117)."""
+def test_show_declarative_settings_is_merged_patch_view(tmp_path):
+    """``config:show.declarative_settings`` carries the merged patch view, where
+    absence (``core is None``) means "inherit" — the auto-tune/default intent —
+    rather than a ``None``-filled struct (v6 §6.6). The effective core stays
+    resolved on the read paths, not exposed through ``config:show``."""
     proc = make_processor(
         tmp_path,
         remote_config_enabled=True,
@@ -635,17 +640,18 @@ def test_show_declarative_settings_preserve_none_and_auto_tune(tmp_path):
     response = proc._config_manager.show_config(False)
 
     declarative = msgspec.msgpack.decode(response.declarative_settings, type=DeclarativeSections)
-    assert declarative.core.max_concurrent_tasks is None
-    assert declarative.core.task_timeout is None
+    assert declarative.core is None
 
-    effective = msgspec.msgpack.decode(response.settings, type=ConfigSections)
-    assert effective.core.max_concurrent_tasks == proc.max_concurrent_tasks
-    assert effective.core.task_timeout == proc._current_reloadable_settings().task_timeout
+    # The effective snapshot still resolves the absent fields: auto-tune for
+    # concurrency and the DEFAULT_* constant for task_timeout.
+    assert proc._current_reloadable_settings().max_concurrent_tasks == max(1, os.cpu_count() or 1)
+    assert proc._current_reloadable_settings().task_timeout == 3.0
 
 
-def test_store_then_restart_preserves_declarative_intent(tmp_path):
-    """A store→restart cycle keeps ``None``/auto_tune intent: the local file is
-    written declaratively and re-applied without pinning resolved values (AR-117)."""
+def test_store_then_restart_preserves_patch_intent(tmp_path):
+    """A store→restart cycle keeps the patch intent: the local file is written as
+    the merged patch view and re-applied without pinning resolved values, so
+    absent fields still resolve to auto-tune/default at read time (v6 §6.2)."""
     proc = make_processor(
         tmp_path,
         remote_config_enabled=True,

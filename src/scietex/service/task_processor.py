@@ -23,7 +23,7 @@ from .config import (
     resolve_reloadable_settings,
 )
 from .config_manager import ConfigManager
-from .config_reload import RELOADABLE_FIELDS, DeclarativeSettings, ReloadableSettings
+from .config_reload import RELOADABLE_FIELDS, ReloadableSettings
 from .manager import Manager
 from .task_executor import TaskExecutor
 from .task_handler import (
@@ -196,7 +196,7 @@ class TaskProcessor(BasicWorker):
             logger=self.logger,
             signing_key=cfg.config_signing_key,
             enabled=cfg.remote_config_enabled,
-            declarative=self._declarative_reloadable_settings,
+            validate_core=self._validate_reloadable_config,
             apply_declarative=self._apply_declarative_config,
         )
         if self._config_manager.enabled:
@@ -279,17 +279,20 @@ class TaskProcessor(BasicWorker):
         struct_type: type[msgspec.Struct],
         *,
         apply: Callable[[Any], None],
+        defaults: msgspec.Struct | None = None,
+        bootstrap: Callable[[], dict | None] | None = None,
     ) -> None:
         """Register a custom service settings struct and its apply hook.
 
         Extension point for custom services: the reloadable surface grows with
         service-specific fields without the core knowing them. The registered
-        struct is decoded against ``forbid_unknown_fields`` and its ``apply``
-        hook is invoked with the decoded struct during an apply, before the
-        core swap (validate-before-swap). Hooks run in the order the sections
-        appear in the envelope. If a hook raises, the apply aborts with
-        ``INVALID_CONFIG`` and the core settings are left unchanged.
-        Delegates to the config manager.
+        struct's merged patch is converted through ``struct_type`` (which
+        validates + coerces every level) and its ``apply`` hook is invoked with
+        the merged struct during an apply, before the core swap
+        (validate-before-swap). Hooks run in the order the sections appear in
+        the envelope. If a hook raises, the apply aborts with ``INVALID_CONFIG``
+        and the core settings are left unchanged. Delegates to the config
+        manager.
 
         Args:
             name: Section name used as the key in ``ConfigSections.services``.
@@ -297,8 +300,37 @@ class TaskProcessor(BasicWorker):
                 bytes against.
             apply: Hook called with the decoded struct during an apply, before
                 the core swap.
+            defaults: Concrete L0 base instance; ``None`` uses ``struct_type()``
+                as the L0 base.
+            bootstrap: Optional L1 provider returning a patch dict; ``None``
+                means the section has no L1 (single-layer).
         """
-        self._config_manager.register_section(name, struct_type, apply=apply)
+        self._config_manager.register_section(
+            name,
+            struct_type,
+            apply=apply,
+            defaults=defaults,
+            bootstrap=bootstrap,
+        )
+
+    def seed_config_bootstrap(self) -> None:
+        """Seed each registered section's L1 patch and resolve L0+L1 (§6.7).
+
+        Delegates to the config manager, which calls each registered section's
+        ``bootstrap`` provider, stores the result as its L1 patch, and resolves
+        L0+L1 into the section's effective struct. Called once at run start,
+        after ``reset()`` and before handlers start.
+        """
+        self._config_manager.seed_bootstrap()
+
+    def current_config_settings(self, name: str) -> msgspec.Struct | None:
+        """Return the last resolved effective struct for a registered section.
+
+        The service-facing accessor (§6.7 step 3): a service builds its runtime
+        objects from the merged settings here, not from the raw bootstrap it
+        read. Returns ``None`` for an unregistered or never-resolved section.
+        """
+        return self._config_manager.current_settings(name)
 
     def _current_reloadable_settings(self) -> ReloadableSettings:
         """Return the current effective reloadable core settings.
@@ -313,72 +345,68 @@ class TaskProcessor(BasicWorker):
         """Return the concrete config's field names that are not reloadable."""
         return sorted(f.name for f in msgspec.structs.fields(type(self._config)) if f.name not in RELOADABLE_FIELDS)
 
-    def _apply_reloadable_config(self, settings: ReloadableSettings) -> list[str]:
-        """Validate-then-swap the reloadable core settings into the config.
+    def _validate_reloadable_config(self, values: dict[str, object]) -> None:
+        """Validate the merged core patch without mutating state.
 
-        Builds a fresh concrete config by overlaying the eight reloadable
-        values onto a shallow copy of the current config's fields, then
-        constructs ``type(current)(**merged)`` so
-        ``__post_init__``/``validate_range`` reject an out-of-range value
-        before any mutation. Nested structs (e.g. ``valkey_config``) are
-        preserved by reference, so ``msgspec.structs.asdict`` (which recurses
-        into them) must not be used. Only after a valid candidate exists are
-        the raw config reference and the effective snapshot swapped together.
+        The reloader calls this after the key allowlist check and before any
+        section hook, so an out-of-range value aborts the apply with no state
+        change (validate-before-swap). It overlays ``values`` onto the current
+        config exactly as :meth:`_overlay_reloadable` does, but discards the
+        candidate: constructing ``type(current)(**merged)`` raises
+        ``msgspec.ValidationError`` for an out-of-range field, and nothing is
+        stored.
+        """
+        current = cast(TaskProcessorConfig, self._config)
+        merged = {f.name: getattr(current, f.name) for f in msgspec.structs.fields(type(current))}
+        merged.update(values)
+        type(current)(**merged)
+
+    def _apply_reloadable_config(self, values: dict[str, object]) -> list[str]:
+        """Validate-then-swap the merged core patch into the config.
+
+        The reloader passes only the keys present in the merged L2/L3 core
+        patch (§5); absent fields inherit the current config and any cleared
+        field resolves to its ``DEFAULT_*`` constant (and the auto-tune branch)
+        inside :meth:`_overlay_reloadable`. Terminal resolution is delegated to
+        that method.
 
         Args:
-            settings: The complete snapshot of reloadable core values.
+            values: The merged core patch dict (keys present only).
 
         Returns:
-            The names of the reloadable fields whose value changed.
+            The names of the reloadable fields whose effective value changed.
         """
-        return self._overlay_reloadable(
-            {
-                "max_concurrent_tasks": settings.max_concurrent_tasks,
-                "task_manager_sleep_time": settings.task_manager_sleep_time,
-                "task_queue_manager_sleep_time": settings.task_queue_manager_sleep_time,
-                "task_handler_start_timeout": settings.task_handler_start_timeout,
-                "task_handler_stop_timeout": settings.task_handler_stop_timeout,
-                "task_timeout": settings.task_timeout,
-                "task_queue_fetch_timeout": settings.task_queue_fetch_timeout,
-                "task_cancellation_timeout": settings.task_cancellation_timeout,
-            }
-        )
+        return self._overlay_reloadable(values)
 
-    def _declarative_reloadable_settings(self) -> DeclarativeSettings:
-        """Return the declarative reloadable core settings (AR-117).
-
-        Reads the raw ``_config`` fields, so a field left unset stays ``None``
-        (and ``auto_tune`` intent is preserved) rather than being resolved to a
-        concrete default.
-        """
-        cfg = cast(TaskProcessorConfig, self._config)
-        return DeclarativeSettings(**{f: getattr(cfg, f) for f in RELOADABLE_FIELDS})
-
-    def _apply_declarative_config(self, settings: DeclarativeSettings) -> list[str]:
-        """Validate-then-swap declarative reloadable settings into the config.
+    def _apply_declarative_config(self, values: dict[str, object]) -> list[str]:
+        """Validate-then-swap the merged declarative core patch into the config.
 
         The declarative counterpart of :meth:`_apply_reloadable_config`: the
-        overlay may carry ``None`` values, which ``resolve_reloadable_settings``
-        turns into the effective defaults (and the auto-tune branch) when the
-        effective snapshot is rebuilt.
+        merged L2 core patch dict is applied through the same terminal resolver,
+        so absent fields inherit the current config and cleared fields resolve
+        to their defaults.
         """
-        return self._overlay_reloadable(
-            {f.name: getattr(settings, f.name) for f in msgspec.structs.fields(type(settings))}
-        )
+        return self._overlay_reloadable(values)
 
     def _overlay_reloadable(self, values: dict[str, object]) -> list[str]:
-        """Overlay reloadable ``values`` onto a copy of the config and swap.
+        """Overlay the merged core patch ``values`` onto the config and swap.
 
-        Shared by the effective and declarative apply paths. Builds a fresh
-        concrete config, validates it via ``type(current)(**merged)``, then
-        swaps ``_config`` and ``_effective`` together (no await between them).
+        Terminal resolver for the core block (§5): the reloader hands over the
+        merged L2/L3 core patch (keys present only), and this method overlays
+        it onto a copy of the current config. A field present in ``values``
+        with ``None`` is stored as ``None`` on the candidate and re-resolved to
+        its ``DEFAULT_*`` constant (and the auto-tune branch) below; a field
+        absent from ``values`` inherits the current config untouched. The
+        candidate is validated via ``type(current)(**merged)`` before any
+        mutation, and ``_config``/``_effective`` are swapped together (no await
+        between them).
 
         Args:
-            values: The reloadable field values to overlay (concrete or
-                ``None``-carrying).
+            values: The merged core patch fields to overlay (values may carry
+                ``None``, which ``resolve_reloadable_settings`` re-resolves).
 
         Returns:
-            The names of the reloadable fields whose value changed.
+            The names of the reloadable fields whose effective value changed.
         """
         current = cast(TaskProcessorConfig, self._config)
         merged = {f.name: getattr(current, f.name) for f in msgspec.structs.fields(type(current))}
@@ -390,10 +418,11 @@ class TaskProcessor(BasicWorker):
             if f.name in RELOADABLE_FIELDS and getattr(candidate, f.name) != getattr(current, f.name)
         ]
 
-        # The reloadable values are always explicit, so this resolution
-        # degenerates to the value itself; it mirrors __init__ for safety and
-        # produces the single effective snapshot. `_config` and `_effective`
-        # are written together (no await between them) in __init__ and here.
+        # Absent fields inherit the current value; a ``None`` field is filled
+        # with its DEFAULT_* constant (and the auto-tune branch). This mirrors
+        # __init__ and produces the single effective snapshot. `_config` and
+        # `_effective` are written together (no await between them) in __init__
+        # and here.
         effective = resolve_reloadable_settings(candidate)
         self._config = candidate
         self._effective = effective
@@ -865,6 +894,10 @@ class TaskProcessor(BasicWorker):
         # as stale and no stale section/remote shadow survives. Registered
         # sections and handlers are preserved.
         self._config_manager.reset()
+        # Seed each registered section's L1 patch from its bootstrap provider
+        # and resolve L0+L1 (§6.7), before any handler or gateway reads the
+        # merged settings.
+        self.seed_config_bootstrap()
         for handler_name in self.__control_handlers_map:
             if not await self._start_task_handler(handler_name):
                 return False

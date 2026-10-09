@@ -15,7 +15,6 @@ from .config_reload import (
     ConfigReloader,
     ConfigSource,
     ConfigStoreOutcome,
-    DeclarativeSettings,
     ReloadableSettings,
     read_local_config,
     write_local_config,
@@ -44,14 +43,14 @@ class ConfigManager:
         *,
         conf_dir: Path,
         config_file: str,
-        apply: Callable[[ReloadableSettings], list[str]],
+        apply: Callable[[dict[str, object]], list[str]],
         current: Callable[[], ReloadableSettings],
         restart_required: Callable[[], list[str]],
         logger: logging.Logger,
         signing_key: str | None = None,
         enabled: bool = False,
-        declarative: Callable[[], DeclarativeSettings] | None = None,
-        apply_declarative: Callable[[DeclarativeSettings], list[str]] | None = None,
+        validate_core: Callable[[dict[str, object]], None] | None = None,
+        apply_declarative: Callable[[dict[str, object]], list[str]] | None = None,
     ) -> None:
         """Initialize the manager.
 
@@ -59,7 +58,8 @@ class ConfigManager:
             conf_dir: Directory holding the local ``config_file`` snapshot.
             config_file: Filename of the local reloadable snapshot, resolved
                 under ``conf_dir``.
-            apply: Callback that validates and swaps the core settings.
+            apply: Callback that receives the merged core patch dict, overlays
+                it, validates it, and swaps the core settings.
             current: Callback returning the current effective core settings.
             restart_required: Callback returning the restart-required field
                 names.
@@ -67,9 +67,10 @@ class ConfigManager:
             signing_key: Optional HMAC key; ``None`` disables signature
                 enforcement.
             enabled: Master switch for remote config (default ``False``).
-            declarative: Optional callback returning the declarative core
-                settings.
-            apply_declarative: Optional callback that validates and swaps the
+            validate_core: Optional callback that validates the merged core
+                patch before any section hook runs.
+            apply_declarative: Optional callback that receives the merged core
+                patch dict, overlays it, validates it, and swaps the
                 declarative core settings.
         """
         self._conf_dir = conf_dir
@@ -83,7 +84,7 @@ class ConfigManager:
             logger=logger,
             signing_key=signing_key,
             enabled=enabled,
-            declarative=declarative,
+            validate_core=validate_core,
             apply_declarative=apply_declarative,
         )
         self._source: ConfigSource | None = None
@@ -114,13 +115,35 @@ class ConfigManager:
         struct_type: type[msgspec.Struct],
         *,
         apply: Callable[[Any], None],
+        defaults: msgspec.Struct | None = None,
+        bootstrap: Callable[[], dict | None] | None = None,
     ) -> None:
-        """Register a service settings struct and its apply hook with the reloader."""
-        self._reloader.register_section(name, struct_type, apply)
+        """Register a service settings struct and its apply hook with the reloader.
+
+        Forwards ``defaults`` (the concrete L0 base; ``None`` uses
+        ``struct_type()``) and ``bootstrap`` (an optional L1 provider; ``None``
+        means single-layer) so a section can declare its full layer stack.
+        """
+        self._reloader.register_section(name, struct_type, apply, defaults=defaults, bootstrap=bootstrap)
 
     def reset(self) -> None:
         """Reset run-scoped replay state for a fresh run start (AR-111)."""
         self._reloader.reset()
+
+    def seed_bootstrap(self) -> None:
+        """Seed each registered section's L1 patch from its bootstrap provider.
+
+        Resolves L0+L1 into each section's effective struct. Called at run
+        start before handlers start.
+        """
+        self._reloader.seed_bootstrap()
+
+    def current_settings(self, name: str) -> msgspec.Struct | None:
+        """Return the last resolved effective struct for a registered section.
+
+        Returns ``None`` for an unregistered or never-resolved section.
+        """
+        return self._reloader.current_settings(name)
 
     def attach_source(self, source: ConfigSource | None) -> None:
         """Attach (or clear) the transport's desired-state ``ConfigSource``."""
@@ -177,10 +200,10 @@ class ConfigManager:
         Injected into ``ConfigShowHandler``. ``settings`` is the msgpack
         encoding of the reloader's effective ``ConfigSections`` (never
         secrets); ``declarative_settings`` is the msgpack encoding of the
-        declarative view, which preserves ``None``-means-default and
-        ``auto_tune`` intent (AR-117). ``restart_required_fields`` is only
-        populated when requested. When the master switch is off, the response
-        carries ``REMOTE_CONFIG_DISABLED`` instead of the settings.
+        merged patch view — the keys any layer explicitly set, where absence
+        means inherit (not ``None``-means-default). ``restart_required_fields``
+        is only populated when requested. When the master switch is off, the
+        response carries ``REMOTE_CONFIG_DISABLED`` instead of the settings.
         """
         if not self._reloader.enabled:
             return ConfigShowResponse(
@@ -197,11 +220,11 @@ class ConfigManager:
         )
 
     def write_local(self) -> ConfigStoreOutcome:
-        """Write the declarative config to ``<conf_dir>/<config_file>``.
+        """Write the merged patch view to ``<conf_dir>/<config_file>``.
 
-        Writes the reloader's declarative view (AR-117) so a store→restart
-        cycle preserves ``None``-means-default and ``auto_tune`` intent rather
-        than pinning resolved values. Uses the reloader's atomic
+        Writes the reloader's merged patch view so a store→restart cycle
+        preserves which keys were explicitly set (and any explicit ``null``
+        clears) rather than pinning resolved values. Uses the reloader's atomic
         ``write_local_config``; a failure returns ``CONFIG_STORE_FAILED`` and
         leaves any previous file intact.
         """
@@ -230,12 +253,12 @@ class ConfigManager:
     async def apply_local_file(self) -> ConfigApplyOutcome | None:
         """Apply the persisted ``config.yml`` snapshot as a trusted local artifact.
 
-        Applied ahead of the remote read as a trusted, unsigned declarative
-        snapshot (AR-117): the declarative view preserves ``None``-means-default
-        and ``auto_tune`` intent, so a store→restart cycle does not pin resolved
-        values. The remote source stays authoritative. Returns ``None`` when the
-        feature is disabled, the file is absent, or the apply fails; otherwise
-        returns the apply outcome for the caller to log.
+        Applied ahead of the remote read as a trusted, unsigned L2 patch: the
+        merged patch view preserves which keys were explicitly set (and any
+        explicit ``null`` clears), so a store→restart cycle does not pin
+        resolved values. The remote source stays authoritative. Returns ``None``
+        when the feature is disabled, the file is absent, or the apply fails;
+        otherwise returns the apply outcome for the caller to log.
         """
         if not self._reloader.enabled:
             return None

@@ -1,6 +1,7 @@
 # Remote Configuration for `scietex.service`
 
-**Status:** implemented
+**Status:** implemented (superseded by the v6 layered merge — see
+`docs/design/layered_config_merge.md`)
 **Target release:** v4.5.0
 **Branch:** `main` @ `74b4692`
 **Motivation:** operators currently change worker behaviour by editing
@@ -18,10 +19,22 @@ built-in `task:cancel` control path (`task_handler/cancel.py:59-133`).
 > destroyed `None`-means-default and `auto_tune` intent on a store→restart
 > cycle. AR-117 added a separate **declarative** view — `DeclarativeSettings` /
 > `DeclarativeSections` (every field required but each may be `None`) plus
-> `to_declarative(...)`. The **remote** envelope stays effective (unchanged wire
-> format, no `CONFIG_ENVELOPE_VERSION` bump), while the local `config.yml` and
-> the `config:show` `declarative_settings` field carry the declarative view.
-> `docs/remote_config.md` documents the current behaviour.
+> `to_declarative(...)`. The **remote** envelope stayed effective (unchanged
+> wire format, no `CONFIG_ENVELOPE_VERSION` bump), while the local `config.yml`
+> and the `config:show` `declarative_settings` field carried the declarative
+> view.
+>
+> **Superseded by v6 (layered config merge).** The AR-117 declarative view and
+> its `DeclarativeSettings`/`to_declarative` helpers were removed in v6.0.0.
+> The config model is now four layers (L0 constructor defaults → L1 service
+> bootstrap → L2 namespaced `config.yml` → L3 remote source), each layer a
+> **patch dict** merged field-by-field with the three-state rule (absent =
+> inherit, `null` = clear, value = set). `CONFIG_ENVELOPE_VERSION` is now `2`;
+> v1 envelopes are rejected with `INVALID_CONFIG`. `config:show`'s
+> `declarative_settings` is the merged patch view ("what is explicitly set"),
+> not a `None`-preserving settings object. See
+> `docs/design/layered_config_merge.md` for the authoritative v6 contract and
+> `docs/remote_config.md` for the current behaviour.
 
 ---
 

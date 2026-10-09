@@ -1,4 +1,4 @@
-"""MQTT transport for ``MqttWorker`` (v4.4.0).
+"""MQTT transport for ``MqttWorker``.
 
 Implements the core :class:`~scietex.service.transport.TaskTransport` contract
 over MQTT, where at-least-once delivery is restored by the durable

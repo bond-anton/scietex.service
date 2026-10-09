@@ -3,13 +3,13 @@
 import logging
 from pathlib import Path
 
+import msgspec
+
 from scietex.service.config_manager import ConfigManager
 from scietex.service.config_reload import (
     ConfigSections,
-    DeclarativeSettings,
     ReloadableSettings,
     encode_config_envelope,
-    to_declarative,
 )
 
 logger = logging.getLogger("scietex.service.config_manager.tests")
@@ -33,11 +33,22 @@ def make_settings(**overrides) -> ReloadableSettings:
     return ReloadableSettings(**values)
 
 
+def make_core(**overrides) -> dict:
+    """Build a core patch dict from the base defaults with overrides.
+
+    The v6 wire/persistence core is a patch dict (§5): a full patch here sets
+    every reloadable field, while a partial patch omits keys to inherit.
+    """
+    values = dict(_CORE_DEFAULTS)
+    values.update(overrides)
+    return values
+
+
 def make_envelope(sections: ConfigSections | None = None, *, revision: int = 1) -> bytes:
     """Encode a valid, unsigned envelope around ``sections`` (defaults to the
-    base core settings)."""
+    base core patch)."""
     if sections is None:
-        sections = ConfigSections(core=make_settings())
+        sections = ConfigSections(core=make_core())
     return encode_config_envelope(sections, revision=revision)
 
 
@@ -81,36 +92,32 @@ def build_manager(
     """Build a ``ConfigManager`` with a recording in-memory ``apply``/``current``
     double (mirrors the ``_reloader`` factory in ``test_config_reload.py``)."""
     state = {"current": make_settings()}
-    apply_calls: list[ReloadableSettings] = []
-    declarative_calls: list[DeclarativeSettings] = []
+    apply_calls: list[dict] = []
+    declarative_calls: list[dict] = []
 
-    def _apply(settings: ReloadableSettings) -> list[str]:
-        apply_calls.append(settings)
+    def _apply(patch: dict[str, object]) -> list[str]:
+        # Mirror the processor's terminal resolution: overlay the merged core
+        # patch (keys present only) onto the current snapshot and re-resolve.
+        apply_calls.append(patch)
         previous = state["current"]
+        merged = msgspec.to_builtins(previous)
+        merged.update(patch)
+        resolved = ReloadableSettings(**merged)
         changed = [
             field
             for field in ReloadableSettings.__struct_fields__
-            if getattr(previous, field) != getattr(settings, field)
+            if getattr(previous, field) != getattr(resolved, field)
         ]
-        state["current"] = settings
+        state["current"] = resolved
         return changed
 
     def _current() -> ReloadableSettings:
         return state["current"]
 
-    def _declarative() -> DeclarativeSettings:
-        return to_declarative(state["current"])
-
-    def _apply_declarative(settings: DeclarativeSettings) -> list[str]:
-        declarative_calls.append(settings)
-        # Mirror the processor: resolve the declarative values to concrete ones.
-        resolved = ReloadableSettings(
-            **{
-                field: getattr(settings, field) if getattr(settings, field) is not None else _CORE_DEFAULTS[field]
-                for field in ReloadableSettings.__struct_fields__
-            }
-        )
-        return _apply(resolved)
+    def _apply_declarative(patch: dict[str, object]) -> list[str]:
+        declarative_calls.append(patch)
+        # Both core paths apply the same merged patch dict (§5).
+        return _apply(patch)
 
     def _restart_required() -> list[str]:
         return ["queue_size", "auto_tune"]
@@ -124,7 +131,6 @@ def build_manager(
         logger=logger,
         signing_key=signing_key,
         enabled=enabled,
-        declarative=_declarative,
         apply_declarative=_apply_declarative,
     )
     manager.apply_calls = apply_calls

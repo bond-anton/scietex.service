@@ -29,7 +29,6 @@ from scietex.service.config_reload import (
     encode_config_envelope,
     peek_config_envelope_version,
     read_local_config,
-    to_declarative,
     write_local_config,
 )
 
@@ -51,12 +50,22 @@ def _settings(**overrides) -> ReloadableSettings:
     return ReloadableSettings(**values)
 
 
+def _core(**overrides) -> dict:
+    """A full core patch dict (every reloadable field) with overrides."""
+    values = dict(_CORE_DEFAULTS)
+    values.update(overrides)
+    return values
+
+
 def _sections(
-    core: ReloadableSettings | None = None,
-    services: dict[str, bytes] | None = None,
+    core: dict | None = None,
+    services: dict[str, dict] | None = None,
 ) -> ConfigSections:
+    # ``core=None`` here means "no override", so fall back to a full core patch;
+    # a caller that wants "no core patch" builds ``ConfigSections(core=None)``
+    # directly (the same rule as the wire: core absent = no core patch).
     return ConfigSections(
-        core=_settings() if core is None else core,
+        core=_core() if core is None else core,
         services={} if services is None else services,
     )
 
@@ -105,17 +114,20 @@ def _reloader(*, apply=None, current=None, **kwargs) -> ConfigReloader:
     validation failures or a fixed current snapshot.
     """
     state = {"current": _settings()}
-    calls: list[ReloadableSettings] = []
+    calls: list[dict] = []
 
-    def _apply(settings: ReloadableSettings) -> list[str]:
-        calls.append(settings)
+    def _apply(patch: dict[str, object]) -> list[str]:
+        calls.append(patch)
         previous = state["current"]
+        merged = msgspec.to_builtins(previous)
+        merged.update(patch)
+        resolved = ReloadableSettings(**merged)
         changed = [
             field
             for field in ReloadableSettings.__struct_fields__
-            if getattr(previous, field) != getattr(settings, field)
+            if getattr(previous, field) != getattr(resolved, field)
         ]
-        state["current"] = settings
+        state["current"] = resolved
         return changed
 
     def _current() -> ReloadableSettings:
@@ -139,7 +151,7 @@ def _reloader(*, apply=None, current=None, **kwargs) -> ConfigReloader:
 
 
 def test_envelope_round_trip():
-    sections = _sections(core=_settings(task_timeout=7.5))
+    sections = _sections(core=_core(task_timeout=7.5))
     payload = encode_config_envelope(sections, revision=42)
 
     envelope = decode_config_envelope(payload)
@@ -184,11 +196,51 @@ async def test_wrong_schema_version_rejected():
 
 
 @pytest.mark.asyncio
+async def test_v1_envelope_rejected():
+    """A v1 envelope is rejected outright — v6 has no migration path."""
+    reloader = _reloader()
+    # A v1 envelope carried a concrete ReloadableSettings snapshot; encode one
+    # under version=1 to prove the version gate rejects it before any decode.
+    settings = msgspec.msgpack.encode(_settings())
+    payload = msgspec.msgpack.encode(
+        ConfigEnvelope(
+            version=1,
+            revision=1,
+            hash=hashlib.sha256(settings).hexdigest(),
+            settings=settings,
+        )
+    )
+    outcome = await reloader.apply_envelope(payload, source="remote")
+    assert outcome.applied is False
+    assert outcome.error_code == INVALID_CONFIG
+    assert reloader.revision == 0
+
+
+@pytest.mark.asyncio
 async def test_invalid_envelope_payload_rejected():
     reloader = _reloader()
     outcome = await reloader.apply_envelope(b"not msgpack", source="remote")
     assert outcome.applied is False
     assert outcome.error_code == INVALID_CONFIG_PAYLOAD
+
+
+@pytest.mark.asyncio
+async def test_services_null_rejected():
+    """Only ``core`` may be null; a null ``services`` fails the inner decode."""
+    reloader = _reloader()
+    settings = msgspec.msgpack.encode({"core": None, "services": None})
+    payload = msgspec.msgpack.encode(
+        ConfigEnvelope(
+            version=CONFIG_ENVELOPE_VERSION,
+            revision=1,
+            hash=hashlib.sha256(settings).hexdigest(),
+            settings=settings,
+        )
+    )
+    outcome = await reloader.apply_envelope(payload, source="remote")
+    assert outcome.applied is False
+    assert outcome.error_code == INVALID_CONFIG
+    assert reloader.revision == 0
 
 
 # --- hash / signature -------------------------------------------------------
@@ -200,7 +252,7 @@ async def test_hash_mismatch_rejected():
     envelope = decode_config_envelope(encode_config_envelope(_sections(), revision=1))
     tampered = msgspec.msgpack.encode(
         ConfigEnvelope(
-            version=1,
+            version=CONFIG_ENVELOPE_VERSION,
             revision=envelope.revision,
             hash=envelope.hash,
             settings=envelope.settings + b"\x00",
@@ -224,14 +276,14 @@ async def test_valid_signature_accepted():
 async def test_tampered_settings_with_valid_looking_signature_rejected():
     key = "secret"
     original = decode_config_envelope(
-        encode_config_envelope(_sections(core=_settings(task_timeout=1.0)), revision=1, signing_key=key)
+        encode_config_envelope(_sections(core=_core(task_timeout=1.0)), revision=1, signing_key=key)
     )
     # The signature was computed over the original settings, so different
     # settings carrying the same signature no longer verify.
-    other_settings = msgspec.msgpack.encode(_sections(core=_settings(task_timeout=2.0)))
+    other_settings = msgspec.msgpack.encode(_sections(core=_core(task_timeout=2.0)))
     tampered = msgspec.msgpack.encode(
         ConfigEnvelope(
-            version=1,
+            version=CONFIG_ENVELOPE_VERSION,
             revision=1,
             hash=hashlib.sha256(other_settings).hexdigest(),
             signature=original.signature,
@@ -301,7 +353,7 @@ async def test_higher_revision_applied():
     reloader = _reloader()
     await reloader.apply_envelope(encode_config_envelope(_sections(), revision=1), source="remote")
     outcome = await reloader.apply_envelope(
-        encode_config_envelope(_sections(core=_settings(task_timeout=9.0)), revision=2),
+        encode_config_envelope(_sections(core=_core(task_timeout=9.0)), revision=2),
         source="remote",
     )
     assert outcome.applied is True
@@ -314,7 +366,7 @@ async def test_lower_revision_with_different_hash_stale():
     reloader = _reloader()
     await reloader.apply_envelope(encode_config_envelope(_sections(), revision=5), source="remote")
     outcome = await reloader.apply_envelope(
-        encode_config_envelope(_sections(core=_settings(task_timeout=9.0)), revision=4),
+        encode_config_envelope(_sections(core=_core(task_timeout=9.0)), revision=4),
         source="remote",
     )
     assert outcome.applied is False
@@ -325,7 +377,7 @@ async def test_lower_revision_with_different_hash_stale():
 @pytest.mark.asyncio
 async def test_equal_revision_equal_hash_idempotent():
     reloader = _reloader()
-    payload = encode_config_envelope(_sections(core=_settings(task_timeout=9.0)), revision=3)
+    payload = encode_config_envelope(_sections(core=_core(task_timeout=9.0)), revision=3)
     first = await reloader.apply_envelope(payload, source="remote")
     second = await reloader.apply_envelope(payload, source="remote")
     assert first.applied is True
@@ -338,11 +390,11 @@ async def test_equal_revision_equal_hash_idempotent():
 async def test_equal_revision_different_hash_stale():
     reloader = _reloader()
     await reloader.apply_envelope(
-        encode_config_envelope(_sections(core=_settings(task_timeout=1.0)), revision=3),
+        encode_config_envelope(_sections(core=_core(task_timeout=1.0)), revision=3),
         source="remote",
     )
     outcome = await reloader.apply_envelope(
-        encode_config_envelope(_sections(core=_settings(task_timeout=2.0)), revision=3),
+        encode_config_envelope(_sections(core=_core(task_timeout=2.0)), revision=3),
         source="remote",
     )
     assert outcome.applied is False
@@ -354,13 +406,12 @@ async def test_equal_revision_different_hash_stale():
 async def test_reset_restores_initial_replay_state():
     reloader = _reloader()
     reloader.register_section("svc", _ServiceA, lambda value: None)
-    section = _ServiceA(a=1)
-    sections = _sections(services={"svc": msgspec.msgpack.encode(section)})
+    sections = _sections(services={"svc": {"a": 1}})
     outcome = await reloader.apply_envelope(encode_config_envelope(sections, revision=5), source="remote")
     assert outcome.applied is True
     assert reloader.revision == 5
     assert reloader.source == "remote"
-    assert reloader.show().services == {"svc": msgspec.msgpack.encode(section)}
+    assert reloader.show().services == {"svc": {"a": 1}}
 
     reloader.reset()
 
@@ -389,7 +440,7 @@ async def test_unknown_core_field_rejected():
     settings = msgspec.msgpack.encode({"core": dict(_CORE_DEFAULTS, queue_size=100), "services": {}})
     payload = msgspec.msgpack.encode(
         ConfigEnvelope(
-            version=1,
+            version=CONFIG_ENVELOPE_VERSION,
             revision=1,
             hash=hashlib.sha256(settings).hexdigest(),
             settings=settings,
@@ -407,7 +458,7 @@ async def test_apply_callback_raising_leaves_state_unchanged():
 
     reloader = _reloader(apply=failing_apply)
     outcome = await reloader.apply_envelope(
-        encode_config_envelope(_sections(core=_settings(task_timeout=999.0)), revision=7),
+        encode_config_envelope(_sections(core=_core(task_timeout=999.0)), revision=7),
         source="remote",
     )
     assert outcome.applied is False
@@ -423,7 +474,7 @@ async def test_apply_callback_raising_leaves_state_unchanged():
 @pytest.mark.asyncio
 async def test_unknown_section_rejected():
     reloader = _reloader()
-    sections = _sections(services={"bogus": msgspec.msgpack.encode(_ServiceA())})
+    sections = _sections(services={"bogus": {"a": 1}})
     outcome = await reloader.apply_envelope(encode_config_envelope(sections, revision=1), source="remote")
     assert outcome.applied is False
     assert outcome.error_code == UNKNOWN_CONFIG_SECTION
@@ -433,7 +484,7 @@ async def test_unknown_section_rejected():
 async def test_registered_section_bad_payload_rejected():
     reloader = _reloader()
     reloader.register_section("svc", _ServiceA, lambda value: None)
-    sections = _sections(services={"svc": b"garbage"})
+    sections = _sections(services={"svc": {"a": "not-an-int"}})
     outcome = await reloader.apply_envelope(encode_config_envelope(sections, revision=1), source="remote")
     assert outcome.applied is False
     assert outcome.error_code == INVALID_CONFIG
@@ -445,7 +496,7 @@ async def test_section_hook_receives_decoded_struct():
     reloader = _reloader()
     reloader.register_section("svc", _ServiceA, received.append)
     section = _ServiceA(a=7)
-    sections = _sections(services={"svc": msgspec.msgpack.encode(section)})
+    sections = _sections(services={"svc": {"a": 7}})
     outcome = await reloader.apply_envelope(encode_config_envelope(sections, revision=1), source="remote")
     assert outcome.applied is True
     assert received == [section]
@@ -459,8 +510,8 @@ async def test_raising_section_hook_aborts_before_core_swap():
     reloader = _reloader()
     reloader.register_section("svc", _ServiceA, failing_hook)
     sections = _sections(
-        core=_settings(task_timeout=42.0),
-        services={"svc": msgspec.msgpack.encode(_ServiceA())},
+        core=_core(task_timeout=42.0),
+        services={"svc": {"a": 0}},
     )
     outcome = await reloader.apply_envelope(encode_config_envelope(sections, revision=1), source="remote")
     assert outcome.applied is False
@@ -476,7 +527,7 @@ async def test_reregistering_section_replaces_struct_and_hook():
     reloader.register_section("svc", _ServiceA, first.append)
     reloader.register_section("svc", _ServiceB, second.append)
     # The payload only decodes against the second struct (_ServiceB).
-    sections = _sections(services={"svc": msgspec.msgpack.encode(_ServiceB(b=5))})
+    sections = _sections(services={"svc": {"b": 5}})
     outcome = await reloader.apply_envelope(encode_config_envelope(sections, revision=1), source="remote")
     assert outcome.applied is True
     assert first == []
@@ -505,7 +556,7 @@ async def test_reload_source_raises():
 @pytest.mark.asyncio
 async def test_reload_valid_payload_applies():
     reloader = _reloader()
-    source = _FakeSource(payload=encode_config_envelope(_sections(core=_settings(task_timeout=7.0)), revision=2))
+    source = _FakeSource(payload=encode_config_envelope(_sections(core=_core(task_timeout=7.0)), revision=2))
     outcome = await reloader.reload(source)
     assert outcome.applied is True
     assert reloader.source == "remote"
@@ -517,7 +568,7 @@ async def test_reload_valid_payload_applies():
 async def test_store_writes_decodable_envelope():
     reloader = _reloader()
     await reloader.apply_envelope(
-        encode_config_envelope(_sections(core=_settings(task_timeout=6.0)), revision=2),
+        encode_config_envelope(_sections(core=_core(task_timeout=6.0)), revision=2),
         source="remote",
     )
     source = _FakeSource()
@@ -529,7 +580,7 @@ async def test_store_writes_decodable_envelope():
     assert stored is not None
     assert stored.revision == reloader.revision
     assert stored.hash == reloader.hash
-    assert msgspec.msgpack.decode(stored.settings, type=ConfigSections).core == _settings(task_timeout=6.0)
+    assert msgspec.msgpack.decode(stored.settings, type=ConfigSections).core == _core(task_timeout=6.0)
 
 
 @pytest.mark.asyncio
@@ -547,8 +598,10 @@ def test_retryable_error_codes_contains_only_source_unavailable():
 
 
 def test_show_returns_current_core_settings():
+    """A fresh reloader shows the resolved effective core and no services (§6.3)."""
     reloader = _reloader()
-    assert reloader.show().core == _settings()
+    assert reloader.show().core == msgspec.to_builtins(_settings())
+    assert reloader.show().services == {}
 
 
 @pytest.mark.asyncio
@@ -591,14 +644,13 @@ def test_read_local_config_invalid_yaml_returns_none(tmp_path: Path):
 def test_write_then_read_local_config_round_trips(tmp_path: Path):
     path = tmp_path / "config.yml"
     sections = _sections(
-        core=_settings(task_timeout=4.5),
-        services={"svc": msgspec.msgpack.encode(_ServiceA(a=3))},
+        core=_core(task_timeout=4.5),
+        services={"svc": {"a": 3}},
     )
     write_local_config(path, sections)
-    # The local artifact is normalised to the declarative view (AR-117).
-    assert read_local_config(path) == DeclarativeSections(
-        core=to_declarative(sections.core), services=sections.services
-    )
+    # The local artifact is re-wrapped as a DeclarativeSections of patch dicts
+    # with no field normalisation (§6.6); the shapes are identical in v6.
+    assert read_local_config(path) == DeclarativeSections(core=_core(task_timeout=4.5), services={"svc": {"a": 3}})
 
 
 def test_write_local_config_is_atomic(tmp_path: Path):
@@ -619,8 +671,8 @@ def test_write_local_config_creates_parent_directory(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_concurrent_applies_serialize():
     reloader = _reloader()
-    lower = encode_config_envelope(_sections(core=_settings(task_timeout=1.0)), revision=2)
-    higher = encode_config_envelope(_sections(core=_settings(task_timeout=2.0)), revision=3)
+    lower = encode_config_envelope(_sections(core=_core(task_timeout=1.0)), revision=2)
+    higher = encode_config_envelope(_sections(core=_core(task_timeout=2.0)), revision=3)
     outcomes = await asyncio.gather(
         reloader.apply_envelope(lower, source="remote"),
         reloader.apply_envelope(higher, source="remote"),

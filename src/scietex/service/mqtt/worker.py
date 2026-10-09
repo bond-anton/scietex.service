@@ -1,4 +1,4 @@
-"""MQTT-backed async task processor for ``scietex.service`` (v4.4.0).
+"""MQTT-backed async task processor for ``scietex.service``.
 
 Provides ``MqttWorker`` — an async worker that extends ``TransportWorker``
 with MQTT topic-based task distribution, heartbeat publishing, and async

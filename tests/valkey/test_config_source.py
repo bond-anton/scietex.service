@@ -14,7 +14,6 @@ from scietex.service import ValkeyWorker
 from scietex.service.config import TaskProcessorConfig
 from scietex.service.config_reload import (
     ConfigSections,
-    ReloadableSettings,
     encode_config_envelope,
     read_local_config,
     write_local_config,
@@ -40,10 +39,10 @@ _CORE_DEFAULTS: dict[str, float | int] = {
 }
 
 
-def _settings(**overrides) -> ReloadableSettings:
+def _settings(**overrides) -> dict:
     values = dict(_CORE_DEFAULTS)
     values.update(overrides)
-    return ReloadableSettings(**values)
+    return values
 
 
 def _source(client: DummyClient, *, key: str = _CONFIG_KEY) -> ValkeyConfigSource:
@@ -203,7 +202,8 @@ async def test_initialize_persists_remote_config(monkeypatch, tmp_path):
     assert ok is True
     snapshot = read_local_config(tmp_path / "config.yml")
     assert snapshot is not None
-    assert snapshot.core.task_timeout == 7.0
+    assert snapshot.core is not None
+    assert snapshot.core["task_timeout"] == 7.0
 
 
 @pytest.mark.asyncio

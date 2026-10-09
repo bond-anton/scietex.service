@@ -491,10 +491,13 @@ Only the eight core fields (`max_concurrent_tasks`,
 `task_queue_fetch_timeout`, `task_cancellation_timeout`) are hot-reloadable;
 everything else is restart-required and cannot be expressed remotely. A custom
 service extends the surface with
-`worker.register_config_settings(name, struct_type, apply=...)`. Startup
-precedence is `constructor config < config.yml < remote source`, and an invalid
+`worker.register_config_settings(name, struct_type, apply=..., defaults=..., bootstrap=...)`.
+Startup precedence is `constructor defaults (L0) < service bootstrap (L1) <
+config.yml (L2) < remote source (L3)`, each layer a patch dict merged with the
+three-state rule (absent = inherit, `null` = clear, value = set), and an invalid
 remote config never fails startup. See the [Remote Configuration
-guide](docs/remote_config.md) and `examples/remote_config.py`.
+guide](docs/remote_config.md), the [layered merge design](docs/design/layered_config_merge.md),
+and `examples/remote_config.py`.
 
 ## API Reference
 

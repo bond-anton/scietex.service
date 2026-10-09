@@ -25,6 +25,17 @@ Control plane:
       ``ValkeyControlPublisher`` / ``MqttControlPublisher`` live in the
       transport packages and require the matching extra.
 
+Configuration:
+    - Layered config merge (v6): four layers — L0 constructor defaults, L1
+      service bootstrap, L2 namespaced ``config.yml``, L3 remote source — each a
+      patch dict merged field-by-field with the three-state rule (absent =
+      inherit, ``null`` = clear, value = set). Services register via
+      ``TaskProcessor.register_config_settings(name, struct_type, apply=...,
+      defaults=..., bootstrap=...)`` and read the merged result via
+      ``current_config_settings(name)``. The merge engine lives in
+      ``scietex.service.config_merge``; the apply pipeline in
+      ``scietex.service.config_reload``.
+
 Theming:
     - ``Theme``: the extension seam a theme implements (``banner`` /
       ``console_formatter``). Three built-in variants ship with the package:
@@ -35,9 +46,11 @@ Theming:
 
 Module-level exports:
     ``__version__``, ``BasicWorker``, ``TaskProcessor``, the client surface,
-    the theme seam (``Theme`` / ``ScietexMonochrome`` / ``ScietexLight`` /
-    ``ScietexDark`` / ``print_banner``), and optionally
-    ``ValkeyWorker``/``MqttWorker`` and their configuration classes.
+    the control-plane protocol, the theme seam (``Theme`` /
+    ``ScietexMonochrome`` / ``ScietexLight`` / ``ScietexDark`` /
+    ``print_banner``), and optionally ``ValkeyWorker``/``MqttWorker`` and their
+    configuration classes. The config-layer API (``ConfigReloader``,
+    ``ConfigManager``, ``config_merge``) is imported from its own submodules.
 
 The ``VALKEY_AVAILABLE`` and ``MQTT_AVAILABLE`` flags report whether the
 respective surfaces could be imported at package load time.

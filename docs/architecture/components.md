@@ -360,11 +360,13 @@ and registers the three `config:*` handlers — only when
 `remote_config_enabled=True`; the source seam is attached by a
 transport subclass (`ValkeyWorker`/`MqttWorker`) through
 `ConfigManager.attach_source`. Extension point `register_config_settings(name,
-struct_type, *, apply)` delegates to `ConfigManager.register_section`; the
-read-only observability properties `config_revision`, `config_hash`,
+struct_type, *, apply, defaults=None, bootstrap=None)` delegates to
+`ConfigManager.register_section`; `seed_config_bootstrap()` and
+`current_config_settings(name)` expose the L1 seeding and merged-struct read.
+The read-only observability properties `config_revision`, `config_hash`,
 and `config_source` delegate to `ConfigManager`. The private
 apply/validate logic lives in `_apply_reloadable_config` —
-validate-then-swap, overlaying the eight reloadable values onto a shallow copy
+validate-then-swap, overlaying the merged core patch onto a shallow copy
 of the current config and re-constructing `type(current)(**merged)` so
 `__post_init__`/`validate_range` reject a bad candidate before any mutation —
 while the three handler callbacks (`apply_config`/`store_config`/`show_config`)
@@ -898,58 +900,66 @@ into the processor through injected callables, so the effective settings stay
 private to `TaskProcessor`.
 
 **Main symbols:**
-- Constants: `CONFIG_ENVELOPE_VERSION = 1`; the outcome taxonomy
+- Constants: `CONFIG_ENVELOPE_VERSION = 2`; the outcome taxonomy
   `INVALID_CONFIG_PAYLOAD`/`INVALID_CONFIG`/`UNKNOWN_CONFIG_SECTION`/
   `HASH_MISMATCH`/`BAD_SIGNATURE`/`STALE_CONFIG`/`CONFIG_SOURCE_NOT_CONFIGURED`/
   `CONFIG_SOURCE_UNAVAILABLE`/`CONFIG_STORE_FAILED`/`REMOTE_CONFIG_DISABLED`; `RETRYABLE_ERROR_CODES`, the transient-outcome retry set
   (currently `{CONFIG_SOURCE_UNAVAILABLE}`); `RELOADABLE_FIELDS`, the
   eight-field allowlist.
-- Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings` — the complete snapshot of the eight reloadable core fields, all
-  required; `DeclarativeSettings` — the same eight fields, each optional
-  (`None` = "use the default"/auto-tune), the persistence/inspection view;
-  `ConfigSections` — `core: ReloadableSettings | None` +
-  `services: dict[str, bytes]`; `DeclarativeSections` — `core:
-  DeclarativeSettings | None` + `services`; `ConfigEnvelope` — `version`/`revision`/
-  `hash`/`signature`/`settings`/`created_at`. A `None` core marks a
-  service-only envelope: the core is left untouched on apply.
+- Structs (all `frozen=True, forbid_unknown_fields=True`): `ReloadableSettings` — the complete resolved snapshot of the eight reloadable core fields, all
+  required (the terminal resolver's output, no longer the wire type);
+  `ConfigSections` — `core: dict | None` + `services: dict[str, dict]`, the
+  L3 (remote) patch; `DeclarativeSections` — the same shape, the L2 (local
+  file) patch; `ConfigEnvelope` — `version`/`revision`/`hash`/`signature`/
+  `settings`/`created_at`. A `None` core marks a service-only envelope: the
+  core is left untouched on apply. Only `core` may be `None`; `services` is
+  always a map.
 - Wire helpers: `encode_config_envelope(sections, *, revision,
   signing_key=None, created_at=None)` — msgpack-encodes a hashed,
   optionally HMAC-signed envelope; `decode_config_envelope(payload)` and
   `peek_config_envelope_version(payload)` — decode/version-peek, returning
-  `None` on malformed input; `to_declarative(settings)` — view a resolved
-  snapshot as all-explicit declarative settings.
+  `None` on malformed input. The merge engine lives in `config_merge.py`:
+  `merge(base, patch)` (RFC 7396), `merge_all(layers)` (low→high fold),
+  `resolve_section(layers, struct_type)` (HIGH→LOW with the L0 base).
 - `ConfigSource` Protocol — `load() -> bytes | None` and
   `store(envelope: bytes) -> None`, the delivery backend seam.
 - Outcome structs: `ConfigApplyOutcome` — `applied`/`revision`/`hash`/
   `changed`/`restart_required`/`error`/`error_code`; `ConfigStoreOutcome`
   — `stored`/`target`/`path`/`revision`/`hash`/`error`/`error_code`.
-- `ConfigReloader` — the validate-before-swap apply pipeline, serialized
-  behind an `asyncio.Lock`. Constructor takes injected `apply` (validate
-  + swap the core, returning changed names), `current` (snapshot the effective
-  core), `restart_required` (non-reloadable field names), `logger`,
-  `signing_key`, `enabled`, and the optional `declarative`/`apply_declarative`
-  callbacks (AR-117). `register_section(name, struct_type, apply)` is the additive/idempotent service-section registry. `reset()`
+- `ConfigReloader` — the layered validate-before-swap apply pipeline,
+  serialized behind an `asyncio.Lock`. Constructor takes injected `apply`
+  (validate + swap the merged core patch, returning changed names), `current`
+  (snapshot the effective core), `restart_required` (non-reloadable field
+  names), `logger`, `signing_key`, `enabled`, the optional `apply_declarative`
+  callback (the L2 core path), and `validate_core` (pre-hook core validation).
+  `register_section(name, struct_type, apply, *, defaults=None, bootstrap=None)`
+  is the additive/idempotent service-section registry; `defaults` is the L0
+  concrete base struct and `bootstrap` the L1 provider. `seed_bootstrap()`
+  resolves and caches L0+L1 for every registered section (no hooks run);
+  `current_settings(name)` returns the cached merged struct. `reset()`
   clears the run-scoped apply bookkeeping (`_applied_revision`/`_applied_hash`/
   `_source`/`_section_raw`) while preserving registered sections and injected
   callbacks — the run-boundary contract, called before any startup apply.
   `apply_envelope(payload, *, source, trusted=False)` runs decode →
-  version → hash → optional signature → replay → decode sections → run section
-  hooks → swap the core; `trusted=True` skips signature verification for a
+  version → hash → optional signature → replay → decode sections → resolve
+  each touched section (validate-before-swap) → run section hooks → swap the
+  merged core; `trusted=True` skips signature verification for a
   trusted local artifact (the replay guard still applies, and the flag must
   never be set for remote or inline input); a raising hook aborts before any
   state change. `apply_declarative_sections(sections, *, source, trusted=False)`
-  applies a `DeclarativeSections` snapshot (the local-file path, AR-117).
+  applies a `DeclarativeSections` L2 patch (the local-file path).
   `reload(source)`
   loads the desired-state envelope and applies it (a `None` payload or a `load`
   exception maps to `CONFIG_SOURCE_UNAVAILABLE`). `store(source, *,
   target="remote")` persists the effective config back. `show()`
-  returns the effective `ConfigSections`; `show_declarative()` returns the
-  declarative `DeclarativeSections`. Read-only properties `enabled`,
+  returns the effective `ConfigSections` (resolved core + merged effective
+  service structs); `show_declarative()` returns the merged patch view
+  (`DeclarativeSections`). Read-only properties `enabled`,
   `revision`, `hash`, `source`.
 - Local-file helpers: `read_local_config(path)` — write-free YAML read of
   the `config.yml` snapshot as `DeclarativeSections` (`None` on missing/invalid);
   `write_local_config(path, sections)` — atomic YAML write via `os.replace`
-  (accepts `ConfigSections` or `DeclarativeSections`, normalising to declarative).
+  (accepts `ConfigSections` or `DeclarativeSections`, identical shape in v6).
 
 **Dependencies:** `asyncio`, `hashlib`, `hmac`, `logging`, `os`, `tempfile`,
 `msgspec`; stdlib `Protocol`/`Callable`. No transport or processor imports.
@@ -975,7 +985,9 @@ processor internals.
   `ConfigStoreResponse` (`stored`/`target`/`path`/`revision`/`hash`/
   `error`), `ConfigShowRequest` (`include_restart_required: bool = True`),
   `ConfigShowResponse` (`settings`/`declarative_settings`/`revision`/`hash`/
-  `source`/`restart_required_fields`/`error`/`error_code`).
+  `source`/`restart_required_fields`/`error`/`error_code`); `settings` is the
+  resolved effective config, `declarative_settings` the merged patch view
+  (explicitly-set keys only, absence = inherit).
 - Callback types: `ConfigApplyCallback` `(bytes | None, bool) ->
   Awaitable[ConfigApplyOutcome]`; `ConfigStoreCallback` `(str) ->
   Awaitable[ConfigStoreOutcome]`; `ConfigShowCallback` `(bool) ->

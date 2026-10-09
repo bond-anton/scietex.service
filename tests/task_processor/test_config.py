@@ -92,16 +92,16 @@ async def test_initialize_resets_config_replay_state():
     proc = TaskProcessor(TaskProcessorConfig(remote_config_enabled=True))
     envelope = encode_config_envelope(
         ConfigSections(
-            core=ReloadableSettings(
-                max_concurrent_tasks=DEFAULT_MAX_CONCURRENT_TASKS,
-                task_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
-                task_queue_manager_sleep_time=DEFAULT_MANAGER_SLEEP_TIME,
-                task_handler_start_timeout=DEFAULT_TASK_HANDLER_START_TIMEOUT,
-                task_handler_stop_timeout=DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
-                task_timeout=DEFAULT_TASK_TIMEOUT,
-                task_queue_fetch_timeout=DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
-                task_cancellation_timeout=DEFAULT_TASK_CANCELLATION_TIMEOUT,
-            )
+            core={
+                "max_concurrent_tasks": DEFAULT_MAX_CONCURRENT_TASKS,
+                "task_manager_sleep_time": DEFAULT_MANAGER_SLEEP_TIME,
+                "task_queue_manager_sleep_time": DEFAULT_MANAGER_SLEEP_TIME,
+                "task_handler_start_timeout": DEFAULT_TASK_HANDLER_START_TIMEOUT,
+                "task_handler_stop_timeout": DEFAULT_TASK_HANDLER_STOP_TIMEOUT,
+                "task_timeout": DEFAULT_TASK_TIMEOUT,
+                "task_queue_fetch_timeout": DEFAULT_TASK_QUEUE_FETCH_TIMEOUT,
+                "task_cancellation_timeout": DEFAULT_TASK_CANCELLATION_TIMEOUT,
+            }
         ),
         revision=5,
     )

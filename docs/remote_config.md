@@ -22,8 +22,8 @@ worker = MqttWorker(MqttWorkerConfig(service_name="svc", remote_config_enabled=T
 | Transport-delivered config | One durable "desired state" location per transport: a Valkey key or an MQTT retained topic |
 | Startup read | The desired state is applied at startup (availability-first: an absent or invalid config never fails startup) |
 | Three commands | `config:apply`, `config:store`, `config:show` travel as tasks through the existing pipeline and reply in their `TaskResult.payload` |
-| Disk snapshot | `config:store` persists the **declarative** reloadable settings to a dedicated `config.yml`, preserving `None`/`auto_tune` intent |
-| Extensible surface | A service registers its own settings struct + apply hook via `register_config_settings` |
+| Disk snapshot | `config:store` persists the merged effective snapshot to a dedicated `config.yml`; the local file is the L2 layer |
+| Extensible surface | A service registers its own settings struct + apply hook via `register_config_settings`, optionally with `defaults` (L0) and `bootstrap` (L1) |
 | Security by construction | Restart-required and secret fields are *unrepresentable* in the payload; optional HMAC signing |
 
 The feature is opt-in and disabled by default. It is pure-Python (stdlib
@@ -182,55 +182,68 @@ class ReloadableSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     task_cancellation_timeout: float
 ```
 
-### Declarative view (local persistence and inspection)
+### Layered patches (v6)
 
 `ReloadableSettings` is the **effective** runtime snapshot — every field is
-concrete, with `None`-means-default and `auto_tune` already resolved. The
-**remote** desired-state envelope carries this effective view: a remote config
-is a self-contained explicit desired state, so its wire format is unchanged and
-`CONFIG_ENVELOPE_VERSION` stays `1`.
+concrete, with `None`-means-default and `auto_tune` already resolved. It is the
+terminal resolver's output, not the wire type.
 
-Two *other* surfaces carry a **declarative** view, which keeps every field
-explicit but permits `None` to mean "use the library default" (and, for
-`max_concurrent_tasks`, "auto-tune from the CPU count when the worker is built
-with `auto_tune=True`"):
+The wire type is a **patch dict**. Both `ConfigSections` (the L3 remote patch)
+and `DeclarativeSections` (the L2 local-file patch) carry dicts:
 
 ```python
-class DeclarativeSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    max_concurrent_tasks: int | None
-    task_manager_sleep_time: float | None
-    task_queue_manager_sleep_time: float | None
-    task_handler_start_timeout: float | None
-    task_handler_stop_timeout: float | None
-    task_timeout: float | None
-    task_queue_fetch_timeout: float | None
-    task_cancellation_timeout: float | None
+class ConfigSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    core: dict | None = None
+    services: dict[str, dict] = msgspec.field(default_factory=dict)
 
 
 class DeclarativeSections(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    core: DeclarativeSettings | None = None
-    services: dict[str, bytes] = msgspec.field(default_factory=dict)
+    core: dict | None = None
+    services: dict[str, dict] = msgspec.field(default_factory=dict)
 ```
+
+The config model is four layers, each a patch merged field-by-field onto the one
+below:
+
+| Layer | Source | Applied by |
+|---|---|---|
+| L0 | constructor defaults (concrete base struct) | `register_section(defaults=...)` |
+| L1 | service bootstrap provider | `register_section(bootstrap=...)` + `seed_bootstrap()` |
+| L2 | namespaced `config.yml` | `apply_declarative_sections` |
+| L3 | remote source | `apply_envelope` |
+
+The **three-state rule** governs every key at every nesting level:
+
+- **absent** — inherit the value from the layer below;
+- **`null`** — clear: fall back to the L0 default (and, for
+  `max_concurrent_tasks`, the auto-tune branch);
+- **value** — set.
+
+`None` therefore means exactly one thing — *clear*. "Inherit" is *absence*, not
+`None`. Each layer's patch is **replaced wholesale** on apply, so a producer must
+send the complete desired patch for its layer each time.
 
 Both `ConfigSections.core` and `DeclarativeSections.core` are optional. A
 producer that does not track a worker's core settings — the API, for example —
 delivers `core=None` and only the service sections; the worker then keeps its
 current core settings while still running the section hooks and advancing the
-revision/hash bookkeeping so the envelope is not re-applied.
+revision/hash bookkeeping so the envelope is not re-applied. Only `core` may be
+`None`; `services` is always a map.
 
-The declarative view is what the local `config.yml` stores and what
-`config:show` returns as `declarative_settings`, so a store→restart cycle
-preserves `None`/`auto_tune` intent instead of pinning the values that happened
-to be resolved at store time.
+`config:show`'s `declarative_settings` is the merged **patch** view — the keys
+any layer explicitly set, with absence meaning inherit. It is not a
+`None`-preserving settings object.
 
-### Complete snapshot, not a patch
+### Validation, not a complete snapshot
 
-When a core snapshot is present, all eight of its fields are required: a partial
-payload fails loudly instead of silently resetting operator-tuned values. (The
-`core` section itself is optional — see above — but a present one is complete.)
-Because every struct is declared `forbid_unknown_fields=True`, a payload naming
-`queue_size`, `valkey_config`, or any connection parameter is **rejected**, not
-merely ignored — restart-required fields are *unrepresentable*, not dropped.
+A core patch is **partial by design**: only the keys a layer sets are merged, and
+absent keys inherit. The merged core is validated against the `RELOADABLE_FIELDS`
+allowlist before any section hook runs, so a payload naming `queue_size`,
+`valkey_config`, or any connection parameter is **rejected** with
+`INVALID_CONFIG`, not merely ignored — restart-required fields are
+*unrepresentable*, not dropped. The merged core is then resolved through the
+existing `resolve_reloadable_settings` path (it is **not** converted via
+`msgspec.convert`, because `ReloadableSettings` has eight required fields).
 
 ### Encoding
 
@@ -266,9 +279,10 @@ read that snapshot.
 | `task_queue_fetch_timeout` | yes | `_effective` snapshot |
 | `task_cancellation_timeout` | yes | `_effective` snapshot |
 
-The apply path swaps `self._config` (raw/declarative) and `self._effective`
-(resolved) together with no `await` between them, so an observer sees old-or-new,
-never a mix. `_current_reloadable_settings()` returns `self._effective`.
+The apply path overlays the merged core patch onto a copy of `self._config` and
+re-resolves `self._effective` together with no `await` between them, so an
+observer sees old-or-new, never a mix. `_current_reloadable_settings()` returns
+`self._effective`.
 
 **Restart-required** (cannot be expressed in a remote payload): `queue_size`
 (the `asyncio.Queue` is sized at construction), `auto_tune`, the `WorkerConfig`
@@ -328,12 +342,13 @@ exactly as `CancelTaskResponse` does. No reply topic/channel is introduced.
 | `revision` / `hash` | `int` / `str` | Identity of the stored config |
 | `error` | `str` | Error description (empty on success) |
 
-`disk` writes the **declarative** snapshot to `<conf_dir>/config.yml`
-(preserving `None`/`auto_tune` intent); `remote` publishes the **effective**
-snapshot back to the source (Valkey `SET` / MQTT retained `PUBLISH`); `both`
-does both. Only the **reloadable snapshot** is written — never connection
-credentials or TLS material. The disk write is atomic (`os.replace` of a
-temp file in the same directory).
+`disk` writes the merged **patch** view to `<conf_dir>/config.yml` (the L2
+layer, preserving which keys were explicitly set and any explicit `null`
+clears); `remote` publishes the **effective** snapshot back to the source
+(Valkey `SET` / MQTT retained `PUBLISH`); `both` does both. Only the
+**reloadable surface** is written — never connection credentials or TLS
+material. The disk write is atomic (`os.replace` of a temp file in the same
+directory).
 
 ### `config:show`
 
@@ -343,8 +358,8 @@ temp file in the same directory).
 
 | Response field | Type | Meaning |
 |---|---|---|
-| `settings` | `bytes` | msgpack-encoded effective `ConfigSections`; never secrets |
-| `declarative_settings` | `bytes` | msgpack-encoded declarative `DeclarativeSections`; preserves `None`/`auto_tune` intent |
+| `settings` | `bytes` | msgpack-encoded effective `ConfigSections` (resolved core + merged effective service structs); never secrets |
+| `declarative_settings` | `bytes` | msgpack-encoded merged patch view (`DeclarativeSections`); explicitly-set keys only, absence = inherit |
 | `revision` / `hash` | `int` / `str` | Identity of the effective config |
 | `source` | `"default"\|"file"\|"remote"\|"inline"` | Where the effective config came from |
 | `restart_required_fields` | `list[str]` | Restart-required field names (when requested) |
@@ -383,19 +398,22 @@ invalid payload, or a not-configured source, must not create a requeue loop.
 The worker applies config at startup in a fixed precedence order:
 
 ```
-constructor config  <  config.yml  <  remote source
+constructor defaults (L0)  <  service bootstrap (L1)  <  config.yml (L2)  <  remote source (L3)
 ```
 
-1. The constructor config is the base.
-2. `config.yml` (if present) is applied as a trusted, unsigned **declarative**
-   snapshot (revision `1`, below any remote revision); signature verification is
-   waived for this local file only — remote and inline envelopes are still
-   verified. Because it is declarative, a `config.yml` written by
-   `config:store` preserves `None`-means-default and `auto_tune` intent across a
+1. The constructor defaults are the L0 base; the service bootstrap provider
+   supplies L1. `seed_bootstrap()` resolves and caches L0+L1 for every
+   registered section (no hooks run); services read the merged result via
+   `current_settings(name)`.
+2. `config.yml` (if present) is applied as a trusted, unsigned **L2 patch**
+   (revision `1`, below any remote revision); signature verification is waived
+   for this local file only — remote and inline envelopes are still verified.
+   Because it is a patch, a `config.yml` written by `config:store` preserves
+   which keys were explicitly set (and any explicit `null` clears) across a
    store→restart cycle instead of pinning the resolved values that were
    effective at store time.
-3. The remote source is read and applied last, so it stays authoritative when
-   present.
+3. The remote source is read and applied last as the L3 patch, so it stays
+   authoritative when present.
 
 After a successful remote apply, the effective config is persisted back to
 `config.yml`, so the file becomes a durable mirror of the last-applied remote
@@ -436,7 +454,8 @@ that is loudly logged, not a crash-loop.
 ## Extending with Custom Settings
 
 A custom service extends the reloadable surface by declaring its own frozen
-`msgspec.Struct` and registering it with the processor:
+`msgspec.Struct` and registering it with the processor. The struct is the
+concrete L0 base; an optional `bootstrap` provider supplies L1:
 
 ```python
 import msgspec
@@ -456,29 +475,36 @@ class MyWorker(MqttWorker):
         self.register_config_settings(
             "my_service",  # section name in the envelope
             MyServiceSettings,
-            apply=self._apply_my_settings,  # Callable[[MyServiceSettings], None]
+            apply=self._apply_my_settings,  # Callable[[dict[str, object]], list[str]]
+            defaults=MyServiceSettings(),  # L0 concrete base
         )
 
-    def _apply_my_settings(self, settings: MyServiceSettings) -> None:
-        self._my_settings = settings
-        self.logger.info("Applied batch_size=%d", settings.batch_size)
+    def _apply_my_settings(self, values: dict[str, object]) -> list[str]:
+        # ``values`` is the merged patch; resolve it against the L0 base.
+        self._my_settings = msgspec.convert(
+            {**msgspec.to_builtins(MyServiceSettings()), **values},
+            MyServiceSettings,
+        )
+        self.logger.info("Applied batch_size=%d", self._my_settings.batch_size)
+        return list(values)
 ```
 
 The envelope's `settings.services` map then carries
-`{"my_service": msgpack(MyServiceSettings(...))}` alongside `core` (or on its
+`{"my_service": {"batch_size": 200}}` (a patch dict) alongside `core` (or on its
 own, when the producer delivers service sections only). On every apply:
 
-- The core section, when present, is validated against `ReloadableSettings`; a
-  `core=None` envelope leaves the current core settings untouched.
-- Each registered section is decoded against its registered struct
-  (`forbid_unknown_fields` rejects a typo in a service field, not silently
-  ignoring it).
+- The core section, when present, is a partial patch validated against the
+  `RELOADABLE_FIELDS` allowlist; a `core=None` envelope leaves the current core
+  settings untouched.
+- Each registered section's patch is merged onto its L0 base and L1 bootstrap,
+  then converted through its registered struct (`forbid_unknown_fields` rejects
+  a typo in a service field, not silently ignoring it).
 - An unregistered section name is rejected (`UNKNOWN_CONFIG_SECTION`).
 - Each section's `apply` hook runs **before** the core swap succeeds, in
   registration order; a raising hook aborts the whole apply and leaves the
   previous config in place.
 - Registration is additive and idempotent per section name; re-registering
-  the same name replaces the struct + hook.
+  the same name replaces the struct + hook + defaults + bootstrap.
 
 This keeps the core transport-agnostic and validation strict. `examples/remote_config.py`
 shows the full pattern end to end (a `DemoServiceSettings` section registered
@@ -540,19 +566,13 @@ them by hand on the shell is impractical. Encode an envelope in Python (as the
 example does) or use a small script, then publish it:
 
 ```python
-from scietex.service.config_reload import ConfigSections, ReloadableSettings, encode_config_envelope
+from scietex.service.config_reload import ConfigSections, encode_config_envelope
 
+# A core patch is partial: only the keys you set are merged; absent keys
+# inherit, and an explicit None clears the key back to its default.
 sections = ConfigSections(
-    core=ReloadableSettings(
-        max_concurrent_tasks=8,
-        task_manager_sleep_time=0.01,
-        task_queue_manager_sleep_time=0.01,
-        task_handler_start_timeout=5.0,
-        task_handler_stop_timeout=5.0,
-        task_timeout=3.0,
-        task_queue_fetch_timeout=1.0,
-        task_cancellation_timeout=5.0,
-    ),
+    core={"max_concurrent_tasks": 8, "task_timeout": 3.0},
+    services={"my_service": {"batch_size": 200}},
 )
 envelope = encode_config_envelope(sections, revision=1)
 ```

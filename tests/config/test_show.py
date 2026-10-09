@@ -3,12 +3,11 @@
 import msgspec
 
 from scietex.service.config_reload import (
-    RELOADABLE_FIELDS,
     REMOTE_CONFIG_DISABLED,
     ConfigSections,
 )
 
-from ._helpers import build_manager
+from ._helpers import build_manager, make_settings
 
 #: Connection-config field names that must never leak through ``config:show``.
 _SECRET_FIELDS: tuple[str, ...] = (
@@ -57,8 +56,9 @@ def test_show_never_contains_secrets(tmp_path):
 
     sections = msgspec.msgpack.decode(response.settings, type=ConfigSections)
     assert sections.services == {}
-    core_fields = {f.name for f in msgspec.structs.fields(type(sections.core))}
-    assert core_fields == set(RELOADABLE_FIELDS)
+    # The effective view carries the resolved core (a full 8-field dict), not a
+    # patch (v6 §6.3).
+    assert sections.core == msgspec.to_builtins(make_settings())
 
     encoded = msgspec.msgpack.encode(response)
     for field in _SECRET_FIELDS:

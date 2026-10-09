@@ -56,9 +56,9 @@ Run all commands (linters, tests, examples) within this environment.
 **Remote configuration (core, `scietex.service.config_reload`):**
 - `ConfigReloader` — transport-agnostic owner of the apply/reload/store/show pipeline (validate-before-swap, serialized behind an `asyncio.Lock`, replay protection). Calls back into the processor through injected callables; imports no transport package and no processor type.
 - `ConfigSource` — core Protocol (`load`/`store`) both transports implement to deliver the desired-state envelope.
-- `ConfigEnvelope` / `ConfigSections` / `ReloadableSettings` — frozen `forbid_unknown_fields` structs; `RELOADABLE_FIELDS` is the eight-field hot-reload allowlist.
+- `ConfigEnvelope` / `ConfigSections` / `DeclarativeSections` — frozen `forbid_unknown_fields` structs carrying patch dicts (`core: dict | None`, `services: dict[str, dict]`); `ReloadableSettings` is the resolved terminal snapshot; `RELOADABLE_FIELDS` is the eight-field hot-reload allowlist. `CONFIG_ENVELOPE_VERSION = 2` (v1 rejected).
 - `ValkeyConfigSource` (`valkey/config_source.py`) — durable key `scietex:{service}:config` via `GET`/`SET`; `MqttConfigSource` (`mqtt/config_source.py`) — retained topic `scietex/{service}/config` via snapshot + retained publish.
-- Built-in `config:apply` / `config:store` / `config:show` handlers (`task_handler/config.py`) plus the `register_config_settings(name, struct_type, apply=...)` extension point on `TaskProcessor`.
+- Built-in `config:apply` / `config:store` / `config:show` handlers (`task_handler/config.py`) plus the `register_config_settings(name, struct_type, apply=..., defaults=..., bootstrap=...)` extension point on `TaskProcessor` (L0 defaults + L1 bootstrap), with `seed_config_bootstrap()` / `current_config_settings(name)` for the layered merge.
 
 **Valkey collaborators (internal, `scietex.service.valkey`):**
 - `TaskLeaseManager` (`lease.py`) — per-entry lease store (`key`/`write`/`acquire`/`delete`/`refresh`)
@@ -142,9 +142,9 @@ is created.
 **Remote configuration:**
 - Opt-in via `TaskProcessorConfig.remote_config_enabled=True` (default `False`); adds `config_file` (`"config.yml"`), `config_signing_key` (HMAC, `None` disables), and `config_startup_timeout` (MQTT bounded snapshot wait, default 2.0, range `[0.0, 60.0]`)
 - Delivery: one durable desired-state location per transport — Valkey key `scietex:{service}:config` (`GET`/`SET`), MQTT retained topic `scietex/{service}/config`; commands travel as tasks (`config:apply`/`config:store`/`config:show`) through the existing pipeline
-- Precedence at startup: constructor config < `config.yml` < remote source; invalid remote config never fails startup (availability-first)
-- The payload is a `ConfigEnvelope` (msgpack) wrapping a complete `ReloadableSettings` snapshot plus optional registered service sections; only the 8 core fields (`max_concurrent_tasks`, `task_manager_sleep_time`, `task_queue_manager_sleep_time`, `task_handler_start_timeout`, `task_handler_stop_timeout`, `task_timeout`, `task_queue_fetch_timeout`, `task_cancellation_timeout`) are hot-reloadable — everything else is restart-required and unrepresentable remotely
-- Extension point: `worker.register_config_settings(name, struct_type, apply=...)` adds a custom service settings struct + apply hook without the core knowing its fields
+- Precedence at startup: constructor defaults (L0) < service bootstrap (L1) < `config.yml` (L2) < remote source (L3); invalid remote config never fails startup (availability-first)
+- The payload is a `ConfigEnvelope` (msgpack, version `2`) wrapping **patch dicts** — a partial `core` patch plus optional registered service-section patches. Three-state rule: absent = inherit, `null` = clear, value = set. Only the 8 core fields (`max_concurrent_tasks`, `task_manager_sleep_time`, `task_queue_manager_sleep_time`, `task_handler_start_timeout`, `task_handler_stop_timeout`, `task_timeout`, `task_queue_fetch_timeout`, `task_cancellation_timeout`) are hot-reloadable — everything else is restart-required and unrepresentable remotely
+- Extension point: `worker.register_config_settings(name, struct_type, apply=..., defaults=..., bootstrap=...)` adds a custom service settings struct (L0 base) + optional L1 bootstrap + apply hook without the core knowing its fields
 - Full guide: `docs/remote_config.md`
 
 ## Task Handler System

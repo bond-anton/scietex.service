@@ -1,7 +1,12 @@
 """Example: remote configuration over MQTT with a custom settings section.
 
-Remote config delivers a reloadable-behaviour snapshot to a running worker
-over the transport it already uses. Over MQTT this uses two channels:
+Remote config delivers a *layered patch* to a running worker over the
+transport it already uses. The v6 envelope carries a partial core patch and
+per-service patch dicts, each following the three-state rule: a key absent
+from a patch inherits the layer below, a key present with a value sets it,
+and a key present with ``null`` clears it back to the layer below (ultimately
+the constructor default). A producer changes only the fields it cares about;
+every omitted field is preserved. Over MQTT this uses two channels:
 
 1. A retained desired-state message on ``scietex/{service}/config`` — the
    source of truth, read at startup and re-read by ``config:apply``.
@@ -14,10 +19,10 @@ over the transport it already uses. Over MQTT this uses two channels:
 
 A custom service extends the reloadable surface by registering its own
 ``msgspec.Struct`` section: :class:`ConfigDemoWorker` registers
-``DemoServiceSettings`` under the ``"demo"`` section name, and its apply hook
-stores and logs the decoded settings whenever a config applies. The core
-``TaskProcessor`` fields (concurrency, timeouts) remain reloadable alongside
-it.
+``DemoServiceSettings`` under the ``"demo"`` section name with an explicit L0
+``defaults`` instance, and its apply hook stores and logs the merged settings
+whenever a config applies. The core ``TaskProcessor`` fields (concurrency,
+timeouts) remain reloadable alongside it, as a partial patch.
 
 Security: broker ACLs are the primary defense. Anyone able to publish a
 retained message to the config topic — or a task to the task topic — can
@@ -46,7 +51,7 @@ import aiomqtt
 import msgspec
 
 from scietex.service import MqttConfig, MqttWorker, MqttWorkerConfig
-from scietex.service.config_reload import ConfigSections, ReloadableSettings, encode_config_envelope
+from scietex.service.config_reload import ConfigSections, encode_config_envelope
 from scietex.service.task_handler import (
     CONFIG_APPLY_TASK_NAME,
     CONFIG_SHOW_TASK_NAME,
@@ -94,7 +99,14 @@ class ConfigDemoWorker(MqttWorker):
         #: ``BasicWorker.start()`` returns before startup completes, so an
         #: operator must wait on this before publishing non-retained tasks.
         self.subscribed = asyncio.Event()
-        self.register_config_settings(DEMO_SECTION, DemoServiceSettings, apply=self._apply_demo_settings)
+        # L0 is the explicit struct default; the demo has no bootstrap file, so
+        # there is no L1 provider — the section is single-layer plus L2/L3.
+        self.register_config_settings(
+            DEMO_SECTION,
+            DemoServiceSettings,
+            apply=self._apply_demo_settings,
+            defaults=DemoServiceSettings(),
+        )
 
     async def _start_intake(self) -> bool:
         started = await super()._start_intake()
@@ -205,22 +217,12 @@ async def run(host: str, port: int, service_name: str) -> None:
         # retained per-task status topic.
         async with aiomqtt.Client(hostname=host, port=port, protocol=aiomqtt.ProtocolVersion.V5) as operator:
             # (a) Desired state: a retained config envelope on the config topic.
-            # The core snapshot is complete (all fields required); the "demo"
-            # section carries this service's registered settings.
+            # The v6 envelope carries partial patches, not complete snapshots:
+            # only the changed core field and the demo section's fields are
+            # sent, and every omitted field inherits the layer below.
             sections = ConfigSections(
-                core=ReloadableSettings(
-                    max_concurrent_tasks=8,  # bumped from the worker's 4: a core field reload
-                    task_manager_sleep_time=0.01,
-                    task_queue_manager_sleep_time=0.01,
-                    task_handler_start_timeout=5.0,
-                    task_handler_stop_timeout=5.0,
-                    task_timeout=3.0,
-                    task_queue_fetch_timeout=1.0,
-                    task_cancellation_timeout=5.0,
-                ),
-                services={
-                    DEMO_SECTION: msgspec.msgpack.encode(DemoServiceSettings(batch_size=42, greeting="howdy")),
-                },
+                core={"max_concurrent_tasks": 8},  # bumped from the worker's 4: only this field is sent
+                services={DEMO_SECTION: {"batch_size": 42, "greeting": "howdy"}},
             )
             envelope = encode_config_envelope(sections, revision=1)
             # qos=1 matches the worker's config_qos default. Publishing alone
@@ -261,10 +263,11 @@ async def run(host: str, port: int, service_name: str) -> None:
             if payload is not None:
                 response = msgspec.msgpack.decode(payload, type=ConfigShowResponse)
                 shown = msgspec.msgpack.decode(response.settings, type=ConfigSections)
-                demo = msgspec.msgpack.decode(shown.services[DEMO_SECTION], type=DemoServiceSettings)
+                core = shown.core
+                demo = shown.services[DEMO_SECTION]
                 print(
                     f"config:show -> revision={response.revision} source={response.source!r} "
-                    f"max_concurrent_tasks={shown.core.max_concurrent_tasks}"
+                    f"max_concurrent_tasks={core.get('max_concurrent_tasks') if core else None}"
                 )
                 print(f"  demo section: {demo}")
                 print(f"  restart_required_fields={response.restart_required_fields}")

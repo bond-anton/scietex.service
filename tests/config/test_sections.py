@@ -5,7 +5,7 @@ import pytest
 
 from scietex.service.config_reload import ConfigSections
 
-from ._helpers import build_manager, make_envelope, make_settings
+from ._helpers import build_manager, make_core, make_envelope
 
 
 class MyServiceSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -21,8 +21,8 @@ async def test_register_section_passthrough_invokes_hook(tmp_path):
     manager.register_section("my_service", MyServiceSettings, apply=applied.append)
 
     sections = ConfigSections(
-        core=make_settings(),
-        services={"my_service": msgspec.msgpack.encode(MyServiceSettings(batch_size=42))},
+        core=make_core(),
+        services={"my_service": {"batch_size": 42}},
     )
     outcome = await manager.apply_config(make_envelope(sections, revision=1), False)
 
@@ -41,8 +41,8 @@ async def test_reregister_section_replaces_hook(tmp_path):
     manager.register_section("svc", MyServiceSettings, apply=second.append)
 
     sections = ConfigSections(
-        core=make_settings(),
-        services={"svc": msgspec.msgpack.encode(MyServiceSettings(batch_size=7))},
+        core=make_core(),
+        services={"svc": {"batch_size": 7}},
     )
     outcome = await manager.apply_config(make_envelope(sections, revision=1), False)
 
@@ -65,7 +65,7 @@ async def test_core_none_applies_sections_without_touching_core(tmp_path):
 
     sections = ConfigSections(
         core=None,
-        services={"svc": msgspec.msgpack.encode(MyServiceSettings(batch_size=9))},
+        services={"svc": {"batch_size": 9}},
     )
     outcome = await manager.apply_config(make_envelope(sections, revision=5), False)
 
@@ -84,7 +84,7 @@ async def test_core_none_advances_revision_for_replay_guard(tmp_path):
 
     sections = ConfigSections(
         core=None,
-        services={"svc": msgspec.msgpack.encode(MyServiceSettings(batch_size=1))},
+        services={"svc": {"batch_size": 1}},
     )
     payload = make_envelope(sections, revision=5)
     first = await manager.apply_config(payload, False)

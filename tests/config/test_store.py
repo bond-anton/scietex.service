@@ -8,9 +8,11 @@ from scietex.service.config_reload import (
     CONFIG_SOURCE_UNAVAILABLE,
     CONFIG_STORE_FAILED,
     REMOTE_CONFIG_DISABLED,
+    ConfigSections,
+    read_local_config,
 )
 
-from ._helpers import FakeConfigSource, build_manager
+from ._helpers import FakeConfigSource, build_manager, make_envelope
 
 
 @pytest.mark.asyncio
@@ -22,6 +24,26 @@ async def test_store_disk_writes_local_file(tmp_path):
 
     assert outcome.stored is True
     assert (tmp_path / "config.yml").exists()
+
+
+@pytest.mark.asyncio
+async def test_store_disk_round_trips_merged_patch(tmp_path):
+    """The stored file carries the merged patch view, not the resolved snapshot.
+
+    Apply a partial core patch, store to disk, then read the file back: the
+    persisted ``core`` must contain exactly the explicitly-set keys (the patch),
+    so a store→restart cycle preserves which keys were set rather than pinning
+    every resolved value.
+    """
+    manager = build_manager(tmp_path, enabled=True)
+    await manager.apply_envelope(make_envelope(ConfigSections(core={"task_timeout": 9.0})), source="remote")
+
+    outcome = await manager.store_config("disk")
+
+    assert outcome.stored is True
+    stored = read_local_config(tmp_path / "config.yml")
+    assert stored is not None
+    assert stored.core == {"task_timeout": 9.0}
 
 
 @pytest.mark.asyncio

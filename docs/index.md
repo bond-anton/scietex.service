@@ -44,6 +44,7 @@ architecture/hotspots
 design/control_plane
 design/mqtt_worker
 design/remote_config
+design/layered_config_merge
 ```
 
 ```{toctree}

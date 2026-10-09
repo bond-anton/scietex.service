@@ -10,7 +10,6 @@ from scietex.service.config_reload import (
     STALE_CONFIG,
     ConfigApplyOutcome,
     ConfigSections,
-    ReloadableSettings,
     encode_config_envelope,
     read_local_config,
     write_local_config,
@@ -33,7 +32,7 @@ def _sections(**overrides) -> ConfigSections:
         "task_cancellation_timeout": 1.0,
     }
     core.update(overrides)
-    return ConfigSections(core=ReloadableSettings(**core))
+    return ConfigSections(core=core)
 
 
 @pytest.mark.asyncio
@@ -85,7 +84,8 @@ async def test_reload_remote_config_persists_successful_apply(tmp_path):
 
     snapshot = read_local_config(tmp_path / "config.yml")
     assert snapshot is not None
-    assert snapshot.core.task_timeout == 5.0
+    assert snapshot.core is not None
+    assert snapshot.core["task_timeout"] == 5.0
 
 
 @pytest.mark.asyncio
@@ -110,7 +110,8 @@ async def test_reload_remote_config_does_not_persist_when_rejected(tmp_path):
 
     snapshot = read_local_config(tmp_path / "config.yml")
     assert snapshot is not None
-    assert snapshot.core.task_timeout == 9.0
+    assert snapshot.core is not None
+    assert snapshot.core["task_timeout"] == 9.0
 
 
 @pytest.mark.asyncio

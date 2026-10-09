@@ -6,17 +6,16 @@ from scietex.service.config_reload import (
     ConfigSections,
     DeclarativeSections,
     read_local_config,
-    to_declarative,
     write_local_config,
 )
 
-from ._helpers import build_manager, make_envelope, make_settings
+from ._helpers import build_manager, make_core, make_envelope
 
 
 @pytest.mark.asyncio
 async def test_apply_local_file_applies_persisted_snapshot(tmp_path):
     """A persisted ``config.yml`` applies as a revision-1 ``file`` source."""
-    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings(task_timeout=9.0)))
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_core(task_timeout=9.0)))
     manager = build_manager(tmp_path, enabled=True)
 
     outcome = await manager.apply_local_file()
@@ -38,7 +37,7 @@ async def test_apply_local_file_absent_file_returns_none(tmp_path):
 @pytest.mark.asyncio
 async def test_apply_local_file_disabled_returns_none(tmp_path):
     """A disabled feature skips the file without logging an error."""
-    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings()))
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_core()))
     manager = build_manager(tmp_path, enabled=False)
 
     assert await manager.apply_local_file() is None
@@ -56,7 +55,7 @@ async def test_apply_local_file_invalid_file_returns_none(tmp_path):
 @pytest.mark.asyncio
 async def test_apply_local_file_error_returns_none(tmp_path, monkeypatch):
     """A raising apply is caught and returns ``None`` (never propagates)."""
-    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings()))
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_core()))
     manager = build_manager(tmp_path, enabled=True)
 
     async def boom(sections, *, source, trusted=False):
@@ -71,7 +70,7 @@ async def test_apply_local_file_error_returns_none(tmp_path, monkeypatch):
 async def test_apply_local_file_after_remote_revision_applies(tmp_path):
     """A local snapshot still applies after a higher remote revision because
     ``reset()`` clears run-scoped replay state (AR-111)."""
-    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings(task_timeout=9.0)))
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_core(task_timeout=9.0)))
     manager = build_manager(tmp_path, enabled=True)
 
     remote = await manager.apply_envelope(make_envelope(revision=5), source="remote")
@@ -91,7 +90,7 @@ async def test_apply_local_file_after_remote_revision_applies(tmp_path):
 async def test_apply_local_file_with_signing_key_applies(tmp_path):
     """A local snapshot applies as a trusted unsigned envelope even when
     signing is enabled (the signature check is skipped for the trusted file)."""
-    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_settings(task_timeout=9.0)))
+    write_local_config(tmp_path / "config.yml", ConfigSections(core=make_core(task_timeout=9.0)))
     manager = build_manager(tmp_path, enabled=True, signing_key="secret")
 
     outcome = await manager.apply_local_file()
@@ -111,5 +110,5 @@ def test_write_local_round_trips_atomically(tmp_path):
     assert outcome.stored is True
     assert outcome.target == "disk"
     assert outcome.path == str(tmp_path / "config.yml")
-    assert read_local_config(tmp_path / "config.yml") == DeclarativeSections(core=to_declarative(make_settings()))
+    assert read_local_config(tmp_path / "config.yml") == DeclarativeSections(core=None, services={})
     assert [entry.name for entry in tmp_path.iterdir()] == ["config.yml"]

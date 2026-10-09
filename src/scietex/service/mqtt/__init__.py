@@ -1,4 +1,4 @@
-"""MQTT transport for ``scietex.service`` (v4.4.0). Requires the optional ``aiomqtt`` dependency."""
+"""MQTT transport for ``scietex.service``. Requires the optional ``aiomqtt`` dependency."""
 
 from .config import MqttConfig, MqttWorkerConfig, read_mqtt_config
 from .config_source import MqttConfigSource

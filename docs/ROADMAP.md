@@ -4,6 +4,31 @@ Planned work for future major versions. Items here are **not** committed to a
 release date; they are tracked so architectural decisions made in earlier
 versions are not lost. Each entry cites the review finding that motivated it.
 
+## v6.0.0 — Layered config merge
+
+**Motivation:** the v4.5.0/AR-117 config model had a single effective layer plus
+a separate "declarative" view, and the remote envelope carried a *complete*
+`ReloadableSettings` snapshot. That made partial overrides impossible (a producer
+had to resend all eight core fields), conflated "inherit" with `None`, and left
+the local `config.yml` and the remote source unable to compose field-by-field.
+
+**Decision (v6.0.0):** the config model is four layers — L0 constructor defaults
+→ L1 service bootstrap → L2 namespaced `config.yml` → L3 remote source — where
+each layer is a **patch dict** merged field-by-field onto the one below, with the
+three-state rule (absent = inherit, `null` = clear, value = set). `None` means
+exactly one thing — *clear*; "inherit" is *absence*. The wire type is a dict, not
+a struct; the merged dict is converted through the concrete struct at the
+terminal resolver. `CONFIG_ENVELOPE_VERSION` is now `2`; v1 envelopes are
+rejected with `INVALID_CONFIG`. The AR-117 `DeclarativeSettings`/`to_declarative`
+helpers are removed; `config:show`'s `declarative_settings` is the merged patch
+view ("what is explicitly set"). New public API: `config_merge.py`
+(`merge`/`merge_all`/`resolve_section`), `register_section(defaults=, bootstrap=)`,
+`seed_bootstrap()`, `current_settings(name)`.
+
+**Status: implemented** (v6.0.0).
+See [docs/design/layered_config_merge.md](design/layered_config_merge.md) and
+[docs/remote_config.md](remote_config.md).
+
 ## v5.0.0 — Task id moves into `TaskData`
 
 **Motivation:** the task id travelled as a sibling of the payload — a Valkey
@@ -324,6 +349,10 @@ and exposed as `config:show.declarative_settings`, so a store→restart cycle
 preserves the operator's declarative config; `config:show.settings` stays the
 effective snapshot (AR-100 preserved) and the remote desired-state envelope
 stays concrete by design (no `CONFIG_ENVELOPE_VERSION` bump).
+
+> **Superseded by v6.0.0.** The AR-117 declarative view and its
+> `DeclarativeSettings`/`to_declarative` helpers were removed in v6.0.0; the
+> config model is now the four-layer patch merge (see the v6.0.0 entry above).
 
 ## v4.4.0 — MQTT transport
 
