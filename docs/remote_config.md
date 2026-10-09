@@ -372,6 +372,14 @@ constructor config  <  config.yml  <  remote source
 3. The remote source is read and applied last, so it stays authoritative when
    present.
 
+After a successful remote apply, the effective config is persisted back to
+`config.yml`, so the file becomes a durable mirror of the last-applied remote
+config and is re-applied ahead of the remote read on the next start. This
+persistence does not alter the precedence order — it only refreshes the local
+fallback snapshot. It is best-effort: a write failure is logged and leaves
+startup running (and any previous file intact). No file is written when the
+remote source is unavailable or the apply is rejected.
+
 This precedence is re-established on **every** run of the same worker instance:
 each run starts from the constructor/default baseline (the run boundary resets
 apply state via `ConfigReloader.reset()`), so the local file and the remote

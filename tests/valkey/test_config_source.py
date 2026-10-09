@@ -16,6 +16,7 @@ from scietex.service.config_reload import (
     ConfigSections,
     ReloadableSettings,
     encode_config_envelope,
+    read_local_config,
     write_local_config,
 )
 from scietex.service.valkey._glide import GlideClient
@@ -184,6 +185,25 @@ async def test_initialize_applies_remote_config(monkeypatch, tmp_path):
     assert worker.config_revision == 5
     assert worker.config_source == "remote"
     assert cast(TaskProcessorConfig, worker._config).task_timeout == 7.0
+
+
+@pytest.mark.asyncio
+async def test_initialize_persists_remote_config(monkeypatch, tmp_path):
+    """A successful remote apply at startup mirrors the config to config.yml."""
+    envelope = encode_config_envelope(
+        ConfigSections(core=_settings(task_timeout=7.0)),
+        revision=5,
+    )
+    client = DummyClient(ping_ok=True, get_values={_CONFIG_KEY: envelope})
+    _patch_glide_and_handler(monkeypatch)
+    worker = _make_worker(tmp_path, client)
+
+    ok = await worker.initialize()
+
+    assert ok is True
+    snapshot = read_local_config(tmp_path / "config.yml")
+    assert snapshot is not None
+    assert snapshot.core.task_timeout == 7.0
 
 
 @pytest.mark.asyncio

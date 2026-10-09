@@ -18,6 +18,7 @@ from scietex.service.config_reload import (
     ConfigSections,
     ReloadableSettings,
     encode_config_envelope,
+    read_local_config,
     write_local_config,
 )
 from scietex.service.mqtt.config import MqttConfig, MqttWorkerConfig
@@ -279,10 +280,35 @@ async def test_initialize_applies_remote_config(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_initialize_persists_remote_config(monkeypatch, tmp_path):
+    """A successful remote apply at startup mirrors the config to config.yml."""
+    _patch_handler(monkeypatch)
+    fake = FakeClient()
+    envelope = encode_config_envelope(
+        ConfigSections(core=_settings(task_timeout=7.0)),
+        revision=5,
+    )
+    fake.feed(_FakeMessage(envelope, topic=_CONFIG_TOPIC))
+    worker = _make_worker(tmp_path, fake)
+
+    ok = await worker.initialize()
+
+    assert ok is True
+    snapshot = read_local_config(tmp_path / "config.yml")
+    assert snapshot is not None
+    assert snapshot.core.task_timeout == 7.0
+
+    await worker._stop_message_loop()
+    await worker.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_second_initialize_reapplies_local_config(monkeypatch, tmp_path):
     """A second ``initialize()`` of the same worker re-applies the local
     ``config.yml`` when no fresh retained snapshot is delivered, instead of
-    re-using the previous run's retained message (AR-111 step 4)."""
+    re-using the previous run's retained message (AR-111 step 4). The local
+    file now mirrors the first run's remote apply, so it re-applies the remote
+    value (7.0) rather than the hand-written 9.0 snapshot."""
     _patch_handler(monkeypatch)
     write_local_config(tmp_path / "config.yml", ConfigSections(core=_settings(task_timeout=9.0)))
     fake = FakeClient()
@@ -303,11 +329,13 @@ async def test_second_initialize_reapplies_local_config(monkeypatch, tmp_path):
     await worker.disconnect()
 
     # Second start: no fresh retained delivery, so the previous run's in-memory
-    # snapshot must not be re-applied; the local file wins instead.
+    # snapshot must not be re-applied; the local file wins instead. That file is
+    # the mirror of the first run's remote apply (revision 5), not the 9.0 the
+    # test wrote before the first run.
     ok = await worker.initialize()
     assert ok is True
     assert worker.config_source == "file"
-    assert cast(TaskProcessorConfig, worker._config).task_timeout == 9.0
+    assert cast(TaskProcessorConfig, worker._config).task_timeout == 7.0
 
     await worker._stop_message_loop()
     await worker.disconnect()

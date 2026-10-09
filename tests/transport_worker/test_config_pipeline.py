@@ -6,9 +6,13 @@ import pytest
 
 from scietex.service.config import TaskProcessorConfig
 from scietex.service.config_reload import (
+    CONFIG_SOURCE_UNAVAILABLE,
+    STALE_CONFIG,
     ConfigApplyOutcome,
     ConfigSections,
     ReloadableSettings,
+    encode_config_envelope,
+    read_local_config,
     write_local_config,
 )
 from scietex.service.transport_worker import TransportWorker
@@ -65,6 +69,48 @@ async def test_reload_remote_config_delegates_and_logs(tmp_path, caplog):
 
     assert worker.read_calls == 1
     assert any("Applied remote config revision 5" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_reload_remote_config_persists_successful_apply(tmp_path):
+    """A successful remote apply is mirrored to config.yml for the next start."""
+    worker = build_worker(tmp_path, config=TaskProcessorConfig(conf_dir=tmp_path, remote_config_enabled=True))
+    outcome = await worker._config_manager.apply_envelope(
+        encode_config_envelope(_sections(task_timeout=5.0), revision=3),
+        source="remote",
+    )
+    worker.remote_outcome = outcome
+
+    await worker._reload_remote_config()
+
+    snapshot = read_local_config(tmp_path / "config.yml")
+    assert snapshot is not None
+    assert snapshot.core.task_timeout == 5.0
+
+
+@pytest.mark.asyncio
+async def test_reload_remote_config_does_not_persist_when_unavailable(tmp_path):
+    """An unavailable remote source does not create a config.yml mirror."""
+    worker = build_worker(tmp_path, config=TaskProcessorConfig(conf_dir=tmp_path, remote_config_enabled=True))
+    worker.remote_outcome = ConfigApplyOutcome(applied=False, error_code=CONFIG_SOURCE_UNAVAILABLE)
+
+    await worker._reload_remote_config()
+
+    assert not (tmp_path / "config.yml").exists()
+
+
+@pytest.mark.asyncio
+async def test_reload_remote_config_does_not_persist_when_rejected(tmp_path):
+    """A rejected remote apply leaves a pre-existing config.yml untouched."""
+    write_local_config(tmp_path / "config.yml", _sections(task_timeout=9.0))
+    worker = build_worker(tmp_path, config=TaskProcessorConfig(conf_dir=tmp_path, remote_config_enabled=True))
+    worker.remote_outcome = ConfigApplyOutcome(applied=False, revision=2, error_code=STALE_CONFIG)
+
+    await worker._reload_remote_config()
+
+    snapshot = read_local_config(tmp_path / "config.yml")
+    assert snapshot is not None
+    assert snapshot.core.task_timeout == 9.0
 
 
 @pytest.mark.asyncio

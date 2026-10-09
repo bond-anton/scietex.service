@@ -119,9 +119,17 @@ class TransportWorker(TaskProcessor):
         transport-specific source (a live durable GET, or a retained snapshot
         wait) by overriding :meth:`_read_remote_outcome`. Startup must not fail
         on a bad or unavailable remote config (availability-first).
+
+        A successful apply is persisted to the local ``config.yml`` snapshot so
+        the file mirrors the last-applied remote config and is re-applied ahead
+        of the remote read on the next start. Persistence is best-effort:
+        ``write_local`` never raises and a failure only logs, so startup stays
+        availability-first.
         """
         outcome = await self._read_remote_outcome()
         self._log_config_outcome(outcome, "remote")
+        if outcome.applied:
+            self._config_manager.write_local()
 
     async def _read_remote_outcome(self) -> ConfigApplyOutcome:
         """Abstract: read and apply the remote desired-state envelope."""
